@@ -719,9 +719,22 @@ agora sabe-se que o braço é um caso de um enum de três bits, não um booleano
 
 ### 11.2.1. As outras três palavras
 
-`[BIN]` Com o instrumento corrigido: **37 máscaras ao todo**, e as palavras 1, 2
-e 3 quase não são mascaradas dentro das funções — uma cada (palavra 1 bit 14,
-palavra 2 bit 19, palavra 3 bit 1). Elas são consumidas em outro lugar.
+`[BIN]` Com o instrumento corrigido: **42 máscaras ao todo**, e as palavras 1, 2
+e 3 quase não são mascaradas *dentro* das funções — uma cada. Elas são consumidas
+em outro lugar.
+
+> **Correção (2026-09-01, mesmo dia).** A tabela abaixo já disse "palavra 0" para
+> máscaras que ela **não podia atribuir**. O RenderBox embrulha as **quatro**
+> palavras no **mesmo tipo** — `RenderState0` — e as passa como quatro argumentos
+> separados, então o sufixo do nome do tipo não diz qual palavra um `extractvalue`
+> produziu.
+>
+> Medido no `Shader::blend`: o seletor de modo dele sai do **segundo argumento**,
+> a **palavra 1**, e o tipo continua se chamando `RenderState0`.
+>
+> O instrumento agora reporta essas máscaras como palavra **`?`** em vez de zero.
+> Uma tabela que diz "não sei" numa coluna é melhor que uma que erra numa fração
+> desconhecida das linhas.
 
 ### 11.2.2. Onde os bits ganham NOME
 
@@ -1012,3 +1025,55 @@ o driver pôde fundir a multiplicação com a soma e o host não pôde.
 
 É o mesmo cuidado aplicado em toda a torre desde o §8.5. Onde eu não apliquei,
 apareceu — e apareceu como um número, não como uma opinião.
+
+## 15. A mescla — 56 modos, e onde o seletor mora
+
+`[BIN]` `RB::Shader::blend(ShaderState, half4 src, half4 dst)`, no
+`shader_accumulator.metal` e no `shader_blend.metal`.
+
+### 15.1. O seletor
+
+```llvm
+%7 = extractvalue RenderState0 %1, 0     ; o SEGUNDO argumento = palavra 1
+%8 = lshr i32 %7, 16
+%9 = and i32 %8, 16383                   ; bits 16-29
+switch i32 %9, ...
+```
+
+`[BIN]` **`modo = (palavra1 >> 16) & 16383`**, e o `switch` tem **56 casos**,
+numerados de 1 a 56, mais o default.
+
+### 15.2. Isso fecha a pergunta aberta do doc 01 §10.5
+
+O doc 01 registrava: *"dez modos de mescla contra os dezessete implementados
+antes — decisão pendente, e o caminho para fechá-la é o `IconRendering` e o
+`default.metallib`"*.
+
+`[BIN]` O caminho era esse e a resposta é: o `RenderBox` implementa **56**. Os
+dez que o `.icon` nomeia (`normal`, `plusLighter`, `plusDarker`, `overlay`,
+`multiply`, `softLight`, `hardLight`, `darken`, `lighten`, `screen`) são um
+**subconjunto** deles. Nem 10 nem 17: 56, e o formato usa dez.
+
+### 15.3. Os 56 não são todos "modos de mescla"
+
+`[BIN]` Boa parte é **composição Porter-Duff**, não mistura separável:
+
+| caso | matemática | leitura |
+|---|---|---|
+| 3 | `dst.a · src` | *src in dst* |
+| 4 | `(1 − dst.a) · src` | *src out dst* |
+| 6 | `src·(1 − dst.a) + dst` | *dst over src* |
+| 13 | `rgb = src + dst`, `a = src.a + dst.a·(1−src.a)` | **plusLighter** |
+| 15 | `max(src, dst)` | **lighten** |
+| 16 | `min(src, dst)` | **darken** |
+
+`[OBS]` **Seis de 56.** Os outros cinquenta não foram decodados, e a
+correspondência entre os dez nomes do formato e a numeração do `RenderBox` está
+ancorada em três pontos apenas (13, 15, 16). Marcado como aberto em vez de
+completado por analogia com o `CGBlendMode`, cuja numeração **não** bate com esta.
+
+### 15.4. E o `extended_color` aparece aqui
+
+`[BIN]` Vários casos leem `Constant::extended_color` — palavra 3, bit 2, batizado
+no §11.2.2 — e tomam caminhos diferentes conforme ele. A mescla depende do espaço
+de cor, e o bit que a governa já tinha nome antes de eu saber para quê.

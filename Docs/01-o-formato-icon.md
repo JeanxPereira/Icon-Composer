@@ -280,8 +280,13 @@ e sim quatro.
    selados, um deles nunca é escrito, e a relação entre eles é desconhecida.
 4. **O que `automatic-gradient` faz com uma cor só.** O gradiente tem de sair de
    algum lugar; a regra que o deriva está no render, não no documento.
-5. **Dez modos de mescla contra os dezessete implementados antes** — decisão
-   pendente, e o caminho para fechá-la é o `IconRendering` e o `default.metallib`.
+5. ~~**Dez modos de mescla contra os dezessete implementados antes**~~ —
+   **FECHADO em 2026-09-01 pelo caminho que este item previu.** O
+   `RB::Shader::blend` do `default.metallib` tem **56 casos**, selecionados por
+   `(palavra1 >> 16) & 16383`. Nem dez nem dezessete: os dez que o `.icon` nomeia
+   são um subconjunto de 56, e boa parte dos 56 é composição Porter-Duff e não
+   mistura separável. Doc 03 §15. `[OBS]` A correspondência nome↔número está
+   ancorada em três casos só.
 6. **O bundle em volta do `icon.json`.** Este documento cobre o JSON. O `.icon` é
    uma pasta, e os SVGs e PNGs ao lado dele não foram levantados.
 7. **A gramática exata da CLI.** O §11 levanta os comandos e as mensagens; o

@@ -70,6 +70,7 @@ especializações** — 1.040 chaveadas por `appearance`, 616 sem predicado, 82 
 | M2·P4b — os três fragments de cobertura | **passa o gate** — winding, área exata do pixel e distância, GPU × CPU (doc 03 §12) |
 | M2·P5 — alvo de render, o primeiro pixel | **passa o gate** — cobertura conferida contra a **forma fechada** da área do retângulo (doc 03 §13) |
 | o resolve — cobertura assinada vira alpha | **passa o gate** — `accumulator_shape`, e a regra de preenchimento é **um bit** (doc 03 §14) |
+| a mescla | **levantada** — 56 casos, seletor em `(palavra1 >> 16) & 16383`; fecha a pergunta 5 do doc 01, **6 de 56 decodados** (doc 03 §15) |
 
 ## Build
 
