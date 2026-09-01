@@ -1,0 +1,20 @@
+# References/ — o corpo do delito.
+#
+# Aqui moram os DMGs da Apple, as imagens de disco decodificadas, o bundle
+# extraído, os projetos de Ghidra e os dumps. NADA disso entra no git: é
+# material de terceiro e/ou derivado dele.
+#
+# Sobrevivem ao ignore apenas: este arquivo, o README que documenta o pipeline,
+# e os `provenance.json` de cada build — que são metadado NOSSO (url, sha256,
+# tamanho, data), não conteúdo da Apple, e são o lastro de cada selo [BIN].
+#
+# As FERRAMENTAS não moram aqui: `udif.py` e `hfs.py` vivem em
+# AquaKit/References/scripts/, a caixa compartilhada dos três projetos.
+# Ver README.md e docs/metodo-re.md do AquaKit.
+
+*
+!.gitignore
+!README.md
+!*/
+!*/provenance.json
+!*/corpus.json

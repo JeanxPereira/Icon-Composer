@@ -1,0 +1,1483 @@
+{
+  "documents": {
+    "ARMSX2__ARMSX1__icon": {
+      "repo": "ARMSX2/ARMSX1",
+      "path": "ios/icon.icon/icon.json",
+      "sha": "250ce1b45bcdf5f8ff14f15dd56dfaf1bf6974a0",
+      "bytes": 822,
+      "license": "LGPL-3.0",
+      "fetched": "2026-08-31T21:46:00+00:00",
+      "assets": [
+        "88161-playstation-brand-area-png-image-high-quality.png"
+      ]
+    },
+    "AdguardTeam__AdguardForiOS__ProAppIcon": {
+      "repo": "AdguardTeam/AdguardForiOS",
+      "path": "AdguardExtension/AdguardApp/ProAppIcon.icon/icon.json",
+      "sha": "6b1cb65ec2710e635506251a56258822f39665b7",
+      "bytes": 4271,
+      "license": "GPL-3.0",
+      "fetched": "2026-08-31T21:46:02+00:00",
+      "assets": [
+        "AdGuardShield 3.svg",
+        "AdGuardShield 4.svg",
+        "Icon-Light-1024x1024 2.svg",
+        "Icon-Light-1024x1024.svg"
+      ]
+    },
+    "Aeastr__GlowGetter__icon": {
+      "repo": "Aeastr/GlowGetter",
+      "path": "assets/icon.icon/icon.json",
+      "sha": "a32f4e962d721ce979f5db4a7eb53946a4b4296e",
+      "bytes": 3042,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:46:03+00:00",
+      "assets": [
+        "LeftBlur.png",
+        "LeftHalf.svg",
+        "RightHalf.svg",
+        "grid.png"
+      ]
+    },
+    "Aeastr__NotchMyProblem__icon": {
+      "repo": "Aeastr/NotchMyProblem",
+      "path": "resources/icon.icon/icon.json",
+      "sha": "86b49769681b60eb6108ad062a08e78adfa6da0a",
+      "bytes": 1848,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:46:05+00:00",
+      "assets": [
+        "Camera.png",
+        "Frame 33.png",
+        "Grid.png"
+      ]
+    },
+    "Apollo-Reborn__Apollo-Reborn__AppIcon": {
+      "repo": "Apollo-Reborn/Apollo-Reborn",
+      "path": "liquid-glass/icons/AppIcon/AppIcon.icon/icon.json",
+      "sha": "17dd1c127b63d73f88250e82e930453c0a664b0e",
+      "bytes": 10360,
+      "license": "GPL-3.0",
+      "fetched": "2026-08-31T21:46:07+00:00",
+      "assets": [
+        "Antenna.svg",
+        "Apollo Helmet Space.svg",
+        "Eyes 3.svg",
+        "Face.svg",
+        "Helmet 2.svg",
+        "apollo_antennaball.svg",
+        "apollo_ring_large.svg",
+        "stem.svg"
+      ]
+    },
+    "Apollo-Reborn__Apollo-Reborn__LG-antenna": {
+      "repo": "Apollo-Reborn/Apollo-Reborn",
+      "path": "liquid-glass/icons/LG-antenna/LG-antenna.icon/icon.json",
+      "sha": "641c35065d7c79c71ab8df817dd683a6d7b8ad69",
+      "bytes": 6709,
+      "license": "GPL-3.0",
+      "fetched": "2026-08-31T21:46:07+00:00",
+      "assets": [
+        "apollo_antennaball.svg",
+        "apollo_ring_large.svg",
+        "ovalduck_head.svg",
+        "ovalduck_stem.svg"
+      ]
+    },
+    "Apollo-Reborn__Apollo-Reborn__apollo": {
+      "repo": "Apollo-Reborn/Apollo-Reborn",
+      "path": "liquid-glass/icons/apollo/apollo.icon/icon.json",
+      "sha": "fe1ce558dba3ed66efcf27a8e9d91feb018cbb98",
+      "bytes": 9719,
+      "license": "GPL-3.0",
+      "fetched": "2026-08-31T21:46:08+00:00",
+      "assets": [
+        "Antenna.svg",
+        "Apollo Helmet Space.svg",
+        "Eyes 3.svg",
+        "Face.svg",
+        "Helmet 2.svg",
+        "apollo_antennaball.svg",
+        "apollo_ring_large.svg",
+        "stem.svg"
+      ]
+    },
+    "Apollo-Reborn__Apollo-Reborn__halo": {
+      "repo": "Apollo-Reborn/Apollo-Reborn",
+      "path": "liquid-glass/icons/halo/halo.icon/icon.json",
+      "sha": "92b6fc1e782361eafdb1b797043c89b2eb1e447d",
+      "bytes": 10720,
+      "license": "GPL-3.0",
+      "fetched": "2026-08-31T21:46:09+00:00",
+      "assets": [
+        "Antenna.svg",
+        "Apollo Helmet Space.svg",
+        "Eyes 3.svg",
+        "Face.svg",
+        "Halo 2.svg",
+        "Helmet 2.svg",
+        "apollo_antennaball.svg",
+        "apollo_ring_large.svg",
+        "stem.svg"
+      ]
+    },
+    "Arthi-chaud__Meelo__icon": {
+      "repo": "Arthi-chaud/Meelo",
+      "path": "front/apps/mobile/assets/icon.icon/icon.json",
+      "sha": "fa68e11729de1b382b449288b4c6e190868250bc",
+      "bytes": 1315,
+      "license": "GPL-3.0",
+      "fetched": "2026-08-31T21:46:10+00:00",
+      "assets": [
+        "icon-black.png",
+        "icon-white.png"
+      ]
+    },
+    "Avi0n__MeshCoreOne__AppIcon": {
+      "repo": "Avi0n/MeshCoreOne",
+      "path": "AppIcon.icon/icon.json",
+      "sha": "a85119e798d126c8ad5202c83bd880a6f9555542",
+      "bytes": 1739,
+      "license": "GPL-3.0",
+      "fetched": "2026-08-31T21:46:12+00:00",
+      "assets": [
+        "app-icon.png",
+        "background.png"
+      ]
+    },
+    "Bunn__PiStats__pistats": {
+      "repo": "Bunn/PiStats",
+      "path": "pistats.icon/icon.json",
+      "sha": "d0bd07a5fd4f0ca4c12f6384d0d7c7e9977d686f",
+      "bytes": 2101,
+      "license": "BSD-2-Clause",
+      "fetched": "2026-08-31T21:46:13+00:00",
+      "assets": [
+        "Ellipse 1.svg",
+        "\udbc1\ude66.svg"
+      ]
+    },
+    "CamilleScholtz__swmpc__swmpc": {
+      "repo": "CamilleScholtz/swmpc",
+      "path": "swmpc/swmpc.icon/icon.json",
+      "sha": "57485a59acfc54c1d1a3ee487b88ddf7a83bd6c8",
+      "bytes": 990,
+      "license": "EUPL-1.2",
+      "fetched": "2026-08-31T21:46:14+00:00",
+      "assets": [
+        "12.png"
+      ]
+    },
+    "Code-with-Beto__quick-push__QuickPushIcon": {
+      "repo": "Code-with-Beto/quick-push",
+      "path": "QuickPush/QuickPushIcon.icon/icon.json",
+      "sha": "607764b9f0c0f9a227f857fc798f7b8cb0eef304",
+      "bytes": 973,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:46:16+00:00",
+      "assets": [
+        "bolt.brakesignal 1.svg"
+      ]
+    },
+    "CodeEditApp__CodeEdit__CodeEditAlphaIcon": {
+      "repo": "CodeEditApp/CodeEdit",
+      "path": "ProductIcons/CodeEditAlphaIcon.icon/icon.json",
+      "sha": "a72aaa3331d8332908f6e8f6834d65db6ed81c87",
+      "bytes": 6290,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:46:17+00:00",
+      "assets": [
+        "CodeEdit pen.png",
+        "Slice 1 (9).svg",
+        "label-alpha-dark.svg",
+        "label-alpha-light.svg",
+        "pen-dark-color.png",
+        "pen-light-color.png",
+        "pen-light.png"
+      ]
+    },
+    "CodeEditApp__CodeEdit__CodeEditBetaIcon": {
+      "repo": "CodeEditApp/CodeEdit",
+      "path": "ProductIcons/CodeEditBetaIcon.icon/icon.json",
+      "sha": "4c69ca015b4d939fdea268454e7d9074975c9acf",
+      "bytes": 5770,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:46:18+00:00",
+      "assets": [
+        "CodeEdit pen.png",
+        "Slice 1 (9).svg",
+        "label-beta-dark.svg",
+        "label-beta-light.svg",
+        "pen-dark-color.png",
+        "pen-light-color.png",
+        "pen-light.png"
+      ]
+    },
+    "CodeEditApp__CodeEdit__CodeEditDevIcon": {
+      "repo": "CodeEditApp/CodeEdit",
+      "path": "ProductIcons/CodeEditDevIcon.icon/icon.json",
+      "sha": "dba5069e6650e040ab2fc9387118ebd74a4546a7",
+      "bytes": 5828,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:46:19+00:00",
+      "assets": [
+        "CodeEdit pen.png",
+        "Slice 1 (9).svg",
+        "label-dev-dark.svg",
+        "label-dev-light.svg",
+        "pen-dark-color.png",
+        "pen-light-color.png",
+        "pen-light.png"
+      ]
+    },
+    "CodeEditApp__CodeEdit__CodeEditPreIcon": {
+      "repo": "CodeEditApp/CodeEdit",
+      "path": "ProductIcons/CodeEditPreIcon.icon/icon.json",
+      "sha": "5407dfaa93d45cf8047c25918ffdb65ecbb99c6d",
+      "bytes": 5854,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:46:20+00:00",
+      "assets": [
+        "CodeEdit pen.png",
+        "Slice 1 (9).svg",
+        "label-pre-dark.svg",
+        "label-pre-light.svg",
+        "pen-dark-color.png",
+        "pen-light-color.png",
+        "pen-light.png"
+      ]
+    },
+    "CommE2E__comm__apple": {
+      "repo": "CommE2E/comm",
+      "path": "lib/icons/apple.icon/icon.json",
+      "sha": "dccf83e83e8b576fbb31e35b4f01cfcf1531eb79",
+      "bytes": 801,
+      "license": "BSD-3-Clause",
+      "fetched": "2026-08-31T21:46:21+00:00",
+      "assets": [
+        "transparent.svg"
+      ]
+    },
+    "DimensionDev__Flare__AppIcon": {
+      "repo": "DimensionDev/Flare",
+      "path": "appleApp/ios/AppIcon.icon/icon.json",
+      "sha": "f94fe0e12a7333976dda4654c1923df7ff98c765",
+      "bytes": 1446,
+      "license": "AGPL-3.0",
+      "fetched": "2026-08-31T21:46:23+00:00",
+      "assets": [
+        "Group-2.svg",
+        "Group.svg"
+      ]
+    },
+    "DimensionDev__Flare__AppIcon_black": {
+      "repo": "DimensionDev/Flare",
+      "path": "appleApp/ios/AppIcon_black.icon/icon.json",
+      "sha": "b5f57ed7002ddc2893d917ba188d9633552b5afc",
+      "bytes": 1586,
+      "license": "AGPL-3.0",
+      "fetched": "2026-08-31T21:46:23+00:00",
+      "assets": [
+        "Group-2.svg",
+        "Group.svg"
+      ]
+    },
+    "DimensionDev__Flare__AppIcon_blue": {
+      "repo": "DimensionDev/Flare",
+      "path": "appleApp/ios/AppIcon_blue.icon/icon.json",
+      "sha": "ed71ac235c5ea300f53b2a4321efdf0b0835db55",
+      "bytes": 1586,
+      "license": "AGPL-3.0",
+      "fetched": "2026-08-31T21:46:24+00:00",
+      "assets": [
+        "Group-2.svg",
+        "Group.svg"
+      ]
+    },
+    "DimensionDev__Flare__AppIcon_cyan": {
+      "repo": "DimensionDev/Flare",
+      "path": "appleApp/ios/AppIcon_cyan.icon/icon.json",
+      "sha": "9b276e8af797412c8cc33c9ee36383e5c2a4b9c5",
+      "bytes": 1587,
+      "license": "AGPL-3.0",
+      "fetched": "2026-08-31T21:46:25+00:00",
+      "assets": [
+        "Group-2.svg",
+        "Group.svg"
+      ]
+    },
+    "DimensionDev__Flare__AppIcon_light_blue": {
+      "repo": "DimensionDev/Flare",
+      "path": "appleApp/ios/AppIcon_light_blue.icon/icon.json",
+      "sha": "9d79eb8d3d3862bd5ddbec12fe1b23d1f3eaa7a4",
+      "bytes": 1587,
+      "license": "AGPL-3.0",
+      "fetched": "2026-08-31T21:46:26+00:00",
+      "assets": [
+        "Group-2.svg",
+        "Group.svg"
+      ]
+    },
+    "DimensionDev__Flare__AppIcon_orange": {
+      "repo": "DimensionDev/Flare",
+      "path": "appleApp/ios/AppIcon_orange.icon/icon.json",
+      "sha": "71276894d5cd20146e208eaec42d8e3892abc2fb",
+      "bytes": 1587,
+      "license": "AGPL-3.0",
+      "fetched": "2026-08-31T21:46:26+00:00",
+      "assets": [
+        "Group-2.svg",
+        "Group.svg"
+      ]
+    },
+    "DimensionDev__Flare__AppIcon_red": {
+      "repo": "DimensionDev/Flare",
+      "path": "appleApp/ios/AppIcon_red.icon/icon.json",
+      "sha": "64cd82ac84c17c2a4826062892fd2d323068409b",
+      "bytes": 1587,
+      "license": "AGPL-3.0",
+      "fetched": "2026-08-31T21:46:27+00:00",
+      "assets": [
+        "Group-2.svg",
+        "Group.svg"
+      ]
+    },
+    "DimensionDev__Flare__AppIcon_teal": {
+      "repo": "DimensionDev/Flare",
+      "path": "appleApp/ios/AppIcon_teal.icon/icon.json",
+      "sha": "1c9c6dae9c8dfb96a035dee4f1495fdcd8b69aab",
+      "bytes": 1587,
+      "license": "AGPL-3.0",
+      "fetched": "2026-08-31T21:46:28+00:00",
+      "assets": [
+        "Group-2.svg",
+        "Group.svg"
+      ]
+    },
+    "DimensionDev__Flare__AppIcon_white": {
+      "repo": "DimensionDev/Flare",
+      "path": "appleApp/ios/AppIcon_white.icon/icon.json",
+      "sha": "cc2a9fe37a866039ec75890097b3ab02507b0c44",
+      "bytes": 1859,
+      "license": "AGPL-3.0",
+      "fetched": "2026-08-31T21:46:29+00:00",
+      "assets": [
+        "Group-2.svg",
+        "Group.svg"
+      ]
+    },
+    "DimensionDev__Flare__AppIcon_yellow": {
+      "repo": "DimensionDev/Flare",
+      "path": "appleApp/ios/AppIcon_yellow.icon/icon.json",
+      "sha": "b8522a243d7f54082aa59833091250652ce3775e",
+      "bytes": 2006,
+      "license": "AGPL-3.0",
+      "fetched": "2026-08-31T21:46:30+00:00",
+      "assets": [
+        "Group-2.svg",
+        "Group.svg"
+      ]
+    },
+    "Emanuele-web04__remodex__RemodexContrast": {
+      "repo": "Emanuele-web04/remodex",
+      "path": "CodexMobile/CodexMobile/RemodexContrast.icon/icon.json",
+      "sha": "70b6e306d5a5e7950b304dd430fecbae0eba42f6",
+      "bytes": 2733,
+      "license": "Apache-2.0",
+      "fetched": "2026-08-31T21:46:31+00:00",
+      "assets": [
+        "Subtract.png",
+        "remdark.svg"
+      ]
+    },
+    "Hydr8gon__NooDS__icon-ios": {
+      "repo": "Hydr8gon/NooDS",
+      "path": "icon/icon-ios.icon/icon.json",
+      "sha": "949a7918aef9613fab5e93f03f5988580e44cab5",
+      "bytes": 664,
+      "license": "GPL-3.0",
+      "fetched": "2026-08-31T21:46:32+00:00",
+      "assets": [
+        "noods.png"
+      ]
+    },
+    "Jellify-Music__App__teal-icon-composer": {
+      "repo": "Jellify-Music/App",
+      "path": "ios/teal-icon-composer.icon/icon.json",
+      "sha": "6c991a72d64ecabee89412ac42e1afa461326576",
+      "bytes": 976,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:46:34+00:00",
+      "assets": [
+        "JellifyFinalGradientTealPurpleFinal 2.svg"
+      ]
+    },
+    "LEOYoon-Tsaw__Squirrel-Designer__Rime": {
+      "repo": "LEOYoon-Tsaw/Squirrel-Designer",
+      "path": "Rime.icon/icon.json",
+      "sha": "4fafe726ca65e51c47cd21029d86cdb132b4c2cf",
+      "bytes": 1510,
+      "license": "GPL-3.0",
+      "fetched": "2026-08-31T21:46:35+00:00",
+      "assets": [
+        "back.svg",
+        "logo.svg"
+      ]
+    },
+    "Lakr233__SafariYYDS__AppIcon": {
+      "repo": "Lakr233/SafariYYDS",
+      "path": "\u559c/AppIcon.icon/icon.json",
+      "sha": "e57f937b87b7238a6cf0420d93bc0baa847f27dd",
+      "bytes": 682,
+      "license": "Unlicense",
+      "fetched": "2026-08-31T21:46:36+00:00",
+      "assets": [
+        "Celebration.png"
+      ]
+    },
+    "LeoNatan__LNPopupController__LNPopupController": {
+      "repo": "LeoNatan/LNPopupController",
+      "path": "LNPopupControllerExample/LNPopupController.icon/icon.json",
+      "sha": "f7405b556e4790643a9de61227b7845c6686a974",
+      "bytes": 5539,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:46:37+00:00",
+      "assets": [
+        "Bar.png",
+        "Buttons.png",
+        "Content.png",
+        "Image.png",
+        "Title.png"
+      ]
+    },
+    "MxIris-Reverse-Engineering__RuntimeViewer__AppIcon": {
+      "repo": "MxIris-Reverse-Engineering/RuntimeViewer",
+      "path": "Resources/AppIcon.icon/icon.json",
+      "sha": "3b05f668cb75a9fc354f21ede2013bc03dfc9574",
+      "bytes": 2035,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:46:39+00:00",
+      "assets": [
+        "Background 2.png",
+        "Grid 10pt.svg"
+      ]
+    },
+    "Neighbor-Z__SwiftMTP__MTPIcon": {
+      "repo": "Neighbor-Z/SwiftMTP",
+      "path": "MTPIcon.icon/icon.json",
+      "sha": "ae002f57278eb25a0bc3777af8e0cb783dfbdd7f",
+      "bytes": 853,
+      "license": "GPL-2.0",
+      "fetched": "2026-08-31T21:46:40+00:00",
+      "assets": [
+        "usb-c-icon-675689-512.png"
+      ]
+    },
+    "NotWadeGrimridge__PingPlace__PingPlace": {
+      "repo": "NotWadeGrimridge/PingPlace",
+      "path": "src/assets/PingPlace.icon/icon.json",
+      "sha": "b31da4f657d731a4bc667c750fca4df8ab2f4fa1",
+      "bytes": 1293,
+      "license": "UNKNOWN",
+      "fetched": "2026-08-31T21:46:41+00:00",
+      "assets": [
+        "icon.svg"
+      ]
+    },
+    "OneKeyHQ__app-monorepo__OneKeyLogo": {
+      "repo": "OneKeyHQ/app-monorepo",
+      "path": "apps/mobile/ios/OneKeyLogo.icon/icon.json",
+      "sha": "c3f8719a488125eaf66e91458609cb8d347b63a8",
+      "bytes": 5038,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:46:43+00:00",
+      "assets": [
+        "App-Icon-Green-BG.svg",
+        "KEY-only-Green.svg"
+      ]
+    },
+    "OpenSource03__harnss__icon": {
+      "repo": "OpenSource03/harnss",
+      "path": "build/icon.icon/icon.json",
+      "sha": "148b559e87d35d1a36501c464203ecdea946b5ee",
+      "bytes": 1621,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:46:44+00:00",
+      "assets": [
+        "harnss-light 2.png",
+        "harnss.pngdark.png"
+      ]
+    },
+    "PDF-Archiver__PDF-Archiver__AppIcon": {
+      "repo": "PDF-Archiver/PDF-Archiver",
+      "path": "Shared/Resources/AppIcon.icon/icon.json",
+      "sha": "e011d5336a269a231eb2a0e7bf19d42163b9fa70",
+      "bytes": 3546,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:46:45+00:00",
+      "assets": [
+        "AppIcon-corner-shadow.svg",
+        "AppIcon-corner.svg",
+        "AppIcon-document.svg",
+        "AppIcon-text.svg"
+      ]
+    },
+    "Renset__macai__AppIcon": {
+      "repo": "Renset/macai",
+      "path": "AppIcon.icon/icon.json",
+      "sha": "19e5b7868af40ebcf66738753c8261d31ce4fe1f",
+      "bytes": 925,
+      "license": "Apache-2.0",
+      "fetched": "2026-08-31T21:46:47+00:00",
+      "assets": [
+        "Macai.png"
+      ]
+    },
+    "RodZill4__material-maker__MaterialMakerLG": {
+      "repo": "RodZill4/material-maker",
+      "path": "MaterialMakerLG.icon/icon.json",
+      "sha": "352b211fc1b2889445d10a439a54f644cf6e1252",
+      "bytes": 2001,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:46:48+00:00",
+      "assets": [
+        "mm.svg"
+      ]
+    },
+    "RoversX__LaunchNext__AppIcon": {
+      "repo": "RoversX/LaunchNext",
+      "path": "LaunchNext/AppIcon.icon/icon.json",
+      "sha": "1f56b1da9724b4409b05246bdbebb2c232275e6c",
+      "bytes": 1828,
+      "license": "GPL-3.0",
+      "fetched": "2026-08-31T21:46:49+00:00",
+      "assets": [
+        "2.searchbar_unspecified_unspecified_automatic.svg",
+        "3.magnifier_unspecified_unspecified_automatic.svg",
+        "4.chiclet6_unspecified_unspecified_automatic.svg",
+        "5.chiclet5_unspecified_unspecified_automatic.svg",
+        "6.chiclet4_unspecified_unspecified_automatic.svg",
+        "7.chiclet3_unspecified_unspecified_automatic.svg",
+        "8.chiclet2_unspecified_unspecified_automatic.svg",
+        "9.chiclet1_unspecified_unspecified_automatic.svg"
+      ]
+    },
+    "SAP__macOS-icon-generator__AppIcon": {
+      "repo": "SAP/macOS-icon-generator",
+      "path": "source/Icons/AppIcon.icon/icon.json",
+      "sha": "d58e1d788e8063dec0d531a7af605a2670176240",
+      "bytes": 2631,
+      "license": "Apache-2.0",
+      "fetched": "2026-08-31T21:46:51+00:00",
+      "assets": [
+        "l1.svg",
+        "l2.svg",
+        "l3.svg",
+        "l4.svg"
+      ]
+    },
+    "Sappharad__mp3gainOSX__GlassIcon": {
+      "repo": "Sappharad/mp3gainOSX",
+      "path": "Images/GlassIcon.icon/icon.json",
+      "sha": "97137153fcb0b7961305fdbdbcca342b792f5149",
+      "bytes": 1857,
+      "license": "LGPL-3.0",
+      "fetched": "2026-08-31T21:46:52+00:00"
+    },
+    "Serial-Studio__Serial-Studio__AppIcon-macOS": {
+      "repo": "Serial-Studio/Serial-Studio",
+      "path": "doc/brand/icon/AppIcon-macOS.icon/icon.json",
+      "sha": "fdf4d929b3e3636d7457cb58b8e672a791e25bb4",
+      "bytes": 5112,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:46:53+00:00"
+    },
+    "Shopify__tophat__AppIcon": {
+      "repo": "Shopify/tophat",
+      "path": "Tophat/AppIcon.icon/icon.json",
+      "sha": "a082767c5180c605e53e8991ffcb9fdf14f2b227",
+      "bytes": 2576,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:46:55+00:00"
+    },
+    "SidhuK__WardenApp__AppIcon": {
+      "repo": "SidhuK/WardenApp",
+      "path": "AppIcon.icon/icon.json",
+      "sha": "9abe98ac769aff895e08bccb24ef8c1020166bdf",
+      "bytes": 751,
+      "license": "Apache-2.0",
+      "fetched": "2026-08-31T21:46:56+00:00"
+    },
+    "SoFriendly__2fhey__AppIcon": {
+      "repo": "SoFriendly/2fhey",
+      "path": "AppIcon.icon/icon.json",
+      "sha": "b8b652d01a0a65d8068eb356c5e79ce013eba4cb",
+      "bytes": 872,
+      "license": "CC0-1.0",
+      "fetched": "2026-08-31T21:46:57+00:00"
+    },
+    "SteamGridDB__SGDBoop__Apple_Icon": {
+      "repo": "SteamGridDB/SGDBoop",
+      "path": "res/mac/Apple Icon.icon/icon.json",
+      "sha": "b77a5636cb4ad9912c14b59881e3bc830a7fe2a4",
+      "bytes": 2006,
+      "license": "Zlib",
+      "fetched": "2026-08-31T21:46:58+00:00"
+    },
+    "StikDebug__StikPair__StikPair": {
+      "repo": "StikDebug/StikPair",
+      "path": "App/StikPair.icon/icon.json",
+      "sha": "771ac30adda5b06e4c050b50baa409493ed0efb0",
+      "bytes": 3067,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:47:00+00:00"
+    },
+    "Subfly__YABA__YABA_Icon": {
+      "repo": "Subfly/YABA",
+      "path": "Darwin/YABA_Icon.icon/icon.json",
+      "sha": "b707526373fe7f15560f9bd8959f2903e7aa35ab",
+      "bytes": 1331,
+      "license": "AGPL-3.0",
+      "fetched": "2026-08-31T21:47:01+00:00"
+    },
+    "SublerApp__Subler__AppIcon": {
+      "repo": "SublerApp/Subler",
+      "path": "AppIcon.icon/icon.json",
+      "sha": "9fcdc8f5b69a12a7b161178265d3db6ed27aab29",
+      "bytes": 5687,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:47:03+00:00"
+    },
+    "Thorium-Sim__thorium-nova__Icon": {
+      "repo": "Thorium-Sim/thorium-nova",
+      "path": "scripts/Icon.icon/icon.json",
+      "sha": "cbf7303a3513bca5818dd7a638047f3d2ed807e1",
+      "bytes": 1410,
+      "license": "Apache-2.0",
+      "fetched": "2026-08-31T21:47:04+00:00"
+    },
+    "Uncommon__Xit__Xit": {
+      "repo": "Uncommon/Xit",
+      "path": "Xit/Xit.icon/icon.json",
+      "sha": "17bc550541d39909aa5a3ca64182726053b64737",
+      "bytes": 1304,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:47:05+00:00"
+    },
+    "ZL-Audio__ZLEqualizer__icon": {
+      "repo": "ZL-Audio/ZLEqualizer",
+      "path": "packaging/icon.icon/icon.json",
+      "sha": "52c1db9a27f0b2b8f292ef90f565ef77a39f3cac",
+      "bytes": 1070,
+      "license": "AGPL-3.0",
+      "fetched": "2026-08-31T21:47:07+00:00"
+    },
+    "alienator88__Viz__Viz": {
+      "repo": "alienator88/Viz",
+      "path": "Viz/Icon/Viz.icon/icon.json",
+      "sha": "7678552abe36150d17a64b7987bcaabdf1965c96",
+      "bytes": 1338,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:47:08+00:00"
+    },
+    "amiantos__pibar__pibar": {
+      "repo": "amiantos/pibar",
+      "path": "PiBar/pibar.icon/icon.json",
+      "sha": "a33c29ef5c0c291f7235a56b79fc25e1d8d85de7",
+      "bytes": 2613,
+      "license": "MPL-2.0",
+      "fetched": "2026-08-31T21:47:09+00:00"
+    },
+    "buresdv__Cork__AppIcon": {
+      "repo": "buresdv/Cork",
+      "path": "Cork/AppIcon.icon/icon.json",
+      "sha": "d5e962da48e477544d2d1da30a6c5c7635855fef",
+      "bytes": 5114,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:47:10+00:00"
+    },
+    "chrismaltby__gb-studio__composer": {
+      "repo": "chrismaltby/gb-studio",
+      "path": "src/assets/app/icon/composer.icon/icon.json",
+      "sha": "d3bf7051fb86fe8b6b7ad731d6f010f4798de095",
+      "bytes": 9270,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:47:12+00:00"
+    },
+    "chromium__chromium__AppIcon": {
+      "repo": "chromium/chromium",
+      "path": "chrome/app/theme/chromium/mac/AppIcon.icon/icon.json",
+      "sha": "f8e12d58db1215b31c1727fffb8730e04e6d92a2",
+      "bytes": 7191,
+      "license": "BSD-3-Clause",
+      "fetched": "2026-08-31T21:47:13+00:00",
+      "assets": [
+        "2.svg",
+        "3.svg",
+        "5.svg",
+        "blue.svg",
+        "cr.svg",
+        "donut.svg",
+        "pill.svg",
+        "ring.png"
+      ]
+    },
+    "coteditor__CotEditor__AppIcon": {
+      "repo": "coteditor/CotEditor",
+      "path": "CotEditor/Resources/AppIcon.icon/icon.json",
+      "sha": "3f28f209a331055365ba9e58596eed38b709b942",
+      "bytes": 5764,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:47:15+00:00"
+    },
+    "criticalmaps__criticalmaps-ios__AppIcon": {
+      "repo": "criticalmaps/criticalmaps-ios",
+      "path": "iOS/AppIcon.icon/icon.json",
+      "sha": "b232415520b9e5a96fb5c5d68ab637979391d97c",
+      "bytes": 6045,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:47:19+00:00"
+    },
+    "criticalmaps__criticalmaps-ios__AppIcon-Dark": {
+      "repo": "criticalmaps/criticalmaps-ios",
+      "path": "iOS/AppIcon-Dark.icon/icon.json",
+      "sha": "a4e03c07ed1f3ea3f2d45018ea1b634f7ebf8bbc",
+      "bytes": 6433,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:47:16+00:00"
+    },
+    "criticalmaps__criticalmaps-ios__AppIcon-Neon": {
+      "repo": "criticalmaps/criticalmaps-ios",
+      "path": "iOS/AppIcon-Neon.icon/icon.json",
+      "sha": "dfd47c5b1b0d8c161eb3e6619455186ea35ff009",
+      "bytes": 3376,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:47:17+00:00"
+    },
+    "criticalmaps__criticalmaps-ios__AppIcon-Rainbow": {
+      "repo": "criticalmaps/criticalmaps-ios",
+      "path": "iOS/AppIcon-Rainbow.icon/icon.json",
+      "sha": "76da45784e617cef7b5060cfdd120d72453f3d05",
+      "bytes": 5372,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:47:18+00:00"
+    },
+    "criticalmaps__criticalmaps-ios__AppIcon-Sun": {
+      "repo": "criticalmaps/criticalmaps-ios",
+      "path": "iOS/AppIcon-Sun.icon/icon.json",
+      "sha": "9d13b79e4254b3d0a032a779ce13a937c05e3dde",
+      "bytes": 7108,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:47:18+00:00"
+    },
+    "daneden__Zeitgeist__AppIcon": {
+      "repo": "daneden/Zeitgeist",
+      "path": "AppIcon.icon/icon.json",
+      "sha": "f1e950c9e37f8361f5b77d5cd59ef170123eaa4a",
+      "bytes": 3565,
+      "license": "Apache-2.0",
+      "fetched": "2026-08-31T21:47:21+00:00"
+    },
+    "danielbuechele__goofy__goofy": {
+      "repo": "danielbuechele/goofy",
+      "path": "goofy.icon/icon.json",
+      "sha": "0c0df2be1a588379b7714a868c77aa0244b5c94a",
+      "bytes": 960,
+      "license": "UNKNOWN",
+      "fetched": "2026-08-31T21:47:22+00:00"
+    },
+    "dannystewart__volumeHUD__volumeHUD": {
+      "repo": "dannystewart/volumeHUD",
+      "path": "volumeHUD.icon/icon.json",
+      "sha": "c9d3e63b9edc6126461aa4c5ef428a4432f1fbc3",
+      "bytes": 882,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:47:23+00:00"
+    },
+    "deemru__Chromium-Gost__AppIcon": {
+      "repo": "deemru/Chromium-Gost",
+      "path": "extra/mac/AppIcon.icon/icon.json",
+      "sha": "d74cefeef7033d7cf2d8039acc5c76c82507b136",
+      "bytes": 1639,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:47:25+00:00"
+    },
+    "dz0ny__meshcore-sar__AppIcon": {
+      "repo": "dz0ny/meshcore-sar",
+      "path": "AppIcon.icon/icon.json",
+      "sha": "387ea08f9241d572ef3d73d62d747eeb3f6cf4f2",
+      "bytes": 727,
+      "license": "UNKNOWN",
+      "fetched": "2026-08-31T21:47:26+00:00"
+    },
+    "fastrepl__anarlog__stable": {
+      "repo": "fastrepl/anarlog",
+      "path": "apps/desktop/src-tauri/icons/src/stable.icon/icon.json",
+      "sha": "e47a287e3ac7d10b52abec94778ba25599e330cc",
+      "bytes": 3610,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:47:27+00:00"
+    },
+    "fcanas__mirror-displays__MDIcon-Next": {
+      "repo": "fcanas/mirror-displays",
+      "path": "MDIcon-Next.icon/icon.json",
+      "sha": "383d5eed13bffe978aa6b21a3a015690c213434f",
+      "bytes": 4136,
+      "license": "UNKNOWN",
+      "fetched": "2026-08-31T21:47:28+00:00"
+    },
+    "gee1k__uPic__uPic": {
+      "repo": "gee1k/uPic",
+      "path": "uPic/uPic.icon/icon.json",
+      "sha": "9a44cb5b9837ee1d332f36715686f5607abaa038",
+      "bytes": 721,
+      "license": "Apache-2.0",
+      "fetched": "2026-08-31T21:47:30+00:00"
+    },
+    "gitx__gitx__AppIcon": {
+      "repo": "gitx/gitx",
+      "path": "Resources/AppIcon.icon/icon.json",
+      "sha": "5e79f4eabb3de352c612c624f1740bec8052c371",
+      "bytes": 2250,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:47:31+00:00"
+    },
+    "h3nock__remux__Remux": {
+      "repo": "h3nock/remux",
+      "path": "RemuxApp/Remux.icon/icon.json",
+      "sha": "aec90a827ad142dcc686e72df2e1fa0ce1293d75",
+      "bytes": 3041,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:47:32+00:00"
+    },
+    "heyderekj__binky__AppIcon": {
+      "repo": "heyderekj/binky",
+      "path": "AppIcon.icon/icon.json",
+      "sha": "e1ec2abdd8eb9210d3df6ec5d9f7d9cc5cd8f1a8",
+      "bytes": 848,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:47:34+00:00"
+    },
+    "heyderekj__dinky__AppIcon": {
+      "repo": "heyderekj/dinky",
+      "path": "AppIcon.icon/icon.json",
+      "sha": "935af8f3034446a0a26507768c216f988d347076",
+      "bytes": 888,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:47:35+00:00"
+    },
+    "inket__stts__AppIcon": {
+      "repo": "inket/stts",
+      "path": "Resources/AppIcon.icon/icon.json",
+      "sha": "db28a475970cfe725fa4dd429e21b75dd89bd71e",
+      "bytes": 1597,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:47:36+00:00"
+    },
+    "insidegui__AssetCatalogTinkerer__AppIcon": {
+      "repo": "insidegui/AssetCatalogTinkerer",
+      "path": "Asset Catalog Tinkerer/AppIcon.icon/icon.json",
+      "sha": "80cfd2948bbe6fb3980fd3687353d8ad2d2f4d5a",
+      "bytes": 6121,
+      "license": "BSD-2-Clause",
+      "fetched": "2026-08-31T21:47:37+00:00",
+      "assets": [
+        "Sausages.svg",
+        "background-dark.png",
+        "background-light.png",
+        "circle-dark.svg",
+        "circle-light.svg",
+        "squircle-dark.svg",
+        "squircle-light.svg"
+      ]
+    },
+    "insidegui__AssetCatalogTinkerer__AppIconV2": {
+      "repo": "insidegui/AssetCatalogTinkerer",
+      "path": "Resources/AppIconV2.icon/icon.json",
+      "sha": "719dc65fa2176cd4e37806b9566e669afa102e99",
+      "bytes": 6113,
+      "license": "BSD-2-Clause",
+      "fetched": "2026-08-31T21:47:38+00:00",
+      "assets": [
+        "Boxes.svg",
+        "background-dark.png",
+        "background-light.png",
+        "circle-dark.svg",
+        "circle-light.svg",
+        "squircle-dark.svg",
+        "squircle-light.svg"
+      ]
+    },
+    "insidegui__AssetCatalogTinkerer__AppIconV3": {
+      "repo": "insidegui/AssetCatalogTinkerer",
+      "path": "Resources/AppIconV3.icon/icon.json",
+      "sha": "ffa601129189aa08799a9a679eda170b736ac053",
+      "bytes": 6119,
+      "license": "BSD-2-Clause",
+      "fetched": "2026-08-31T21:47:39+00:00",
+      "assets": [
+        "Sausages.svg",
+        "background-dark.png",
+        "background-light.png",
+        "circle-dark.svg",
+        "circle-light.svg",
+        "squircle-dark.svg",
+        "squircle-light.svg"
+      ]
+    },
+    "insidegui__AssetCatalogTinkerer__AppIconV4": {
+      "repo": "insidegui/AssetCatalogTinkerer",
+      "path": "Resources/AppIconV4.icon/icon.json",
+      "sha": "7b74ab340a0b5b979f2f8b751083a1c066547327",
+      "bytes": 6123,
+      "license": "BSD-2-Clause",
+      "fetched": "2026-08-31T21:47:40+00:00",
+      "assets": [
+        "SausagesV2.svg",
+        "background-dark.png",
+        "background-light.png",
+        "circle-dark.svg",
+        "circle-light.svg",
+        "squircle-dark.svg",
+        "squircle-light.svg"
+      ]
+    },
+    "insidegui__AssetCatalogTinkerer__AppIconV5": {
+      "repo": "insidegui/AssetCatalogTinkerer",
+      "path": "Resources/AppIconV5.icon/icon.json",
+      "sha": "0f7d9f0e212e275075b9fe108bb25ea8d88b81f9",
+      "bytes": 6401,
+      "license": "BSD-2-Clause",
+      "fetched": "2026-08-31T21:47:40+00:00",
+      "assets": [
+        "SausagesV3-BG.svg",
+        "SausagesV3-FG.svg",
+        "background-dark.png",
+        "background-light.png",
+        "circle-dark.svg",
+        "circle-light.svg",
+        "squircle-dark.svg",
+        "squircle-light.svg"
+      ]
+    },
+    "insidegui__AssetCatalogTinkerer__AppIconV6": {
+      "repo": "insidegui/AssetCatalogTinkerer",
+      "path": "Resources/AppIconV6.icon/icon.json",
+      "sha": "84b835895bd8b073e4c9ef176ae2c864daba4a18",
+      "bytes": 7117,
+      "license": "BSD-2-Clause",
+      "fetched": "2026-08-31T21:47:41+00:00",
+      "assets": [
+        "SausagesV4-BG.svg",
+        "SausagesV4-FG.svg",
+        "background-dark.png",
+        "background-light.png",
+        "circle-dark.svg",
+        "circle-light.svg",
+        "squircle-dark.svg",
+        "squircle-light.svg"
+      ]
+    },
+    "insidegui__AssetCatalogTinkerer__AppIconV7": {
+      "repo": "insidegui/AssetCatalogTinkerer",
+      "path": "Resources/AppIconV7.icon/icon.json",
+      "sha": "2ed7de708ae62e30224d89e44e3c509b5a7ea6fa",
+      "bytes": 6156,
+      "license": "BSD-2-Clause",
+      "fetched": "2026-08-31T21:47:42+00:00",
+      "assets": [
+        "SausagesV4-BG.svg",
+        "SausagesV4-FG.svg",
+        "background-dark.png",
+        "background-light.png",
+        "grid.svg"
+      ]
+    },
+    "instructure__canvas-ios__AppIcon": {
+      "repo": "instructure/canvas-ios",
+      "path": "Parent/Parent/AppIcon.icon/icon.json",
+      "sha": "392bb2cbd089b2feaa284311ca2fee58069e314b",
+      "bytes": 1049,
+      "license": "UNKNOWN",
+      "fetched": "2026-08-31T21:47:43+00:00"
+    },
+    "johnbean393__KeyType__KeyType": {
+      "repo": "johnbean393/KeyType",
+      "path": "KeyType/KeyType.icon/icon.json",
+      "sha": "e2c56087acbe481a7cdfe63416bf4e1853937356",
+      "bytes": 2439,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:47:45+00:00"
+    },
+    "johnbean393__Sidekick__Sidekick": {
+      "repo": "johnbean393/Sidekick",
+      "path": "Sidekick/Sidekick.icon/icon.json",
+      "sha": "2a1aae309710386a5dcac3d26527212b83ec3921",
+      "bytes": 2209,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:47:46+00:00"
+    },
+    "kushalpandya__Petrichor__AppIcon": {
+      "repo": "kushalpandya/Petrichor",
+      "path": "Resources/AppIcon.icon/icon.json",
+      "sha": "6757fbdc623771d3bd98c4547c050b1c3d6edc65",
+      "bytes": 3245,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:47:47+00:00"
+    },
+    "kushalpandya__Petrichor__AppIconDev": {
+      "repo": "kushalpandya/Petrichor",
+      "path": "Resources/AppIconDev.icon/icon.json",
+      "sha": "a96cb20fc9d5b76bf35cb66ef11ee24447390919",
+      "bytes": 3245,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:47:48+00:00"
+    },
+    "losnoco__Cog__Play": {
+      "repo": "losnoco/Cog",
+      "path": "Play.icon/icon.json",
+      "sha": "52c6d554b9d285eb63222eab131b61f13f33bda2",
+      "bytes": 3211,
+      "license": "GPL-2.0",
+      "fetched": "2026-08-31T21:47:49+00:00"
+    },
+    "marzent__XIV-on-Mac__XOM": {
+      "repo": "marzent/XIV-on-Mac",
+      "path": "XOM.icon/icon.json",
+      "sha": "f6481f5c1e8efba5e4ec402cbea594a6a99e1826",
+      "bytes": 2147,
+      "license": "GPL-3.0",
+      "fetched": "2026-08-31T21:47:50+00:00"
+    },
+    "mastodon__mastodon-ios__AppIcon": {
+      "repo": "mastodon/mastodon-ios",
+      "path": "AppIcon.icon/icon.json",
+      "sha": "2b2ed77ab583b547238acaff068ff27f34e182dc",
+      "bytes": 1206,
+      "license": "GPL-3.0",
+      "fetched": "2026-08-31T21:47:52+00:00"
+    },
+    "milanvarady__Applite__AppIcon": {
+      "repo": "milanvarady/Applite",
+      "path": "Applite/AppIcon.icon/icon.json",
+      "sha": "1a96c14d173ede4e1a92d11d9cb637284802949e",
+      "bytes": 3605,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:47:53+00:00"
+    },
+    "morishin__XDeck__XDeck": {
+      "repo": "morishin/XDeck",
+      "path": "XDeck/XDeck.icon/icon.json",
+      "sha": "6d7eb361ebc4799aa9bca5fd07fdad98c80efc63",
+      "bytes": 946,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:47:54+00:00"
+    },
+    "mozilla-mobile__firefox-ios__AppIcon_Beta": {
+      "repo": "mozilla-mobile/firefox-ios",
+      "path": "firefox-ios/Client/Assets/LiquidGlassAppIcons/AppIcon_Beta.icon/icon.json",
+      "sha": "204d09e4934f0bdb3a149cb1b63075a6b60f10b3",
+      "bytes": 4530,
+      "license": "MPL-2.0",
+      "fetched": "2026-08-31T21:47:56+00:00"
+    },
+    "munki__munki__AppIcon": {
+      "repo": "munki/munki",
+      "path": "code/apps/Managed Software Center/Managed Software Center/AppIcon.icon/icon.json",
+      "sha": "a765bc430fe5065862d1bfd06df58cc43ff6f23e",
+      "bytes": 2737,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:47:57+00:00"
+    },
+    "mysk-research__loupe__Loupe": {
+      "repo": "mysk-research/loupe",
+      "path": "code/Loupe/Loupe.icon/icon.json",
+      "sha": "6aea174e49e68fdac487453e94f1bc15b242380f",
+      "bytes": 2356,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:47:58+00:00",
+      "assets": [
+        "loupe-icon-dark.png",
+        "loupe-icon-light.png"
+      ]
+    },
+    "neon443__AirAP__AirAP": {
+      "repo": "neon443/AirAP",
+      "path": "Icon/AirAP.icon/icon.json",
+      "sha": "e086a8291de3962d5331ff1b85519a9251d4c479",
+      "bytes": 2884,
+      "license": "UNKNOWN",
+      "fetched": "2026-08-31T21:48:00+00:00"
+    },
+    "newmarcel__KeepingYouAwake__AppIcon": {
+      "repo": "newmarcel/KeepingYouAwake",
+      "path": "KeepingYouAwake/AppIcon.icon/icon.json",
+      "sha": "771ad1033df64d25c8034dd6ed2c2c26fe9a3d5f",
+      "bytes": 1768,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:48:01+00:00"
+    },
+    "nextcloud__ios__AppIcon": {
+      "repo": "nextcloud/ios",
+      "path": "AppIcon.icon/icon.json",
+      "sha": "84a97631d88666784ca69a9ef7718e10d503d743",
+      "bytes": 889,
+      "license": "GPL-3.0",
+      "fetched": "2026-08-31T21:48:02+00:00"
+    },
+    "nymtech__nym-vpn-client__AppIcon": {
+      "repo": "nymtech/nym-vpn-client",
+      "path": "nym-vpn-apple/SharedResources/AppIcon.icon/icon.json",
+      "sha": "f16ef7537b1c556d334330ca7b64e874936ef381",
+      "bytes": 1444,
+      "license": "GPL-3.0",
+      "fetched": "2026-08-31T21:48:03+00:00"
+    },
+    "openchamber__openchamber__AppIcon": {
+      "repo": "openchamber/openchamber",
+      "path": "packages/electron/resources/icons/AppIcon.icon/icon.json",
+      "sha": "9c78ee34e6054ef544955b77107fdabbb82f2c88",
+      "bytes": 3118,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:48:05+00:00"
+    },
+    "openhab__openhab-ios__AppIcon": {
+      "repo": "openhab/openhab-ios",
+      "path": "openHAB/Images/AppIcon.icon/icon.json",
+      "sha": "cd3e39df8365cd53b6e3d16821b29f861dcf1064",
+      "bytes": 1999,
+      "license": "EPL-2.0",
+      "fetched": "2026-08-31T21:48:06+00:00"
+    },
+    "pablopunk__SwiftShift__AppIcon": {
+      "repo": "pablopunk/SwiftShift",
+      "path": "assets/AppIcon.icon/icon.json",
+      "sha": "be9520926247d2b91e0fa8e17b3b352f551e69fb",
+      "bytes": 703,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:48:07+00:00"
+    },
+    "pixelspark__sushitrain__SushitrainGlass": {
+      "repo": "pixelspark/sushitrain",
+      "path": "SushitrainGlass.icon/icon.json",
+      "sha": "84e432e93d8813bfd9516ab088ae749f80425639",
+      "bytes": 9760,
+      "license": "MPL-2.0",
+      "fetched": "2026-08-31T21:48:09+00:00"
+    },
+    "protonpass__ios-pass__AppIcon": {
+      "repo": "protonpass/ios-pass",
+      "path": "iOS & macOS/AppIcon.icon/icon.json",
+      "sha": "375741bdc143e0094e1e675e39791b750e8f2182",
+      "bytes": 942,
+      "license": "GPL-3.0",
+      "fetched": "2026-08-31T21:48:10+00:00"
+    },
+    "ptsochantaris__trailer__AppIcon": {
+      "repo": "ptsochantaris/trailer",
+      "path": "Trailer/AppIcon.icon/icon.json",
+      "sha": "ecb584805f9c05adadd066e78aef5a59685ad6cc",
+      "bytes": 2203,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:48:11+00:00"
+    },
+    "rileytestut__Delta__MicrochipIcon": {
+      "repo": "rileytestut/Delta",
+      "path": "Resources/MicrochipIcon.icon/icon.json",
+      "sha": "fd9abff1809178d44c85e863eee85d543368b027",
+      "bytes": 18797,
+      "license": "AGPL-3.0",
+      "fetched": "2026-08-31T21:48:13+00:00",
+      "assets": [
+        "00_stripes.png",
+        "00_stripes.svg",
+        "01_connectors.png",
+        "01_connectors.svg",
+        "02_chip.png",
+        "02_chip.svg",
+        "04_symbols.svg",
+        "delta-text.svg",
+        "logo.svg",
+        "texture.svg",
+        "thnx.svg"
+      ]
+    },
+    "robertying__learnX__AppIcon": {
+      "repo": "robertying/learnX",
+      "path": "ios/learnX/AppIcon.icon/icon.json",
+      "sha": "fab273853474a493c8ca672cbf71c7ba65db73a8",
+      "bytes": 2283,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:48:14+00:00",
+      "assets": [
+        "0-background.svg",
+        "1-text-dark.svg",
+        "1-text.svg"
+      ]
+    },
+    "rtunazzz__hidemyemail-generator__HME-Gen-icon": {
+      "repo": "rtunazzz/hidemyemail-generator",
+      "path": "HME-Gen-icon.icon/icon.json",
+      "sha": "dc0b35e98c12172cde03abb93e1f46eca20c8c30",
+      "bytes": 1342,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:48:15+00:00"
+    },
+    "rudrankriyam__Foundation-Models-Framework-Lab__Foundation_Lab": {
+      "repo": "rudrankriyam/Foundation-Models-Framework-Lab",
+      "path": "Foundation Lab.icon/icon.json",
+      "sha": "6763f39e47bc107b5b68bd0d5a29f7db709a9963",
+      "bytes": 1150,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:48:17+00:00"
+    },
+    "sbarex__QLMarkdown__qlmarkdown": {
+      "repo": "sbarex/QLMarkdown",
+      "path": "assets/img/qlmarkdown.icon/icon.json",
+      "sha": "5ea01fd5d217058a6ec3db046c587fdebf412a13",
+      "bytes": 985,
+      "license": "GPL-3.0",
+      "fetched": "2026-08-31T21:48:18+00:00"
+    },
+    "sbarex__SourceCodeSyntaxHighlight__qlsource": {
+      "repo": "sbarex/SourceCodeSyntaxHighlight",
+      "path": "Resources/qlsource.icon/icon.json",
+      "sha": "fe392831d50de8539c2b2d29b17a8aafcfd8f7a9",
+      "bytes": 1442,
+      "license": "GPL-3.0",
+      "fetched": "2026-08-31T21:48:19+00:00"
+    },
+    "signalapp__Signal-iOS__AppIcon-color": {
+      "repo": "signalapp/Signal-iOS",
+      "path": "Signal/AppIcons/AppIcon-color.icon/icon.json",
+      "sha": "582a956a6506de255402cca765ed91b100e969fd",
+      "bytes": 2535,
+      "license": "AGPL-3.0",
+      "fetched": "2026-08-31T21:48:21+00:00"
+    },
+    "sindresorhus__Gifski__AppIcon": {
+      "repo": "sindresorhus/Gifski",
+      "path": "Gifski/AppIcon.icon/icon.json",
+      "sha": "84dd91bee30a0f0a72add0a7e741df41e70bf0cc",
+      "bytes": 1375,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:48:22+00:00"
+    },
+    "siyuan-note__siyuan-ios__logo": {
+      "repo": "siyuan-note/siyuan-ios",
+      "path": "siyuan-ios/logo.icon/icon.json",
+      "sha": "715b71cc684602504cd87ad4cadc5909069fe021",
+      "bytes": 2789,
+      "license": "AGPL-3.0",
+      "fetched": "2026-08-31T21:48:23+00:00"
+    },
+    "sozercan__OpenInCode__vscode": {
+      "repo": "sozercan/OpenInCode",
+      "path": "vscode.icon/icon.json",
+      "sha": "5616bd6c328b5ecdbbd659cafab8525483cbfc8e",
+      "bytes": 724,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:48:24+00:00"
+    },
+    "sparkle-project__Sparkle__AppIcon": {
+      "repo": "sparkle-project/Sparkle",
+      "path": "Resources/AppIcon.icon/icon.json",
+      "sha": "403690c5f87409459ca14edbd8821ea9831acebc",
+      "bytes": 1391,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:48:26+00:00"
+    },
+    "steipete__Trimmy__Icon": {
+      "repo": "steipete/Trimmy",
+      "path": "Icon.icon/icon.json",
+      "sha": "1385ec71ca8bc6dc604f2306ed1d16e492008b6b",
+      "bytes": 727,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:48:27+00:00"
+    },
+    "streamyfin__streamyfin__icon-ios-liquid-glass": {
+      "repo": "streamyfin/streamyfin",
+      "path": "assets/images/icon-ios-liquid-glass.icon/icon.json",
+      "sha": "4e40ad1727916a96c067ced26b48c7ea682f7c08",
+      "bytes": 4097,
+      "license": "MPL-2.0",
+      "fetched": "2026-08-31T21:48:28+00:00"
+    },
+    "strongdm__leash__SDMLeash": {
+      "repo": "strongdm/leash",
+      "path": "mac-leash/Leash/SDMLeash.icon/icon.json",
+      "sha": "7c883fde74ef2e62a39264bc5cdc4712e8a7a2ea",
+      "bytes": 2123,
+      "license": "Apache-2.0",
+      "fetched": "2026-08-31T21:48:30+00:00"
+    },
+    "supergeorg__Grocy-SwiftUI__AppIcon": {
+      "repo": "supergeorg/Grocy-SwiftUI",
+      "path": "Grocy Mobile/AppIcon.icon/icon.json",
+      "sha": "bd518bd2f369d613ded17ecca44471e817df3253",
+      "bytes": 1178,
+      "license": "GPL-3.0",
+      "fetched": "2026-08-31T21:48:31+00:00"
+    },
+    "swiftDialog__swiftDialog__swiftDialog": {
+      "repo": "swiftDialog/swiftDialog",
+      "path": "swiftDialog.icon/icon.json",
+      "sha": "0b5b39ba838bd3fa3c5bbe6c884f21a24cc502ad",
+      "bytes": 1410,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:48:32+00:00"
+    },
+    "tagspaces__tagspaces__icon": {
+      "repo": "tagspaces/tagspaces",
+      "path": "assets/icon.icon/icon.json",
+      "sha": "586998eba5278b9c3abbed98b0f1d1b1e877323e",
+      "bytes": 624,
+      "license": "AGPL-3.0",
+      "fetched": "2026-08-31T21:48:34+00:00"
+    },
+    "tdeverx__contained-app__beta": {
+      "repo": "tdeverx/contained-app",
+      "path": "Resources/beta.icon/icon.json",
+      "sha": "7bd38ec47a40f096d14e84f917820e7ac6638e52",
+      "bytes": 1667,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:48:35+00:00"
+    },
+    "tdeverx__contained-app__nightly": {
+      "repo": "tdeverx/contained-app",
+      "path": "Resources/nightly.icon/icon.json",
+      "sha": "9fec143367f201d404216df30abe0e8fdb38f9ee",
+      "bytes": 1667,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:48:36+00:00"
+    },
+    "thommcgrath__Beacon__App": {
+      "repo": "thommcgrath/Beacon",
+      "path": "Project/App.icon/icon.json",
+      "sha": "232b9fb6490f4ce7a7b603ef4a58ea24334ca963",
+      "bytes": 2243,
+      "license": "GPL-3.0",
+      "fetched": "2026-08-31T21:48:37+00:00"
+    },
+    "thusvill__LiveWallpaperMacOS__AppIcon": {
+      "repo": "thusvill/LiveWallpaperMacOS",
+      "path": "asset/AppIcon.icon/icon.json",
+      "sha": "dde727e79c6a12317d34f43ec637c0f360e78da3",
+      "bytes": 3659,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:48:38+00:00"
+    },
+    "tonylu110__uyou-todo-electron__logo": {
+      "repo": "tonylu110/uyou-todo-electron",
+      "path": "icons/logo.icon/icon.json",
+      "sha": "7e756b5df64ab09a2ace802ec4c94e5c39367319",
+      "bytes": 735,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:48:39+00:00"
+    },
+    "transmission__transmission__Transmission_Tahoe": {
+      "repo": "transmission/transmission",
+      "path": "macosx/Images/Transmission_Tahoe.icon/icon.json",
+      "sha": "437a819b06ddeb28aaacdf3ade00ff8d6ce50144",
+      "bytes": 7297,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:48:41+00:00"
+    },
+    "tropy__tropy__tropy": {
+      "repo": "tropy/tropy",
+      "path": "res/darwin/tropy.icon/icon.json",
+      "sha": "6e53fd2e24bd510190e3ac0f1ab93c3dfbc9010d",
+      "bytes": 3059,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:48:43+00:00"
+    },
+    "tropy__tropy__tropy-dev": {
+      "repo": "tropy/tropy",
+      "path": "res/darwin/tropy-dev.icon/icon.json",
+      "sha": "c7a415d85be6c9f10d08a2d13aa837608b383810",
+      "bytes": 2991,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:48:42+00:00"
+    },
+    "tw93__MiaoYan__app": {
+      "repo": "tw93/MiaoYan",
+      "path": "Resources/app.icon/icon.json",
+      "sha": "8e1b97f6c9772092b030e79d2d58e092edd060ff",
+      "bytes": 685,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:48:45+00:00"
+    },
+    "videolan__vlc-ios__VLC26": {
+      "repo": "videolan/vlc-ios",
+      "path": "Resources/iOS/VLC26.icon/icon.json",
+      "sha": "77ae9be35ca2e53f7d6495c9e6120e0319481f27",
+      "bytes": 9734,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:48:46+00:00"
+    },
+    "vira-soft__vira-assets__vscode-mac-carbon": {
+      "repo": "vira-soft/vira-assets",
+      "path": "assets/vira-theme/icons/macos/vscode/vscode-mac-carbon.icon/icon.json",
+      "sha": "df30f126b9240c82a648aef9557048a7eff50e4a",
+      "bytes": 4020,
+      "license": "UNKNOWN",
+      "fetched": "2026-08-31T21:48:47+00:00"
+    },
+    "wxtsky__CodeIsland__AppIcon": {
+      "repo": "wxtsky/CodeIsland",
+      "path": "AppIcon.icon/icon.json",
+      "sha": "9e227eae1d15930e64c5d49b3686ea0cabb67064",
+      "bytes": 647,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:48:48+00:00"
+    },
+    "wzh4869__AppPorts__icon": {
+      "repo": "wzh4869/AppPorts",
+      "path": "icon.icon/icon.json",
+      "sha": "4e128685ad26ffa4b1bd16853ca79c2950c29508",
+      "bytes": 937,
+      "license": "Apache-2.0",
+      "fetched": "2026-08-31T21:48:50+00:00"
+    },
+    "xenios-jp__XeniOS__AppIcon": {
+      "repo": "xenios-jp/XeniOS",
+      "path": "assets/apple/AppIcon.icon/icon.json",
+      "sha": "a9e7711aac97ee9e430f93d09b050fed5532ac83",
+      "bytes": 3861,
+      "license": "BSD-3-Clause",
+      "fetched": "2026-08-31T21:48:52+00:00"
+    },
+    "xenios-jp__XeniOS__AppIconDark": {
+      "repo": "xenios-jp/XeniOS",
+      "path": "assets/apple/AppIconDark.icon/icon.json",
+      "sha": "fbd7250b13d0f1f2b08a61f4f97a000e45a95b98",
+      "bytes": 3884,
+      "license": "BSD-3-Clause",
+      "fetched": "2026-08-31T21:48:52+00:00"
+    },
+    "zizicici__Off-Day__AppIcon": {
+      "repo": "zizicici/Off-Day",
+      "path": "Off Day/AppIcon.icon/icon.json",
+      "sha": "71d7b9f99fda0a84c0ada5fc75f04919c40e40f4",
+      "bytes": 1409,
+      "license": "MIT",
+      "fetched": "2026-08-31T21:48:54+00:00"
+    },
+    "zoidsh__meru__AppIcon": {
+      "repo": "zoidsh/meru",
+      "path": "media/AppIcon.icon/icon.json",
+      "sha": "4a6a0b5d4a4f887ddfe464504ac3e5ba5eddca9b",
+      "bytes": 780,
+      "license": "AGPL-3.0",
+      "fetched": "2026-08-31T21:48:55+00:00"
+    },
+    "zotero__zotero-ios__AppIcon": {
+      "repo": "zotero/zotero-ios",
+      "path": "Zotero/Assets/AppIcon.icon/icon.json",
+      "sha": "b93b6a02b7130bfb129dae0aa2481cc38e548692",
+      "bytes": 8229,
+      "license": "NOASSERTION",
+      "fetched": "2026-08-31T21:48:56+00:00"
+    }
+  }
+}

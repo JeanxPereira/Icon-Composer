@@ -1,0 +1,44 @@
+{
+  "file": "Icon_Composer_2_beta_6.dmg",
+  "size": 19812864,
+  "sha256": "484786f72fbf988d0242b2460b00f5adaaf830c7a1d06d95bffbc9d0e96abb2a",
+  "recorded": "2026-08-31T20:30:09+00:00",
+  "url": "https://developer.apple.com/download/all/ (Apple Developer, autenticado) - Icon Composer 2 beta 6",
+  "udif": {
+    "version": 4,
+    "data_fork_length": 19804247,
+    "sector_count": 41472,
+    "blkx": [
+      {
+        "id": "0",
+        "name": "MBR",
+        "crc32": 1586040613
+      },
+      {
+        "id": "1",
+        "name": "Primary GPT Header",
+        "crc32": 2383123456
+      },
+      {
+        "id": "2",
+        "name": "Primary GPT Table",
+        "crc32": 2737900739
+      },
+      {
+        "id": "3",
+        "name": "Apple_HFS",
+        "crc32": 164789227
+      },
+      {
+        "id": "4",
+        "name": "Backup GPT Table",
+        "crc32": 2737900739
+      },
+      {
+        "id": "5",
+        "name": "Backup GPT Header",
+        "crc32": 1149801420
+      }
+    ]
+  }
+}

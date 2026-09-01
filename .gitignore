@@ -1,0 +1,9 @@
+build/
+out/
+.cache/
+compile_commands.json
+
+# The DMG is the corpus, not source. References/ has its own .gitignore for the
+# rest of the corpus; this catches an image dropped at the root.
+*.dmg
+*.img
