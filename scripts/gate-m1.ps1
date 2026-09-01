@@ -13,7 +13,7 @@
 #      unknown to it, not one of the 1,740 specializations may be unreachable by
 #      the resolver, and not one of the 61,537 values it resolves may fail to
 #      decode into a type.
-#   3. A mandatory mutation sweep. Eighty-five defects go in one at a time, and every
+#   3. A mandatory mutation sweep. Ninety defects go in one at a time, and every
 #      one of them MUST redden the suite WITH AN ASSERTION -- a mutation that
 #      merely crashes the process is caught by accident and is reported as a
 #      failure of the test, because a suite that dies hides every case after it.
@@ -54,6 +54,7 @@ $sources = @{
     rbvert   = Join-Path $root "Source/RenderBox/shaders/path_exterior.vert"
     rbpass   = Join-Path $root "Source/RenderBox/CoveragePass.cpp"
     rbres    = Join-Path $root "Source/RenderBox/shaders/PathResolve.glsl"
+    rbcomp   = Join-Path $root "Source/RenderBox/shaders/PathComposite.glsl"
 }
 $original = @{}
 $hashes = @{}
@@ -421,7 +422,23 @@ $mutations = @(
        to   = 'if (result >= kShapeEpsilon && result <= shape.x) {' },
     @{ file = "rbres"; name = "mode 2's sub-mode selector is dropped"
        from = 'uint sub = (state >> 8) & 3u;'
-       to   = 'uint sub = 1u;' }
+       to   = 'uint sub = 1u;' },
+    # ---- the flat composite ----
+    @{ file = "rbcomp"; name = "the colour is not premultiplied by the shape"
+       from = 'precise vec4 premultiplied = vec4(shape) * colour;'
+       to   = 'precise vec4 premultiplied = colour;' },
+    @{ file = "rbcomp"; name = "the invert bit is ignored"
+       from = 'float reported = ((word3 & 2u) != 0u) ? (1.0 - alpha) : alpha;'
+       to   = 'float reported = alpha;' },
+    @{ file = "rbcomp"; name = "the alpha broadcast never happens"
+       from = 'o.colour = ((word2 & 524288u) != 0u) ? vec4(premultiplied.a) : premultiplied;'
+       to   = 'o.colour = premultiplied;' },
+    @{ file = "rbcomp"; name = "the depth nudge tests the raw alpha, not the reported one"
+       from = 'float d = (reported < kCompositeEpsilon) ? (depth + 1.0) : depth;'
+       to   = 'float d = (alpha < kCompositeEpsilon) ? (depth + 1.0) : depth;' },
+    @{ file = "rbcomp"; name = "a fragment that paints nothing is not pushed back"
+       from = 'float d = (reported < kCompositeEpsilon) ? (depth + 1.0) : depth;'
+       to   = 'float d = depth;' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"

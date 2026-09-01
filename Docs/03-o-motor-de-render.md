@@ -1049,10 +1049,23 @@ O doc 01 registrava: *"dez modos de mescla contra os dezessete implementados
 antes — decisão pendente, e o caminho para fechá-la é o `IconRendering` e o
 `default.metallib`"*.
 
-`[BIN]` O caminho era esse e a resposta é: o `RenderBox` implementa **56**. Os
-dez que o `.icon` nomeia (`normal`, `plusLighter`, `plusDarker`, `overlay`,
-`multiply`, `softLight`, `hardLight`, `darken`, `lighten`, `screen`) são um
-**subconjunto** deles. Nem 10 nem 17: 56, e o formato usa dez.
+`[BIN]` O caminho era esse e a resposta é: o `RenderBox` implementa **56**.
+
+> **Correção (2026-09-01, mesmo dia).** Esta seção dizia *"os dez que o `.icon`
+> nomeia"*. Errado: **dez é o que o CORPUS usa**, não o que o formato tem. O
+> `IconRendering.Icon.BlendMode` declara **dezoito** casos (§17.3), e o doc 01 §6
+> mediu dez porque mediu 145 documentos reais, não o enum.
+>
+> A contagem certa tem três números, não dois:
+>
+> | | |
+> |---|---|
+> | o enum do formato | **18** |
+> | o que 145 documentos usam | **10** |
+> | o que o `RenderBox` implementa | **56**, incluindo Porter-Duff |
+>
+> E os "dezessete implementados antes" que o doc 01 §10.5 registrava não eram
+> arbitrários: eram **dezessete de dezoito**.
 
 ### 15.3. Os 56 não são todos "modos de mescla"
 
@@ -1077,3 +1090,175 @@ completado por analogia com o `CGBlendMode`, cuja numeração **não** bate com 
 `[BIN]` Vários casos leem `Constant::extended_color` — palavra 3, bit 2, batizado
 no §11.2.2 — e tomam caminhos diferentes conforme ele. A mescla depende do espaço
 de cor, e o bit que a governa já tinha nome antes de eu saber para quê.
+
+## 16. A cor — o `composite`, e o caminho que dá para transcrever
+
+`[BIN]` `RB::Shader::composite(ShaderState, half4 cor, half forma, float depth,
+half4 dst, half2 cobertura, constant float*)`, no `shader_accumulator.metal`.
+
+### 16.1. Dois caminhos, e só um é transcrito
+
+`[BIN]` **Palavra 3, bit 0** escolhe:
+
+| | |
+|---|---|
+| **apagado** | premultiplica a cor pela forma e escreve. É o preenchimento chapado — **transcrito e gatado** |
+| **ligado** | roda a mescla, que comuta nos 56 casos do §15 |
+
+`[OBS]` Seis dos 56 estão decodados. Transcrever o segundo caminho seria
+**cinquenta stubs vestindo nome de função**, e por isso ele não está aqui.
+
+### 16.2. Quatro bits que este trecho nomeia
+
+`[BIN]`
+
+```
+palavra 3 bit 0    mesclar em vez de premultiplicar
+palavra 3 bit 1    inverter o alpha
+palavra 2 bit 19   espalhar o alpha em todos os canais
+palavra 1 bit 30   usar `custom_blend`
+```
+
+`[BIN]` O último é achado estrutural: `custom_blend.MTL_VISIBLE_FN_REF` é uma
+função **stitchable** — o `RenderBox` aceita mescla fornecida por quem chama,
+pelo mesmo mecanismo que expõe o `glassBackground_v1` (§4.1).
+
+### 16.3. O detalhe que uma transcrição descuidada perde
+
+`[BIN]` A inversão alcança **só o canal de cobertura**. A cor mantém o alpha
+**não** invertido: são dois números, não um.
+
+`[BIN]` E a profundidade é empurrada um passo atrás quando o alpha **reportado**
+— já invertido ou não — fica abaixo de `0xH1419`, para que um fragmento que não
+pinta nada não ganhe o teste de profundidade de um que pinta. Testa o
+**reportado**, não o cru, então o bit de inversão muda *quais* fragmentos são
+empurrados. Há uma mutação para exatamente essa troca.
+
+`[OBS]` Eu tinha transcrito a profundidade **antes** de ler de onde ela vinha, e
+voltei para ler a cauda da função antes de escrever o teste. A ordem certa é a
+inversa, e ela custou uma releitura.
+
+## 17. `IconRendering` — a ponte entre o documento e o motor
+
+Até aqui o repositório tem duas metades gatadas e **nada as ligando**: um modelo
+de documento `.icon` de um lado, um rasterizador de outro. O `IconRendering` é a
+camada que as liga, e o metadado Swift dele lê inteiro.
+
+`[BIN]` `IconRendering.framework`, fatia **arm64** do binário universal, **197
+descritores** de reflexão.
+
+### 17.1. Os dois modelos
+
+`[BIN]` Há um modelo **de autoria** e um modelo **assado**, e são tipos
+diferentes:
+
+```
+IconRendering.Icon
+    name              String?
+    chicletIsVisible  Bool
+    chiclet           Icon.Fill
+    layers            [Icon.Layer]
+    canvasSize        CGSize
+    appearance        ICRAppearance
+
+IconRendering.Icon.Layer
+    elements                   [Icon.Element]
+    opacity                    Double
+    blendMode                  Icon.BlendMode
+    material                   Icon.GlassMaterial
+    performsLightingByElement  Bool
+    appearance                 ICRAppearance
+
+IconRendering.Icon.Element
+    opacity, blendMode, contents, participatesInGlass,
+    appearance, bounds, fill, layoutDirection
+```
+
+```
+IconRendering.FinalizedIcon
+    requestedSize, bakedSize, layers, config, device, retainedObjects
+
+IconRendering.FinalizedIcon.Layer
+    material, blendMode, opacity, knocksOutBorder, image,
+    contentFrame, effectsFrame, sdf, shadowImage
+```
+
+`[INF]` O `Icon` é o documento em memória; o `FinalizedIcon` é o que já passou
+pelo *bake* — cada camada dele carrega uma **imagem**, um **SDF** e uma **imagem
+de sombra**, que é exatamente a forma que o `RenderBox` consome.
+
+### 17.2. Um elemento tem três tipos de conteúdo
+
+`[BIN]` `Icon.Element.ContentsStorage` é um enum de três cargas:
+
+```
+vector   CGPath
+raster
+svg
+```
+
+`[INF]` O nosso `CoreSVG` cobre **um** dos três. O `vector` chega como `CGPath`
+já construído e o `raster` como imagem — nenhum dos dois passa por parser de SVG.
+
+### 17.3. Os dezoito modos de mescla, em ordem
+
+`[BIN]` `Icon.BlendMode.CodingKeys`, na ordem de declaração — que para um enum
+Swift **é** a ordem dos casos:
+
+```
+ 0 normal        6 screen        12 difference
+ 1 darken        7 colorDodge    13 exclusion
+ 2 multiply      8 plusLighter   14 hue
+ 3 colorBurn     9 overlay       15 saturation
+ 4 plusDarker   10 softLight     16 color
+ 5 lighten      11 hardLight     17 luminosity
+```
+
+`[OBS]` Essa é a numeração **do formato**. A do `RenderBox` (§15) tem 56 casos e
+**não é a mesma** — os três pontos que ancorei lá (13 plusLighter, 15 lighten,
+16 darken) não batem com estes índices, então a tradução entre as duas é uma
+tabela que ainda não existe.
+
+### 17.4. `Icon.Fill` responde a pergunta 4 do doc 01
+
+`[BIN]` `Icon.Fill.Contents` é um enum de quatro cargas:
+
+```
+solid
+automaticGradient
+gradient
+system            -> Icon.SystemFill
+```
+
+O doc 01 §10.4 perguntava *"o que `automatic-gradient` faz com uma cor só — a
+regra que o deriva está no render, não no documento"*. `[BIN]` A pergunta estava
+certa sobre **onde**: é um caso próprio do enum de preenchimento do
+`IconRendering`, ao lado de `gradient` e distinto dele. `[OBS]` A **regra** que
+deriva os stops ainda não foi lida.
+
+### 17.5. A configuração global
+
+`[BIN]` `GlobalConfiguration`, treze campos, e vários nomeiam decisões que o doc
+03 tratava como desconhecidas:
+
+```
+lightIntensity              customLightDirection
+effectsAreEnabled           drawMitigatedVersion
+forceEnableEnhancedGlass    layerUsesCAFilterForClearMode
+usesCAFilterForClearMode    allowHDR
+enabledRenderingSteps       _relativeIconInset
+canvasSize                  chicletDropShadow
+iconShape
+```
+
+`[INF]` `drawMitigatedVersion` e `forceEnableEnhancedGlass` são as duas gerações
+do efeito que o doc 03 §1 chamou de `EffectsRenderMode`, vistas do lado do host.
+`enabledRenderingSteps` é o que liga e desliga passos do pipeline — e é o
+candidato natural a alimentar o `RenderState` do §11.
+
+### 17.6. O que isto NÃO é
+
+`[OBS]` Isto é o **mapa dos tipos**, lido do metadado de reflexão. Nenhuma
+função do `IconRendering` foi decodada: como um `Icon` vira um `FinalizedIcon`,
+como o `sdf` de cada camada é gerado, e como as chamadas ao `RenderBox` são
+emitidas seguem sem leitura.

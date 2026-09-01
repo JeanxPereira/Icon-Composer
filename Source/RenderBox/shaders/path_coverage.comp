@@ -11,6 +11,7 @@
 // to reach.
 #include "PathFragment.glsl"
 #include "PathResolve.glsl"
+#include "PathComposite.glsl"
 
 layout(local_size_x = 64) in;
 
@@ -29,10 +30,12 @@ layout(std430, binding = 1) writeonly buffer Outputs {
     vec4 results[];
 };
 
+
 layout(push_constant) uniform Control {
     uint count;
     uint stage;   // 0 interior, 1 exterior, 2 distance, 3 the fill rule
-    uint state;   // the shader state word, for stage 3
+    uint state;   // the shader state word, for stages 3 and 4
+    uint word2;   // for stage 4, which reads two words
 } c;
 
 void main() {
@@ -49,10 +52,20 @@ void main() {
                                          in_.line.w, in_.extra.x));
     } else if (c.stage == 2u) {
         out_ = vec2(0.0, rbDistanceShape(in_.dist.xy, in_.dist.zw, in_.extra.z));
-    } else {
+    } else if (c.stage == 3u) {
         // The fill rule: `position.x` carries the accumulated coverage and
         // `line` the shape curve, because the probe's buffer is the probe's.
         out_ = vec2(0.0, rbAccumulatorShape(c.state, in_.position.x, in_.line));
+    } else {
+        // The flat composite. `line` is the colour, `extra.x` the shape and
+        // `extra.y` the depth; the whole output goes back, not just two halves.
+        // The composite returns colour AND coverage AND depth, so it takes TWO
+        // consecutive slots. The caller sizes the buffer for that.
+        CompositeOut co = rbCompositeFlat(c.word2, c.state, in_.line, in_.extra.x,
+                                          in_.extra.y);
+        results[i * 2u] = co.colour;
+        results[i * 2u + 1u] = vec4(co.coverage, co.depth, 0.0);
+        return;
     }
     results[i] = vec4(out_, 0.0, 0.0);
 }

@@ -71,6 +71,8 @@ especializações** — 1.040 chaveadas por `appearance`, 616 sem predicado, 82 
 | M2·P5 — alvo de render, o primeiro pixel | **passa o gate** — cobertura conferida contra a **forma fechada** da área do retângulo (doc 03 §13) |
 | o resolve — cobertura assinada vira alpha | **passa o gate** — `accumulator_shape`, e a regra de preenchimento é **um bit** (doc 03 §14) |
 | a mescla | **levantada** — 56 casos, seletor em `(palavra1 >> 16) & 16383`; fecha a pergunta 5 do doc 01, **6 de 56 decodados** (doc 03 §15) |
+| a cor (`composite`, caminho chapado) | **passa o gate** — premultiplicação, inversão e broadcast, GPU × CPU bit a bit (doc 03 §16) |
+| `IconRendering` — a ponte documento↔motor | **mapeada** — `Icon`, `FinalizedIcon`, os 18 modos de mescla, `Fill.Contents`, `GlobalConfiguration`. **Nenhuma função decodada** (doc 03 §17) |
 
 ## Build
 
@@ -106,7 +108,7 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
    que o conteúdo deles atravessa intacto. O do *modelo*: **nenhuma chave** dos
    145 documentos pode ser desconhecida, e **nenhuma das 1.740 especializações**
    pode ser inalcançável pelo resolver.
-3. **Uma varredura de mutação obrigatória.** Oitenta e cinco defeitos entram um a um e cada
+3. **Uma varredura de mutação obrigatória.** Noventa defeitos entram um a um e cada
    um TEM que avermelhar a suíte, aplicados em árvore limpa e restaurados de um
    backup conferido por SHA-256 — nunca por comando de git.
 
@@ -114,7 +116,7 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
 totalmente compreendidos, 1.740 de 1.740 especializações alcançáveis, 61.537
 valores decodados sem uma falha, 55 bundles sem arquivo morto, 1.100 árvores
 renderizadas sem cair em JSON cru, 149 SVGs lidos em geometria com 128 deles
-totalmente compreendidos, e **85 de 85 mutações pegas**.
+totalmente compreendidos, e **90 de 90 mutações pegas**.
 
 | # | mutação | asserções avermelhadas |
 |---|---|---|

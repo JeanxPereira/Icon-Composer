@@ -156,7 +156,7 @@ as duas leituras dão o mesmo resultado em 890 de 890 listas.
 |---|---|---|
 | `Appearance` | base, light, dark, tinted | dark(585), tinted(425), light(32) — `base` nunca escrito |
 | `Idiom` | base, square, iOS, macOS, watchOS | square(57), macOS(20), watchOS(7) |
-| `BlendMode` | normal, plusLighter, plusDarker, overlay, multiply, softLight, hardLight, darken, lighten, screen | normal(112), screen(2), plus-darker(2), plus-lighter(1), soft-light(1), multiply(1) — e em `value`: overlay, hard-light, darken |
+| `BlendMode` (**18 casos**, doc 03 §17.3; estes 10 ocorrem) | normal, plusLighter, plusDarker, overlay, multiply, softLight, hardLight, darken, lighten, screen | normal(112), screen(2), plus-darker(2), plus-lighter(1), soft-light(1), multiply(1) — e em `value`: overlay, hard-light, darken |
 | `Fill.Kind` | none, automatic, solid, automaticGradient, linearGradient, systemLight, systemDark | automatic(34), none(16), system-light(10), system-dark(1), mais as formas de objeto (§7) |
 | `Shadow.Kind` | automatic, neutral, layerColor, none | neutral(190), layer-color(87), none(25) |
 | `SpecularHighlight` | off, automatic, inside, outside | inside(3) |
@@ -278,15 +278,20 @@ e sim quatro.
 2. **`specular` bool contra string.** Medido, não explicado (§7).
 3. **`material` na camada contra `blur-material` no grupo.** Os dois estão
    selados, um deles nunca é escrito, e a relação entre eles é desconhecida.
-4. **O que `automatic-gradient` faz com uma cor só.** O gradiente tem de sair de
-   algum lugar; a regra que o deriva está no render, não no documento.
+4. **O que `automatic-gradient` faz com uma cor só.** A pergunta estava certa
+   sobre **onde**: `[BIN]` o `IconRendering.Icon.Fill.Contents` tem
+   `automaticGradient` como caso próprio, ao lado de `gradient` e distinto dele
+   (doc 03 §17.4). `[OBS]` A **regra** que deriva os stops segue sem leitura.
 5. ~~**Dez modos de mescla contra os dezessete implementados antes**~~ —
    **FECHADO em 2026-09-01 pelo caminho que este item previu.** O
    `RB::Shader::blend` do `default.metallib` tem **56 casos**, selecionados por
-   `(palavra1 >> 16) & 16383`. Nem dez nem dezessete: os dez que o `.icon` nomeia
-   são um subconjunto de 56, e boa parte dos 56 é composição Porter-Duff e não
-   mistura separável. Doc 03 §15. `[OBS]` A correspondência nome↔número está
-   ancorada em três casos só.
+   `(palavra1 >> 16) & 16383`. E a contagem tem **três** números, não dois: o
+   enum do formato tem **18** casos (`IconRendering.Icon.BlendMode`, doc 03
+   §17.3), os 145 documentos usam **10**, e o `RenderBox` implementa **56** —
+   boa parte deles composição Porter-Duff e não mistura separável. Os
+   "dezessete implementados antes" eram dezessete de dezoito. Doc 03 §15 e §17.3.
+   `[OBS]` A tradução entre a numeração do formato e a do `RenderBox` **não
+   existe ainda**: as duas não coincidem nos três pontos ancorados.
 6. **O bundle em volta do `icon.json`.** Este documento cobre o JSON. O `.icon` é
    uma pasta, e os SVGs e PNGs ao lado dele não foram levantados.
 7. **A gramática exata da CLI.** O §11 levanta os comandos e as mensagens; o

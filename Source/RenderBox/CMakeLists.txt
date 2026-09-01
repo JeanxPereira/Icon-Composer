@@ -14,6 +14,7 @@ add_library(RenderBox STATIC
     Compute.cpp
     PathCoverageOracle.cpp
     PathResolveOracle.cpp
+    PathCompositeOracle.cpp
     Image.cpp
     CoveragePass.cpp
 )

@@ -2,7 +2,10 @@
 #include "Source/RenderBox/Compute.h"
 #include "Source/RenderBox/PathCoverageOracle.h"
 #include "Source/RenderBox/PathResolveOracle.h"
+#include "Source/RenderBox/PathCompositeOracle.h"
 
+#include <cmath>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -34,9 +37,13 @@ struct Control {
     std::uint32_t count = 0;
     std::uint32_t stage = 0;
     std::uint32_t state = 0;
+    std::uint32_t word2 = 0;
 };
 
 std::uint32_t gState = 0;
+std::uint32_t gWord2 = 0;
+bool gWideOutput = false;      // the composite writes two slots per invocation
+std::vector<float> gRaw;       // the raw slots, for a stage whose output is wider
 
 std::vector<Coverage> onGpu(Device& d, const std::vector<CoverageInput>& in, CoverageStage stage) {
     if (in.empty()) return {};
@@ -47,12 +54,13 @@ std::vector<Coverage> onGpu(Device& d, const std::vector<CoverageInput>& in, Cov
     if (!input) return {};
     std::memcpy(input->mapped(), in.data(), in.size() * sizeof(CoverageInput));
 
-    auto out = Buffer::create(d, in.size() * 4 * sizeof(float),
+    const std::size_t slots = gWideOutput ? 2 : 1;
+    auto out = Buffer::create(d, in.size() * slots * 4 * sizeof(float),
                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (!out) return {};
-    std::memset(out->mapped(), 0, in.size() * 4 * sizeof(float));
+    std::memset(out->mapped(), 0, in.size() * slots * 4 * sizeof(float));
 
     auto pass = ComputePass::create(d, kCoverageSpirv, sizeof kCoverageSpirv, sizeof(Control));
     if (!pass) {
@@ -64,6 +72,7 @@ std::vector<Coverage> onGpu(Device& d, const std::vector<CoverageInput>& in, Cov
     c.count = static_cast<std::uint32_t>(in.size());
     c.stage = static_cast<std::uint32_t>(stage);
     c.state = gState;
+    c.word2 = gWord2;
     auto ran = pass->run(d, *input, *out, &c, sizeof c, c.count);
     if (!ran) {
         std::printf("  FAIL dispatch: %s\n", ran.error().c_str());
@@ -71,12 +80,12 @@ std::vector<Coverage> onGpu(Device& d, const std::vector<CoverageInput>& in, Cov
         return {};
     }
 
-    std::vector<float> raw(in.size() * 4);
-    std::memcpy(raw.data(), out->mapped(), raw.size() * sizeof(float));
+    gRaw.assign(in.size() * slots * 4, 0.0f);
+    std::memcpy(gRaw.data(), out->mapped(), gRaw.size() * sizeof(float));
     std::vector<Coverage> results(in.size());
     for (std::size_t i = 0; i < results.size(); ++i) {
-        results[i].x = raw[i * 4];
-        results[i].y = raw[i * 4 + 1];
+        results[i].x = gRaw[i * slots * 4];
+        results[i].y = gRaw[i * slots * 4 + 1];
     }
     return results;
 }
@@ -425,4 +434,124 @@ TEST_CASE(the_shape_curve_is_off_unless_its_bit_is_set) {
     curve.z = -3.0f;
     CHECK_EQ(accumulatorShape(state, 0.5f, curve), 0.5f);
     resolveAgreesOn(state, coverageSweep(), curve);
+}
+
+// ---- the flat composite -------------------------------------------------
+//
+// `[BIN]` `RB::Shader::composite`, the path taken when word 3 bit 0 is CLEAR:
+// premultiply the colour by the shape and write it. The other path runs the
+// 56-case blend, of which six are decoded, and is deliberately not transcribed.
+
+namespace {
+
+void compositeAgreesOn(std::uint32_t word2, std::uint32_t word3,
+                       const std::vector<std::array<float, 4>>& colours,
+                       const std::vector<float>& shapes, float depth) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    std::vector<CoverageInput> in;
+    for (const auto& c : colours) {
+        for (float sh : shapes) {
+            CoverageInput one;
+            for (int i = 0; i < 4; ++i) one.line[i] = c[i];
+            one.extra[0] = sh;
+            one.extra[1] = depth;
+            in.push_back(one);
+        }
+    }
+    gState = word3;
+    gWord2 = word2;
+    gWideOutput = true;
+    (void)onGpu(d, in, static_cast<CoverageStage>(4));
+    gWideOutput = false;
+    gState = 0;
+    gWord2 = 0;
+    REQUIRE(gRaw.size() == in.size() * 8);
+
+    int bad = 0;
+    for (std::size_t i = 0; i < in.size(); ++i) {
+        const CompositeOut want =
+            compositeFlat(word2, word3, in[i].line, in[i].extra[0], in[i].extra[1]);
+        bool ok = true;
+        for (int k = 0; k < 4; ++k) {
+            if (std::memcmp(&gRaw[i * 8 + k], &want.colour[k], sizeof(float)) != 0) ok = false;
+        }
+        for (int k = 0; k < 2; ++k) {
+            if (std::memcmp(&gRaw[i * 8 + 4 + k], &want.coverage[k], sizeof(float)) != 0) {
+                ok = false;
+            }
+        }
+        if (std::memcmp(&gRaw[i * 8 + 6], &want.depth, sizeof(float)) != 0) ok = false;
+        if (!ok) {
+            if (bad < 3) {
+                std::printf("  FAIL composite i=%u  gpu %.6f %.6f %.6f %.6f cov %.6f d %.9g"
+                            "   cpu %.6f %.6f %.6f %.6f cov %.6f d %.9g\n",
+                            static_cast<unsigned>(i), gRaw[i * 8], gRaw[i * 8 + 1],
+                            gRaw[i * 8 + 2], gRaw[i * 8 + 3], gRaw[i * 8 + 4], gRaw[i * 8 + 6],
+                            want.colour[0], want.colour[1], want.colour[2], want.colour[3],
+                            want.coverage[0], want.depth);
+            }
+            ++bad;
+        }
+    }
+    CHECK_EQ(bad, 0);
+}
+
+std::vector<std::array<float, 4>> paletteForTest() {
+    return {{{1.0f, 0.0f, 0.0f, 1.0f}},
+            {{0.25f, 0.5f, 0.75f, 1.0f}},
+            {{0.25f, 0.5f, 0.75f, 0.5f}},
+            {{0.0f, 0.0f, 0.0f, 0.0f}},
+            {{0.125f, 0.875f, 0.375f, 0.625f}}};
+}
+
+}  // namespace
+
+// The flat fill: the colour, premultiplied by the shape.
+TEST_CASE(the_flat_composite_premultiplies_the_colour_by_the_shape) {
+    const float red[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+    const CompositeOut o = compositeFlat(0u, 0u, red, 0.5f, 0.0f);
+    CHECK_EQ(o.colour[0], 0.5f);
+    CHECK_EQ(o.colour[3], 0.5f);
+    CHECK_EQ(o.coverage[0], 0.5f);
+    CHECK_EQ(o.coverage[1], 0.0f);
+    compositeAgreesOn(0u, 0u, paletteForTest(), {0.0f, 0.25f, 0.5f, 1.0f}, 4.0f);
+}
+
+// `[BIN]` Word 3 bit 1 inverts the alpha the COVERAGE channel reports -- and only
+// that one. The colour keeps the un-inverted alpha, so the two numbers differ.
+TEST_CASE(the_invert_bit_reaches_the_coverage_and_not_the_colour) {
+    const float grey[4] = {0.5f, 0.5f, 0.5f, 0.8f};
+    const CompositeOut plain = compositeFlat(0u, 0u, grey, 1.0f, 0.0f);
+    const CompositeOut inverted = compositeFlat(0u, kWord3InvertAlpha, grey, 1.0f, 0.0f);
+    CHECK_EQ(plain.coverage[0], 0.8f);
+    CHECK(std::fabs(inverted.coverage[0] - 0.2f) < 1e-6f);
+    for (int i = 0; i < 4; ++i) CHECK_EQ(plain.colour[i], inverted.colour[i]);
+    compositeAgreesOn(0u, kWord3InvertAlpha, paletteForTest(), {0.0f, 0.5f, 1.0f}, 4.0f);
+}
+
+// `[BIN]` Word 2 bit 19 puts the alpha in every channel.
+TEST_CASE(the_broadcast_bit_puts_alpha_in_every_channel) {
+    const float c[4] = {0.25f, 0.5f, 0.75f, 0.5f};
+    const CompositeOut o = compositeFlat(kWord2BroadcastAlpha, 0u, c, 1.0f, 0.0f);
+    for (int i = 0; i < 4; ++i) CHECK_EQ(o.colour[i], 0.5f);
+    compositeAgreesOn(kWord2BroadcastAlpha, 0u, paletteForTest(), {0.25f, 1.0f}, 4.0f);
+}
+
+// `[BIN]` The depth is nudged one step back when the REPORTED alpha is under the
+// epsilon, so a fragment that paints nothing does not win the depth test against
+// one that does. It tests the REPORTED value, which is why the invert bit changes
+// which fragments get nudged -- that is the detail a careless transcription drops.
+TEST_CASE(a_fragment_that_paints_nothing_is_pushed_back_in_depth) {
+    const float clear[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+    const float solid[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    const CompositeOut nothing = compositeFlat(0u, 0u, clear, 1.0f, 8.0f);
+    const CompositeOut something = compositeFlat(0u, 0u, solid, 1.0f, 8.0f);
+    CHECK(nothing.depth > something.depth);
+    CHECK_EQ(something.depth, 8.0f * 2.3283064365386963e-10f);
+    CHECK_EQ(nothing.depth, 9.0f * 2.3283064365386963e-10f);
+
+    const CompositeOut invertedClear = compositeFlat(0u, kWord3InvertAlpha, clear, 1.0f, 8.0f);
+    CHECK_EQ(invertedClear.depth, 8.0f * 2.3283064365386963e-10f);
+    compositeAgreesOn(0u, 0u, paletteForTest(), {0.0f, 1.0f}, 8.0f);
 }
