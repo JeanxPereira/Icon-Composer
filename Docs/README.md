@@ -59,6 +59,7 @@ especializações** — 1.040 chaveadas por `appearance`, 616 sem predicado, 82 
 | o nosso `ictool` | **passa o gate** — 1.100 árvores renderizadas, nenhuma caindo em JSON cru |
 | a UI do app | **não levantada** — e não há nib: o app é SwiftUI |
 | `IconRendering` + `RenderBox` + os dois `default.metallib` | **mapeados** — doc 03: 123 módulos, 82 entry points, 12 funções stitchable, 197 descritores Swift. **Nada decodado.** |
+| o diferencial IR do vidro (`glassBackground_v1` × QuartzCore) | **medido** — doc 03 §4.1: 12 constantes em comum, **11 com multiplicidade idêntica**. Mesmo fonte. |
 
 ## Build
 

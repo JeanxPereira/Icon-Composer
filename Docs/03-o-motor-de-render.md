@@ -93,12 +93,108 @@ spec de arquitetura afirmou em 31/08: eles não são primos distantes, são muit
 mais próximos do que eu disse. Não significa que sejam o mesmo código: nome igual
 não é IR igual.
 
-**O instrumento que fecharia isso** é um diferencial IR contra IR —
-`RenderBox::glassBackground_v1` contra o `glassBackground` do QuartzCore, termo a
-termo, como o AquaKit já faz nas suas próprias transcrições. **Não roda hoje**: o
-`References/` do AquaKit está vazio nesta máquina, e o lado do QuartzCore exige a
-extração do dyld shared cache. É a primeira coisa a fazer quando aquele corpus
-voltar.
+**O instrumento que fecharia isso** é um diferencial IR contra IR. Ele rodou.
+
+## 4.1. O diferencial — RODOU, 2026-09-01
+
+`[BIN]` `RenderBox::glassBackground_v1` × `QuartzCore::glass_background_base<1,1,1>`,
+ambos do build **`26A5416b`** — o mesmo macOS dos dois lados, o que faz a
+comparação valer.
+
+| | A — RenderBox | B — QuartzCore |
+|---|---|---|
+| função | `glassBackground_v1` | `glass_background_base<1,1,1>` (`_all_lph`) |
+| onde | `RenderBox.framework/…/default.metallib`, mod98, `shader_system_glass.metal` | `QuartzCore.framework/default.metallib`, mod204 |
+| forma | função *stitchable* (`!air.visible`), uniforms em `RB::Shader::Glass::BackgroundUniforms` | fragment shader, uniforms em `GlassBackgroundUniforms` |
+| tamanho | 1.445 linhas de IR | 1.089 linhas de IR |
+
+### O que foi medido, e por que essa medida decide
+
+Uma constante escrita no fonte do shader **sobrevive a toda otimização como
+literal**. Duas funções que computam a mesma coisa carregam os mesmos números — e
+a parte que discrimina de verdade: carregam cada número **o mesmo número de
+vezes**. Duas implementações independentes do mesmo efeito não concordam em
+multiplicidade, porque ninguém arredonda igual duas vezes.
+
+`[BIN]` **Doze constantes não-triviais em ambos os lados. Onze delas com a
+contagem de ocorrências idêntica.**
+
+| constante | A × B | |
+|---|---|---|
+| `-0.560547` | 3 × 3 | |
+| `-0.034454` | 3 × 3 | |
+| `0.002954` | 3 × 3 | |
+| `0.168213` | 3 × 3 | |
+| `0.212646` | 2 × 2 | luma R Rec.709 (`0.2126`) |
+| `0.715332` | 3 × 3 | luma G |
+| `0.072205` | 2 × 2 | luma B Rec.709 (`0.0722`) |
+| `0.212524` | 1 × 1 | luma R SMPTE (`0.2125`) |
+| `0.072083` | 1 × 1 | luma B SMPTE (`0.0721`) |
+| `-0.75`, `0.75` | 1 × 1 | |
+| `0.25` | 3 × 1 | **a única que discorda** |
+
+Só de A: `0.001`, `0.300049`, `0.333252`. Só de B: `0.0001`.
+
+### A impressão digital, e ela é específica demais para ser coincidência
+
+`[BIN]` Os dois lados carregam **duas trincas de luma, não uma**, e na mesma
+proporção:
+
+```
+Rec.709   0.2126  0.7152  0.0722   ->  half  0.212646  0.715332  0.072205
+SMPTE     0.2125  0.7154  0.0721   ->  half  0.212524  0.715332  0.072083
+                                                        ^^^^^^^^
+                                        as duas colidem no MESMO half
+```
+
+`[BIN]` É por isso que R e B aparecem repartidos **2+1** enquanto G aparece **3**:
+o G das duas trincas cai no mesmo valor em meia precisão. A contagem fecha
+sozinha — e fecha **igual dos dois lados**.
+
+`[INF]` Dois times implementando vidro independentemente não escrevem ambos as
+duas trincas de luma, na mesma proporção, com a mesma colisão de arredondamento.
+**É o mesmo fonte.**
+
+### O que NÃO é igual, e isso também importa
+
+`[BIN]` A embalagem difere, e de forma explicável:
+
+| só no QuartzCore | leitura |
+|---|---|
+| `aberrate_texture` (216 linhas, função à parte) | a aberração cromática é fatorada fora; o RenderBox é achatado |
+| `air.discard_fragment` | é um fragment shader; o `v1` é função que retorna |
+| `air.get_width/height_texture_2d` | mede a textura; o RenderBox recebe isso em uniform |
+
+| só no RenderBox | leitura |
+|---|---|
+| `air.fwidth.f16` | derivada de tela — antialiasing próprio |
+| variantes de largura (`v2f32`, `v2f16`, `v4f16`) | o mesmo op em outro vetor |
+
+`[INF]` E 7 dos "13 intrinsics só de A" na primeira passada eram
+`llvm.fmuladd.*` contra `air.fma.*` — **a mesma operação sob flag de compilação
+diferente**. Contar isso como divergência teria fabricado uma diferença que não
+existe; o instrumento normaliza os dois, e aí ficam **28 intrinsics em comum**.
+
+### O veredito, e o que ele custa
+
+**Mesmo fonte, embalagem diferente.** A matemática do vidro do ícone é a
+matemática do vidro do controle; o que muda é que o QuartzCore compila oito
+variantes por template em tempo de compilação e o RenderBox expõe uma função
+stitchable com uniforms em tempo de execução.
+
+Para este projeto: **a transcrição que o AquaKit já fez dos coeficientes vale
+aqui**, e o `IconRendering` deixa de ser RE nova para virar porte + releitura do
+controle de fluxo. Era isso que o item 4 da tabela de pendências perguntava.
+
+> **Reprodução.** `References/scripts/ir_diff.py`, na caixa do AquaKit:
+> ```
+> python ir_diff.py --a <renderbox_mod98.ll> --a-fn "@glassBackground_v1" \
+>                   --b-fn "glass_background_baseILb1ELb1ELb1EE"
+> ```
+> Sem `--b` ele procura o módulo sozinho no dump do build TARGET — e **recusa**
+> se mais de um definir a função. Recusou na primeira execução: quatro módulos
+> definem esse template (`half`/`float` × `tex`/`sdf`), e escolher o primeiro em
+> silêncio teria comparado contra uma variante que ninguém pediu.
 
 ## 5. A API do `IconRendering`
 

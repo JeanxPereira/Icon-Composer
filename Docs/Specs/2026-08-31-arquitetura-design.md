@@ -68,12 +68,18 @@ cli                     ->  IconComposerFoundation, IconRendering
 app                     ->  IconComposerKit, Onyx
 ```
 
-**O AquaKit não entra ainda, e a razão é dele.** Hoje ele tem o pipeline de
-material, um `Button` e o banner — é a prova de que o vidro funciona, não uma
-biblioteca de componentes. Uma UI inteira precisa de campo de texto, lista,
-sidebar, popover, slider, toolbar; nada disso existe. Declarar a dependência
-agora seria vender uma interface que ninguém pode construir. Ele entra quando
-tiver componentes, e o lugar dele já está reservado: o topo, ao lado do Onyx.
+**O AquaKit não aparece nesse grafo, e isso é decisão fechada (2026-09-01).**
+A UI deste projeto é do **OnyxSDK e de mais ninguém**. Hoje o AquaKit tem o
+pipeline de material, um `Button` e o banner — é a prova de que o vidro funciona,
+não uma biblioteca de componentes; uma UI inteira precisa de campo de texto,
+lista, sidebar, popover, slider e toolbar, e nada disso existe. Declarar a
+dependência seria vender uma interface que ninguém pode construir.
+
+O que **não** muda: o AquaKit continua central neste projeto, só que **de fora do
+grafo de link**. Ele é a caixa de engenharia reversa — `dsc_reader.py`,
+`metallib_extract.py`, `udif.py`, `hfs.py`, `target.py`, a disciplina de selos —
+e é dele que sai o material que alimenta o decode do `IconRendering`. Uma
+dependência de *método*, não de *biblioteca*.
 
 ## As dependências externas
 
@@ -83,11 +89,11 @@ reescrever (`AppConfig`, `RecentFiles`, `TaskManager`, `Logger`, `Appearance`,
 `SystemTheme`). Desde a v1.0.0 ele é **Vulkan** — Vulkan-Headers, volk, VMA,
 glslang, `imgui_impl_vulkan`.
 
-**AquaKit** é o material — o papel do QuartzCore e do DesignLibrary. O lugar dele
-é o topo, dando o *chrome*: janela, sidebar e controles em Liquid Glass. **Não
-entra nesta rodada**: ver a nota na ordem topológica acima. O que ele tem hoje é
-o pipeline de vidro provado, um `Button` e o banner — material, não biblioteca de
-componentes.
+**AquaKit** não é dependência externa deste projeto — **é a bancada**. Ele
+carrega a caixa de RE compartilhada pelos três repositórios (`References/scripts/`)
+e o decode do QuartzCore contra o qual o `IconRendering` vai ser conferido. O
+papel de *chrome* em Liquid Glass que este documento reservava para ele está
+**cancelado nesta rodada**: a UI é do Onyx.
 
 **AquaKit não é a engine do ícone** — mas os dois estão MUITO mais próximos do
 que este documento afirmou quando foi escrito. A afirmação original era que o
@@ -102,10 +108,21 @@ já transcreveu do metallib do QuartzCore**, e o `HighlightsSet` do
 `rim`) é campo a campo o vocabulário do `KeyFillHighlight` dele. O vidro do ícone
 e o do controle falam a mesma língua.
 
-Nome igual não é IR igual, e o diferencial que fecharia isso não roda hoje (o
-`References/` do AquaKit está vazio nesta máquina). Mas a torre `IconRendering`
-deste repositório pode não ser RE nova coisa nenhuma — pode ser porte do que já
-está decodado. Isso é para medir antes de planejar.
+Nome igual não é IR igual, e o diferencial é o que fecha isso. **Ele roda.**
+
+> **Correção (2026-09-01).** Este parágrafo dizia que o diferencial não rodava
+> porque *"o `References/` do AquaKit está vazio nesta máquina"*. Errado, e o
+> erro era meu: o material do AquaKit mora **fora da worktree por regra
+> registrada** — um diretório `.gitignore`d dentro de um repositório é
+> exatamente o que o `git clean` existe para apagar, e já apagou duas vezes lá.
+> `python References/scripts/target.py` responde onde ele está: os dois dyld
+> shared caches **já extraídos**, 82 partes cada, em `G:\AquaKit-refs`. E o
+> `TARGET` do AquaKit é **`26A5416b`** — o mesmo build de macOS que produziu
+> este Icon Composer (`DTPlatformBuild = 26A5388g`, `ProjectName = IconStudio`,
+> SDK `macosx27.0.internal`). As duas pontas do diferencial são do mesmo trem.
+
+A torre `IconRendering` deste repositório pode não ser RE nova coisa nenhuma —
+pode ser porte do que já está decodado. Isso é para medir antes de planejar.
 
 ## As três regras
 
@@ -139,7 +156,32 @@ não deve ser escolhida antes do decode: é o decode do `default.metallib` que d
 se o pipeline precisa de fp16, de compute, e em que espaço os dez blend modes
 compõem. Escolher a API antes disso é escolher a coleira antes do cachorro.
 
-## O nome
+## O nome — **IconStudio** (2026-09-01)
 
-Em aberto. `IComposer` e `IconStudio` estão na mesa — e `IconStudio` tem a graça
-de ser o `ProjectName` que a própria Apple carrega no `version.plist` do app.
+`[BIN]` A convenção da Apple, medida nos oito `version.plist` do bundle — o app,
+os cinco frameworks e os dois appex:
+
+| campo | valor | onde vive |
+|---|---|---|
+| `ProjectName` | **`IconStudio`** | `version.plist`, os oito, sem exceção |
+| `CFBundleName` | `Icon Composer` | `Info.plist` |
+| `CFBundleIdentifier` | `com.apple.IconComposer` | `Info.plist` |
+
+`[BIN]` E a separação é limpa: `IconStudio` aparece **zero vezes** dentro de
+qualquer executável ou framework. É nome do *projeto de build*, escrito pelo
+trem de compilação; o código só conhece `IconComposer`.
+
+**A decisão, e ela inverte o mapa da Apple de propósito.** O produto chama
+**IconStudio**; o código continua `IconComposer*` (`icf::`,
+`IconComposerFoundation`, `IconComposerKit`, `CoreSVG`, `RenderBox`).
+
+A inversão é o ponto. Na Apple o nome interno é arbitrário e o do produto é o
+real. Aqui é o contrário: os nomes internos **não são escolha nossa** — são
+copiados dos `LC_ID_DYLIB` do alvo, e é essa correspondência literal que deixa
+uma afirmação nossa ser conferida contra o binário dele. Renomear a torre
+`IconComposerFoundation` para `IconStudioFoundation` custaria a única coisa que
+esses nomes compram. Já o produto é nosso, e chamá-lo `Icon Composer` seria
+vestir o nome de um app da Apple que lê o mesmo formato — confusão, não homenagem.
+
+Então: **por dentro, o nome do alvo, porque ele nomeia o alvo. Por fora, o
+nosso.** O easter egg sobrevive intacto, só que do lado certo do espelho.
