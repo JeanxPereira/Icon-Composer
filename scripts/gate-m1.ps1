@@ -13,7 +13,7 @@
 #      unknown to it, not one of the 1,740 specializations may be unreachable by
 #      the resolver, and not one of the 61,537 values it resolves may fail to
 #      decode into a type.
-#   3. A mandatory mutation sweep. Forty-one defects go in one at a time, and every
+#   3. A mandatory mutation sweep. Fifty defects go in one at a time, and every
 #      one of them MUST redden the suite WITH AN ASSERTION -- a mutation that
 #      merely crashes the process is caught by accident and is reported as a
 #      failure of the test, because a suite that dies hides every case after it.
@@ -43,6 +43,9 @@ $sources = @{
     svgxml   = Join-Path $root "Source/CoreSVG/Xml.cpp"
     svgdoc   = Join-Path $root "Source/CoreSVG/Document.cpp"
     svgpaint = Join-Path $root "Source/CoreSVG/Paint.cpp"
+    rbdevice = Join-Path $root "Source/RenderBox/Device.cpp"
+    rbbuffer = Join-Path $root "Source/RenderBox/Buffer.cpp"
+    rbpath   = Join-Path $root "Source/RenderBox/PathBuffer.cpp"
 }
 $original = @{}
 $hashes = @{}
@@ -213,7 +216,48 @@ $mutations = @(
        to   = 'void(0);' },
     @{ file = "svgdoc"; name = "a class rule never reaches the element"
        from = 'if (cls != fromClass.end()) return cls->second;'
-       to   = 'if (false) return cls->second;' }
+       to   = 'if (false) return cls->second;' },
+    # ---- RenderBox P0: the headless device ----
+    #
+    # These four are what makes "128 cases, 0 failures" mean the GPU was actually
+    # driven. Without them a Device that never submits, a copy that never runs and
+    # an allocation that ignores what was asked for all pass, because the suite
+    # only ever looked at bytes it wrote itself.
+    @{ file = "rbdevice"; name = "the memory type ignores the properties asked for"
+       from = 'if ((mem.memoryTypes[i].propertyFlags & properties) == properties) return i;'
+       to   = 'return i;' },
+    @{ file = "rbdevice"; name = "the command buffer is never submitted to the queue"
+       from = 'VkResult submitted = vkQueueSubmit(queue_, 1, &si, fence);'
+       to   = 'VkResult submitted = VK_SUCCESS; (void)si;' },
+    @{ file = "rbbuffer"; name = "device-local memory is reported as mappable"
+       from = 'if ((properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {'
+       to   = 'if (true) {' },
+    @{ file = "rbbuffer"; name = "a zero-sized buffer is allocated instead of refused"
+       from = 'if (size == 0) return std::unexpected(std::string("a buffer size of zero is not allocatable"));'
+       to   = 'if (size == 0) size = 4;' },
+    # ---- RenderBox P1: the path buffer, one per measured convention ----
+    #
+    # Each of the four is a convention read out of `path_edges_vertex`, and each
+    # of these four breaks exactly one of them. A buffer that violates any is
+    # still a well-formed array of 32-byte structs -- which is why nothing but a
+    # test that knows the convention can tell.
+    @{ file = "rbpath"; name = "convention 2: count is per-segment, not a prefix sum"
+       from = 'running += options.subdivisions;
+        s.count = running;'
+       to   = 's.count = options.subdivisions;
+        running += options.subdivisions;' },
+    @{ file = "rbpath"; name = "convention 3: the header does not carry the start point"
+       from = 'setPoint(header.p3, path.segments.front().p[0]);'
+       to   = 'void(0);' },
+    @{ file = "rbpath"; name = "convention 4: a move is not marked as a subpath break"
+       from = 'markSubpathBreak(s);'
+       to   = 's.p1[0] = 0.0f;' },
+    @{ file = "rbpath"; name = "a subpath break advances the prefix sum"
+       from = 's.count = running;   // a break contributes no vertices, so the'
+       to   = 's.count = ++running; // a break contributes no vertices, so the' },
+    @{ file = "rbpath"; name = "convention 1: the header vertex total is written as a float"
+       from = 'std::memcpy(&header.recip_n, &running, sizeof running);'
+       to   = 'header.recip_n = static_cast<float>(running);' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"

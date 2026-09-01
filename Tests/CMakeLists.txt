@@ -12,9 +12,11 @@ add_executable(ic_tests
     test_svg_css.cpp
     test_bundle.cpp
     test_cli.cpp
+    test_rb_device.cpp
+    test_rb_pathbuffer.cpp
 )
 
-target_link_libraries(ic_tests PRIVATE IconComposer::Foundation IconComposer::CliLib IconComposer::CoreSVG)
+target_link_libraries(ic_tests PRIVATE IconComposer::Foundation IconComposer::CliLib IconComposer::CoreSVG IconComposer::RenderBox)
 target_include_directories(ic_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_test(NAME ic_tests COMMAND ic_tests)

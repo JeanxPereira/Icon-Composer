@@ -240,3 +240,101 @@ função foi lida, nenhum termo foi transcrito. Em ordem de valor:
    `designGeneration27`. Os dois metallib têm o mesmo triple `air64_v26`, então a
    geração **não** está no target; está em código, e provavelmente perto de
    `forceEnableEnhancedGlass` e `drawMitigatedVersion`.
+
+
+## 7. O buffer de path — o alvo desenha na GPU, e o formato está medido
+
+`[BIN]` `shader_path.metal` (mod58) declara:
+
+```
+path_edges_vertex(ShaderState, PathEdgesVertex, PathGlobals,
+                  device const Path::CubicSegment*, ushort vid, uint iid)
+```
+
+Um **vertex shader** que lê segmentos cúbicos direto de um buffer de device.
+`shader_stroke.metal` (6 módulos) faz o mesmo com `StrokeLinePoint`. **O path
+nunca é achatado na CPU, em lugar nenhum.**
+
+Isso decide a arquitetura da nossa torre: um rasterizador scanline de CPU não
+seria degrau para trocar depois, seria **outro algoritmo**, com outro
+antialiasing e outro pixel. É a mesma classe de erro do doc 04 §3 — ficar mais
+certo que o alvo é o erro errado num projeto de reprodução.
+
+### 7.1. Os dois layouts, do `air.struct_type_info`
+
+`[BIN]` Offset, tamanho, tipo e nome, campo a campo:
+
+```
+RB::Shader::Path::CubicSegment          32 bytes, align 4
+   0  int            count
+   4  float          recip_n
+   8  packed_float2  p1
+  16  packed_float2  p2
+  24  packed_float2  p3
+
+RB::Shader::PathGlobals                 52 bytes, align 4
+   0  packed_float2  path_matrix[3]     afim 2×3
+  24  packed_float2  two_over_size
+  32  packed_float2  origin
+  40  float          depth
+  44  float          urx
+  48  float          arg
+```
+
+### 7.2. As quatro convenções, lidas do corpo da função
+
+Nenhuma delas está no layout — todas saíram do IR do `path_edges_vertex`.
+
+**1. A entrada 0 é um CABEÇALHO, não um segmento.** O shader lê
+`segments[0].count` como o número de segmentos a percorrer, e
+`segments[0].recip_n` — **carregado como `i32`, pela casa do float** — como o
+total de vértices:
+
+```llvm
+%51 = getelementptr … %6, i64 0, i32 1   ; recip_n
+%53 = load i32, ptr addrspace(1) %52     ; lido como INTEIRO
+%54 = icmp sgt i32 %53, %16              ; comparado com o índice do vértice
+```
+
+**2. O `count` de cada segmento é uma SOMA DE PREFIXO**, não a contagem dele.
+É o que permite a **busca binária** — o IR parte o intervalo ao meio e compara
+`count` contra o índice do vértice:
+
+```llvm
+%70 = lshr i32 %69, 1                    ; metade
+%72 = getelementptr … %68, i64 %71
+%74 = load i32 …                         ; count do meio
+%75 = icmp sgt i32 %74, %16
+%77 = select i1 %75, i32 %70, i32 %76    ; desce para a metade certa
+```
+
+**3. O `p0` é o `p3` da entrada ANTERIOR.** O IR indexa `segments[i-1].p3`:
+
+```llvm
+%97 = getelementptr … %61, i64 -1, i32 4, i64 0
+```
+
+Logo o `p3` do próprio cabeçalho é onde o path começa, e o segmento 1 resolve
+sem caso especial.
+
+**4. Uma quebra de subpath é um `p1.x` NÃO-FINITO.** O shader faz bitcast de
+`p1.x` para inteiro, mascara `0x7F800000` e desvia quando o expoente é todo um —
+Inf ou NaN:
+
+```llvm
+%64 = bitcast float %63 to i32
+%65 = and i32 %64, 2139095040            ; 0x7F800000
+%66 = icmp eq i32 %65, 2139095040
+```
+
+É assim que vários subpaths moram num buffer plano só.
+
+### 7.3. O que NÃO foi medido
+
+**Quantos vértices um segmento recebe.** O alvo carrega o número *no buffer*,
+o que significa que a regra que o escolhe mora na CPU e não estava no shader
+para ler. O nosso `BuildOptions::subdivisions` é fixo e está marcado `[INF]` no
+cabeçalho — produz o buffer com a forma certa, não com a subdivisão do alvo.
+Pergunta aberta.
+
+`urx` e `arg` do `PathGlobals` também não foram lidos.

@@ -151,10 +151,29 @@ hipótese, não decisão, e nada aqui depende dela hoje.
 nenhum ponto da árvore dele, e nenhum alvo `AquaKit::`. As torres existem e a
 ordem topológica existe (`cmake/Towers.cmake`); falta a embalagem.
 
-**A API de render das torres `RenderBox`/`IconRendering` não está escolhida**, e
-não deve ser escolhida antes do decode: é o decode do `default.metallib` que diz
-se o pipeline precisa de fp16, de compute, e em que espaço os dez blend modes
-compõem. Escolher a API antes disso é escolher a coleira antes do cachorro.
+~~**A API de render das torres `RenderBox`/`IconRendering` não está escolhida**~~
+— **DECIDIDA em 2026-09-01: Vulkan.**
+
+O critério que este parágrafo estabeleceu foi respeitado, não contornado: a
+escolha esperou o decode, e o decode aconteceu. Doc 03 §7 mediu que o alvo
+rasteriza path **na GPU**, subindo `CubicSegment` para um buffer de device e
+expandindo num vertex shader — `path_edges_vertex`, com `shader_path.metal` e
+`shader_stroke.metal` inteiros dedicados a isso.
+
+Logo um rasterizador de CPU não seria um degrau; seria outro algoritmo, com
+outro antialiasing. Vulkan também é o que o Onyx e o AquaKit falam, então não há
+costura entre nenhum par de peças deste projeto.
+
+A torre é **headless**: sem surface, sem swapchain, sem janela. A regra 2
+continua intacta — ela fala de **Onyx**, não de Vulkan, e uma torre pode linkar
+a API sem linkar o toolkit. A regra 1 também: `IconComposerFoundation` segue sem
+GPU.
+
+**O que a decisão NÃO resolve, e está registrado para não virar surpresa:** não
+existe oráculo de pixel. A M1 teve dente porque o corpus trazia a saída do
+encoder da Apple; o corpus não tem um único `.icns`, e os 60 PNG dele são
+camadas de ENTRADA. Sem macOS não roda `icrtool`. O gate do render é, por
+enquanto, invariante + mutação + oráculo de CPU nos pedaços que têm um.
 
 ## O nome — **IconStudio** (2026-09-01)
 
