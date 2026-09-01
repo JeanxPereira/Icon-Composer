@@ -6,10 +6,12 @@
 // what the 149 corpus files actually weigh on. What it does NOT draw it names,
 // through `unsupported()` -- the same rule as `IconDocument::unknownKeys`, and
 // for the same reason.
+#include "Source/CoreSVG/Paint.h"
 #include "Source/CoreSVG/Path.h"
 #include "Source/CoreSVG/Xml.h"
 
 #include <optional>
+#include <map>
 #include <set>
 #include <string>
 #include <string_view>
@@ -42,9 +44,37 @@ struct ViewBox {
     double x = 0, y = 0, width = 0, height = 0;
 };
 
+enum class FillRule { NonZero, EvenOdd };
+
+enum class GradientKind { Linear, Radial };
+
+struct GradientStop {
+    double offset = 0;
+    SvgColor color;
+};
+
+struct Gradient {
+    GradientKind kind = GradientKind::Linear;
+    // Linear: the axis. Radial: centre and radius. Defaults are SVG's own.
+    double x1 = 0, y1 = 0, x2 = 1, y2 = 0;
+    double cx = 0.5, cy = 0.5, radius = 0.5;
+    // `gradientUnits`: false is `objectBoundingBox`, the default, where the
+    // coordinates above are fractions of the shape's box rather than lengths.
+    bool userSpace = false;
+    Transform transform;
+    std::vector<GradientStop> stops;
+};
+
 struct Shape {
     Path path;                 // already in the document's user space
     std::string element;       // the element it came from: path, rect, circle...
+
+    // SVG's initial values, and they are not symmetric: an unpainted shape is
+    // BLACK, and an unstroked one is not stroked at all.
+    Paint fill;
+    Paint stroke;
+    FillRule fillRule = FillRule::NonZero;
+    double strokeWidth = 1.0;
 };
 
 class SvgDocument {
@@ -53,6 +83,9 @@ public:
 
     ViewBox viewBox;
     std::vector<Shape> shapes;
+    // By id, so a `url(#g)` paint can be answered. 161 gradients answer 165
+    // references in the corpus.
+    std::map<std::string, Gradient> gradients;
 
     // Element names seen and not drawn. Empty means every element in the file is
     // either drawn or deliberately ignored (`title`, `desc`, `metadata`).

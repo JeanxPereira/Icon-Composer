@@ -53,8 +53,9 @@ especializações** — 1.040 chaveadas por `appearance`, 616 sem predicado, 82 
 | resolução de especialização | **passa o gate** — 1.740 de 1.740 alcançáveis; a regra está medida, doc 01 §5 |
 | leitura tipada dos valores (cores, enums, geometria) | **passa o gate** — 61.537 valores decodados, 0 falhas |
 | o bundle (`Assets/`, a referência das imagens) | **passa o gate** — 55 bundles, 0 arquivos mortos, 2 referências penduradas conhecidas |
-| SVG: XML, path data, geometria | **passa o gate** — 149/149 lidos, 477 formas, 6.384 segmentos |
-| SVG: pintura (cor, gradiente, CSS) | **não começada** — e o relatório de cobertura diz isso arquivo a arquivo (doc 04 §6) |
+| SVG: XML, path, geometria, pintura, gradientes | **passa o gate** — 149/149 lidos, **98 totalmente compreendidos**, 477 formas, 6.564 segmentos |
+| SVG: a folha de estilo (`class` + `<style>`) | **não começada** — 35 e 18 arquivos; doc 04 §7 |
+| SVG: filtro, máscara, recorte, padrão | **não começados** — e cada um é reportado por arquivo |
 | CLI do `ictool` / `icrtool` | **levantada** — doc 01 §11: comandos, gramática, e o `icrtool` como auxiliar interno |
 | o nosso `ictool` | **passa o gate** — 1.100 árvores renderizadas, nenhuma caindo em JSON cru |
 | a UI do app | **não levantada** — e não há nib: o app é SwiftUI |
@@ -94,15 +95,15 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
    que o conteúdo deles atravessa intacto. O do *modelo*: **nenhuma chave** dos
    145 documentos pode ser desconhecida, e **nenhuma das 1.740 especializações**
    pode ser inalcançável pelo resolver.
-3. **Uma varredura de mutação obrigatória.** Trinta e dois defeitos entram um a um e cada
+3. **Uma varredura de mutação obrigatória.** Trinta e oito defeitos entram um a um e cada
    um TEM que avermelhar a suíte, aplicados em árvore limpa e restaurados de um
    backup conferido por SHA-256 — nunca por comando de git.
 
 **gate-m1 passou em 2026-08-31** — 145 documentos, 135 byte-exatos, 145 de 145
 totalmente compreendidos, 1.740 de 1.740 especializações alcançáveis, 61.537
 valores decodados sem uma falha, 55 bundles sem arquivo morto, 1.100 árvores
-renderizadas sem cair em JSON cru, 149 SVGs lidos em geometria, e **32 de 32
-mutações pegas**.
+renderizadas sem cair em JSON cru, 149 SVGs lidos em geometria com 98 deles
+totalmente compreendidos, e **38 de 38 mutações pegas**.
 
 | # | mutação | asserções avermelhadas |
 |---|---|---|
@@ -133,7 +134,13 @@ mutações pegas**.
 | 29 | dados de caractere descartados | 2 |
 | 30 | lista de transform composta na ordem errada | **1** |
 | 31 | o que o `defs` define nunca é reportado | 2 |
-| 32 | pintura descartada em silêncio em vez de nomeada | 4 |
+| 32 | pintura descartada em silêncio em vez de nomeada | 3 |
+| 33 | hex de três dígitos escalado por 16 em vez de 17 | **1** |
+| 34 | cor display-p3 reportada como sRGB | 2 |
+| 35 | referência url() mantém o # | 3 |
+| 36 | o atributo de apresentação passa na frente do style | 2 |
+| 37 | pintura deixa de herdar pela árvore | **1** |
+| 38 | rect arredondado perde o raio do canto | **1** |
 | 21 | uma sombra despejada como JSON cru | 3 |
 | 22 | camada de vidro deixa de ser marcada | **1** |
 | 23 | a árvore ignora o contexto que recebeu | **1** |

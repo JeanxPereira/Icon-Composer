@@ -140,33 +140,78 @@ elemento a elemento com a sonda independente em Python que produziu a tabela do
 **O documento.** 149 de 149 lidos em geometria, zero recusados, **477 formas e
 6.384 segmentos**.
 
-### E zero de 149 "totalmente compreendidos"
+### O relatório de cobertura, e a vez em que ele me pegou
 
-O relatório de cobertura começou dizendo **133 de 149**, e o número era falso. Ele
-contava um arquivo como entendido quando toda forma dele virava geometria — mas
-este leitor **não lê pintura nenhuma**, e os gradientes e filtros moram dentro de
-`<defs>`, que ele pulava sem reportar. Um instrumento que mede a metade fácil e
-chama de total é pior do que não medir.
+O relatório começou dizendo **133 de 149 totalmente compreendidos**, e o número
+era falso. Ele contava um arquivo como entendido quando toda forma dele virava
+geometria — mas naquele momento o leitor **não lia pintura nenhuma**, e os
+gradientes e filtros moram dentro de `<defs>`, que ele pulava sem reportar. Um
+instrumento que mede a metade fácil e chama de total é pior do que não medir.
 
-Corrigido, o relatório nomeia cada atributo de pintura e cada tipo de definição.
-O número honesto é **zero**, e a lista é o roteiro da próxima rodada, ordenada por
-peso real:
+Corrigido para nomear cada atributo de pintura e cada tipo de definição, o número
+honesto caiu para **zero**, e a lista virou o roteiro. Com a pintura implementada
+ele está em **98 de 149**.
 
-| declinado | em N arquivos | | declinado | em N arquivos |
-|---|---|---|---|---|
-| `paint:fill` | 122 | | `defs:style` | 18 |
-| `paint:style` | 67 | | `rect:rounded` | 15 |
-| `paint:stroke` | 50 | | `paint:stroke-opacity` | 12 |
-| `paint:fill-rule` | 41 | | `paint:fill-opacity` | 9 |
-| `defs:linearGradient` | 41 | | `defs:filter` | 9 |
-| `paint:stroke-width` | 40 | | `paint:opacity` | 7 |
-| `paint:class` | 35 | | `defs:radialGradient` | 4 |
+### A pintura, medida antes de escrita
 
-Mais `paint:filter` (5), `paint:mask` (3), `defs:pattern` (3), `defs:image` (3),
-`mask` (2), `path:A` (1), `paint:clip-path` (1), `defs:clipPath` (1).
+`[ART]` As formas de valor de `fill`/`stroke` nos 149 arquivos:
 
-`[INF]` A ordem de trabalho que esses números sugerem é: cor sólida e
-`fill-rule` primeiro (122 e 41 arquivos), gradiente linear depois (41), o CSS de
-`style=` e `class` em seguida (67 e 35), e cantos arredondados de `rect` (15).
-Filtros ficam por último — e três das primitivas mais usadas no corpus a própria
-Apple não lê (§3).
+| forma | n |
+|---|---|
+| `url(#id)` | 165 |
+| hex de seis dígitos | 162 |
+| `none` | 148 |
+| `white` | 41 |
+| `black` | 29 |
+| `color(display-p3 …)` | ~15 |
+| hex de três dígitos | 1 |
+
+**Cores nomeadas são duas**, não 147: `white` e `black`. As outras 145 do CSS
+ocorrem zero vezes, então a tabela que este leitor carrega tem duas entradas, e
+um terceiro nome é uma recusa reportada — não um preto plausível.
+
+`[ART]` Dentro de `style="…"`: `stop-color` 54, `fill` 50, `fill-rule` 34,
+`stop-opacity` 34, `mix-blend-mode` 24, `clip-rule` 22, `fill-opacity` 19.
+`[ART]` Gradientes: `gradientUnits` em 159, `gradientTransform` em 13, um único
+`xlink:href`. Zero `spreadMethod`. `[ART]` Seletores em `<style>`: 16
+descendentes e 13 de classe, e nada mais.
+
+> **E uma coisa que a sonda perdeu e o gate achou.** A varredura em Python
+> classificou `fill` e `stroke` e concluiu que `rgb()` não ocorre. Ocorre — em
+> `stop-color`, e num `fill`. Quem contou foi o relatório de cobertura, porque
+> ele imprime **o valor** que não conseguiu ler e não apenas uma contagem:
+> `stop-color=rgb(9,111,124)`. Vinte linhas de função depois, o número de
+> arquivos totalmente compreendidos subiu de 95 para 98.
+
+## 7. Onde o leitor está
+
+| | |
+|---|---|
+| lidos | **149 de 149**, zero recusados |
+| totalmente compreendidos | **98 de 149** |
+| geometria | **477 formas, 6.564 segmentos** |
+| paths | 372 de 373, um `A` recusado |
+
+Lê: `svg`/`g`/`defs`, `path`, `rect` (com cantos arredondados), `circle`,
+`ellipse`, `line`, `polyline`, `polygon`, `transform` acumulado pela árvore,
+`fill`, `stroke`, `fill-rule`, `fill-opacity`, `stroke-opacity`, `stroke-width`,
+`style="…"` com precedência sobre o atributo, herança de pintura pela árvore, e
+os gradientes lineares e radiais com os seus stops.
+
+O que sobra, e é o roteiro da próxima rodada:
+
+| declinado | em N arquivos | o que falta |
+|---|---|---|
+| `paint:class` | 35 | o seletor de classe do `<style>` |
+| `defs:style` | 18 | a folha de estilo em si |
+| `defs:filter` · `paint:filter` | 9 · 5 | filtros |
+| `paint:opacity` | 7 | opacidade de grupo, que é composição e não pintura |
+| `paint:clip-rule` · `paint:clip-path` · `defs:clipPath` | 4 · 1 · 1 | recorte |
+| `paint:mask` · `mask` · `defs:mask` | 3 · 2 · 1 | máscara |
+| `defs:pattern` · `defs:image` | 3 · 3 | padrão e imagem embutida |
+| `path:A` | 1 | arcos |
+| `gradient:href` | 1 | gradiente que herda os stops de outro |
+
+`[INF]` As duas primeiras linhas são o mesmo trabalho — um mini-CSS de seletor de
+classe e descendente, 29 regras em 18 arquivos — e sozinhas valem mais que todo o
+resto somado.

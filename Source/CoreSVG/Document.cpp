@@ -1,5 +1,6 @@
 #include "Source/CoreSVG/Document.h"
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 
@@ -73,14 +74,57 @@ void appendPolygon(Path& p, const std::vector<double>& pts, bool close) {
     if (close && !p.segments.empty()) p.segments.push_back({SegmentKind::Close, {}});
 }
 
+// A property, looked up the way CSS orders it: the `style` attribute outranks
+// the presentation attribute of the same name. 67 of 149 files put their paint
+// in `style`, so a reader that consults only attributes misses most of it.
+std::optional<std::string> property(const Element& e, std::string_view name,
+                                    const std::map<std::string, std::string>& style) {
+    auto it = style.find(std::string(name));
+    if (it != style.end()) return it->second;
+    if (const std::string* a = e.attribute(name)) return *a;
+    return std::nullopt;
+}
+
+// What a shape inherits from its ancestry. `opacity` is NOT here: it applies to
+// a whole group as a composited unit, which is a different idea from paint and
+// is still reported as unsupported.
+struct Inherited {
+    Paint fill = [] { Paint p; p.kind = PaintKind::Color; p.color = {0, 0, 0, 1, false}; return p; }();
+    Paint stroke = [] { Paint p; p.kind = PaintKind::None; return p; }();
+    FillRule fillRule = FillRule::NonZero;
+    double fillOpacity = 1.0;
+    double strokeOpacity = 1.0;
+    double strokeWidth = 1.0;
+};
+
+// The alpha the paint ends up with. `fill-opacity` is a separate multiplier
+// from the colour's own alpha, and both apply.
+Paint withOpacity(Paint p, double opacity) {
+    if (p.kind == PaintKind::Color) p.color.a *= opacity;
+    return p;
+}
+
+// A quarter of a rounded corner, as a cubic. Same constant as the ellipse.
+void appendCorner(Path& p, Point from, Point to, Point corner, double kx, double ky) {
+    p.segments.push_back({SegmentKind::Cubic,
+                          {{from.x + kx, from.y + ky},
+                           {to.x - kx, to.y - ky},
+                           to}});
+    (void)corner;
+}
+
 // The attributes that decide how a shape LOOKS. None is read by this layer, and
 // each is named the moment it appears -- doc 04 §4's rule, applied to paint
 // rather than to elements. Without this the report would call a file understood
 // while dropping every colour in it.
+// What is STILL not read. `fill`, `stroke`, `fill-rule`, `fill-opacity`,
+// `stroke-opacity`, `stroke-width` and `style` left this list when they were
+// implemented; `class` stays because the stylesheet that would give it meaning
+// is not read, and `opacity` stays because group compositing is a different
+// idea from paint.
 constexpr std::string_view kPaintAttributes[] = {
-    "fill", "stroke", "style", "class", "opacity", "fill-opacity", "stroke-opacity",
-    "stroke-width", "fill-rule", "clip-path", "mask", "filter", "clip-rule",
-    "stroke-linecap", "stroke-linejoin", "stroke-dasharray",
+    "class", "opacity", "clip-path", "mask", "filter", "clip-rule",
+    "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "mix-blend-mode",
 };
 
 // Elements that carry nothing to draw. Reporting them as unsupported would bury
@@ -96,6 +140,88 @@ bool isIgnorable(std::string_view name) {
 struct Builder {
     std::vector<Shape> shapes;
     std::set<std::string> unsupported;
+    std::map<std::string, Gradient> gradients;
+
+    // One element's paint, resolved against what the ancestry set.
+    Inherited resolve(const Element& e, const std::map<std::string, std::string>& style,
+                      Inherited in) {
+        if (auto v = property(e, "fill", style)) {
+            Paint p = parsePaint(*v);
+            if (p.kind == PaintKind::Unreadable) unsupported.insert("paint:fill=" + *v);
+            else in.fill = p;
+        }
+        if (auto v = property(e, "stroke", style)) {
+            Paint p = parsePaint(*v);
+            if (p.kind == PaintKind::Unreadable) unsupported.insert("paint:stroke=" + *v);
+            else in.stroke = p;
+        }
+        if (auto v = property(e, "fill-rule", style)) {
+            if (*v == "evenodd") in.fillRule = FillRule::EvenOdd;
+            else if (*v == "nonzero") in.fillRule = FillRule::NonZero;
+            else unsupported.insert("paint:fill-rule=" + *v);
+        }
+        auto scalar = [&](const char* name, double& slot) {
+            if (auto v = property(e, name, style)) {
+                auto n = numbers(*v);
+                if (n.size() == 1) slot = n[0];
+                else unsupported.insert(std::string("paint:") + name + "=" + *v);
+            }
+        };
+        scalar("fill-opacity", in.fillOpacity);
+        scalar("stroke-opacity", in.strokeOpacity);
+        scalar("stroke-width", in.strokeWidth);
+        return in;
+    }
+
+    // A gradient definition, by id. Stops in document order.
+    void collectGradient(const Element& e) {
+        const std::string* id = e.attribute("id");
+        if (!id) return;
+        Gradient g;
+        g.kind = (e.name == "radialGradient") ? GradientKind::Radial : GradientKind::Linear;
+        auto num = [&](const char* name, double& slot) {
+            if (const std::string* v = e.attribute(name)) {
+                auto n = numbers(*v);
+                if (n.size() == 1) slot = n[0];
+            }
+        };
+        num("x1", g.x1); num("y1", g.y1); num("x2", g.x2); num("y2", g.y2);
+        num("cx", g.cx); num("cy", g.cy); num("r", g.radius);
+        if (const std::string* u = e.attribute("gradientUnits")) {
+            g.userSpace = (*u == "userSpaceOnUse");
+        }
+        if (const std::string* t = e.attribute("gradientTransform")) {
+            if (auto tr = parseTransform(*t)) g.transform = *tr;
+            else unsupported.insert("gradientTransform:" + *t);
+        }
+        if (e.attribute("xlink:href") || e.attribute("href")) {
+            // A gradient that inherits another's stops. One occurrence in the
+            // corpus, and following it is a second pass this does not make.
+            unsupported.insert("gradient:href");
+        }
+        for (const auto& c : e.children) {
+            if (c.name != "stop") continue;
+            GradientStop stop;
+            const auto style = c.attribute("style")
+                                   ? parseStyle(*c.attribute("style"))
+                                   : std::map<std::string, std::string>{};
+            if (auto v = property(c, "offset", style)) {
+                auto n = numbers(*v);
+                if (n.size() == 1) stop.offset = n[0];
+            }
+            if (auto v = property(c, "stop-color", style)) {
+                Paint pnt = parsePaint(*v);
+                if (pnt.kind == PaintKind::Color) stop.color = pnt.color;
+                else unsupported.insert("stop-color=" + *v);
+            }
+            if (auto v = property(c, "stop-opacity", style)) {
+                auto n = numbers(*v);
+                if (n.size() == 1) stop.color.a *= n[0];
+            }
+            g.stops.push_back(stop);
+        }
+        gradients[*id] = std::move(g);
+    }
 
     // What a shape's paint attributes would have said, had anything read them.
     void notePaint(const Element& e) {
@@ -106,7 +232,11 @@ struct Builder {
         }
     }
 
-    void walk(const Element& e, const Transform& parent) {
+    void walk(const Element& e, const Transform& parent, Inherited inherited) {
+        const auto style = e.attribute("style")
+                               ? parseStyle(*e.attribute("style"))
+                               : std::map<std::string, std::string>{};
+        inherited = resolve(e, style, inherited);
         Transform here = parent;
         if (const std::string* t = e.attribute("transform")) {
             auto local = parseTransform(*t);
@@ -137,17 +267,41 @@ struct Builder {
             auto x = number(e, "x", 0), y = number(e, "y", 0);
             auto w = number(e, "width", 0), h = number(e, "height", 0);
             if (!x || !y || !w || !h) return;
-            if (e.attribute("rx") || e.attribute("ry")) {
-                // Sharp corners, and said so. The gate counts how many rects are
-                // rounded, and that number is what decides whether the arc is
-                // worth writing.
-                unsupported.insert("rect:rounded");
+            // `rx` alone implies `ry`, and the other way round: SVG says an
+            // omitted one takes the value of the other, and both clamp to half
+            // the side they run along.
+            double rx = number(e, "rx", -1).value_or(-1);
+            double ry = number(e, "ry", -1).value_or(-1);
+            if (rx < 0) rx = ry;
+            if (ry < 0) ry = rx;
+            if (rx < 0) rx = 0;
+            if (ry < 0) ry = 0;
+            rx = std::min(rx, *w / 2);
+            ry = std::min(ry, *h / 2);
+            const double x0 = *x, y0 = *y, x1 = *x + *w, y1 = *y + *h;
+            if (rx <= 0 || ry <= 0) {
+                path.segments.push_back({SegmentKind::Move, {{x0, y0}}});
+                path.segments.push_back({SegmentKind::Line, {{x1, y0}}});
+                path.segments.push_back({SegmentKind::Line, {{x1, y1}}});
+                path.segments.push_back({SegmentKind::Line, {{x0, y1}}});
+                path.segments.push_back({SegmentKind::Close, {}});
+            } else {
+                const double kx = rx * kKappa, ky = ry * kKappa;
+                path.segments.push_back({SegmentKind::Move, {{x0 + rx, y0}}});
+                path.segments.push_back({SegmentKind::Line, {{x1 - rx, y0}}});
+                path.segments.push_back({SegmentKind::Cubic,
+                    {{x1 - rx + kx, y0}, {x1, y0 + ry - ky}, {x1, y0 + ry}}});
+                path.segments.push_back({SegmentKind::Line, {{x1, y1 - ry}}});
+                path.segments.push_back({SegmentKind::Cubic,
+                    {{x1, y1 - ry + ky}, {x1 - rx + kx, y1}, {x1 - rx, y1}}});
+                path.segments.push_back({SegmentKind::Line, {{x0 + rx, y1}}});
+                path.segments.push_back({SegmentKind::Cubic,
+                    {{x0 + rx - kx, y1}, {x0, y1 - ry + ky}, {x0, y1 - ry}}});
+                path.segments.push_back({SegmentKind::Line, {{x0, y0 + ry}}});
+                path.segments.push_back({SegmentKind::Cubic,
+                    {{x0, y0 + ry - ky}, {x0 + rx - kx, y0}, {x0 + rx, y0}}});
+                path.segments.push_back({SegmentKind::Close, {}});
             }
-            path.segments.push_back({SegmentKind::Move, {{*x, *y}}});
-            path.segments.push_back({SegmentKind::Line, {{*x + *w, *y}}});
-            path.segments.push_back({SegmentKind::Line, {{*x + *w, *y + *h}}});
-            path.segments.push_back({SegmentKind::Line, {{*x, *y + *h}}});
-            path.segments.push_back({SegmentKind::Close, {}});
             drew = true;
         } else if (e.name == "circle" || e.name == "ellipse") {
             auto cx = number(e, "cx", 0), cy = number(e, "cy", 0);
@@ -175,14 +329,20 @@ struct Builder {
             drew = true;
         } else if (e.name == "svg" || e.name == "g" || e.name == "a") {
             notePaint(e);  // paint inherits, so a group's is a group's shapes'
-            for (const auto& c : e.children) walk(c, here);
+            for (const auto& c : e.children) walk(c, here, inherited);
             return;
         } else if (e.name == "defs") {
             // Definitions are referenced, not drawn -- walking in to paint them
             // would put gradient stops on the canvas. But what is DEFINED in
             // there is exactly what a later round has to implement, so each kind
             // is named once.
-            for (const auto& c : e.children) unsupported.insert("defs:" + c.name);
+            for (const auto& c : e.children) {
+                if (c.name == "linearGradient" || c.name == "radialGradient") {
+                    collectGradient(c);
+                } else {
+                    unsupported.insert("defs:" + c.name);
+                }
+            }
             return;
         } else if (isIgnorable(e.name)) {
             return;  // nothing to draw, and nothing to report
@@ -201,7 +361,14 @@ struct Builder {
             const int n = (s.kind == SegmentKind::Cubic) ? 3 : (s.kind == SegmentKind::Close ? 0 : 1);
             for (int i = 0; i < n; ++i) s.p[i] = here.apply(s.p[i]);
         }
-        shapes.push_back({std::move(path), e.name});
+        Shape shape;
+        shape.path = std::move(path);
+        shape.element = e.name;
+        shape.fill = withOpacity(inherited.fill, inherited.fillOpacity);
+        shape.stroke = withOpacity(inherited.stroke, inherited.strokeOpacity);
+        shape.fillRule = inherited.fillRule;
+        shape.strokeWidth = inherited.strokeWidth;
+        shapes.push_back(std::move(shape));
     }
 };
 
@@ -265,8 +432,9 @@ std::optional<SvgDocument> SvgDocument::parse(std::string_view svg) {
     SvgDocument doc;
     doc.viewBox = {n[0], n[1], n[2], n[3]};
     Builder b;
-    b.walk(xml->root, Transform{});
+    b.walk(xml->root, Transform{}, Inherited{});
     doc.shapes = std::move(b.shapes);
+    doc.gradients = std::move(b.gradients);
     doc.unsupported_ = std::move(b.unsupported);
     return doc;
 }

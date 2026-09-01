@@ -1,5 +1,6 @@
 #include "check.h"
 #include "Source/CoreSVG/Document.h"
+#include "Source/CoreSVG/Paint.h"
 
 using namespace icf::svg;
 
@@ -131,36 +132,45 @@ TEST_CASE(document_reports_an_element_it_does_not_draw) {
     CHECK(un.count("svg") == 0);
 }
 
-// This layer reads GEOMETRY. It does not read paint -- no fill, no stroke, no
-// gradient, no CSS. Staying quiet about that would make `unsupported()` claim a
-// file was understood when its every colour was dropped, and the corpus gate
-// would report a number that means less than it looks like it means.
-TEST_CASE(document_reports_that_it_does_not_read_paint) {
+// Paint IS read now -- `fill`, `stroke`, `fill-rule`, the opacities, the widths
+// and `style`. What is still not read is named, and the list is short and
+// deliberate: `class` needs a stylesheet nobody parses, and `opacity` is group
+// compositing rather than paint.
+TEST_CASE(document_reports_the_paint_it_still_does_not_read) {
     auto d = SvgDocument::parse(
-        R"(<svg viewBox="0 0 10 10"><path d="M1 1" fill="#ff0000" stroke="blue"/></svg>)");
+        R"(<svg viewBox="0 0 10 10"><path d="M1 1" fill="#ff0000" stroke="black"
+            class="a" opacity="0.5" mix-blend-mode="multiply"/></svg>)");
     REQUIRE(d.has_value());
-    CHECK(d->unsupported().count("paint:fill") == 1);
-    CHECK(d->unsupported().count("paint:stroke") == 1);
+    CHECK(d->unsupported().count("paint:fill") == 0);     // read
+    CHECK(d->unsupported().count("paint:stroke") == 0);   // read
+    CHECK(d->unsupported().count("paint:class") == 1);    // needs a stylesheet
+    CHECK(d->unsupported().count("paint:opacity") == 1);  // group compositing
+    CHECK(d->unsupported().count("paint:mix-blend-mode") == 1);
 }
 
-TEST_CASE(document_reports_a_style_attribute_and_a_class) {
+// A colour this reader cannot read is named WITH ITS VALUE. `currentColor`
+// occurs zero times in the corpus and needs an inherited `color` property that
+// nothing here tracks -- so a file that carries one says which value, rather
+// than being painted a plausible black.
+TEST_CASE(document_names_the_paint_value_it_could_not_read) {
     auto d = SvgDocument::parse(
-        R"(<svg viewBox="0 0 10 10"><path d="M1 1" style="fill:red" class="a"/></svg>)");
+        R"SVG(<svg viewBox="0 0 10 10"><path d="M1 1" fill="currentColor"/></svg>)SVG");
     REQUIRE(d.has_value());
-    CHECK(d->unsupported().count("paint:style") == 1);
-    CHECK(d->unsupported().count("paint:class") == 1);
+    CHECK(d->unsupported().count("paint:fill=currentColor") == 1);
+    // And the shape keeps the INHERITED fill rather than an invented one.
+    CHECK(d->shapes[0].fill.kind == PaintKind::Color);
 }
 
-// A gradient or a filter inside `defs` is a definition something references. Not
-// walking into `defs` to DRAW is right; staying silent about what is in there is
-// not -- those are exactly the things a later round has to implement.
+// Gradients are collected now. A filter is not -- and `defs` still names what it
+// holds that nobody reads.
 TEST_CASE(document_reports_what_is_defined_but_not_understood) {
     auto d = SvgDocument::parse(R"(<svg viewBox="0 0 10 10"><defs>
         <linearGradient id="g"><stop offset="0"/></linearGradient>
         <filter id="f"><feBlend/></filter></defs><path d="M1 1"/></svg>)");
     REQUIRE(d.has_value());
-    CHECK(d->unsupported().count("defs:linearGradient") == 1);
+    CHECK(d->unsupported().count("defs:linearGradient") == 0);  // collected
     CHECK(d->unsupported().count("defs:filter") == 1);
+    CHECK(d->gradients.count("g") == 1);
 }
 
 TEST_CASE(document_does_not_report_what_it_deliberately_ignores) {
@@ -169,4 +179,127 @@ TEST_CASE(document_does_not_report_what_it_deliberately_ignores) {
     // `title` and `metadata` carry nothing to draw. Reporting them as
     // unsupported would drown the real findings in noise.
     CHECK(d->unsupported().empty());
+}
+
+// ---- paint on a shape ---------------------------------------------------
+
+namespace {
+std::string paintText(const Paint& p) {
+    switch (p.kind) {
+        case PaintKind::None: return "none";
+        case PaintKind::Reference: return "url:" + p.reference;
+        case PaintKind::Unreadable: return "unreadable";
+        case PaintKind::Color: {
+            auto r = [](double v) { return std::to_string(static_cast<int>(v * 1000 + 0.5)); };
+            return std::string(p.color.displayP3 ? "p3 " : "srgb ") + r(p.color.r) + "," +
+                   r(p.color.g) + "," + r(p.color.b) + "," + r(p.color.a);
+        }
+    }
+    return "?";
+}
+}  // namespace
+
+// SVG's initial values, and they are not symmetric: a shape with no `fill`
+// attribute is BLACK, and one with no `stroke` is not stroked at all.
+TEST_CASE(shape_defaults_to_black_fill_and_no_stroke) {
+    auto d = SvgDocument::parse(R"(<svg viewBox="0 0 10 10"><path d="M1 1"/></svg>)");
+    REQUIRE(d.has_value());
+    REQUIRE(d->shapes.size() == 1);
+    CHECK_EQ(paintText(d->shapes[0].fill), std::string("srgb 0,0,0,1000"));
+    CHECK_EQ(paintText(d->shapes[0].stroke), std::string("none"));
+}
+
+// Paint inherits. A group that sets `fill` sets it for every shape under it
+// that does not say otherwise -- and 201 groups in the corpus rely on that.
+TEST_CASE(shape_inherits_paint_from_its_group) {
+    auto d = SvgDocument::parse(R"(<svg viewBox="0 0 10 10"><g fill="#ff0000">
+        <path d="M1 1"/><path d="M2 2" fill="#00ff00"/></g></svg>)");
+    REQUIRE(d.has_value());
+    REQUIRE(d->shapes.size() == 2);
+    CHECK_EQ(paintText(d->shapes[0].fill), std::string("srgb 1000,0,0,1000"));
+    CHECK_EQ(paintText(d->shapes[1].fill), std::string("srgb 0,1000,0,1000"));
+}
+
+// The `style` attribute outranks the presentation attribute -- that is CSS's
+// rule, and 67 of 149 files put their paint there.
+TEST_CASE(style_attribute_outranks_the_presentation_attribute) {
+    auto d = SvgDocument::parse(
+        R"(<svg viewBox="0 0 10 10"><path d="M1 1" fill="#ff0000" style="fill:#0000ff"/></svg>)");
+    REQUIRE(d.has_value());
+    CHECK_EQ(paintText(d->shapes[0].fill), std::string("srgb 0,0,1000,1000"));
+}
+
+TEST_CASE(shape_reads_its_fill_rule_and_stroke_width) {
+    auto d = SvgDocument::parse(
+        R"(<svg viewBox="0 0 10 10"><path d="M1 1" fill-rule="evenodd" stroke="black" stroke-width="2.5"/></svg>)");
+    REQUIRE(d.has_value());
+    CHECK(d->shapes[0].fillRule == FillRule::EvenOdd);
+    CHECK(d->shapes[0].strokeWidth == 2.5);
+}
+
+TEST_CASE(shape_multiplies_its_opacity_into_the_paint) {
+    auto d = SvgDocument::parse(
+        R"(<svg viewBox="0 0 10 10"><path d="M1 1" fill="#ffffff" fill-opacity="0.5"/></svg>)");
+    REQUIRE(d.has_value());
+    CHECK_EQ(paintText(d->shapes[0].fill), std::string("srgb 1000,1000,1000,500"));
+}
+
+// ---- gradients ----------------------------------------------------------
+
+// 165 paint values are `url(...)`, and 161 gradients are defined to answer
+// them. A document that collects the shapes and not the gradients answers the
+// most common question in the corpus with nothing.
+TEST_CASE(document_collects_the_gradients_defined_in_defs) {
+    auto d = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10"><defs>
+        <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#ff0000"/>
+          <stop offset="1" stop-color="#0000ff" stop-opacity="0.5"/>
+        </linearGradient></defs>
+        <path d="M1 1" fill="url(#g)"/></svg>)SVG");
+    REQUIRE(d.has_value());
+    REQUIRE(d->gradients.count("g") == 1);
+    const auto& g = d->gradients.at("g");
+    CHECK(g.kind == GradientKind::Linear);
+    REQUIRE(g.stops.size() == 2);
+    CHECK(g.stops[0].offset == 0.0);
+    CHECK_EQ(paintText(Paint{PaintKind::Color, g.stops[1].color, ""}),
+             std::string("srgb 0,0,1000,500"));
+    CHECK_EQ(paintText(d->shapes[0].fill), std::string("url:g"));
+}
+
+TEST_CASE(document_reads_a_radial_gradient) {
+    auto d = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10"><defs>
+        <radialGradient id="r" cx="5" cy="5" r="4"><stop offset="0" stop-color="black"/>
+        </radialGradient></defs><path d="M1 1"/></svg>)SVG");
+    REQUIRE(d.has_value());
+    REQUIRE(d->gradients.count("r") == 1);
+    CHECK(d->gradients.at("r").kind == GradientKind::Radial);
+    CHECK(d->gradients.at("r").radius == 4.0);
+}
+
+// A stop can put its colour in `style` instead of in `stop-color`, and 34 of
+// them do.
+TEST_CASE(document_reads_a_stop_whose_colour_is_in_its_style) {
+    auto d = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10"><defs>
+        <linearGradient id="g"><stop offset="0" style="stop-color:#00ff00;stop-opacity:1"/>
+        </linearGradient></defs><path d="M1 1"/></svg>)SVG");
+    REQUIRE(d.has_value());
+    REQUIRE(d->gradients.count("g") == 1);
+    REQUIRE(d->gradients.at("g").stops.size() == 1);
+    CHECK_EQ(paintText(Paint{PaintKind::Color, d->gradients.at("g").stops[0].color, ""}),
+             std::string("srgb 0,1000,0,1000"));
+}
+
+// ---- rounded rectangles -------------------------------------------------
+
+// 40 rects in 15 files carry `rx`. They were drawn with sharp corners and
+// reported; now they are drawn.
+TEST_CASE(rect_with_rx_gets_rounded_corners) {
+    auto d = SvgDocument::parse(
+        R"(<svg viewBox="0 0 10 10"><rect x="0" y="0" width="10" height="10" rx="2"/></svg>)");
+    REQUIRE(d.has_value());
+    REQUIRE(d->shapes.size() == 1);
+    // Move, then four sides and four corner arcs, then close.
+    CHECK(d->shapes[0].path.segments.size() == 10);
+    CHECK(d->unsupported().count("rect:rounded") == 0);
 }

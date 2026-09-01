@@ -6,6 +6,7 @@ add_library(CoreSVG STATIC
     Path.cpp
     Xml.cpp
     Document.cpp
+    Paint.cpp
 )
 
 target_include_directories(CoreSVG PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../..)

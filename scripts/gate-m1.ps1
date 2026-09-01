@@ -13,7 +13,7 @@
 #      unknown to it, not one of the 1,740 specializations may be unreachable by
 #      the resolver, and not one of the 61,537 values it resolves may fail to
 #      decode into a type.
-#   3. A mandatory mutation sweep. Thirty-two defects go in one at a time, and every
+#   3. A mandatory mutation sweep. Thirty-eight defects go in one at a time, and every
 #      one of them MUST redden the suite. Each is applied to a pristine tree and
 #      restored from a byte-exact backup verified by SHA-256 -- never by a git
 #      command, because this repository has no git history to lean on, and a
@@ -39,6 +39,7 @@ $sources = @{
     svgpath  = Join-Path $root "Source/CoreSVG/Path.cpp"
     svgxml   = Join-Path $root "Source/CoreSVG/Xml.cpp"
     svgdoc   = Join-Path $root "Source/CoreSVG/Document.cpp"
+    svgpaint = Join-Path $root "Source/CoreSVG/Paint.cpp"
 }
 $original = @{}
 $hashes = @{}
@@ -176,11 +177,30 @@ $mutations = @(
        from = 'result = t.then(result);'
        to   = 'result = result.then(t);' },
     @{ file = "svgdoc"; name = "what defs defines is never reported"
-       from = 'for (const auto& c : e.children) unsupported.insert("defs:" + c.name);'
-       to   = ';' },
+       from = 'unsupported.insert("defs:" + c.name);'
+       to   = 'void(0);' },
     @{ file = "svgdoc"; name = "paint silently dropped instead of named"
        from = 'if (a.first == p) unsupported.insert("paint:" + a.first);'
-       to   = 'if (false) unsupported.insert("paint:" + a.first);' }
+       to   = 'if (false) unsupported.insert("paint:" + a.first);' },
+    # ---- SVG paint ----
+    @{ file = "svgpaint"; name = "three-digit hex scaled by 16 instead of 17"
+       from = '(nibble(0) * 17)'
+       to   = '(nibble(0) * 16)' },
+    @{ file = "svgpaint"; name = "a display-p3 colour reported as sRGB"
+       from = 'return colorPaint({n[0], n[1], n[2], n.size() == 4 ? n[3] : 1.0, true});'
+       to   = 'return colorPaint({n[0], n[1], n[2], n.size() == 4 ? n[3] : 1.0, false});' },
+    @{ file = "svgpaint"; name = "a url reference keeps its hash"
+       from = 'p.reference = std::string(inner.substr(1));'
+       to   = 'p.reference = std::string(inner);' },
+    @{ file = "svgdoc"; name = "the presentation attribute outranks style"
+       from = 'if (it != style.end()) return it->second;'
+       to   = 'if (false) return it->second;' },
+    @{ file = "svgdoc"; name = "paint stops inheriting down the tree"
+       from = 'inherited = resolve(e, style, inherited);'
+       to   = 'inherited = resolve(e, style, Inherited{});' },
+    @{ file = "svgdoc"; name = "a rounded rect loses its corner radius"
+       from = 'rx = std::min(rx, *w / 2);'
+       to   = 'rx = 0;' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"
