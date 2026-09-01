@@ -867,3 +867,72 @@ do pixel.
 `[OBS]` **E a tolerância não mordia** — `return true` no lugar dela deixava a
 suíte verde, porque desligar uma verificação que hoje passa não quebra nada.
 Exatamente a mesma lição do oráculo de vértice (§8.5), repetida no mesmo dia.
+
+## 13. O primeiro pixel
+
+Com o estágio de vértice e os três de fragment transcritos e gatados, a P5 é a
+tubulação entre eles: um alvo de render `half2`, mistura **aditiva**, e a leitura
+de volta.
+
+### 13.1. O oráculo que existe, e ele não é da Apple
+
+Este projeto não tem oráculo de pixel — está registrado no spec de arquitetura
+desde 01/09. Mas **para uma forma cuja cobertura tem forma fechada, não precisa
+de um**: a sobreposição de um pixel com um retângulo alinhado aos eixos é
+calculável exatamente, sem referência a shader nenhum. Um render que discorda
+dela está errado por mais plausível que pareça.
+
+O gate da P5 é isso: retângulo alinhado ao grid, retângulo fracionário nos quatro
+lados, retângulo mais estreito que um pixel, forma inteiramente fora da imagem, e
+o buraco por winding oposto. **A geometria é o oráculo.**
+
+`[BIN]` A mistura é **aditiva** e tem de ser: cada aresta contribui uma área com
+sinal, e a soma sobre as arestas que cruzam um pixel **é** a cobertura. Arestas
+opostas se cancelam porque o `path_value` delas difere de sinal.
+
+### 13.2. A cobertura é ASSINADA, e isso não é defeito
+
+`[BIN]` O interior de um retângulo volta **−1** ou **+1** conforme o sentido em
+que ele foi percorrido. Quem transforma isso em alpha é um estágio de **resolve**
+aplicando a regra de preenchimento — e esse estágio **não está decodado**.
+
+Então a verificação compara **magnitude**, e há um teste separado provando que o
+sinal existe e inverte com o sentido. Sem ele, largar o `path_value` inteiro
+passaria em todas as verificações de magnitude.
+
+### 13.3. Dois defeitos, e nenhum deles foi achado deduzindo
+
+**`[INF]` O Y do Metal não é o Y do Vulkan.** O `rbToClip` transcreve
+`y · (−two_over_size.y) + 1`, que é **correto para Metal**: o NDC dele aponta
+para CIMA, então o flip converte um mundo y-para-baixo, e a origem no topo do
+fragment devolve a concordância com o `path_y` que o fragment compara.
+
+**O NDC do Vulkan já aponta para baixo.** O mesmo flip inverte. Medido: mundo
+y 8..20 caiu nas linhas de tela 24..12 enquanto o fragment recortava contra
+`path_y` 8..20.
+
+A transcrição fica com a aritmética do alvo, gatada bit a bit contra o oráculo de
+CPU; **a adaptação de API mora no shader de render, onde a API está.**
+
+**`[OBS]` E metade do quad nunca era rasterizada.** Os quatro cantos do alvo estão
+em ordem de **anel**, então uma lista de triângulos divide na diagonal 0–2:
+`(0,1,2)` e `(0,2,3)`. Eu usei `(0,1,2)` e `(1,2,3)` — a convenção de **strip**.
+As duas metades se sobrepõem e deixam a outra sem cobrir.
+
+Achado por medição em três passos, não por dedução: dumpei os varyings (corretos),
+depois a posição interpolada (correta), e a região desenhada era exatamente a
+metade inferior-direita do quad.
+
+### 13.4. Um padrão meu que a varredura achou TRÊS vezes no mesmo dia
+
+`[OBS]` Três guardas escritas, três guardas que nada exercitava:
+
+| guarda | como a varredura a matou |
+|---|---|
+| a comparação de ULP do oráculo de vértice (§8.5) | `return true`, suíte verde |
+| a tolerância da cobertura (§12.5) | `return true`, suíte verde |
+| a guarda do cabeçalho no `draw` (§9.5) | `if (false)`, suíte verde |
+
+Sempre a mesma forma: **desligar uma verificação que hoje passa não quebra nada.**
+Escrever a guarda e escrever o teste que prova que ela morde são dois trabalhos, e
+eu fiz um só, três vezes. A varredura é o que torna essa diferença visível.

@@ -13,6 +13,8 @@ add_library(RenderBox STATIC
     PathVertexOracle.cpp
     Compute.cpp
     PathCoverageOracle.cpp
+    Image.cpp
+    CoveragePass.cpp
 )
 
 # Shaders are compiled at BUILD time, not loaded at run time. A shader that does
@@ -23,7 +25,7 @@ set(_shader_dir ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${_shader_dir})
 file(GLOB _glsl_deps ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.glsl)
 set(_shader_incs)
-foreach(shader IN ITEMS path_probe.comp path_coverage.comp)
+foreach(shader IN ITEMS path_probe.comp path_coverage.comp path_exterior.vert path_exterior.frag)
     set(_src ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader})
     set(_out ${_shader_dir}/${shader}.inc)
     add_custom_command(OUTPUT ${_out}

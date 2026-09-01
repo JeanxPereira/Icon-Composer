@@ -13,7 +13,7 @@
 #      unknown to it, not one of the 1,740 specializations may be unreachable by
 #      the resolver, and not one of the 61,537 values it resolves may fail to
 #      decode into a type.
-#   3. A mandatory mutation sweep. Seventy-four defects go in one at a time, and every
+#   3. A mandatory mutation sweep. Seventy-nine defects go in one at a time, and every
 #      one of them MUST redden the suite WITH AN ASSERTION -- a mutation that
 #      merely crashes the process is caught by accident and is reported as a
 #      failure of the test, because a suite that dies hides every case after it.
@@ -51,6 +51,8 @@ $sources = @{
     rboracle = Join-Path $root "Source/RenderBox/PathVertexOracle.cpp"
     rbfrag   = Join-Path $root "Source/RenderBox/shaders/PathFragment.glsl"
     rbcov    = Join-Path $root "Source/RenderBox/PathCoverageOracle.cpp"
+    rbvert   = Join-Path $root "Source/RenderBox/shaders/path_exterior.vert"
+    rbpass   = Join-Path $root "Source/RenderBox/CoveragePass.cpp"
 }
 $original = @{}
 $hashes = @{}
@@ -383,7 +385,23 @@ $mutations = @(
        to   = 'float r = 1.0 - narrowed;' },
     @{ file = "rbcov"; name = "the coverage tolerance accepts any two floats"
        from = 'return (gap < 0 ? -gap : gap) <= static_cast<float>(maxHalfUlps) * 0.00048828125f;'
-       to   = 'return true;' }
+       to   = 'return true;' },
+    # ---- P5: the render ----
+    @{ file = "rbvert"; name = "the clip Y keeps Metal's flip on Vulkan"
+       from = 'gl_Position = vec4(x * g.twoOverSize.x + -1.0, y * g.twoOverSize.y - 1.0,'
+       to   = 'gl_Position = vec4(x * g.twoOverSize.x + -1.0, y * -g.twoOverSize.y + 1.0,' },
+    @{ file = "rbvert"; name = "the quad is split on the strip diagonal, not the ring's"
+       from = 'const int kCorner[6] = int[6](0, 1, 2, 0, 2, 3);'
+       to   = 'const int kCorner[6] = int[6](0, 1, 2, 1, 2, 3);' },
+    @{ file = "rbvert"; name = "the quad stops at the edge instead of reaching urx"
+       from = 'precise float x = (corner == 0u || corner == 3u) ? (min(a.x, b.x) - 0.5) : (g.urx + 0.5);'
+       to   = 'precise float x = (corner == 0u || corner == 3u) ? (min(a.x, b.x) - 0.5) : (max(a.x, b.x) + 0.5);' },
+    @{ file = "rbpass"; name = "the blend replaces instead of accumulating"
+       from = 'blend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;'
+       to   = 'blend.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;' },
+    @{ file = "rbpass"; name = "the draw trusts a header it did not check"
+       from = 'if (!headerAgreesWithSegments(path)) {'
+       to   = 'if (false) {' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"
