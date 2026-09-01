@@ -13,12 +13,14 @@ WHAT COUNTS AS "IN THE SLICE"
 -----------------------------
 A layer is in the slice when it is drawable with what is gated today: a `solid`
 fill, `normal` blend, no glass, and art the renderer can place -- a PNG, or
-vector art the CoreSVG reader turns into filled paths with no stroke, gradient,
-filter, mask, clip path, pattern, `use` or embedded raster.
+vector art the CoreSVG reader turns into filled paths, flat or gradient-filled,
+with no stroke, filter, mask, clip path, pattern, `use` or embedded raster.
 
-RASTER MOVED OUT OF THE BLOCKER LIST on 2026-09-01, when the compositor learned
-to decode and place a PNG. The number this script prints is therefore not
-comparable across that change, which is the point of saying so here.
+TWO THINGS HAVE LEFT THE BLOCKER LIST, both on 2026-09-01: RASTER, when the
+compositor learned to decode and place a PNG, and the SVG's `url(#id)` GRADIENT
+paint, when the gradient was transcribed. The number this script prints is
+therefore not comparable across either change -- said here rather than letting a
+rising number look like the corpus changed.
 
 TWO RULERS, AND THE SECOND IS THE ONE THAT DECIDES
 --------------------------------------------------
@@ -75,7 +77,6 @@ FLAT_FILLS = {"solid", "none"}
 
 # What the CoreSVG reader turns into filled paths today, and what it does not.
 SVG_BLOCKERS = {
-    "gradiente (url(#…))": re.compile(r'fill\s*[=:]\s*["\']?\s*url\(', re.I),
     "traço pintado": re.compile(r'stroke\s*[=:]\s*["\']?\s*(?!none)[#a-z0-9(]', re.I),
     "filtro": re.compile(r"<\s*filter[\s>]|filter\s*[=:]", re.I),
     "máscara": re.compile(r"<\s*mask[\s>]|mask\s*[=:]", re.I),

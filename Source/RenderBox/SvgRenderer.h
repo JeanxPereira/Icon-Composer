@@ -43,13 +43,39 @@
 #include "Source/CoreSVG/Document.h"
 #include "Source/RenderBox/CoveragePass.h"
 #include "Source/RenderBox/Device.h"
+#include "Source/RenderBox/GradientOracle.h"
 #include "Source/RenderBox/Image.h"
 
 namespace rb {
 
+// What a LAYER's own fill does to the art it names.
+//
+// `[INF]` The art gives the SHAPE and the layer's fill gives the COLOUR. The
+// evidence is in the corpus: `Apollo-Reborn/AppIcon` draws `Eyes 3.svg`, whose
+// art is `#000000`, under a layer fill of `display-p3:0.695,0.153,0.477` -- a
+// pink. Nobody authors pink eyes as black art unless the fill retints them. And
+// `GlowGetter`'s two halves are `#D9D9D9`, the placeholder grey a design tool
+// leaves behind, under a fill of white.
+//
+// Measured: of the corpus's layers that carry BOTH a solid fill and SVG art,
+// 17 name monochrome art and 7 name polychrome art. The polychrome ones flatten
+// under this rule, and whether the target flattens them too is `[OBS]`.
+struct FillOverride {
+    enum class Kind { None, Solid, Ramp };
+    Kind kind = Kind::None;
+    float colour[4]{0, 0, 0, 1};
+    // For `Ramp`: the stops and the map from CANVAS pixels into the ramp's
+    // parameter, which the compositor builds because only it knows the canvas.
+    std::vector<RampPoint> stops;
+    double m[6]{1, 0, 0, 0, 1, 0};
+};
+
 struct RenderOptions {
     std::uint32_t width = 512;
     std::uint32_t height = 512;
+    // When set, every shape in the document is painted with this instead of its
+    // own fill. The shape's own gradient reference is then not consulted.
+    FillOverride override;
     // How many line segments one cubic becomes. `[INF]`, and inherited from
     // `BuildOptions`: the target carries the count in the buffer, so the RULE
     // that picks it lives on its CPU side and was not in the shader to read.
@@ -94,5 +120,27 @@ Result<RenderedImage> renderSvg(Device& device, const icf::svg::SvgDocument& doc
 Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocument& doc,
                                       const PathGlobals& globals,
                                       RenderOptions options = RenderOptions{});
+
+// ---- gradients -----------------------------------------------------------
+//
+// A gradient the renderer can evaluate: the ramp, plus the map that carries a
+// point in the SVG's user space into the gradient's own -- which is where the
+// target's geometry expects it, because `Gradient::value` for a linear gradient
+// is just `p.x` (doc 03 §23.2). Everything the axis or the circle says is
+// folded into this map.
+struct ResolvedGradient {
+    std::uint32_t state = 0;         // the geometry x spread field, doc 03 §23.1
+    // user -> gradient space, row-major 2x3: gx = m[0]*x + m[1]*y + m[2]
+    double m[6]{1, 0, 0, 0, 1, 0};
+    std::vector<RampPoint> stops;    // ascending by location
+    bool ok = false;
+    std::string why;                 // when `ok` is false, in words
+};
+
+// Resolves an SVG paint reference against the document's gradients, for a shape
+// whose user-space bounding box is `bx0..by1` -- which `objectBoundingBox`
+// needs and `userSpaceOnUse` ignores.
+ResolvedGradient resolveGradient(const icf::svg::SvgDocument& doc, const std::string& id,
+                                 double bx0, double by0, double bx1, double by1);
 
 }  // namespace rb

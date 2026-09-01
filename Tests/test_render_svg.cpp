@@ -247,26 +247,206 @@ TEST_CASE(the_fill_rule_reaches_the_render) {
 TEST_CASE(a_shape_that_cannot_be_drawn_is_named) {
     Device& d = gpu();
     if (!d.valid()) return;
+    // A reference that resolves is DRAWN now -- that is what the gradient work
+    // bought. What is still named is one that does not resolve, and `fill="none"`
+    // is still not named at all, because a deliberate non-painting is not a gap
+    // and reporting it would drown the real ones.
     const std::string svg = svgWith(
         "0 0 16 16",
-        "<defs><linearGradient id=\"g\"><stop offset=\"0\" stop-color=\"#000\"/>"
-        "<stop offset=\"1\" stop-color=\"#fff\"/></linearGradient></defs>"
+        "<defs><linearGradient id=\"g\" x1=\"0\" y1=\"0\" x2=\"16\" y2=\"0\" "
+        "gradientUnits=\"userSpaceOnUse\">"
+        "<stop offset=\"0\" stop-color=\"#000000\"/>"
+        "<stop offset=\"1\" stop-color=\"#ffffff\"/></linearGradient></defs>"
         "<path d=\"M0 0 L16 0 L16 16 L0 16 Z\" fill=\"url(#g)\"/>"
-        "<path d=\"M0 0 L8 0 L8 8 L0 8 Z\" fill=\"none\"/>");
+        "<path d=\"M0 0 L8 0 L8 8 L0 8 Z\" fill=\"url(#nao-existe)\"/>"
+        "<path d=\"M0 0 L4 0 L4 4 L0 4 Z\" fill=\"none\"/>");
     auto doc = icf::svg::SvgDocument::parse(svg);
     REQUIRE(doc.has_value());
     RenderOptions o;
     o.width = 16;
     o.height = 16;
+    o.subdivisions = 1;
     auto img = renderSvg(d, *doc, o);
     REQUIRE(img.has_value());
 
-    CHECK_EQ(img->drawn, std::size_t{0});
-    // The gradient is a gap and is reported; `fill="none"` is a deliberate
-    // non-painting and must NOT be, or the real gaps drown in noise.
+    CHECK_EQ(img->drawn, std::size_t{1});
     REQUIRE(img->skipped.size() == 1);
-    CHECK(img->skipped[0].why.find("gradiente") != std::string::npos ||
-          img->skipped[0].why.find("referencia") != std::string::npos);
+    CHECK(img->skipped[0].why.find("nao-existe") != std::string::npos);
+
+    // And the gradient it DID draw runs dark to light across the row, which is
+    // the whole point: a ramp that came back as one flat colour would still
+    // count as drawn.
+    const float left = channelAt(*img, 1, 8, 0);
+    const float right = channelAt(*img, 14, 8, 0);
+    CHECK(left < 0.15f);
+    CHECK(right > 0.85f);
+    CHECK(right - left > 0.7f);
+}
+
+
+// ---- the gradient, resolved and painted ---------------------------------
+
+// `userSpaceOnUse` -- 159 of the corpus's 161 -- leaves the axis in the
+// document's own coordinates. The ramp has to run along that axis and nowhere
+// else, so this checks BOTH ends and the middle: a map that got the direction
+// right and the scale wrong would pass a two-point check.
+TEST_CASE(a_user_space_gradient_runs_along_its_own_axis) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    const std::string svg = svgWith(
+        "0 0 32 32",
+        "<defs><linearGradient id=\"g\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"32\" "
+        "gradientUnits=\"userSpaceOnUse\">"
+        "<stop offset=\"0\" stop-color=\"#000000\"/>"
+        "<stop offset=\"1\" stop-color=\"#ffffff\"/></linearGradient></defs>"
+        "<path d=\"M0 0 L32 0 L32 32 L0 32 Z\" fill=\"url(#g)\"/>");
+    auto doc = icf::svg::SvgDocument::parse(svg);
+    REQUIRE(doc.has_value());
+    RenderOptions o;
+    o.width = o.height = 32;
+    o.subdivisions = 1;
+    auto img = renderSvg(d, *doc, o);
+    REQUIRE(img.has_value());
+    CHECK_EQ(img->drawn, std::size_t{1});
+
+    // The axis runs DOWN, so the ramp must vary with y and not with x.
+    CHECK(channelAt(*img, 16, 1, 0) < 0.1f);
+    CHECK(std::fabs(channelAt(*img, 16, 16, 0) - 0.5f) < 0.05f);
+    CHECK(channelAt(*img, 16, 30, 0) > 0.9f);
+    CHECK(std::fabs(channelAt(*img, 2, 16, 0) - channelAt(*img, 29, 16, 0)) < 0.02f);
+}
+
+// `objectBoundingBox` is SVG's DEFAULT and occurs in 2 of the corpus's 161. Its
+// coordinates are fractions of the shape's box, so the same gradient on a shape
+// in a different place has to follow the shape.
+TEST_CASE(an_object_bounding_box_gradient_follows_its_shape) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    // No `gradientUnits` at all: the default applies. The axis 0..1 spans the
+    // shape, and the shape is the RIGHT HALF of the canvas.
+    const std::string svg = svgWith(
+        "0 0 32 32",
+        "<defs><linearGradient id=\"g\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"0\">"
+        "<stop offset=\"0\" stop-color=\"#000000\"/>"
+        "<stop offset=\"1\" stop-color=\"#ffffff\"/></linearGradient></defs>"
+        "<path d=\"M16 0 L32 0 L32 32 L16 32 Z\" fill=\"url(#g)\"/>");
+    auto doc = icf::svg::SvgDocument::parse(svg);
+    REQUIRE(doc.has_value());
+    RenderOptions o;
+    o.width = o.height = 32;
+    o.subdivisions = 1;
+    auto img = renderSvg(d, *doc, o);
+    REQUIRE(img.has_value());
+    CHECK_EQ(img->drawn, std::size_t{1});
+
+    // The ramp spans the SHAPE (x from 16 to 32), not the canvas. A renderer
+    // that ignored the box would have the shape start at grey, not at black.
+    CHECK(channelAt(*img, 17, 16, 0) < 0.15f);
+    CHECK(channelAt(*img, 30, 16, 0) > 0.85f);
+    CHECK(alphaAt(*img, 2, 16) < 0.01f);          // nothing outside the shape
+}
+
+// A radial gradient runs from its centre outward, which is a different SHAPE of
+// answer from a linear one and not just a different direction.
+TEST_CASE(a_radial_gradient_runs_from_its_centre) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    const std::string svg = svgWith(
+        "0 0 32 32",
+        "<defs><radialGradient id=\"g\" cx=\"16\" cy=\"16\" r=\"16\" "
+        "gradientUnits=\"userSpaceOnUse\">"
+        "<stop offset=\"0\" stop-color=\"#000000\"/>"
+        "<stop offset=\"1\" stop-color=\"#ffffff\"/></radialGradient></defs>"
+        "<path d=\"M0 0 L32 0 L32 32 L0 32 Z\" fill=\"url(#g)\"/>");
+    auto doc = icf::svg::SvgDocument::parse(svg);
+    REQUIRE(doc.has_value());
+    RenderOptions o;
+    o.width = o.height = 32;
+    o.subdivisions = 1;
+    auto img = renderSvg(d, *doc, o);
+    REQUIRE(img.has_value());
+    CHECK_EQ(img->drawn, std::size_t{1});
+
+    const float centre = channelAt(*img, 16, 16, 0);
+    // Four points the same distance out must agree, which a linear ramp could
+    // not do.
+    //
+    // The pixels are 4 and 27, not 4 and 28. A pixel's centre is at `x + 0.5`,
+    // so pixels `p` and `31 - p` are the pair symmetric about the gradient's
+    // centre at 16.0; 4 and 28 are 11.5 and 12.5 out, which is 6% of the ramp
+    // apart. The first version of this test used them and failed the renderer
+    // for the test's own asymmetry.
+    const float up = channelAt(*img, 16, 4, 0);
+    const float down = channelAt(*img, 16, 27, 0);
+    const float left = channelAt(*img, 4, 16, 0);
+    const float right = channelAt(*img, 27, 16, 0);
+    CHECK(centre < 0.1f);
+    CHECK(up > 0.6f);
+    CHECK(std::fabs(up - down) < 0.03f);
+    CHECK(std::fabs(up - left) < 0.03f);
+    CHECK(std::fabs(up - right) < 0.03f);
+}
+
+// Three stops, unevenly placed. Two stops cannot tell a ramp that honours stop
+// POSITIONS from one that spreads them evenly, and the corpus's commonest
+// gradient has three.
+TEST_CASE(the_stops_are_placed_where_the_document_puts_them) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    const std::string svg = svgWith(
+        "0 0 32 32",
+        "<defs><linearGradient id=\"g\" x1=\"0\" y1=\"0\" x2=\"32\" y2=\"0\" "
+        "gradientUnits=\"userSpaceOnUse\">"
+        "<stop offset=\"0\" stop-color=\"#000000\"/>"
+        "<stop offset=\"0.25\" stop-color=\"#ffffff\"/>"
+        "<stop offset=\"1\" stop-color=\"#000000\"/></linearGradient></defs>"
+        "<path d=\"M0 0 L32 0 L32 32 L0 32 Z\" fill=\"url(#g)\"/>");
+    auto doc = icf::svg::SvgDocument::parse(svg);
+    REQUIRE(doc.has_value());
+    RenderOptions o;
+    o.width = o.height = 32;
+    o.subdivisions = 1;
+    auto img = renderSvg(d, *doc, o);
+    REQUIRE(img.has_value());
+
+    // White sits a QUARTER along, not half: at x = 8 it is bright, and at
+    // x = 16 -- where an evenly-spread ramp would put it -- it is already well
+    // down the second segment.
+    CHECK(channelAt(*img, 8, 16, 0) > 0.9f);
+    const float mid = channelAt(*img, 16, 16, 0);
+    CHECK(mid < 0.8f);
+    CHECK(mid > 0.4f);
+    CHECK(channelAt(*img, 30, 16, 0) < 0.1f);
+}
+
+// Past either end the ramp HOLDS -- `spreadMethod` occurs zero times in the
+// corpus's 161 gradients, so `pad` is the behaviour and the axis being shorter
+// than the shape must not repeat or reflect it.
+TEST_CASE(the_ramp_holds_past_both_ends_of_its_axis) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    // The axis covers only the middle third of the shape.
+    const std::string svg = svgWith(
+        "0 0 30 30",
+        "<defs><linearGradient id=\"g\" x1=\"10\" y1=\"0\" x2=\"20\" y2=\"0\" "
+        "gradientUnits=\"userSpaceOnUse\">"
+        "<stop offset=\"0\" stop-color=\"#000000\"/>"
+        "<stop offset=\"1\" stop-color=\"#ffffff\"/></linearGradient></defs>"
+        "<path d=\"M0 0 L30 0 L30 30 L0 30 Z\" fill=\"url(#g)\"/>");
+    auto doc = icf::svg::SvgDocument::parse(svg);
+    REQUIRE(doc.has_value());
+    RenderOptions o;
+    o.width = o.height = 30;
+    o.subdivisions = 1;
+    auto img = renderSvg(d, *doc, o);
+    REQUIRE(img.has_value());
+
+    // Everything left of the axis is the first stop, everything right of it the
+    // last -- flat, not wrapped.
+    CHECK(channelAt(*img, 1, 15, 0) < 0.02f);
+    CHECK(std::fabs(channelAt(*img, 1, 15, 0) - channelAt(*img, 8, 15, 0)) < 0.02f);
+    CHECK(channelAt(*img, 28, 15, 0) > 0.98f);
+    CHECK(std::fabs(channelAt(*img, 22, 15, 0) - channelAt(*img, 28, 15, 0)) < 0.02f);
 }
 
 // ---- the PNG ------------------------------------------------------------

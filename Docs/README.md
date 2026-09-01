@@ -78,6 +78,7 @@ especializações** — 1.040 chaveadas por `appearance`, 616 sem predicado, 82 
 | o conversor — SVG desenhado em pixels | **passa o gate** — as peças compostas, conferidas contra a forma fechada pela cadeia inteira. Alcance medido: **22 de 194 camadas**, **0 de 55 documentos** (doc 03 §20) |
 | `icrender` e o PNG | **passam o gate** — binário separado do `ictool`, que segue sem GPU (doc 03 §20.6, §20.7) |
 | os ícones do sistema (Fotos, App Store) | **localizados, não abertos** — não são `.icon`: compilam para `Assets.car` e o motor os lê via CoreUI. Segunda porta de entrada (doc 03 §20.8) |
+| o gradiente, ligado no renderizador | **desenha** — `url(#id)` do SVG, linear e radial, `userSpaceOnUse` e `objectBoundingBox`, `gradientTransform`; e o `fill` da camada retinge a arte. Alcance **22 → 79 de 194 camadas** (doc 03 §25) |
 | a regra do `automatic-gradient` | **lida e transcrita** — Rec.709, quatro faixas de fronteira **fixa**, boost e duas paradas ordenadas; fecha a pergunta 4 do doc 01 por inteiro (doc 03 §24) |
 | o gradiente do `RenderBox` | **levantado** — o campo de 4 bits é **4 geometrias × 4 spreads**, decodado por duas funções independentes que concordam; mais o tipo de rampa e o gama (doc 03 §23) |
 | leitura de PNG (`inflate` + decodificador) | **passa o gate** — **58 de 60** do corpus, 55,3 M pixels; fixtures do zlib do Python como produtor independente. Adam7 é lacuna nomeada, 2 de 60 (doc 03 §21) |

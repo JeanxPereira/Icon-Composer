@@ -73,6 +73,29 @@ void rampTwoColour(std::uint32_t state, float t, const float (&a)[4], const floa
 void rampUniform(std::uint32_t state, float t, const std::vector<Stop>& stops,
                  float (&out)[4]);
 
-// The whole thing: geometry, then spread, then ramp. `[OBS]` Ramp kinds 1 and 2
-// (`sample_stops_binary`) are NOT transcribed here -- see doc 03 §23.5.
+// ---- ramp kinds 1 and 2: a table of stops at arbitrary positions ---------
+//
+// `[BIN]` `sample_stops_binary` does NOT store a stop's position. Each record
+// carries a precomputed affine pair `(a, b)`, and the same `a*t + b` serves
+// twice: as the binary search's predicate (`> 0` means "t is past this stop")
+// and, saturated, as the parameter interpolating to the NEXT record's colour.
+// The record is 16 bytes with bit 25 clear, and the colour of the following
+// record is read at +24 -- so the buffer holds one entry past the last stop.
+//
+// `[INF]` That `a = 1 / (off[i+1] - off[i])` and `b = -off[i] * a` is inference
+// from those two uses, not something read from the code that FILLS the buffer.
+// It is the only assignment that makes both uses mean what they do.
+//
+// So the observable behaviour is piecewise-linear interpolation between stops
+// by position, held flat past either end -- and that is what this computes,
+// expressed in positions because that is what an SVG gives.
+struct RampPoint {
+    float location = 0.0f;
+    float rgba[4]{0, 0, 0, 0};
+};
+
+// `stops` must be sorted ascending by location. Fewer than two is not an error:
+// one stop is a constant colour, and none is transparent.
+void rampAtPositions(const std::vector<RampPoint>& stops, float t, float (&out)[4]);
+
 }  // namespace rb

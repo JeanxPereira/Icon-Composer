@@ -7,6 +7,7 @@
 #include <sstream>
 
 #include "Source/CoreSVG/Document.h"
+#include "Source/RenderBox/AutomaticGradient.h"
 #include "Source/IconComposerFoundation/Png.h"
 #include "Source/IconComposerFoundation/Values.h"
 
@@ -122,6 +123,100 @@ std::vector<float> placeRaster(const icf::DecodedPng& img, const LayerPlacement&
     return out;
 }
 
+
+// The layer's own fill, turned into what the renderer paints with.
+//
+// `[INF]` The art gives the shape and the fill gives the colour -- see the note
+// on `FillOverride`. `why` is filled when a fill kind is recognised but cannot
+// be honoured, so the layer is NAMED rather than drawn in the art's colours,
+// which would look like a render and be a different picture.
+FillOverride overrideFor(const icf::Fill& fill, const LayerPlacement& placement,
+                         std::uint32_t size, std::string& why) {
+    FillOverride out;
+    auto asColour = [](const icf::Color& c, float (&rgba)[4]) {
+        const bool grey = c.count < 3;
+        rgba[0] = static_cast<float>(c.components[0]);
+        rgba[1] = static_cast<float>(grey ? c.components[0] : c.components[1]);
+        rgba[2] = static_cast<float>(grey ? c.components[0] : c.components[2]);
+        rgba[3] = static_cast<float>(grey ? c.components[1] : c.components[3]);
+    };
+
+    switch (fill.kind) {
+        case icf::FillKind::None:
+            return out;
+
+        case icf::FillKind::Solid:
+            if (fill.colors.empty()) return out;
+            out.kind = FillOverride::Kind::Solid;
+            asColour(fill.colors.front(), out.colour);
+            return out;
+
+        case icf::FillKind::LinearGradient: {
+            // `[ART]` The document's linear gradient carries EXACTLY two stops --
+            // 48 of 48 in the corpus -- plus an `orientation` whose start and
+            // stop are points in the unit square. Which is the target's ramp
+            // kind 0, the two-colour mix (doc 03 §23.4).
+            if (fill.colors.size() < 2 || !fill.orientation) {
+                why = "linear-gradient sem duas cores ou sem orientacao";
+                return out;
+            }
+            out.kind = FillOverride::Kind::Ramp;
+            out.stops.resize(2);
+            out.stops[0].location = 0.0f;
+            out.stops[1].location = 1.0f;
+            asColour(fill.colors[0], out.stops[0].rgba);
+            asColour(fill.colors[1], out.stops[1].rgba);
+
+            // The unit square is the CANVAS, and the layer's placement does not
+            // move it: a layer's fill covers the layer, and the orientation is
+            // given in the same fractions for every layer. `[OBS]` That the unit
+            // square is the canvas rather than the layer's own box is NOT
+            // measured -- the corpus cannot tell them apart while every
+            // orientation runs corner to corner.
+            (void)placement;
+            const double sx = fill.orientation->stop.x - fill.orientation->start.x;
+            const double sy = fill.orientation->stop.y - fill.orientation->start.y;
+            const double len2 = sx * sx + sy * sy;
+            if (len2 == 0.0) {
+                why = "linear-gradient com orientacao de comprimento zero";
+                out.kind = FillOverride::Kind::None;
+                return out;
+            }
+            const double k = 1.0 / static_cast<double>(size);   // pixels -> unit square
+            out.m[0] = sx / len2 * k;
+            out.m[1] = sy / len2 * k;
+            out.m[2] = -(fill.orientation->start.x * sx + fill.orientation->start.y * sy) / len2;
+            return out;
+        }
+
+        case icf::FillKind::AutomaticGradient: {
+            if (fill.colors.empty()) {
+                why = "automatic-gradient sem cor base";
+                return out;
+            }
+            // The STOPS are derivable -- doc 03 §24 read the rule. Where the
+            // AXIS goes is not: that function returns stops, not a placement,
+            // and §24.4 records the geometry as untraced. Deriving the colours
+            // and then inventing an axis would put real colours in the wrong
+            // places, so the layer is named instead.
+            why = "automatic-gradient: as paradas sao derivaveis (doc 03 §24) mas o "
+                  "EIXO nao foi medido -- inventa-lo poria cores certas em lugar errado";
+            return out;
+        }
+
+        case icf::FillKind::Automatic:
+        case icf::FillKind::SystemLight:
+        case icf::FillKind::SystemDark:
+            why = "fill de sistema: escolhe entre duas rampas enlatadas dos parametros "
+                  "de render, cujos valores nao foram lidos (doc 03 §24.3)";
+            return out;
+
+        default:
+            why = "fill que este renderizador nao le";
+            return out;
+    }
+}
+
 }  // namespace
 
 LayerPlacement compose(const LayerPlacement& g, const LayerPlacement& l) {
@@ -228,6 +323,22 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             std::transform(ext.begin(), ext.end(), ext.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
+            // The layer's own fill, if it has one. A fill this renderer knows
+            // by name but cannot honour NAMES the layer -- drawing the art in
+            // its own colours instead would be a different picture wearing the
+            // look of a finished one.
+            FillOverride paint;
+            if (const icf::json::Value* f = layer.resolve("fill", options.context)) {
+                if (auto parsed = icf::fillFrom(*f)) {
+                    std::string why;
+                    paint = overrideFor(*parsed, lp, options.size, why);
+                    if (!why.empty()) {
+                        skip(why);
+                        continue;
+                    }
+                }
+            }
+
             if (ext == ".svg") {
                 auto svg = icf::svg::SvgDocument::parse(readAll(art));
                 if (!svg) {
@@ -237,6 +348,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 RenderOptions ro;
                 ro.width = ro.height = options.size;
                 ro.subdivisions = options.subdivisions;
+                ro.override = paint;
                 auto drew = renderSvgPlaced(
                     device, *svg, placeOnCanvas(svg->viewBox, lp, options.size), ro);
                 if (!drew) return std::unexpected(drew.error());

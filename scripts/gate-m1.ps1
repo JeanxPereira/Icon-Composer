@@ -59,6 +59,10 @@ $sources = @{
     png      = Join-Path $root "Source/IconComposerFoundation/Png.cpp"
     inflate  = Join-Path $root "Source/IconComposerFoundation/Inflate.cpp"
     icon     = Join-Path $root "Source/RenderBox/IconRenderer.cpp"
+    grad     = Join-Path $root "Source/RenderBox/GradientOracle.cpp"
+    gradglsl = Join-Path $root "Source/RenderBox/shaders/Gradient.glsl"
+    autograd = Join-Path $root "Source/RenderBox/AutomaticGradient.cpp"
+    rbsvg2   = Join-Path $root "Source/RenderBox/SvgRenderer.cpp"
 }
 $original = @{}
 $hashes = @{}
@@ -471,10 +475,8 @@ $mutations = @(
        from = 'out.rgba[t * 4 + k] = a > 0.0f ? acc[t * 4 + k] / a : 0.0f;'
        to   = 'out.rgba[t * 4 + k] = acc[t * 4 + k];' },
     @{ file = "rbsvg"; name = "a shape that cannot be drawn is dropped in silence"
-       from = 'out.skipped.push_back(
-                {i, shape.element,'
-       to   = 'if (false) out.skipped.push_back(
-                {i, shape.element,' },
+       from = 'out.skipped.push_back({i, shape.element, "valor de fill que este leitor nao le"});'
+       to   = 'if (false) out.skipped.push_back({i, shape.element, "valor de fill que este leitor nao le"});' },
     # ---- the PNG ----
     @{ file = "png"; name = "the stored block length is not complemented"
        from = 'z.push_back(static_cast<std::uint8_t>(~n));'
@@ -587,8 +589,8 @@ $mutations = @(
        from = 'if (*s != "normal") {'
        to   = 'if (false) {' },
     @{ file = "icon"; name = "the layer opacity never reaches the composite"
-       from = 'over(out.rgba, drew->rgba, static_cast<float>(opacity));'
-       to   = 'over(out.rgba, drew->rgba, 1.0f);' },
+       from = 'over(acc, drew->rgba, static_cast<float>(opacity));'
+       to   = 'over(acc, drew->rgba, 1.0f);' },
     @{ file = "icon"; name = "the over operator does not hold back the destination"
        from = 'for (int k = 0; k < 3; ++k) acc[i + k] = src[i + k] * a + acc[i + k] * inv;'
        to   = 'for (int k = 0; k < 3; ++k) acc[i + k] = src[i + k] * a + acc[i + k];' },
@@ -597,6 +599,109 @@ $mutations = @(
        to   = 'acc[c] += static_cast<float>(wgt) * img.rgba[s + c];' },
     @{ file = "icon"; name = "a dangling asset is drawn as though it resolved"
        from = 'if (!std::filesystem::is_regular_file(art)) {'
+       to   = 'if (false) {' },
+    # ---- the gradient ----
+    #
+    # The 4-bit field is FOUR GEOMETRIES BY FOUR SPREADS, and that decomposition
+    # is the measurement (doc 03 section 23.1). One wrong cell still draws a
+    # gradient, so the cells are what these aim at.
+    @{ file = "grad"; name = "a geometry cell moves: case 7 is not linear"
+       from = 'case 0: case 1: case 2: case 7:   return Geometry::Linear;'
+       to   = 'case 0: case 1: case 2:           return Geometry::Linear;' },
+    @{ file = "grad"; name = "a spread cell moves: case 13 is not pad"
+       from = 'case 0: case 3: case 9: case 13:  return Spread::Pad;'
+       to   = 'case 0: case 3: case 9:           return Spread::Pad;' },
+    @{ file = "grad"; name = "the selector reads more than four bits"
+       from = 'return (state >> kGradientKindShift) & kGradientKindMask;'
+       to   = 'return (state >> kGradientKindShift) & 31u;' },
+    @{ file = "grad"; name = "reflect is a sawtooth, not a triangle"
+       from = 'return doubled > 1.0f ? 2.0f - doubled : doubled;'
+       to   = 'return doubled;' },
+    @{ file = "grad"; name = "pad does not clamp"
+       from = 'case Spread::Pad:
+            return saturate(t);'
+       to   = 'case Spread::Pad:
+            return t;' },
+    @{ file = "grad"; name = "the radial geometry drops its offset"
+       from = 'return std::sqrt(px * px + py * py) * a + b;'
+       to   = 'return std::sqrt(px * px + py * py) * a;' },
+    @{ file = "grad"; name = "an untranscribed geometry claims to be covered"
+       from = 'if (covered) *covered = false;
+            return 0.0f;'
+       to   = 'return 0.0f;' },
+    @{ file = "grad"; name = "the two-colour gamma is applied unsaturated"
+       from = 'if ((state & kStopGamma) != 0u) u = saturate(std::pow(saturate(t), gamma));'
+       to   = 'if ((state & kStopGamma) != 0u) u = std::pow(t, gamma);' },
+    @{ file = "grad"; name = "the ramp does not hold past its last stop"
+       from = 'if (t >= stops.back().location) {'
+       to   = 'if (false) {' },
+    @{ file = "grad"; name = "the stop segment ignores where the stops are"
+       from = 'float f = span > 0.0f ? (t - lo.location) / span : 1.0f;'
+       to   = 'float f = t;' },
+    @{ file = "gradglsl"; name = "the shader and the oracle disagree on a geometry cell"
+       from = 'if (k == 3u || k == 4u || k == 5u || k == 8u) return 1;'
+       to   = 'if (k == 3u || k == 4u || k == 5u) return 1;' },
+    @{ file = "gradglsl"; name = "the shader mixes with the wrong factoring"
+       from = 'precise vec4 span = hi - lo;
+    precise vec4 result = lo + span * u;'
+       to   = 'precise vec4 span = hi - lo;
+    precise vec4 result = lo * (1.0 - u) + hi * u;' },
+    # ---- the automatic gradient ----
+    @{ file = "autograd"; name = "the luminance is a plain average, not Rec.709"
+       from = 'return 0.2126 * r + 0.7152 * g + 0.0722 * b;'
+       to   = 'return (r + g + b) / 3.0;' },
+    @{ file = "autograd"; name = "a band boundary moves"
+       from = 'if (L <= 0.25) {'
+       to   = 'if (L <= 0.35) {' },
+    @{ file = "autograd"; name = "the band comparison stops being inclusive"
+       from = 'if (L <= 0.25) {
+        lightening = p.dimLightening;
+    } else if (L <= 0.50) {'
+       to   = 'if (L < 0.25) {
+        lightening = p.dimLightening;
+    } else if (L <= 0.50) {' },
+    @{ file = "autograd"; name = "the saturation boost pushes toward the luminance"
+       from = 'double boosted[3] = {r - sb * (L - r), g - sb * (L - g), b - sb * (L - b)};'
+       to   = 'double boosted[3] = {r + sb * (L - r), g + sb * (L - g), b + sb * (L - b)};' },
+    @{ file = "autograd"; name = "the lightening always blends toward white"
+       from = 'const double toward = positive ? (1.0 - boosted[i]) : boosted[i];'
+       to   = 'const double toward = 1.0 - boosted[i];' },
+    @{ file = "autograd"; name = "the derived colour is not clamped"
+       from = 'shifted[i] = clamp01(boosted[i] + lightening * toward);'
+       to   = 'shifted[i] = boosted[i] + lightening * toward;' },
+    @{ file = "autograd"; name = "the two ends do not flip with the sign"
+       from = 'a.location = positive ? 0.0 : 1.0;'
+       to   = 'a.location = 0.0;' },
+    @{ file = "autograd"; name = "basePosition moves the wrong stop"
+       from = 'c.location = positive ? (1.0 - p.basePosition) : (0.0 + p.basePosition);'
+       to   = 'c.location = positive ? 1.0 : 0.0;' },
+    @{ file = "autograd"; name = "the alpha is lightened along with the colour"
+       from = 'a.rgba[3] = alpha;'
+       to   = 'a.rgba[3] = clamp01(alpha + lightening);' },
+    # ---- the gradient wired into the renderer ----
+    @{ file = "rbsvg2"; name = "objectBoundingBox is treated as user space"
+       from = 'if (!g.userSpace) {'
+       to   = 'if (false) {' },
+    @{ file = "rbsvg2"; name = "the linear axis is not normalised by its own length"
+       from = 'raw[0] = dx / len2;
+        raw[1] = dy / len2;'
+       to   = 'raw[0] = dx;
+        raw[1] = dy;' },
+    @{ file = "rbsvg2"; name = "the linear axis forgets where it starts"
+       from = 'raw[2] = -(g.x1 * dx + g.y1 * dy) / len2;'
+       to   = 'raw[2] = 0.0;' },
+    @{ file = "rbsvg2"; name = "the radial gradient forgets its centre"
+       from = 'raw[2] = -g.cx / g.radius;'
+       to   = 'raw[2] = 0.0;' },
+    @{ file = "rbsvg2"; name = "the gradient is sampled at the pixel corner, not its centre"
+       from = 'const double px = static_cast<double>(t % options.width) + 0.5;
+                const double py = static_cast<double>(t / options.width) + 0.5;
+                const double ux = (px - globals.m2[0]) * sx;'
+       to   = 'const double px = static_cast<double>(t % options.width);
+                const double py = static_cast<double>(t / options.width);
+                const double ux = (px - globals.m2[0]) * sx;' },
+    @{ file = "rbsvg2"; name = "a reference that does not resolve is drawn anyway"
+       from = 'if (!ramp.ok) {'
        to   = 'if (false) {' }
 )
 

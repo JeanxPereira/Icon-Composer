@@ -1899,3 +1899,73 @@ duas listas de paradas enlatadas que o §19.5 mediu como rampas de cinza
 `[OBS]` A **geometria** do `automatic-gradient` não sai desta função: ela devolve
 paradas, não posições de eixo. De onde vem o `start`/`end` desse gradiente não
 foi rastreado.
+
+## 25. O gradiente ligado, e o que a arte de uma camada realmente dá
+
+### 25.1. O alcance, de novo
+
+`[ART]` Depois de o `url(#id)` do SVG passar a ser pintado:
+
+| | antes do raster | depois do raster | depois do gradiente |
+|---|---|---|---|
+| camadas | 22 | 62 | **79 de 194 — 40,7%** |
+| documentos inteiros | 0 | 9 | **12 de 55** |
+
+`[INF]` Os três números **não são comparáveis entre si** como medida do corpus: o
+que mudou foi a régua, não os documentos. Está escrito no cabeçalho do
+`slice-reach.py`, porque um número subindo sem essa nota parece descoberta.
+
+### 25.2. A geometria, em termos do alvo
+
+`[BIN]` Para a geometria linear o `Gradient::value` do alvo é literalmente
+`p.x` — o que significa que **toda** a informação do eixo tem de estar na
+transformação que leva o ponto ao espaço do gradiente. É isso que o renderizador
+monta:
+
+```
+usuário --(gradientUnits, gradientTransform)--> espaço declarado --> parâmetro
+```
+
+`[ART]` `userSpaceOnUse` em **159** dos 161 gradientes do corpus, e o
+`objectBoundingBox` — o *default* do SVG — nos outros 2. Os dois entram, porque
+2 não é zero. `gradientTransform` em 13, componível.
+
+`[ART]` **`spreadMethod` não entra, e o número é zero**: nenhuma ocorrência em
+161 gradientes. O comportamento é sempre `pad`.
+
+### 25.3. A arte dá a forma; o `fill` da camada dá a cor
+
+Esta é a semântica que faltava para o compositor, e ela foi **medida**, não
+suposta.
+
+`[ART]` Das camadas do corpus que carregam ao mesmo tempo um `fill` sólido e
+arte SVG: **17** nomeiam arte monocromática e **7** nomeiam arte policrômica. E
+os dois exemplos que decidem:
+
+| bundle | arte | `fill` da camada |
+|---|---|---|
+| `Apollo-Reborn/AppIcon` — `Eyes 3.svg` | `#000000` | `display-p3:0.695, 0.153, 0.477` — rosa |
+| `Aeastr/GlowGetter` — `LeftHalf.svg` | `#D9D9D9` | branco |
+
+`[INF]` Ninguém desenha um olho rosa como arte preta a menos que o `fill`
+retinja. E `#D9D9D9` é o cinza de espaço reservado que uma ferramenta de desenho
+deixa para trás. A regra é: **a arte é a forma, o `fill` é a cor.**
+
+O render confirma: com a regra aplicada, o Apollo deixa de ser uma silhueta preta
+e vira um capacete branco com anel violeta e o rosa dos olhos aparecendo.
+
+`[OBS]` As **7 camadas de arte policrômica** achatam sob esta regra. Se o alvo
+também as achata não foi medido.
+
+### 25.4. O `automatic-gradient` NÃO é desenhado, e o motivo é preciso
+
+As paradas são deriváveis — o §24 leu a regra. **O eixo não.** A função devolve
+paradas, não colocação (§24.4).
+
+`[INF]` Derivar as cores certas e inventar onde elas vão põe **cor certa em
+lugar errado** — pior que não desenhar, porque parece pronto. A camada é
+**nomeada**, com essa frase, e o `icrender` a imprime.
+
+O mesmo vale para `automatic`/`system`: ele escolhe entre duas rampas enlatadas
+dos parâmetros de render (§24.3), e os **valores** dessas rampas não foram lidos
+além dos dois pares de cinza do §19.5.

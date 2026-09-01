@@ -127,4 +127,31 @@ void rampUniform(std::uint32_t state, float t, const std::vector<Stop>& stops,
     for (int k = 0; k < 4; ++k) out[k] = lo.rgba[k] + (hi.rgba[k] - lo.rgba[k]) * f;
 }
 
+void rampAtPositions(const std::vector<RampPoint>& stops, float t, float (&out)[4]) {
+    for (int i = 0; i < 4; ++i) out[i] = 0.0f;
+    if (stops.empty()) return;
+    if (stops.size() == 1 || t <= stops.front().location) {
+        for (int i = 0; i < 4; ++i) out[i] = stops.front().rgba[i];
+        return;
+    }
+    if (t >= stops.back().location) {
+        for (int i = 0; i < 4; ++i) out[i] = stops.back().rgba[i];
+        return;
+    }
+    // The search the target does with a branchless binary partition. Linear
+    // here: the corpus's longest ramp has five stops, and a binary search over
+    // five is a way to get the boundaries wrong for no measurable gain.
+    std::size_t i = 0;
+    while (i + 2 < stops.size() && stops[i + 1].location <= t) ++i;
+    const RampPoint& lo = stops[i];
+    const RampPoint& hi = stops[i + 1];
+    const float span = hi.location - lo.location;
+    // `[BIN]` The parameter is SATURATED before the mix, which is what holds a
+    // degenerate segment (two stops at the same position) to a hard edge rather
+    // than letting a division by zero through.
+    float f = span > 0.0f ? (t - lo.location) / span : 1.0f;
+    f = saturate(f);
+    for (int k = 0; k < 4; ++k) out[k] = lo.rgba[k] + (hi.rgba[k] - lo.rgba[k]) * f;
+}
+
 }  // namespace rb
