@@ -74,6 +74,7 @@ especializações** — 1.040 chaveadas por `appearance`, 616 sem predicado, 82 
 | a cor (`composite`, caminho chapado) | **passa o gate** — premultiplicação, inversão e broadcast, GPU × CPU bit a bit (doc 03 §16) |
 | `IconRendering` — a ponte documento↔motor | **mapeada** — `Icon`, `FinalizedIcon`, os 18 modos de mescla, `Fill.Contents`, `GlobalConfiguration` (doc 03 §17) |
 | o pipeline `Icon → FinalizedIcon → imagem` | **levantado pelos seletores** — as duas etapas, as três famílias de saída, e os parâmetros de render; responde a pergunta 4 do doc 01. **Nenhum corpo desmontado** (doc 03 §18) |
+| os defaults do render | **16 campos lidos e atribuídos** — fecha a pergunta 4 do doc 01; 126 escritas medidas no construtor global, **110 sem nome ganho** (doc 03 §19) |
 
 ## Build
 
@@ -187,5 +188,10 @@ totalmente compreendidos, e **90 de 90 mutações pegas**.
 Os scripts de RE não moram aqui: vivem em `AquaKit/References/scripts/`, a caixa
 compartilhada dos três projetos (AquaKit, SF-Symbols, Icon-Composer). A
 disciplina de selos é a do AquaKit, em `docs/metodo-re.md` de lá.
+
+**Duas exceções, em `scripts/`:** `thinlit.py` e `ctormap.py` leem um Mach-O
+**fino e solto** — o `IconRendering.framework` vem dentro do bundle do Icon
+Composer, não do shared cache que os instrumentos da caixa compartilhada
+assumem. Ficam aqui porque o input é deste projeto (doc 03 §19.7).
 
 O pipeline do DMG ao bundle está em `References/README.md`.

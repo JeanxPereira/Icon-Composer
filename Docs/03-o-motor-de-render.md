@@ -1330,6 +1330,10 @@ dois lados.
 | `SDFGeneration` | `clampThreshold`, `useAdvancedStacking`, `precisePixelFormatThreshold`, `maxRelativeSmoothing` |
 | `SpatialHighlighting`, `TranslucencyEffect`, `ContourGradients`, `ClearMode` (15 campos) | |
 
+`[BIN]` Um dos 35 campos do agregado chama-se `recreateRadar153477135`. É um
+número de radar virado nome de campo: o parâmetro existe para reproduzir um bug
+específico, e o alvo carrega o identificador dele no tipo.
+
 ### 18.4. E isto responde a pergunta 4 do doc 01
 
 `[BIN]` `ICRRenderingParameters.Fills.AutomaticGradient`:
@@ -1349,9 +1353,7 @@ brilho** — escuro, meio-escuro, meio-claro, claro — aplicada sobre a cor bas
 com um impulso de saturação e uma âncora de posição. Não é regra arbitrária nem
 tabela de stops: são **seis números**.
 
-`[OBS]` Os **valores** desses seis não foram lidos. Eles vivem como defaults no
-binário, e lê-los é o próximo passo desta pergunta — não desmontagem, apenas
-achar a inicialização.
+Os **valores** estão medidos no §19.
 
 ### 18.5. O que continua fechado
 
@@ -1359,3 +1361,142 @@ achar a inicialização.
 chama quem, com que argumentos, e que parâmetros existem. Como o `sdf` de cada
 camada é gerado, e o que exatamente o `finalizedIconWithDescriptor:` faz entre
 receber um `Icon` e devolver camadas com imagem e SDF, seguem sem leitura.
+
+## 19. Os defaults do render, lidos do binário
+
+O §18.4 nomeou os seis campos do `automaticGradient` e deixou os **valores** por
+ler. Esta seção os lê — e o caminho até eles é o achado de método.
+
+### 19.1. A pergunta que não tinha resposta, e a que tinha
+
+`[BIN]` O Swift emite uma *variable initialization expression* por propriedade
+com default: para um `Double` constante, a função inteira é `carrega a
+constante; ret`. Varrer o binário atrás delas devolve **zero**, sobre um
+`__text` decodificado a **100%**.
+
+`[INF]` Como a cobertura é integral, isto é **ausência**, não varredura
+truncada: a otimização de módulo inteiro dissolveu essas funções. É exatamente o
+cenário para o qual o `litref.py` do AquaKit foi escrito, e a saída é a dele —
+**inverter a pergunta**. Os números existem em algum lugar, e alguém os lê.
+
+### 19.2. O que os leitores apontaram
+
+`[BIN]` Um bloco de constantes em `__TEXT.__const`, a partir de `0x984c8`, com
+`1.0` repetido três vezes e `0.0` várias. **Um pool deduplicado não repete
+valor** — isto é um layout ordenado, não um pool.
+
+`[BIN]` E há um leitor que o percorre com passo de **16 bytes** (cargas de `q`,
+dois `double` por vez), a partir de `0x5e87c`. A entrada da função é `0x5e838`:
+
+```
+0x5e838  adrp x8, #0xcd000
+0x5e83c  add  x8, x8, #0xfd0     ; x8 -> 0xcdfd0, em __DATA.__data
+0x5e840  b    #0x5e844           ; cai no corpo
+```
+
+`[INF]` Um prólogo que aponta o registrador de retorno indireto para um buffer
+**estático** e cai no corpo genérico é a forma de um inicializador de valor
+global. O `ICRRenderingParameters` padrão é montado em `0xcdfd0`.
+
+### 19.3. A cadeia de âncoras — dez campos antes do alvo
+
+`[BIN]` As escritas, na ordem em que a função as faz, contra a lista de campos
+que o metadado de reflexão declara (§18.3). O tipo de cada valor não vem do
+código — vem da lista:
+
+| offset | campo | valor |
+|---|---|---|
+| `+0x00` | `simulatedChiclet.useSystemGlass` | `false` |
+| `+0x08` | `.dimmingStrength` | `0.22` |
+| `+0x10` | `.relativeBackdropBlurRadius` | `0.0065` |
+| `+0x18` | `.resultBlurRadius` | `2.0` |
+| `+0x20` | `.relativeRefractionStrength` | `0.28` |
+| `+0x28` | `.relativeRefractionHeight` | `0.11` |
+| `+0x30` | `.refractionSupersampling` | `2` |
+| `+0x38` | `.gradientSamplesExp` | `4` |
+| `+0x40` | `darkTintDuotoneShadowBlendFactor` | `0.0` |
+| `+0x48` | `darkTintHighlightsBlendWithContent` | `true` |
+
+`[INF]` Dez campos, e o padrão de tipos casa exatamente: `Bool`, cinco
+`Double`, dois `Int`, `Double`, `Bool`. É o `SimulatedChiclet` inteiro seguido
+dos dois campos que o metadado declara depois dele.
+
+### 19.4. Os seis valores
+
+`[BIN]` `fills` começa em `+0x50`, e `Fills.automaticGradient` é o campo zero
+dele:
+
+| offset | campo | valor |
+|---|---|---|
+| `+0x50` | `basePosition` | `0.0` |
+| `+0x58` | `saturationBoost` | `0.2` |
+| `+0x60` | `dimLightening` | `0.04` |
+| `+0x68` | `midDimLightening` | `0.08` |
+| `+0x70` | `midBrightLightening` | `0.15` |
+| `+0x78` | `brightLightening` | **`-0.05`** |
+
+`[INF]` O clareamento **cresce** do escuro ao meio-claro — `0.04`, `0.08`,
+`0.15` — e vira **negativo** na faixa mais clara. A faixa mais brilhante da cor
+base não é clareada: é **escurecida**. A leitura é que a rampa faz o meio-tom
+florescer e puxa o realce de volta antes que ele estoure; o que está **medido** é
+o sinal, não a intenção.
+
+### 19.5. E a prova de que é este agregado, não outro
+
+Layout que casa não basta: uma struct com prefixo parecido produziria a mesma
+tabela. O que fecha a identificação é o que vem **logo depois** do alvo.
+
+`[BIN]` `IconColor.LinearGradient` tem **um** campo, `stops: [Stop]` — um array
+Swift, **8 bytes**. E em `+0x80` e `+0x88` a função chama o **mesmo**
+construtor, duas vezes, com dois `double` cada:
+
+| destino | argumentos | em bytes sRGB |
+|---|---|---|
+| `+0x80` `systemLightGradient` | `1.0`, `0.9607843137254902` | **255 → 245** |
+| `+0x88` `systemDarkGradient` | `0.12156862745098039`, `0.058823529411764705` | **31 → 15** |
+
+`[INF]` Duas rampas de cinza de dois pontos: uma quase-branca, outra
+quase-preta, na ordem light/dark que os nomes exigem. Os quatro números são
+valores **exatos** de byte sRGB (`245/255`, `31/255`, `15/255`), o que doubles
+arbitrários não são.
+
+`[BIN]` E a conta fecha sem folga: `Fills` = 48 + 8 + 8 = **64 bytes**,
+`[0x50, 0x90)`, e a escrita seguinte é em `+0x90`. Não sobra um byte para
+padding nem falta um para um campo não visto.
+
+### 19.6. O que esta leitura NÃO entrega
+
+`[BIN]` A função faz **126 escritas** no buffer, das quais o instrumento resolve
+98 e reporta **28** como `?`.
+
+`[OBS]` Deste total, **16 estão atribuídas a campos com nome** — as das tabelas
+acima. As outras **110 têm valor medido e não têm nome ganho**: atribuí-las
+exigiria o layout completo do agregado, com os tamanhos dos tipos externos que o
+metadado marca como `<indirect-external>`, e isso não foi medido. Os defaults do
+`ClearMode`, do `SDFGeneration` e dos demais grupos estão neste mesmo corpo,
+esperando essa conta — não uma nova técnica.
+
+### 19.7. O instrumento, e por que ele existe
+
+`scripts/thinlit.py` e `scripts/ctormap.py`.
+
+O primeiro é o método do `litref.py` sobre um Mach-O **fino** em vez do shared
+cache — o `IconRendering` não está no cache, vem solto dentro do bundle do app.
+Ele carrega os dois avisos do original: cobertura sempre impressa (abaixo de
+100%, "não achei" não é ausência), e retorno autenticado tratado como fronteira
+de função.
+
+`[BIN]` O **controle positivo** teve de ser outro: o pool de sombra do
+`SystemBannerUI` não existe aqui. O que existe em qualquer Mach-O, e é
+independente deste decodificador, é a tabela de strings — `__TEXT.__cstring` é
+uma sequência de strings terminadas em `NUL` cujos **inícios vêm do arquivo**,
+não da minha aritmética. Todo ponteiro que a ferramenta resolve para dentro dela
+tem que cair num início. **319 resolvidos, 319 em início, cobertura 100%.**
+
+O segundo lê o corpo do construtor. Ele existe porque a alternativa era
+decodificar cadeias `movk` **à mão** — que foi o que eu fiz primeiro, e é
+precisamente o risco que o `litref.py` documenta: *"um decodificador escrito às
+pressas não falha, ele mente baixinho."* O que o modelo não resolve sai como
+`?`, nunca como palpite, e ele imprime as **duas** leituras dos mesmos bits
+(`Double` e `Int`) porque o fluxo de instruções não diz qual é o tipo do campo —
+quem diz é a lista de campos, que é outra fonte.

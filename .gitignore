@@ -7,3 +7,7 @@ compile_commands.json
 # rest of the corpus; this catches an image dropped at the root.
 *.dmg
 *.img
+
+# Python
+__pycache__/
+*.pyc
