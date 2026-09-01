@@ -1500,3 +1500,150 @@ pressas não falha, ele mente baixinho."* O que o modelo não resolve sai como
 `?`, nunca como palpite, e ele imprime as **duas** leituras dos mesmos bits
 (`Double` e `Int`) porque o fluxo de instruções não diz qual é o tipo do campo —
 quem diz é a lista de campos, que é outra fonte.
+
+## 20. O conversor — as peças compostas, e o alcance medido antes
+
+Até aqui cada estágio passava um gate **isolado** e nada os ligava. Esta seção
+liga, e a primeira coisa que ela fez foi medir o quanto isso vale.
+
+### 20.1. A medição que veio antes do código
+
+`scripts/slice-reach.py`, sobre o corpus:
+
+```
+POR CAMADA      22 de 194 desenháveis    11,3%
+POR DOCUMENTO    0 de  55                 0,0%
+```
+
+`[ART]` **Zero documentos.** O enquadramento anterior — "o primeiro ícone ponta
+a ponta" — estava errado, e a medição é que disse. A fatia chapada entrega a
+primeira **camada**, não o primeiro ícone.
+
+| o que bloqueia | camadas | |
+|---|---|---|
+| camada de vidro | 87 | 44,8% |
+| raster `.png` | 54 | 27,8% |
+| gradiente no SVG | 48 | 24,7% |
+| traço pintado | 31 | 16,0% |
+| `fill` automático | 29 | 14,9% |
+
+`[INF]` Isso reordena a fila: o **raster** vem antes do gradiente, e não precisa
+de engenharia reversa nenhuma — é um decodificador de PNG e um desenho de
+imagem.
+
+> **Três defeitos meus nesta medição, e o terceiro é o instrutivo.** A primeira
+> versão contou os 90 bundles que vieram **sem arte** como bloqueados — buraco
+> do corpus reportado como buraco do renderizador. A segunda leu a forma string
+> de `fill` caractere a caractere e reportou **letras** como tipos de
+> preenchimento. A terceira procurava a chave `image-name` e não a chave irmã
+> `image-name-specializations`: num documento que especializa tudo ela via
+> **asset nenhum**, não achava bloqueio, e reportava o documento como
+> **totalmente desenhável**. Os dois "dentro da fatia" que ela anunciou não eram
+> chapados — eram **não lidos**.
+>
+> O que expôs o terceiro foi um **desacordo entre duas medições minhas**: esta
+> reportava zero referências penduradas onde o doc 02 §3 tinha medido duas. Um
+> leitor que pula uma chave não falha; ele reporta um mundo menor e chama de
+> limpo. Depois do conserto, três checagens cruzadas fecham contra medições
+> independentes: **2** referências penduradas, **149** SVGs, **10** modos de
+> mescla.
+
+### 20.2. O que o conversor faz
+
+`Source/RenderBox/SvgRenderer.cpp`. Um `SvgDocument` entra, pixels saem:
+
+```
+viewBox -> pixels     ajuste uniforme, centrado, sem flip
+                      (o y do SVG e o do raster apontam ambos para baixo)
+por forma:            buildPathBuffer -> CoveragePass -> readBack
+                      -> accumulatorShape (regra de preenchimento)
+                      -> compositeFlat (o alpha reportado)
+                      -> `over`, acumulado
+```
+
+`[INF]` **A cobertura roda na GPU; a regra de preenchimento e o composite rodam
+na CPU.** Não é concessão de fidelidade: os dois oráculos são gatados bit a bit
+contra `PathResolve.glsl` e `PathComposite.glsl`, então CPU e GPU produzem os
+mesmos números **por medição**. É escolha de escopo — transformar esses dois
+shaders em passes próprios não é necessário para sair uma imagem, e o
+diferencial que guardaria isso já existe.
+
+### 20.3. O que empilhar formas NÃO é
+
+`[BIN]` `composite` premultiplica a cor pela **cobertura**, e reporta o alpha
+total (`cor.a × cobertura`) num canal separado.
+
+`[INF]` Empilhar uma forma sobre a outra é uma operação **diferente**, e ela não
+está decodada: o alvo faz isso com a mescla de framebuffer, cuja configuração
+vive em bits do `RenderState` sem semântica (§11). O `over` do conversor é o
+premultiplicado padrão, e ele é **escolha deste renderizador**, não
+transcrição — está escrito assim no código.
+
+> Isto foi um erro meu, e o teste pegou. Eu usei a cor de saída do `composite`
+> direto no acumulador. Ela é premultiplicada pela cobertura e **não** pelo
+> alpha da tinta: é o valor certo para o anexo do alvo e o errado para um
+> acumulador. O alpha passava e os três canais de cor saíam deslocados.
+
+### 20.4. A mutação que sobreviveu, e o que ela disse
+
+A varredura reprovou a primeira execução: **102 de 103**, e a sobrevivente foi
+*"o ajuste do viewBox esquece de centralizar"*. O defeito não estava no código —
+estava no meu teste.
+
+Eu escrevi três casos para o ajuste: um quadrado, um largo, e um com origem
+deslocada. Nos **três**, o eixo x é o que preenche o alvo, então
+`(largura − s·w) · 0,5` vale zero em todos. Um ajuste que jogasse fora a
+centralização **horizontal** inteira passava a suíte limpa. A vertical estava
+conferida; a horizontal nunca foi exercida.
+
+`[INF]` É o mesmo ponto cego de §8: lá, `path_y.x` era igual ao `py` do pixel em
+todo caso escrito à mão **e** na varredura de mil arestas, e o `max` que corta
+por baixo nunca rodou. Casos escolhidos por variedade que, sem querer, concordam
+justamente no termo sob teste. O reparo é um viewBox **alto**, onde o letterbox
+é horizontal — e o RED foi verificado com a mutação aplicada à mão antes de
+aceitar o teste.
+
+### 20.5. O espaço de cor não é convertido, e isso é reportado
+
+`[ART]` `color(display-p3 …)` aparece cerca de uma dúzia de vezes no corpus.
+`[OBS]` A matriz que converte para sRGB não foi medida do alvo, e desenhar os
+componentes como se fossem sRGB deslocaria todos em silêncio. A forma **é**
+desenhada — descartá-la seria pior — e o índice dela sai em `unconvertedP3`.
+
+### 20.6. O PNG, e por que ele não comprime
+
+`Source/IconComposerFoundation/Png.cpp`. Este repositório não linka terceiros, e
+uma imagem que ninguém abre não é entrega. O payload do PNG é um fluxo zlib, e
+zlib permite blocos **stored** — sem compressão, com o comprimento e o
+complemento dele. O arquivo é um PNG válido que qualquer visualizador abre;
+apenas maior.
+
+`[INF]` É a troca certa aqui: compressão compraria espaço em disco em troca de
+um codificador de Huffman que precisaria de gate próprio, e o que este
+repositório verifica é o **render**, não o codificador.
+
+### 20.7. `icrender`, e por que é um binário separado
+
+O `ictool` lê documentos e não precisa de nada além do sistema de arquivos:
+roda numa máquina sem GPU, sem driver e sem loader Vulkan. Linkar o
+renderizador nele faria todo `ictool --tree` depender de um dispositivo. `[BIN]`
+O alvo traça a mesma linha — ele publica `ictool` **e** `icrtool` como dois
+programas (doc 01 §11) — então isto segue a forma dele.
+
+### 20.8. Onde os ícones do sistema estão, e não é aqui
+
+Uma pergunta natural é usar os ícones nativos do macOS (Fotos, App Store) como
+material. `[BIN]` Eles não são `.icon`:
+
+| | |
+|---|---|
+| `Icon Composer.app` publica | `AppIcon.icns` e `Assets.car` — **nenhum `.icon`** |
+| `IconRendering` declara | `CUILayer`, `CUILayerElement` (ambos `CUINamedLookup`), `CoreUIIconLoadingError` |
+
+`[INF]` **`.icon` é o formato de AUTORIA.** Um app publicado compila o ícone
+para dentro do `Assets.car`, e o `IconRendering` o lê de volta **via CoreUI**.
+Há **duas portas de entrada** no motor, e este repositório decodificou uma.
+
+`[OBS]` Chegar aos ícones do sistema exige extrair o sistema de arquivos do
+IPSW e decodificar os registros `CUILayer` do `Assets.car` — trabalho de uma
+porta que não foi aberta, não uma variação da que foi.

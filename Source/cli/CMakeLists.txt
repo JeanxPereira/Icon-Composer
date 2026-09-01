@@ -10,3 +10,9 @@ add_library(IconComposer::CliLib ALIAS ic_cli_lib)
 
 add_executable(ictool main.cpp)
 target_link_libraries(ictool PRIVATE IconComposer::CliLib)
+
+# icrender is a SECOND executable on purpose: it links the GPU tower, and
+# `ictool` must keep running on a machine that has no device. The target ships
+# `ictool` and `icrtool` for the same reason.
+add_executable(icrender render_main.cpp)
+target_link_libraries(icrender PRIVATE IconComposer::RenderBox IconComposer::Foundation)

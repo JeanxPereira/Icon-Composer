@@ -55,6 +55,8 @@ $sources = @{
     rbpass   = Join-Path $root "Source/RenderBox/CoveragePass.cpp"
     rbres    = Join-Path $root "Source/RenderBox/shaders/PathResolve.glsl"
     rbcomp   = Join-Path $root "Source/RenderBox/shaders/PathComposite.glsl"
+    rbsvg    = Join-Path $root "Source/RenderBox/SvgRenderer.cpp"
+    png      = Join-Path $root "Source/IconComposerFoundation/Png.cpp"
 }
 $original = @{}
 $hashes = @{}
@@ -438,7 +440,56 @@ $mutations = @(
        to   = 'float d = (alpha < kCompositeEpsilon) ? (depth + 1.0) : depth;' },
     @{ file = "rbcomp"; name = "a fragment that paints nothing is not pushed back"
        from = 'float d = (reported < kCompositeEpsilon) ? (depth + 1.0) : depth;'
-       to   = 'float d = depth;' }
+       to   = 'float d = depth;' },
+    # ---- the connector: an SVG drawn into pixels ----
+    #
+    # Every stage below already had its own mutations. These are for the JOINTS,
+    # which is where a stage gate cannot see: the viewBox fit, the fill rule
+    # reaching the render, the premultiply, and the reporting of what was not
+    # drawn.
+    @{ file = "rbsvg"; name = "the viewBox is stretched instead of fit uniformly"
+       from = 'const double s = std::min(static_cast<double>(width) / w,'
+       to   = 'const double s = std::max(static_cast<double>(width) / w,' },
+    @{ file = "rbsvg"; name = "the viewBox fit forgets to centre"
+       from = 'g.m2[0] = static_cast<float>((width - s * w) * 0.5 - s * box.x);'
+       to   = 'g.m2[0] = static_cast<float>(-s * box.x);' },
+    @{ file = "rbsvg"; name = "the viewBox origin is ignored"
+       from = 'g.m2[1] = static_cast<float>((height - s * h) * 0.5 - s * box.y);'
+       to   = 'g.m2[1] = static_cast<float>((height - s * h) * 0.5);' },
+    @{ file = "rbsvg"; name = "an edge cannot reach the end of its row"
+       from = 'g.urx = static_cast<float>(width);'
+       to   = 'g.urx = 0.0f;' },
+    @{ file = "rbsvg"; name = "the even-odd fill rule never reaches the render"
+       from = 'return kPlainFill | (rule == icf::svg::FillRule::EvenOdd ? kEvenOdd : 0u);'
+       to   = 'return kPlainFill;' },
+    @{ file = "rbsvg"; name = "the colour is not premultiplied before compositing"
+       from = 'for (int k = 0; k < 3; ++k) dst[k] = colour[k] * srcA + dst[k] * inv;'
+       to   = 'for (int k = 0; k < 3; ++k) dst[k] = colour[k] + dst[k] * inv;' },
+    @{ file = "rbsvg"; name = "the result is left premultiplied"
+       from = 'out.rgba[t * 4 + k] = a > 0.0f ? acc[t * 4 + k] / a : 0.0f;'
+       to   = 'out.rgba[t * 4 + k] = acc[t * 4 + k];' },
+    @{ file = "rbsvg"; name = "a shape that cannot be drawn is dropped in silence"
+       from = 'out.skipped.push_back(
+                {i, shape.element,'
+       to   = 'if (false) out.skipped.push_back(
+                {i, shape.element,' },
+    # ---- the PNG ----
+    @{ file = "png"; name = "the stored block length is not complemented"
+       from = 'z.push_back(static_cast<std::uint8_t>(~n));'
+       to   = 'z.push_back(static_cast<std::uint8_t>(n));' },
+    @{ file = "png"; name = "the zlib header is not a multiple of 31"
+       from = 'z.push_back(0x01);  // FLG: no dictionary, fastest'
+       to   = 'z.push_back(0x00);  // FLG: no dictionary, fastest' },
+    @{ file = "png"; name = "the row filter byte is dropped"
+       from = '        raw.push_back(0);
+        for (std::uint32_t x = 0; x < width; ++x) {'
+       to   = '        for (std::uint32_t x = 0; x < width; ++x) {' },
+    @{ file = "png"; name = "a channel out of range wraps instead of clamping"
+       from = 'if (v >= 1.0f) return 255;'
+       to   = 'if (v >= 1.0f) return static_cast<std::uint8_t>(v * 255.0f);' },
+    @{ file = "png"; name = "the colour type says RGB where the data is RGBA"
+       from = 'ihdr.push_back(6);  // colour type: RGBA'
+       to   = 'ihdr.push_back(2);  // colour type: RGBA' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"

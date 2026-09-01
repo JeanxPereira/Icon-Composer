@@ -17,6 +17,7 @@ add_library(RenderBox STATIC
     PathCompositeOracle.cpp
     Image.cpp
     CoveragePass.cpp
+    SvgRenderer.cpp
 )
 
 # Shaders are compiled at BUILD time, not loaded at run time. A shader that does

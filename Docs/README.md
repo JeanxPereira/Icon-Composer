@@ -75,6 +75,9 @@ especializações** — 1.040 chaveadas por `appearance`, 616 sem predicado, 82 
 | `IconRendering` — a ponte documento↔motor | **mapeada** — `Icon`, `FinalizedIcon`, os 18 modos de mescla, `Fill.Contents`, `GlobalConfiguration` (doc 03 §17) |
 | o pipeline `Icon → FinalizedIcon → imagem` | **levantado pelos seletores** — as duas etapas, as três famílias de saída, e os parâmetros de render; responde a pergunta 4 do doc 01. **Nenhum corpo desmontado** (doc 03 §18) |
 | os defaults do render | **16 campos lidos e atribuídos** — fecha a pergunta 4 do doc 01; 126 escritas medidas no construtor global, **110 sem nome ganho** (doc 03 §19) |
+| o conversor — SVG desenhado em pixels | **passa o gate** — as peças compostas, conferidas contra a forma fechada pela cadeia inteira. Alcance medido: **22 de 194 camadas**, **0 de 55 documentos** (doc 03 §20) |
+| `icrender` e o PNG | **passam o gate** — binário separado do `ictool`, que segue sem GPU (doc 03 §20.6, §20.7) |
+| os ícones do sistema (Fotos, App Store) | **localizados, não abertos** — não são `.icon`: compilam para `Assets.car` e o motor os lê via CoreUI. Segunda porta de entrada (doc 03 §20.8) |
 
 ## Build
 
@@ -89,6 +92,7 @@ cmake --build --preset mingw
 $env:IC_CORPUS_DIR = "D:\CodingProjects\Icon-Composer\References\corpus"
 build\mingw\Tests\ic_tests.exe
 
+build\mingw\Source\cli\icrender.exe <arquivo.svg> --out saida.png --size 512
 build\mingw\Source\cli\ictool.exe References\corpus\<bundle>
 build\mingw\Source\cli\ictool.exe --tree References\corpus\<bundle> --appearance dark
 build\mingw\Source\cli\ictool.exe --assets References\corpus\<bundle>
@@ -110,7 +114,7 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
    que o conteúdo deles atravessa intacto. O do *modelo*: **nenhuma chave** dos
    145 documentos pode ser desconhecida, e **nenhuma das 1.740 especializações**
    pode ser inalcançável pelo resolver.
-3. **Uma varredura de mutação obrigatória.** Noventa defeitos entram um a um e cada
+3. **Uma varredura de mutação obrigatória.** Cento e três defeitos entram um a um e cada
    um TEM que avermelhar a suíte, aplicados em árvore limpa e restaurados de um
    backup conferido por SHA-256 — nunca por comando de git.
 
@@ -118,7 +122,7 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
 totalmente compreendidos, 1.740 de 1.740 especializações alcançáveis, 61.537
 valores decodados sem uma falha, 55 bundles sem arquivo morto, 1.100 árvores
 renderizadas sem cair em JSON cru, 149 SVGs lidos em geometria com 128 deles
-totalmente compreendidos, e **90 de 90 mutações pegas**.
+totalmente compreendidos, e **103 de 103 mutações pegas**.
 
 | # | mutação | asserções avermelhadas |
 |---|---|---|
@@ -175,6 +179,14 @@ totalmente compreendidos, e **90 de 90 mutações pegas**.
 > A nº18 é o contra-exemplo instrutivo: nasceu pega por **1** asserção, e virou
 > **3** quando o corpus de bundles passou a incluir documentos que especializam
 > o `image-name` (doc 02 §4). Cobertura de corpus é uma escolha, não um dado.
+>
+> **E ela reprova o TESTE, não só o código.** A rodada do conversor parou em
+> **102 de 103**: *"o ajuste do viewBox esquece de centralizar"* sobreviveu. Os
+> três casos escritos para esse ajuste — quadrado, largo, e com origem deslocada
+> — têm todos o eixo x preenchendo o alvo, então o termo de centralização
+> horizontal vale zero nos três, e jogá-lo fora inteiro deixava a suíte verde. O
+> mesmo formato do ponto cego do doc 03 §8. Reparado com um viewBox alto, e o
+> RED conferido à mão antes de aceitar.
 >
 > **E a varredura reprova quem passa por acidente.** A nº39 nasceu reportada como
 > "pega com ZERO asserções" — o que é a forma de um *crash*, não de um teste

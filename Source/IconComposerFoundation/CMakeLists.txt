@@ -9,6 +9,7 @@ add_library(IconComposerFoundation STATIC
     Coverage.cpp
     Values.cpp
     IconBundle.cpp
+    Png.cpp
 )
 
 target_include_directories(IconComposerFoundation PUBLIC
