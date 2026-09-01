@@ -1,0 +1,8 @@
+# `core.autocrlf` is true on this machine, and CRLF is the right thing for the
+# C++ and the PowerShell -- they are only ever read by tools that do not care.
+#
+# A script with a shebang IS different: a CRLF after `#!/usr/bin/env python3`
+# makes the kernel look for an interpreter literally named `python3\r`, and the
+# error it gives says nothing useful. Force those to LF at the source.
+*.py text eol=lf
+*.sh text eol=lf
