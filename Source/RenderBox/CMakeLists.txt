@@ -13,6 +13,7 @@ add_library(RenderBox STATIC
     PathVertexOracle.cpp
     Compute.cpp
     PathCoverageOracle.cpp
+    PathResolveOracle.cpp
     Image.cpp
     CoveragePass.cpp
 )

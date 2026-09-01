@@ -80,8 +80,9 @@ Coverage pathCoverage(const CoverageInput& in, CoverageStage stage) {
 bool matches(const Coverage& a, const Coverage& b, CoverageStage stage,
              std::uint32_t maxHalfUlps) {
     if (std::memcmp(&a.x, &b.x, sizeof(float)) != 0) return false;
-    if (stage == CoverageStage::Interior) {
-        // A select between two constants. Nothing here can round.
+    if (stage == CoverageStage::Interior || stage == CoverageStage::Resolve) {
+        // A select between constants, a fract and a floor. Nothing here rounds
+        // in a way a driver has any latitude over.
         return std::memcmp(&a.y, &b.y, sizeof(float)) == 0;
     }
     if (stage == CoverageStage::Exterior) {

@@ -741,12 +741,25 @@ outras — `has_coverage`, `spill_reads_color`, `spill_reads_layer`,
 `has_function_table`, `filter_blur_reads_dest` e as variantes `_and_fb_read` —
 são expressões compostas, e não foram decodadas.
 
-### 11.2.3. E o que trava o traço continua sem nome
+### 11.2.3. E o que trava o traço continua sem nome — mas quatro campos não
 
-`[OBS]` Os bits nomeados estão todos na **palavra 3**. Os campos que travam o
-§10 — palavra 0 bits 6–8 e 9–10 — **continuam sem semântica**. O layout diz onde
-eles estão e quantos casos têm; não diz o que cada caso significa, e nenhum
-inicializador estático os batiza.
+`[OBS]` Os bits batizados por inicializador estático estão todos na **palavra 3**.
+
+> **Atualização (2026-09-01, mesmo dia).** Quatro campos da **palavra 0** ganharam
+> nome depois, por outro caminho: não por um inicializador que os batize, mas
+> pelo que o `accumulator_shape` **faz** com eles. O §14 tem a leitura.
+>
+> | campo | significado |
+> |---|---|
+> | bits 6–7 | o modo da forma no resolve |
+> | bits 8–9 | um sub-modo do modo 2 |
+> | **bit 10** | **par-ímpar quando ligado, não-zero quando desligado** |
+> | bit 11 | liga a curva quadrática do `shape` |
+>
+> `[OBS]` Isso é a semântica **no contexto do resolve**. O `shader_path` mascara
+> os bits 6–8 e o `shader_stroke` compara 6–8 contra 128 — mesmo registrador,
+> possivelmente o mesmo campo, e **isso não foi provado**. O §10 segue bloqueado
+> até que seja.
 
 ### 11.3. Onde a semântica mora, e é outro instrumento
 
@@ -936,3 +949,66 @@ metade inferior-direita do quad.
 Sempre a mesma forma: **desligar uma verificação que hoje passa não quebra nada.**
 Escrever a guarda e escrever o teste que prova que ela morde são dois trabalhos, e
 eu fiz um só, três vezes. A varredura é o que torna essa diferença visível.
+
+## 14. O resolve — a cobertura vira alpha, e a regra é um bit
+
+O §13 registrou que a cobertura volta **assinada** e que o estágio que a
+transforma em opacidade não estava decodado. Está.
+
+`[BIN]` `RB::Shader::accumulator_shape(ShaderState, half, half4)`, módulo 4 do
+`shader_accumulator.metal`. Aparece no `accumulator_coverage` **e** no
+`accumulator_color`.
+
+### 14.1. A leitura
+
+```
+modo = (state >> 6) & 3
+
+modo 1:                            sobre a MAGNITUDE
+    a = |cobertura|
+    bit 10 ligado  → PAR-ÍMPAR:  f = fract(a);  inteiro par ? f : 1 − f
+    bit 10 apagado → NÃO-ZERO:   saturate(a)
+
+modo 2:                            sobre a cobertura COM SINAL
+    piso = floor(cobertura);  f = cobertura − piso
+    bit 10 ligado  → dentro = |piso| ímpar
+    bit 10 apagado → dentro = piso ≠ 0
+    sub = (state >> 8) & 3
+      0 → dentro ? 1 − f      : 0
+      1 → dentro ? 1          : f
+      2 → dentro ? 1 − f·0,5  : f·0,5
+      3 → dentro
+
+modo 0 e 3: a cobertura passa intacta
+
+depois, se bit 11 e resultado ≥ 0xH1419 e resultado ≤ shape.x:
+    resultado = saturate((shape.x·r + shape.y)·r + shape.z)
+```
+
+`[BIN]` `0xH1419` = **0,0010004043579101562**.
+
+### 14.2. A regra de preenchimento é UM BIT
+
+`[INF]` E esse é o achado. Todo o resto das duas regras — o valor absoluto, o
+`fract`, o teste de paridade — é **compartilhado**; o bit 10 só escolhe qual dos
+dois finais roda.
+
+Onde elas discordam de verdade é em **duas voltas**: o não-zero preenche `1,0` e
+o par-ímpar abre buraco, `0,0`. Há um teste cujo único trabalho é essa
+discordância — uma suíte que nunca alcança `|cobertura| ≥ 2` não consegue dizer
+se o bit chegou a ser lido.
+
+### 14.3. Um valor com dois trabalhos
+
+`[BIN]` O `shape.x` é ao mesmo tempo o **limite superior** acima do qual a curva
+não se aplica **e o coeficiente principal** da quadrática. Isso é do alvo, não
+uma simplificação nossa, e está escrito no código para ninguém "arrumar".
+
+### 14.4. Onde eu escorreguei
+
+`[OBS]` A curva divergiu entre GPU e CPU por **um ULP de float** — 0,192968756
+contra 0,192968741. Causa: eu não marquei aquela expressão como `precise`, então
+o driver pôde fundir a multiplicação com a soma e o host não pôde.
+
+É o mesmo cuidado aplicado em toda a torre desde o §8.5. Onde eu não apliquei,
+apareceu — e apareceu como um número, não como uma opinião.

@@ -13,7 +13,7 @@
 #      unknown to it, not one of the 1,740 specializations may be unreachable by
 #      the resolver, and not one of the 61,537 values it resolves may fail to
 #      decode into a type.
-#   3. A mandatory mutation sweep. Seventy-nine defects go in one at a time, and every
+#   3. A mandatory mutation sweep. Eighty-five defects go in one at a time, and every
 #      one of them MUST redden the suite WITH AN ASSERTION -- a mutation that
 #      merely crashes the process is caught by accident and is reported as a
 #      failure of the test, because a suite that dies hides every case after it.
@@ -53,6 +53,7 @@ $sources = @{
     rbcov    = Join-Path $root "Source/RenderBox/PathCoverageOracle.cpp"
     rbvert   = Join-Path $root "Source/RenderBox/shaders/path_exterior.vert"
     rbpass   = Join-Path $root "Source/RenderBox/CoveragePass.cpp"
+    rbres    = Join-Path $root "Source/RenderBox/shaders/PathResolve.glsl"
 }
 $original = @{}
 $hashes = @{}
@@ -401,7 +402,26 @@ $mutations = @(
        to   = 'blend.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;' },
     @{ file = "rbpass"; name = "the draw trusts a header it did not check"
        from = 'if (!headerAgreesWithSegments(path)) {'
-       to   = 'if (false) {' }
+       to   = 'if (false) {' },
+    # ---- the fill rule ----
+    @{ file = "rbres"; name = "the even-odd bit is ignored, so every fill is non-zero"
+       from = 'bool evenOdd = (state & 1024u) != 0u;'
+       to   = 'bool evenOdd = false;' },
+    @{ file = "rbres"; name = "non-zero keeps the sign instead of taking the magnitude"
+       from = '        float a = abs(coverage);'
+       to   = '        float a = coverage;' },
+    @{ file = "rbres"; name = "even-odd tests the wrong parity"
+       from = 'bool even = (uint(whole) & 1u) == 0u;'
+       to   = 'bool even = (uint(whole) & 1u) != 0u;' },
+    @{ file = "rbres"; name = "the shape curve ignores its own upper bound"
+       from = 'if ((state & 2048u) != 0u && result >= kShapeEpsilon && result <= shape.x) {'
+       to   = 'if ((state & 2048u) != 0u && result >= kShapeEpsilon) {' },
+    @{ file = "rbres"; name = "the shape curve runs whether its bit is set or not"
+       from = 'if ((state & 2048u) != 0u && result >= kShapeEpsilon && result <= shape.x) {'
+       to   = 'if (result >= kShapeEpsilon && result <= shape.x) {' },
+    @{ file = "rbres"; name = "mode 2's sub-mode selector is dropped"
+       from = 'uint sub = (state >> 8) & 3u;'
+       to   = 'uint sub = 1u;' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"

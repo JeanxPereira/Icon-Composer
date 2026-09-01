@@ -23,6 +23,7 @@ enum class CoverageStage : std::uint32_t {
     Interior = 0,
     Exterior = 1,
     Distance = 2,
+    Resolve = 3,
 };
 
 // The `half2` the target writes into its `coverage` render target. All three

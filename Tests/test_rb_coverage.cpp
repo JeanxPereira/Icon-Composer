@@ -1,6 +1,7 @@
 #include "check.h"
 #include "Source/RenderBox/Compute.h"
 #include "Source/RenderBox/PathCoverageOracle.h"
+#include "Source/RenderBox/PathResolveOracle.h"
 
 #include <cmath>
 #include <cstdint>
@@ -32,7 +33,10 @@ Device& gpu() {
 struct Control {
     std::uint32_t count = 0;
     std::uint32_t stage = 0;
+    std::uint32_t state = 0;
 };
+
+std::uint32_t gState = 0;
 
 std::vector<Coverage> onGpu(Device& d, const std::vector<CoverageInput>& in, CoverageStage stage) {
     if (in.empty()) return {};
@@ -59,6 +63,7 @@ std::vector<Coverage> onGpu(Device& d, const std::vector<CoverageInput>& in, Cov
     Control c;
     c.count = static_cast<std::uint32_t>(in.size());
     c.stage = static_cast<std::uint32_t>(stage);
+    c.state = gState;
     auto ran = pass->run(d, *input, *out, &c, sizeof c, c.count);
     if (!ran) {
         std::printf("  FAIL dispatch: %s\n", ran.error().c_str());
@@ -285,4 +290,139 @@ TEST_CASE(gpu_and_cpu_agree_on_a_sweep_of_distances) {
     }
     CHECK(in.size() > 1000);
     agreeOn(in, CoverageStage::Distance);
+}
+
+// ---- the fill rule ------------------------------------------------------
+//
+// `[BIN]` `accumulator_shape` is what turns the signed, winding-weighted coverage
+// into an alpha -- the stage doc 03 section 13 had to record as "not decoded".
+//
+// AND IT NAMES FOUR FIELDS of the state word that section 11 could only locate:
+// bits 6-7 the mode, bits 8-9 a sub-mode, bit 10 the FILL RULE, bit 11 the curve.
+
+namespace {
+
+// The probe carries the coverage in `position.x` and the curve in `line`.
+CoverageInput resolveInput(float coverage, ShapeCurve curve = ShapeCurve{}) {
+    CoverageInput in;
+    in.position[0] = coverage;
+    in.line[0] = curve.x;
+    in.line[1] = curve.y;
+    in.line[2] = curve.z;
+    in.line[3] = curve.w;
+    return in;
+}
+
+void resolveAgreesOn(std::uint32_t state, const std::vector<float>& coverages,
+                     ShapeCurve curve = ShapeCurve{}) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    std::vector<CoverageInput> in;
+    in.reserve(coverages.size());
+    for (float c : coverages) in.push_back(resolveInput(c, curve));
+
+    gState = state;
+    const auto gpuSide = onGpu(d, in, CoverageStage::Resolve);
+    gState = 0;
+    REQUIRE(gpuSide.size() == in.size());
+    int bad = 0;
+    for (std::size_t i = 0; i < in.size(); ++i) {
+        const float want = accumulatorShape(state, coverages[i], curve);
+        if (std::memcmp(&gpuSide[i].y, &want, sizeof(float)) != 0) {
+            if (bad < 3) {
+                std::printf("  FAIL state=0x%X cov=%.6f  gpu %.9g  cpu %.9g\n", state,
+                            coverages[i], gpuSide[i].y, want);
+            }
+            ++bad;
+        }
+    }
+    CHECK_EQ(bad, 0);
+}
+
+std::vector<float> coverageSweep() {
+    std::vector<float> v;
+    for (float c = -4.0f; c <= 4.0f; c += 0.125f) v.push_back(c);
+    return v;
+}
+
+}  // namespace
+
+// `[BIN]` Mode 1 without bit 10: NON-ZERO. The magnitude, clamped.
+TEST_CASE(the_non_zero_rule_is_the_saturated_magnitude) {
+    const std::uint32_t state = 1u << kShapeModeShift;
+    CHECK_EQ(accumulatorShape(state, 1.0f, {}), 1.0f);
+    CHECK_EQ(accumulatorShape(state, -1.0f, {}), 1.0f);   // the sign does not matter
+    CHECK_EQ(accumulatorShape(state, 0.5f, {}), 0.5f);
+    CHECK_EQ(accumulatorShape(state, 2.0f, {}), 1.0f);    // two windings is still opaque
+    CHECK_EQ(accumulatorShape(state, 0.0f, {}), 0.0f);
+    resolveAgreesOn(state, coverageSweep());
+}
+
+// `[BIN]` Mode 1 WITH bit 10: EVEN-ODD. Two windings cancel to nothing, which is
+// the whole difference between the two rules and it is ONE BIT.
+TEST_CASE(the_even_odd_rule_cancels_a_second_winding) {
+    const std::uint32_t state = (1u << kShapeModeShift) | kEvenOdd;
+    CHECK_EQ(accumulatorShape(state, 0.5f, {}), 0.5f);
+    CHECK_EQ(accumulatorShape(state, 1.0f, {}), 1.0f);   // odd whole part
+    CHECK_EQ(accumulatorShape(state, 2.0f, {}), 0.0f);   // even: a hole
+    CHECK_EQ(accumulatorShape(state, 3.0f, {}), 1.0f);
+    CHECK_EQ(accumulatorShape(state, -2.0f, {}), 0.0f);  // magnitude again
+    resolveAgreesOn(state, coverageSweep());
+}
+
+// And the two rules DISAGREE where it matters: at two windings, non-zero fills
+// and even-odd cuts a hole. A test that never reached |coverage| >= 2 would not
+// be able to tell the bit was read at all.
+TEST_CASE(the_two_fill_rules_disagree_at_two_windings) {
+    const std::uint32_t nonZero = 1u << kShapeModeShift;
+    const std::uint32_t evenOdd = nonZero | kEvenOdd;
+    CHECK_EQ(accumulatorShape(nonZero, 2.0f, {}), 1.0f);
+    CHECK_EQ(accumulatorShape(evenOdd, 2.0f, {}), 0.0f);
+}
+
+// `[BIN]` Mode 0 is the identity: the coverage passes through untouched.
+TEST_CASE(mode_zero_leaves_the_coverage_alone) {
+    CHECK_EQ(accumulatorShape(0u, 0.375f, {}), 0.375f);
+    CHECK_EQ(accumulatorShape(0u, -2.5f, {}), -2.5f);
+    resolveAgreesOn(0u, coverageSweep());
+}
+
+// `[BIN]` Mode 2 with its four sub-modes, each a different ending.
+TEST_CASE(mode_two_has_four_sub_modes) {
+    const std::uint32_t base = 2u << kShapeModeShift;
+    for (std::uint32_t sub = 0; sub < 4; ++sub) {
+        resolveAgreesOn(base | (sub << kSubModeShift), coverageSweep());
+        resolveAgreesOn(base | (sub << kSubModeShift) | kEvenOdd, coverageSweep());
+    }
+}
+
+// `[BIN]` Bit 11 turns on a quadratic in `shape`, and `shape.x` does two jobs:
+// it is the upper bound past which nothing happens AND the leading coefficient.
+TEST_CASE(the_shape_curve_applies_only_below_its_own_x) {
+    const std::uint32_t state = (1u << kShapeModeShift) | kShapeCurve;
+    ShapeCurve curve;
+    curve.x = 0.75f;
+    curve.y = 0.1f;
+    curve.z = 0.05f;
+
+    // Above shape.x: untouched.
+    CHECK_EQ(accumulatorShape(state, 0.9f, curve), 0.9f);
+    // Below the epsilon: untouched too.
+    CHECK_EQ(accumulatorShape(state, 0.0005f, curve), 0.0005f);
+    // In between: the quadratic.
+    const float v = 0.5f;
+    CHECK_EQ(accumulatorShape(state, v, curve), (curve.x * v + curve.y) * v + curve.z);
+
+    resolveAgreesOn(state, coverageSweep(), curve);
+}
+
+// Without bit 11 the curve is ignored entirely, however it is filled in.
+TEST_CASE(the_shape_curve_is_off_unless_its_bit_is_set) {
+    const std::uint32_t state = 1u << kShapeModeShift;
+    ShapeCurve curve;
+    curve.x = 0.75f;
+    curve.y = 9.0f;
+    curve.z = -3.0f;
+    CHECK_EQ(accumulatorShape(state, 0.5f, curve), 0.5f);
+    resolveAgreesOn(state, coverageSweep(), curve);
 }

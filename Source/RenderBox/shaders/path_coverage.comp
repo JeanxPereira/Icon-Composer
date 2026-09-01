@@ -10,6 +10,7 @@
 // and feeding it real geometry would only test the cases that geometry happened
 // to reach.
 #include "PathFragment.glsl"
+#include "PathResolve.glsl"
 
 layout(local_size_x = 64) in;
 
@@ -30,7 +31,8 @@ layout(std430, binding = 1) writeonly buffer Outputs {
 
 layout(push_constant) uniform Control {
     uint count;
-    uint stage;   // 0 interior, 1 exterior, 2 distance
+    uint stage;   // 0 interior, 1 exterior, 2 distance, 3 the fill rule
+    uint state;   // the shader state word, for stage 3
 } c;
 
 void main() {
@@ -45,8 +47,12 @@ void main() {
     } else if (c.stage == 1u) {
         out_ = vec2(0.0, rbExteriorShape(in_.position, in_.line.xy, in_.line.z,
                                          in_.line.w, in_.extra.x));
-    } else {
+    } else if (c.stage == 2u) {
         out_ = vec2(0.0, rbDistanceShape(in_.dist.xy, in_.dist.zw, in_.extra.z));
+    } else {
+        // The fill rule: `position.x` carries the accumulated coverage and
+        // `line` the shape curve, because the probe's buffer is the probe's.
+        out_ = vec2(0.0, rbAccumulatorShape(c.state, in_.position.x, in_.line));
     }
     results[i] = vec4(out_, 0.0, 0.0);
 }
