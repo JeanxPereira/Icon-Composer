@@ -664,3 +664,69 @@ governa o modo polilinha × cúbicas do §7 (bit 6 ali) e portanto paga duas vez
 `[BIN]` E do lado fragment, o `stroke_particles_fragment` amostra uma textura e
 usa `fwidth` — é partícula texturizada com antialiasing por derivada de tela.
 Os outros dois não foram lidos.
+
+## 11. O `RenderState` — o layout medido, a semântica não
+
+O §10 parou porque a geometria do traço ramifica em bits do `RenderState`. Este
+é o levantamento desses bits.
+
+`[BIN]` O estado é a constante de função `RB::Shader::Constant::shader_state`,
+um `i32` embrulhado numa struct e lido inteiro. Nada nomeia os campos dele — o
+layout tem de sair das **máscaras**: máscara de um bit é flag, máscara de bits
+adjacentes é enum, e os valores comparados são os casos desse enum.
+
+### 11.1. O que responde às nossas duas perguntas
+
+| máscara | bits | valores testados | quem testa |
+|---|---|---|---|
+| `0x40` | 6 | `0` | **`shader_path.metal`** |
+| `0x1C0` | 6–8 | `0`, `128` | **`shader_stroke.metal`**, `shader_blend`, mod100 |
+| `0x600` | 9–10 | `0`, `512` | **`shader_stroke.metal`**, `shader_blend`, mod100 |
+
+`[BIN]` Então **bits 6–8 são um campo de três bits**, e o path testa só o bit
+mais baixo dele enquanto o traço compara o campo inteiro contra `128` — o bit 7
+sozinho. E **bits 9–10 são um campo de dois**, com o caso `512` (bit 9).
+
+`[INF]` É o mesmo campo que o §7 encontrou: no estágio de path o bit 6 escolhe
+entre ler o buffer como **polilinha já achatada** (`float2[]`) ou como
+**segmentos cúbicos**. A nossa implementação só cobre o braço das cúbicas, e
+agora sabe-se que o braço é um caso de um enum de três bits, não um booleano.
+
+### 11.2. O resto do mapa
+
+`[BIN]` Trinta e quatro máscaras distintas, cobrindo os bits 0–30:
+
+- **flags de um bit**, todas testadas contra zero: 0, 1, 8, 10, 11, 12, 13, 14,
+  15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30
+- **campos de vários bits**: 6–7 (`==128`), 6–8 (`0`/`128`), 9–10 (`0`/`512`),
+  9–11 (`0`/`1024`/`1536`), 10–11 (`==1024`), 16–18, 19–20 (`==524288`),
+  23–25, 16–29 (`==1507328`)
+
+`[OBS]` **A semântica de nenhum deles foi medida.** O layout diz onde os campos
+estão e quantos casos cada um tem; não diz o que cada caso significa.
+
+### 11.3. Onde a semântica mora, e é outro instrumento
+
+`[BIN]` O binário do host carrega `RB::RenderState` e
+`RB::DisplayList::RenderState` — `RenderPass::draw`, `draw_primitives`,
+`set_blend_state` recebem um `RenderState` por valor. A CPU é quem compõe o
+`i32`, e é lá que os bits ganham nome.
+
+Isso é Mach-O, não metallib: outro instrumento, e o AquaKit já tem a caixa
+(`symbols.py`, `cfg.py`, `emu.py`). É o próximo passo do traço, e ele paga duas
+vezes — destrava o §10 e fecha o braço que falta no §7.
+
+### 11.4. Uma nota sobre o instrumento que produziu esta tabela
+
+`[OBS]` A primeira versão do `render_state.py` casava nomes SSA no arquivo
+inteiro. **A numeração SSA reinicia a cada função**, então ele juntou valores de
+funções diferentes e reportou `state & 2048` sendo comparado contra `2`, `4`,
+`5` e `9`.
+
+Isso é **aritmeticamente impossível** — um valor mascarado só pode ser `0` ou um
+subconjunto da máscara — e foi essa impossibilidade que denunciou o defeito. Sem
+ela a tabela teria parecido plausível e estaria errada.
+
+A versão que produziu o que está acima parseia função a função e **recusa**
+qualquer par cujo valor não seja subconjunto da máscara, reportando-o em vez de
+imprimi-lo como se fosse evidência.

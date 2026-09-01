@@ -66,6 +66,7 @@ especializações** — 1.040 chaveadas por `appearance`, 616 sem predicado, 82 
 | M2·P3 — os passes `interior` e `exterior` | **passa o gate** — o leque a partir do `origin` e a cobertura analítica (doc 03 §9) |
 | o gate sobrevive a um crash | **corrigido** — backup em disco com marcador, e as 66 âncoras conferidas antes do primeiro build (doc 03 §9.5, §9.6) |
 | M2·P4 — o traço | **levantado, não transcrito** — os 3 pares, os 3 layouts e a indexação medidos; a geometria ramifica em bits do `RenderState` não decodados (doc 03 §10) |
+| o `RenderState` do `RB::Shader` | **layout medido, semântica não** — 34 máscaras, bits 0–30; os campos 6–8 e 9–10 que travam o traço estão localizados (doc 03 §11) |
 | M2·P5 — alvo de render, o pixel | **não começado** |
 
 ## Build
