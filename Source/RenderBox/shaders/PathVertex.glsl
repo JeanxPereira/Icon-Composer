@@ -70,9 +70,14 @@ vec2 rbCubicAt(float t, vec2 p0, vec2 p1, vec2 p2, vec2 p3) {
 //     ndc.z = depth * 2^-32                        (0x3DF0000000000000)
 //
 // `origin` sits in PathGlobals at offset 32 and this stage never reads it.
-vec4 rbToClip(vec2 p, vec2 m0, vec2 m1, vec2 m2, vec2 twoOverSize, float depth) {
+vec2 rbToWorld(vec2 p, vec2 m0, vec2 m1, vec2 m2) {
     precise vec2 inner = vec2(p.y) * m1 + m2;
     precise vec2 world = vec2(p.x) * m0 + inner;
+    return world;
+}
+
+vec4 rbToClip(vec2 p, vec2 m0, vec2 m1, vec2 m2, vec2 twoOverSize, float depth) {
+    precise vec2 world = rbToWorld(p, m0, m1, m2);
     precise float x = world.x * twoOverSize.x + -1.0;
     precise float y = world.y * -twoOverSize.y + 1.0;
     return vec4(x, y, depth * 2.3283064365386963e-10, 1.0);

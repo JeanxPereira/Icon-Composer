@@ -436,3 +436,137 @@ e o gate teria de aceitar tolerância, que é como um erro pequeno se esconde.
 E as mutações cortam **para os dois lados**: mutar o GLSL obriga o oráculo de
 CPU a perceber; mutar o oráculo obriga a GPU. Um diferencial que só pega de um
 lado é um diferencial com metade funcionando.
+
+
+## 9. O interior e o exterior — onde a cobertura mora
+
+### 9.1. Três empacotamentos, e eles não são iguais
+
+`[BIN]` Cada passe indexa o buffer de um jeito próprio:
+
+| passe | índice | vértices por índice | por instância |
+|---|---|---|---|
+| `edges` | `iid·32 + (vid>>1)` | 2 (`vid&1`) | 64 |
+| `interior` | `iid·21 + (vid>>2)` | 4 (`vid&3`) | 84 |
+| `exterior` | `iid·13 + (vid>>2)` | 4 (`vid&3`) | 52 |
+
+`[OBS]` Por que 32, 21 e 13 — não medido.
+
+### 9.2. O interior é um leque a partir do `origin`
+
+`[BIN]` No `interior`, o canto 0 sai direto do `origin` do `PathGlobals`, **antes
+de qualquer segmento ser consultado** — ele existe esteja o índice dentro do
+alcance ou não. Os cantos 1, 2 e 3 dão `A`, `B`, `B`:
+
+```
+canto 0 → origin        (o ápice)
+canto 1 → cúbica(t)
+canto 2 → cúbica(t+1)
+canto 3 → cúbica(t+1)   ← repetido: o quarto vértice é degenerado, e é ele
+                          que costura um strip de triângulos no seguinte
+```
+
+`[INF]` Isso é o estêncil clássico: um triângulo `(origin, A, B)` por aresta, e o
+número de voltas se acumula. É também onde o `origin` serve para alguma coisa —
+o `edges` não o lê.
+
+### 9.3. O exterior é cobertura analítica, e os cinco varyings dizem como
+
+`[BIN]` O `PathExteriorVertex` tem cinco campos, não três:
+
+```
+position        float4
+path_y          float2     as duas pontas em y, MENOR primeiro
+path_slope      float      dx/dy   ← o recíproco do usual
+path_intercept  float      x onde y = 0
+path_value      half       +1 ou −1
+```
+
+`[BIN]` A reta é carregada como **`x = slope·y + intercept`** — invertida de
+propósito, porque a integral de cobertura corre ao longo de `y`.
+
+`[BIN]` E o quad:
+
+```
+x:  cantos 0 e 3  →  min(a.x, b.x) − 0.5
+    cantos 1 e 2  →  urx + 0.5
+y:  cantos 0 e 1  →  path_y.x − 0.5
+    cantos 2 e 3  →  path_y.y + 0.5
+```
+
+`[INF]` Ou seja: **cada aresta cobre tudo o que está à direita dela**, até o
+limite `urx`, e o fragment acumula a área com sinal. É acumulação de scanline
+analítica — e é por isso que um limite direito precisa existir.
+
+`[BIN]` `path_value = (Δy > 0) ? +1 : −1` é a direção do winding, e é o que faz
+duas arestas opostas se cancelarem.
+
+`[BIN]` Aresta quase horizontal é **descartada**, não dividida: o limiar é
+`float(1e-4)`, escrito `0x3F1A36E2E0000000` no IR. Sem ele o `dx/dy` estouraria.
+
+### 9.4. Onde a comparação bit a bit para, e por quê
+
+Os três passes concordam entre GPU e CPU **exatamente** — menos dois campos.
+
+`path_slope` é uma **divisão**, e `path_intercept` desce dela. O Vulkan **não
+exige divisão de 32 bits corretamente arredondada**: a especificação permite
+**2,5 ULP** no `OpFDiv`, e os drivers gastam esse orçamento num recíproco
+aproximado. Medido aqui numa Radeon RX 6750 XT: o `slope` voltou a **1 ULP** do
+da CPU, com todo o resto idêntico bit a bit.
+
+O `precise` proíbe **contração**; ele não transforma divisão aproximada em
+exata, e não existe controle de SPIR-V que o faça.
+
+Então a comparação é exata em tudo que multiplicação e soma alcançam, e limitada
+a **4 ULP** nos dois campos que descem da divisão. Isso não é tolerância
+escolhida para um teste passar — é o limite documentado da plataforma, e é duas
+ordens de grandeza mais apertado que qualquer mutação da varredura: um `slope`
+errado erra em **por cento**, não em um bit. A mutação que afrouxa essa própria
+comparação para `return true` está na varredura, e é pega.
+
+### 9.5. Duas lições que custaram uma máquina
+
+**Em 2026-09-01 a varredura reiniciou o PC**, e a causa era uma mutação da
+própria varredura.
+
+`[OBS]` A mutação *"o total de vértices do cabeçalho é escrito como float"* faz o
+`headerVertexCount` ler os bits de `8.0f` como inteiro: **1.090.519.040**. Daí o
+`invocationCount` pede 2.181.038.144 invocações × 48 bytes = **104 GB**, no host
+e na GPU. A mutação *seria* pega — o teste só tentou alocar antes de reparar.
+
+**Lição 1: nunca dimensionar alocação a partir de um número em que não se
+confia.** O `headerAgreesWithSegments()` confere o total declarado contra os
+segmentos que o produziram — para o último segmento desenhável, `total` tem de
+ser exatamente `count + round(1/recip_n)`. Buffer que falha é **recusado**, e
+nada é dimensionado a partir dele. Com a guarda, a mesma mutação é pega por 31
+asserções e a memória fica plana.
+
+**Lição 2, e é a pior: o backup do gate vivia só na memória.** Há um
+`try/finally` que restaura — e ele não roda quando a máquina desliga. O
+`PathBuffer.cpp` ficou **mutado no disco**, com o texto pristino perdido junto
+com o processo.
+
+O perigo real não é o arquivo torto; é o que viria depois. A execução seguinte
+leria a mutação **como se fosse o código pristino**, restauraria para o defeito,
+e passaria verde. Um gate que enterra o próprio defeito.
+
+Agora o pristino vai para o disco antes de qualquer coisa, com um marcador
+`SWEEP-IN-PROGRESS`. Uma execução que acha o marcador sabe que a anterior morreu
+e **restaura a árvore antes de ler qualquer coisa**. É a mesma família do bug do
+`LastWriteTime`: o backup existia, mas não sobrevivia ao que precisava sobreviver.
+
+### 9.6. O pré-voo de âncoras
+
+A proteção de âncora obsoleto já disparou **seis vezes** — sempre legítima,
+sempre porque o código andou e a mutação apontava para a forma antiga. E sempre
+no meio de uma varredura de vinte minutos, depois de dezenas de builds pagos.
+
+A conferência custa milissegundos e passou para a frente de tudo: as 66 âncoras
+são resolvidas **antes do primeiro build**, e o gate reporta **todas** as
+obsoletas de uma vez. Um refactor que moveu três linhas vira uma rodada de
+conserto, não três.
+
+```
+gate-m1: 66 mutations
+anchors: 66 of 66 resolve
+```

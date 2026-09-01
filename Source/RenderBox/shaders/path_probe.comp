@@ -1,5 +1,5 @@
 #version 450
-// The path vertex stage, run as COMPUTE so its output can be read back and
+// The path vertex stages, run as COMPUTE so their output can be read back and
 // compared against a CPU oracle.
 //
 // WHY A COMPUTE SHADER AND NOT THE VERTEX STAGE ITSELF
@@ -8,13 +8,16 @@
 // of 2026-09-01. Rendering into an image and eyeballing it proves nothing, and
 // core Vulkan has no transform feedback to capture vertex output with.
 //
-// So the vertex arithmetic is written ONCE, in PathVertex.glsl, and run from
-// here for a grid of (vid, iid). Every clip-space position it computes is
-// compared, bit for bit, against the same arithmetic performed on the CPU. That
-// is a real gate: it cannot pass because the picture looked plausible.
+// So the arithmetic is written ONCE, in PathVertex.glsl, and run from here for a
+// grid of (vid, iid). Every value it computes is compared, bit for bit, against
+// the same arithmetic performed on the CPU. That is a real gate: it cannot pass
+// because the picture looked plausible.
 //
-// The graphics pipeline includes the same file, so the thing under test and the
-// thing that draws cannot drift apart.
+// `[BIN]` THE THREE PASSES, and their packings, all measured (doc 03 §8, §9):
+//
+//   edges     iid*32 + (vid>>1),  vid&1  picks one end of an edge
+//   interior  iid*21 + (vid>>2),  vid&3  fans a triangle from `origin`
+//   exterior  iid*13 + (vid>>2),  vid&3  builds a quad reaching to `urx`
 #include "PathVertex.glsl"
 
 layout(local_size_x = 64) in;
@@ -23,8 +26,16 @@ layout(std430, binding = 0) readonly buffer Segments {
     CubicSegment segments[];
 };
 
-layout(std430, binding = 1) writeonly buffer Positions {
-    vec4 positions[];
+// position, then (path_y.x, path_y.y, path_slope, path_intercept), then
+// (path_value, 0, 0, 0). Only `exterior` fills the last two.
+struct ProbeVertex {
+    vec4 position;
+    vec4 line;
+    vec4 extra;
+};
+
+layout(std430, binding = 1) writeonly buffer Output {
+    ProbeVertex results[];
 };
 
 layout(push_constant) uniform Globals {
@@ -32,51 +43,125 @@ layout(push_constant) uniform Globals {
     vec2 m1;
     vec2 m2;             // path_matrix[3], offsets 0, 8, 16
     vec2 twoOverSize;    // offset 24
-    vec2 origin;         // offset 32 -- present in the target, unread by this stage
+    vec2 origin;         // offset 32 -- the interior fan's apex
     float depth;         // offset 40
-    float urx;           // offset 44 -- not decoded
+    float urx;           // offset 44 -- the exterior quad's right edge
     float arg;           // offset 48 -- not decoded
-    uint vertexPairs;    // ours: how many (vid) values to evaluate
+    uint count;          // ours: how many invocations to run
+    uint pass;           // ours: 0 edges, 1 interior, 2 exterior
 } g;
+
+const uint kEdges = 0u;
+const uint kInterior = 1u;
+const uint kExterior = 2u;
+
+// The segment lookup, shared by all three passes: `[BIN]` the same bound check
+// and the same binary search appear in mod58, mod59 and mod60.
+int rbFindSegment(int vertexIndex) {
+    int total = floatBitsToInt(segments[0].recip_n);
+    if (total <= vertexIndex) return -1;
+    int base = 1;
+    int width = segments[0].count;
+    while (width > 1) {
+        int halfWidth = width >> 1;
+        int mid = base + halfWidth;
+        bool goLeft = segments[mid].count > vertexIndex;
+        width = goLeft ? halfWidth : (width - halfWidth);
+        base = goLeft ? base : mid;
+    }
+    return rbIsSubpathBreak(segments[base].p1) ? -1 : base;
+}
 
 void main() {
     uint index = gl_GlobalInvocationID.x;
-    if (index >= g.vertexPairs) return;
+    if (index >= g.count) return;
 
-    // Two vertices per edge, so a flat index splits back into (vid, iid) the way
-    // the draw call would have supplied them: 32 edge positions per instance,
-    // two vertices each, is 64 vertex ids per instance.
-    uint vid = index % 64u;
-    uint iid = index / 64u;
+    ProbeVertex out_;
+    out_.position = kClippedAway;
+    out_.line = vec4(0.0);
+    out_.extra = vec4(0.0);
 
-    int vertexIndex = rbVertexIndex(vid, iid);
-    uint side = vid & 1u;
+    uint perInstance = (g.pass == kEdges) ? 64u : (g.pass == kInterior ? 84u : 52u);
+    uint stride = (g.pass == kEdges) ? 32u : (g.pass == kInterior ? 21u : 13u);
+    uint vid = index % perInstance;
+    uint iid = index / perInstance;
 
-    vec4 clip = kClippedAway;
+    int vertexIndex = int(iid) * int(stride) +
+                      int(g.pass == kEdges ? (vid >> 1) : (vid >> 2));
+    uint corner = (g.pass == kEdges) ? (vid & 1u) : (vid & 3u);
 
-    // `[BIN]` The bound: the header's recip_n slot, loaded as an INT.
-    int total = floatBitsToInt(segments[0].recip_n);
-    if (total > vertexIndex) {
-        // `[BIN]` The binary search, with the target's halving order. `base` is
-        // the first real segment; entry 0 is the header.
-        int base = 1;
-        int width = segments[0].count;
-        while (width > 1) {
-            int halfWidth = width >> 1;
-            int mid = base + halfWidth;
-            bool goLeft = segments[mid].count > vertexIndex;
-            width = goLeft ? halfWidth : (width - halfWidth);
-            base = goLeft ? base : mid;
-        }
-
-        CubicSegment seg = segments[base];
-        if (!rbIsSubpathBreak(seg.p1)) {
-            vec2 p0 = segments[base - 1].p3;   // convention 3
-            int local = vertexIndex - seg.count;
-            float t = seg.recip_n * float(local + int(side));
-            vec2 p = rbCubicAt(t, p0, seg.p1, seg.p2, seg.p3);
-            clip = rbToClip(p, g.m0, g.m1, g.m2, g.twoOverSize, g.depth);
-        }
+    // `[BIN]` The interior fan's apex is `origin`, and it is taken before any
+    // segment is looked at -- corner 0 exists whether or not the index is in range.
+    if (g.pass == kInterior && corner == 0u) {
+        out_.position = rbToClip(g.origin, g.m0, g.m1, g.m2, g.twoOverSize, g.depth);
+        results[index] = out_;
+        return;
     }
-    positions[index] = clip;
+
+    int base = rbFindSegment(vertexIndex);
+    if (base < 0) {
+        results[index] = out_;
+        return;
+    }
+
+    CubicSegment seg = segments[base];
+    vec2 p0 = segments[base - 1].p3;
+    int local = vertexIndex - seg.count;
+    float t0 = seg.recip_n * float(local);
+    float t1 = seg.recip_n * float(local + 1);
+
+    if (g.pass == kEdges) {
+        vec2 p = rbCubicAt(corner == 0u ? t0 : t1, p0, seg.p1, seg.p2, seg.p3);
+        out_.position = rbToClip(p, g.m0, g.m1, g.m2, g.twoOverSize, g.depth);
+        results[index] = out_;
+        return;
+    }
+
+    vec2 pa = rbCubicAt(t0, p0, seg.p1, seg.p2, seg.p3);
+    vec2 pb = rbCubicAt(t1, p0, seg.p1, seg.p2, seg.p3);
+
+    if (g.pass == kInterior) {
+        // `[BIN]` corner 1 is A; corners 2 and 3 are both B -- the fourth vertex
+        // is degenerate, which is what stitches one triangle strip to the next.
+        vec2 p = (corner == 1u) ? pa : pb;
+        out_.position = rbToClip(p, g.m0, g.m1, g.m2, g.twoOverSize, g.depth);
+        results[index] = out_;
+        return;
+    }
+
+    // ---- exterior ----------------------------------------------------------
+    // `[BIN]` Both endpoints go to WORLD space (not clip), and the quad is built
+    // there: the coverage integral is in pixels, so the numbers the fragment
+    // stage interpolates have to be pixels.
+    vec2 a = rbToWorld(pa, g.m0, g.m1, g.m2);
+    vec2 b = rbToWorld(pb, g.m0, g.m1, g.m2);
+    vec2 d = b - a;
+
+    // `[BIN]` A near-horizontal edge contributes no coverage and would divide by
+    // zero. The threshold is float(1e-4), spelled 0x3F1A36E2E0000000 in the IR.
+    if (!(abs(d.y) > 1.0e-4)) {
+        results[index] = out_;
+        return;
+    }
+
+    precise float slope = d.x / d.y;              // dx/dy, not dy/dx
+    precise float intercept = a.y * (-slope) + a.x;  // x where y = 0
+    bool upward = d.y > 0.0;
+    vec2 pathY = upward ? vec2(a.y, b.y) : vec2(b.y, a.y);
+
+    // `[BIN]` The quad: from the edge's leftmost x minus half a pixel, out to
+    // `urx` plus half a pixel. Everything to the RIGHT of the edge is covered,
+    // and the fragment stage accumulates the signed area -- which is why a
+    // bound like `urx` has to exist at all.
+    precise float x = (corner == 0u || corner == 3u)
+                          ? (min(a.x, b.x) - 0.5)
+                          : (g.urx + 0.5);
+    precise float y = (corner < 2u) ? (pathY.x - 0.5) : (pathY.y + 0.5);
+
+    precise float cx = x * g.twoOverSize.x + -1.0;
+    precise float cy = y * -g.twoOverSize.y + 1.0;
+    out_.position = vec4(cx, cy, g.depth * 2.3283064365386963e-10, 1.0);
+    out_.line = vec4(pathY.x, pathY.y, slope, intercept);
+    out_.extra = vec4(upward ? 1.0 : -1.0, 0.0, 0.0, 0.0);
+    results[index] = out_;
 }

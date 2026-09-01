@@ -13,7 +13,7 @@
 #      unknown to it, not one of the 1,740 specializations may be unreachable by
 #      the resolver, and not one of the 61,537 values it resolves may fail to
 #      decode into a type.
-#   3. A mandatory mutation sweep. Fifty-seven defects go in one at a time, and every
+#   3. A mandatory mutation sweep. Sixty-six defects go in one at a time, and every
 #      one of them MUST redden the suite WITH AN ASSERTION -- a mutation that
 #      merely crashes the process is caught by accident and is reported as a
 #      failure of the test, because a suite that dies hides every case after it.
@@ -52,6 +52,45 @@ $sources = @{
 }
 $original = @{}
 $hashes = @{}
+
+# THE BACKUP LIVES ON DISK, NOT ONLY IN MEMORY.
+#
+# This script edits real source files and puts them back. A `try/finally` covers
+# an exception and a Ctrl+C; it does NOT cover the process being killed, and it
+# does not cover the machine going down. On 2026-09-01 exactly that happened --
+# a mutation made the suite ask for a hundred gigabytes, the machine rebooted
+# mid-sweep, and `PathBuffer.cpp` was left MUTATED in the working tree with the
+# pristine text gone with the process that held it.
+#
+# So the pristine text is written to disk before anything is touched, together
+# with a marker. A run that finds the marker knows a previous run died and puts
+# every file back before doing anything else.
+$Backup = Join-Path $BuildDir "gate-backup"
+$Marker = Join-Path $Backup "SWEEP-IN-PROGRESS"
+
+function Save-Pristine {
+    New-Item -ItemType Directory -Force -Path $Backup | Out-Null
+    foreach ($k in $sources.Keys) {
+        [IO.File]::WriteAllText((Join-Path $Backup "$k.bak"), $original[$k])
+    }
+    [IO.File]::WriteAllText($Marker, (Get-Date -Format o))
+}
+
+function Recover-FromCrashedRun {
+    if (-not (Test-Path $Marker)) { return }
+    Write-Host "A previous sweep did not finish -- restoring the tree from $Backup"
+    foreach ($k in $sources.Keys) {
+        $bak = Join-Path $Backup "$k.bak"
+        if (-not (Test-Path $bak)) { continue }
+        $want = [IO.File]::ReadAllText($bak)
+        if ([IO.File]::ReadAllText($sources[$k]) -ne $want) {
+            Write-Host "  restored: $($sources[$k])"
+            [IO.File]::WriteAllText($sources[$k], $want)
+            (Get-Item $sources[$k]).LastWriteTime = Get-Date
+        }
+    }
+    Remove-Item $Marker -Force
+}
 
 # Put every file back and prove it, byte for byte.
 #
@@ -281,21 +320,79 @@ $mutations = @(
        from = 'bool goLeft = segments[mid].count > vertexIndex;'
        to   = 'bool goLeft = segments[mid].count <= vertexIndex;' },
     @{ file = "rbprobe"; name = "both ends of an edge get the same t"
-       from = 'float t = seg.recip_n * float(local + int(side));'
-       to   = 'float t = seg.recip_n * float(local);' },
+       from = 'vec2 p = rbCubicAt(corner == 0u ? t0 : t1, p0, seg.p1, seg.p2, seg.p3);'
+       to   = 'vec2 p = rbCubicAt(t0, p0, seg.p1, seg.p2, seg.p3);' },
     @{ file = "rboracle"; name = "the oracle reads p0 from the segment itself, not the one before"
        from = 'const Vec2 p0 = point(buffer.entries[static_cast<std::size_t>(base - 1)].p3);'
        to   = 'const Vec2 p0 = point(seg.p3);' },
-    @{ file = "rboracle"; name = "the oracle puts 32 vertex ids in an instance instead of 64"
-       from = 'return instances * 64u;'
-       to   = 'return instances * 32u;' }
+    @{ file = "rboracle"; name = "the oracle packs the edges pass 32 to an instance, not 64"
+       from = 'case PathPass::Edges: return 64;     // 32 edges, two ends each'
+       to   = 'case PathPass::Edges: return 32;     // 32 edges, two ends each' },
+    # ---- RenderBox P3: the interior and exterior passes ----
+    @{ file = "rbprobe"; name = "the interior fan starts at a curve point, not at origin"
+       from = 'out_.position = rbToClip(g.origin, g.m0, g.m1, g.m2, g.twoOverSize, g.depth);'
+       to   = 'out_.position = rbToClip(vec2(0.0), g.m0, g.m1, g.m2, g.twoOverSize, g.depth);' },
+    @{ file = "rbprobe"; name = "the interior third and fourth vertices are not the same point"
+       from = 'vec2 p = (corner == 1u) ? pa : pb;'
+       to   = 'vec2 p = (corner == 3u) ? pa : pb;' },
+    @{ file = "rbprobe"; name = "a near-horizontal edge is kept instead of dropped"
+       from = 'if (!(abs(d.y) > 1.0e-4)) {'
+       to   = 'if (false) {' },
+    @{ file = "rbprobe"; name = "the slope is dy/dx instead of dx/dy"
+       from = 'precise float slope = d.x / d.y;              // dx/dy, not dy/dx'
+       to   = 'precise float slope = d.y / d.x;              // dx/dy, not dy/dx' },
+    @{ file = "rbprobe"; name = "path_y is not ordered by the edge direction"
+       from = 'vec2 pathY = upward ? vec2(a.y, b.y) : vec2(b.y, a.y);'
+       to   = 'vec2 pathY = vec2(a.y, b.y);' },
+    @{ file = "rbprobe"; name = "the exterior quad stops at the edge instead of reaching urx"
+       from = '                          : (g.urx + 0.5);'
+       to   = '                          : (max(a.x, b.x) + 0.5);' },
+    @{ file = "rbprobe"; name = "path_value loses its sign, so winding cannot cancel"
+       from = 'out_.extra = vec4(upward ? 1.0 : -1.0, 0.0, 0.0, 0.0);'
+       to   = 'out_.extra = vec4(1.0, 0.0, 0.0, 0.0);' },
+    @{ file = "rboracle"; name = "the oracle takes the fan apex from the wrong corner"
+       from = 'if (pass == PathPass::Interior && corner == 0u) {'
+       to   = 'if (pass == PathPass::Interior && corner == 1u) {' },
+    @{ file = "rboracle"; name = "the ULP comparison accepts any two floats"
+       from = 'return ulpsApart(a.line[2], b.line[2]) <= maxUlps &&
+           ulpsApart(a.line[3], b.line[3]) <= maxUlps;'
+       to   = 'return true;' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"
 
+# BEFORE anything is read as pristine: if a previous run died mid-sweep, the tree
+# on disk is still mutated and reading it now would enshrine the mutation AS the
+# pristine text -- the sweep would then "restore" to a defect and pass.
+Recover-FromCrashedRun
+
 foreach ($k in $sources.Keys) {
     $original[$k] = [IO.File]::ReadAllText($sources[$k])
 }
+Save-Pristine
+
+# EVERY anchor is checked BEFORE the first build, not when the sweep reaches it.
+#
+# An anchor rots whenever the code it points at is edited, and this guard has
+# fired six times for that reason -- each time twenty minutes into a run, after
+# dozens of builds had already been paid for. The check costs milliseconds and
+# it belongs at the front. It also reports ALL the stale anchors at once, so a
+# refactor that moved three lines is one round of repair instead of three.
+$stale = @()
+foreach ($m in $mutations) {
+    if (-not $sources.ContainsKey($m.file)) {
+        $stale += "$($m.name): unknown file key '$($m.file)'"
+        continue
+    }
+    $n = ([regex]::Matches($original[$m.file], [regex]::Escape($m.from))).Count
+    if ($n -ne 1) { $stale += "$($m.name): anchor appears $n times in $($m.file), expected 1" }
+}
+if ($stale.Count -gt 0) {
+    Write-Host "FAILED: $($stale.Count) stale anchor(s) -- the code moved and the sweep did not"
+    foreach ($x in $stale) { Write-Host "  $x" }
+    exit 1
+}
+Write-Host "anchors: $($mutations.Count) of $($mutations.Count) resolve`n"
 
 # ---- 1 and 2: the pristine run -------------------------------------------
 # Ninja decides by timestamp, so the gate must not inherit one it did not set.
@@ -341,6 +438,8 @@ if ($svgs -lt 140) { Write-Host "FAILED: only $svgs SVGs, expected 140+"; exit 1
 Write-Host "pristine: OK`n"
 
 # ---- 3: the mutation sweep -----------------------------------------------
+
+
 foreach ($k in $sources.Keys) { $hashes[$k] = (Get-FileHash $sources[$k] -Algorithm SHA256).Hash }
 $caught = 0
 $survivors = @()
@@ -385,6 +484,8 @@ try {
     }
 } finally {
     Restore-Sources
+    # The sweep is over and the tree is proven byte-exact: the marker may go.
+    if (Test-Path $Marker) { Remove-Item $Marker -Force }
 }
 
 # ---- the verdict ---------------------------------------------------------
