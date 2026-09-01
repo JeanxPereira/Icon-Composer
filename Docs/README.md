@@ -19,6 +19,7 @@ preenchida com uma resposta plausível.
 | [01 — O formato `.icon`](01-o-formato-icon.md) | o documento que o app edita: chaves, vocabulários, a gramática dos valores, e o que ainda não fechou |
 | [02 — O bundle `.icon`](02-o-bundle-icon.md) | a pasta em volta do documento: `Assets/`, o que mora nele, e a referência que nem sempre resolve |
 | [03 — O motor de render](03-o-motor-de-render.md) | o mapa do `IconRendering` sobre o `RenderBox`: os dois metallib, as peças do vidro, e o vocabulário que bate com o do AquaKit |
+| [_confrontar/](_confrontar/README.md) | material do projeto anterior, **sem selo** — lista de perguntas, nunca fonte |
 | [Specs/arquitetura](Specs/2026-08-31-arquitetura-design.md) | as camadas deste repositório, copiadas das do alvo, e onde Onyx e AquaKit entram |
 
 ## A versão de um parágrafo
