@@ -1735,3 +1735,167 @@ tela: falta o compositor que caminha o documento — grupos, camadas, a
 especialização resolvida para um contexto, a arte de cada camada, e a posição e
 opacidade dela. O `renderSvg` do §20 desenha **um** SVG; o que falta é o nível
 acima dele, e é onde o raster entra.
+
+## 23. O gradiente — o campo de 4 bits que é uma tabela de 4 × 4
+
+`[BIN]` `shader_gradient.metal`. A superfície é maior do que o nome sugere:
+
+```
+Gradient::value(ShaderState, float2, half&, GradientGlobals::Geometry)  ponto -> t
+Gradient::fold_value(ShaderState, half)                                 o spread
+Gradient::color(ShaderState, half, GradientGlobals::Color, ...)         t -> cor
+sample_stops_uniform / sample_stops_binary                              as paradas
+Gradient::color_out(ShaderState, half4, Tables*)
+```
+
+### 23.1. Duas funções, o mesmo seletor, e um quadro que fecha
+
+`[BIN]` `Gradient::value` e `Gradient::fold_value` comutam **ambas** em
+`(palavra0 >> 19) & 15`, e agrupam os 16 casos de maneiras diferentes. Cruzando
+os dois agrupamentos, o campo se decompõe:
+
+| caso | geometria | spread |
+|---|---|---|
+| 0 / 1 / 2 / 7 | **linear** | pad / repeat / reflect / nenhum |
+| 3 / 4 / 5 / 8 | **radial** | pad / repeat / reflect / nenhum |
+| 9 / 10 / 11 / 12 | **focal** | pad / repeat / reflect / nenhum |
+| 13 / 14 / 15 | **vinda do vértice** | pad / repeat / reflect |
+| 6 | **cônica** | nenhum |
+
+`[INF]` Quatro geometrias por quatro spreads, num campo de quatro bits. O que
+torna isso uma medição e não uma leitura conveniente é que **as duas funções são
+independentes** e os agrupamentos delas se encaixam sem sobra: `value` separa por
+geometria, `fold_value` separa por spread, e cada caso cai numa célula só.
+
+### 23.2. As geometrias, medidas
+
+`[BIN]`
+
+| | |
+|---|---|
+| **linear** | `t = p.x` — a transformação já pôs o ponto no espaço do gradiente |
+| **radial** | `t = √(p·p) · a + b` |
+| **cônica** | um minimax de `atan` sobre `p`, dividido por `2π` (`0x3FC45F3060` = `1/2π`) e saturado |
+| **focal** | ramifica em `1 − a` e `b > 1`, e **devolve zero** quando o ponto cai fora do cone |
+| **do vértice** | lê o valor de um parâmetro de saída e escreve `1.0` nele |
+
+`[BIN]` Os spreads: `pad` é `saturate`, `repeat` é `fract`, e `reflect` é
+`fract(t · ½) · 2` dobrado em 1 — a onda triangular.
+
+### 23.3. A rampa — mais dois campos
+
+`[BIN]` `Gradient::color` aplica o `fold_value` **primeiro**, e então comuta em
+`(palavra0 >> 23) & 3`:
+
+| valor | rampa |
+|---|---|
+| **0** | **duas cores**: `mix(a, b, t)` |
+| 1, 2 | `sample_stops_binary` — tabela arbitrária, busca binária |
+| 3 | `sample_stops_uniform` — paradas equiespaçadas |
+
+`[BIN]` E dois bits soltos:
+
+```
+palavra0 bit 25   um caminho alternativo de amostragem no uniforme
+palavra0 bit 26   gama: no caminho de duas cores, `powr(t, arg)`; no de paradas,
+                  a entrada passa de 4 para 5 halves e a quinta e o expoente
+```
+
+`[BIN]` **O layout da parada** sai do `sample_stops_uniform`: um array plano de
+`half4` (RGBA), com stride **4** ou **5** conforme o bit 26.
+
+### 23.4. E isto corrobora a medição do formato
+
+`[ART]` O `linear-gradient` do documento tem **sempre exatamente duas paradas** —
+48 de 48 no corpus.
+
+`[INF]` Que é precisamente a rampa **tipo 0** do motor, o caminho de duas cores.
+As duas medições vêm de lados opostos — uma dos documentos, outra do IR — e
+descrevem a mesma coisa.
+
+### 23.5. O que continua fechado
+
+`[OBS]` `sample_stops_binary` foi localizado e **não** foi lido inteiro; o
+caminho do bit 25 no uniforme também não. E `Gradient::color_out` (97 linhas,
+noutro módulo) segue sem leitura.
+
+`[OBS]` A regra do `automatic-gradient` — o que os seis números de §19.4 fazem
+com uma cor — **não está aqui**: estas funções recebem uma rampa pronta. Quem a
+deriva é o `IconRendering`, não o `RenderBox`.
+
+## 24. `automatic-gradient` — a regra, lida
+
+O §19.4 leu os **seis parâmetros** e deixou a REGRA por ler, e o spec do
+gradiente registrou esse passo como um que **podia não fechar**. Fechou.
+
+`[BIN]` A derivação é uma função só, em `IconRendering` (`0x5864`), com dois
+chamadores e nenhum outro. Ela recebe os seis parâmetros e uma cor, e devolve
+**duas paradas**.
+
+### 24.1. A regra
+
+`[BIN]`
+
+```
+L  = 0.2126·r + 0.7152·g + 0.0722·b            Rec.709, soma exatamente 1
+Λ  = dim        se L ≤ 0.25
+     midDim     se L ≤ 0.50
+     midBright  se L ≤ 0.75
+     bright     caso contrário
+c' = c − sb·(L − c)                            por canal
+c" = clamp01( c' + Λ·(Λ < 0 ? c' : 1 − c') )
+```
+
+E as duas paradas:
+
+```
+A = (c", alpha)  em  Λ > 0 ? 0 : 1
+B = (c,  alpha)  em  Λ > 0 ? 1 − basePosition : basePosition
+```
+
+`[BIN]` ordenadas **crescentes por posição** — o alvo chama um sort com
+comparador que compara o campo de posição.
+
+### 24.2. O que uma invenção plausível teria errado
+
+Este é o ponto da seção. Seis parâmetros com nome de faixa de brilho convidam a
+uma regra em que **os parâmetros descrevem as faixas**. Não descrevem:
+
+`[BIN]` **As fronteiras estão fixas no código** — `fmov d2, #0.25`,
+`fmov d5, #0.50`, `fmov d6, #0.75`, imediatos, comparados com `ls` (≤). Nenhuma
+delas vem do bloco de parâmetros.
+
+`[INF]` Uma rampa que derivasse as fronteiras do `basePosition` — o único
+parâmetro com cara de posição — teria produzido pixel diferente com aparência de
+acerto. E `basePosition` no default `0.0` **não faz nada**, então ler os
+defaults sem a regra não poderia ter dito o que ele é.
+
+Três outros detalhes que a leitura entrega e a dedução não:
+
+| | |
+|---|---|
+| o boost de saturação | empurra o canal **para longe da luminância**, então um cinza não se move |
+| o sinal de Λ | troca **em que ponta** a cor derivada fica, e é por isso que o alvo ordena |
+| o alpha | atravessa **intocado** para as duas paradas — não é clareado nem clampeado |
+
+`[OBS]` A função não faz **nenhuma** conversão de espaço de cor: ela aplica a
+luminância aos componentes como estão. Se eles são linear-light ou codificados
+em sRGB é decidido antes, e isso não foi medido — o gradiente herda a pergunta
+de espaço do §20.4.
+
+### 24.3. E o `automatic` é outra coisa
+
+`[BIN]` `Icon.Fill.Contents.system` (55 fills de camada + 28 de fundo) **não é
+derivado da cor**. Ele lê um byte de payload, compara com 1, e escolhe entre
+`ICRRenderingParameters.Fills.systemLightGradient` e `systemDarkGradient` — as
+duas listas de paradas enlatadas que o §19.5 mediu como rampas de cinza
+`255→245` e `31→15`.
+
+`[INF]` Sem luminância, sem boost, sem clareamento. Os seis parâmetros do
+`automaticGradient` não participam.
+
+### 24.4. O que segue fechado
+
+`[OBS]` A **geometria** do `automatic-gradient` não sai desta função: ela devolve
+paradas, não posições de eixo. De onde vem o `start`/`end` desse gradiente não
+foi rastreado.

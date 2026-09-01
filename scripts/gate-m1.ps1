@@ -58,6 +58,7 @@ $sources = @{
     rbsvg    = Join-Path $root "Source/RenderBox/SvgRenderer.cpp"
     png      = Join-Path $root "Source/IconComposerFoundation/Png.cpp"
     inflate  = Join-Path $root "Source/IconComposerFoundation/Inflate.cpp"
+    icon     = Join-Path $root "Source/RenderBox/IconRenderer.cpp"
 }
 $original = @{}
 $hashes = @{}
@@ -544,6 +545,58 @@ $mutations = @(
        to   = 'if (channels == 3) out.rgba[i * 4 + 3] = 0.0f;' },
     @{ file = "png"; name = "a truncated file is accepted because IEND is not required"
        from = 'if (!sawEnd) {'
+       to   = 'if (false) {' },
+    # ---- the compositor: a document walked, and its art placed ----
+    #
+    # The transform is where the document's numbers meet the canvas. Two of its
+    # conventions are assumptions and one -- the sign of y -- is measured from
+    # the corpus, so all three are pinned: an assumption that quietly changes is
+    # worse than one that was never written down.
+    @{ file = "icon"; name = "a group's scale does not reach the layer's translation"
+       from = 'out.translateX = g.scale * l.translateX + g.translateX;'
+       to   = 'out.translateX = l.translateX + g.translateX;' },
+    @{ file = "icon"; name = "the group and layer scales are added, not composed"
+       from = 'out.scale = g.scale * l.scale;'
+       to   = 'out.scale = g.scale + l.scale - 1.0;' },
+    @{ file = "icon"; name = "art is placed at the origin instead of centred"
+       from = 'const double left = (kCanvasPoints - w * p.scale) * 0.5 + p.translateX;'
+       to   = 'const double left = p.translateX;' },
+    @{ file = "icon"; name = "the sign of the y translation is flipped"
+       from = 'const double top = (kCanvasPoints - h * p.scale) * 0.5 + p.translateY;'
+       to   = 'const double top = (kCanvasPoints - h * p.scale) * 0.5 - p.translateY;' },
+    @{ file = "icon"; name = "the centring ignores the layer's scale"
+       from = 'const double left = (kCanvasPoints - w * p.scale) * 0.5 + p.translateX;
+    const double top = (kCanvasPoints - h * p.scale) * 0.5 + p.translateY;'
+       to   = 'const double left = (kCanvasPoints - w) * 0.5 + p.translateX;
+    const double top = (kCanvasPoints - h) * 0.5 + p.translateY;' },
+    @{ file = "icon"; name = "the viewBox origin is not taken out of the placement"
+       from = 'g.m2[0] = static_cast<float>(left * k - s * box.x);'
+       to   = 'g.m2[0] = static_cast<float>(left * k);' },
+    @{ file = "icon"; name = "the canvas is measured in pixels rather than points"
+       from = 'const double k = static_cast<double>(size) / kCanvasPoints;
+    const double s = p.scale * k;'
+       to   = 'const double k = 1.0;
+    const double s = p.scale * k;' },
+    @{ file = "icon"; name = "a hidden layer is drawn anyway"
+       from = 'if (boolOr(layer.resolve("hidden", options.context), false)) {'
+       to   = 'if (false) {' },
+    @{ file = "icon"; name = "a glass layer is drawn instead of being named"
+       from = 'if (boolOr(layer.resolve("glass", options.context), false)) {'
+       to   = 'if (false) {' },
+    @{ file = "icon"; name = "a blend this renderer does not have is drawn as normal"
+       from = 'if (*s != "normal") {'
+       to   = 'if (false) {' },
+    @{ file = "icon"; name = "the layer opacity never reaches the composite"
+       from = 'over(out.rgba, drew->rgba, static_cast<float>(opacity));'
+       to   = 'over(out.rgba, drew->rgba, 1.0f);' },
+    @{ file = "icon"; name = "the over operator does not hold back the destination"
+       from = 'for (int k = 0; k < 3; ++k) acc[i + k] = src[i + k] * a + acc[i + k] * inv;'
+       to   = 'for (int k = 0; k < 3; ++k) acc[i + k] = src[i + k] * a + acc[i + k];' },
+    @{ file = "icon"; name = "a raster is sampled without premultiplying, so edges bleed"
+       from = 'acc[c] += static_cast<float>(wgt) * img.rgba[s + c] * sa;'
+       to   = 'acc[c] += static_cast<float>(wgt) * img.rgba[s + c];' },
+    @{ file = "icon"; name = "a dangling asset is drawn as though it resolved"
+       from = 'if (!std::filesystem::is_regular_file(art)) {'
        to   = 'if (false) {' }
 )
 

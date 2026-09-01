@@ -1,0 +1,58 @@
+#version 450
+// Runs the gradient stages as compute, so what the GPU computes can be read back
+// and compared with the oracle -- the same shape as `path_probe.comp`.
+//
+// The point of a probe is that the renderer and the differential run the SAME
+// FILE: `Gradient.glsl` is included here and by nothing else that guesses.
+#extension GL_GOOGLE_include_directive : require
+
+#include "Gradient.glsl"
+
+layout(local_size_x = 64) in;
+
+struct Input {
+    vec2 point;     // already in the gradient's own space
+    float a;        // the two floats the target passes alongside
+    float b;
+    vec4 lo;        // ramp kind 0: the two colours
+    vec4 hi;
+    float gamma;
+    float t;        // for the fold and ramp stages, a parameter straight in
+    uint pad0;
+    uint pad1;
+};
+
+layout(std430, binding = 0) readonly buffer In { Input inputs[]; };
+layout(std430, binding = 1) writeonly buffer Out { vec4 outputs[]; };
+
+layout(push_constant) uniform Control {
+    uint count;
+    uint stage;   // 0 = fold, 1 = value, 2 = two-colour ramp, 3 = the table
+    uint state;
+} control;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= control.count) return;
+    Input v = inputs[i];
+    vec4 result = vec4(0.0);
+
+    if (control.stage == 0u) {
+        result.x = rbFoldValue(control.state, v.t);
+    } else if (control.stage == 1u) {
+        int covered;
+        result.x = rbGradientValue(control.state, v.point, v.a, v.b, covered);
+        result.y = float(covered);
+    } else if (control.stage == 2u) {
+        result = rbRampTwoColour(control.state, v.t, v.lo, v.hi, v.gamma);
+    } else {
+        // The whole chain, which is what a caller actually runs: geometry, then
+        // the spread, then the ramp.
+        int covered;
+        float t = rbGradientValue(control.state, v.point, v.a, v.b, covered);
+        result = covered == 1
+            ? rbRampTwoColour(control.state, rbFoldValue(control.state, t), v.lo, v.hi, v.gamma)
+            : vec4(0.0);
+    }
+    outputs[i] = result;
+}

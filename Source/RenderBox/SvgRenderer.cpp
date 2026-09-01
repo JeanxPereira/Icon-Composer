@@ -47,6 +47,12 @@ PathGlobals fitViewBox(const icf::svg::ViewBox& box, std::uint32_t width,
 
 Result<RenderedImage> renderSvg(Device& device, const icf::svg::SvgDocument& doc,
                                 RenderOptions options) {
+    return renderSvgPlaced(device, doc,
+                           fitViewBox(doc.viewBox, options.width, options.height), options);
+}
+
+Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocument& doc,
+                                      const PathGlobals& placement, RenderOptions options) {
     if (options.width == 0 || options.height == 0) {
         return std::unexpected("a render target of zero area was asked for");
     }
@@ -65,7 +71,7 @@ Result<RenderedImage> renderSvg(Device& device, const icf::svg::SvgDocument& doc
     auto pass = CoveragePass::create(device);
     if (!pass) return std::unexpected(pass.error());
 
-    const PathGlobals globals = fitViewBox(doc.viewBox, options.width, options.height);
+    const PathGlobals globals = placement;
 
     for (std::size_t i = 0; i < doc.shapes.size(); ++i) {
         const icf::svg::Shape& shape = doc.shapes[i];

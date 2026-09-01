@@ -12,6 +12,7 @@
 // Everything it cannot draw is listed on stderr, by shape, with a reason.
 #include "Source/CoreSVG/Document.h"
 #include "Source/IconComposerFoundation/Png.h"
+#include "Source/RenderBox/IconRenderer.h"
 #include "Source/RenderBox/SvgRenderer.h"
 
 #include <cstdio>
@@ -62,6 +63,7 @@ int main(int argc, char** argv) {
     const std::string input = args[0];
     std::string output;
     rb::RenderOptions options;
+    icf::Context ctx;
     for (std::size_t i = 1; i < args.size(); ++i) {
         if (i + 1 >= args.size()) return fail("missing a value for " + args[i]);
         const std::string& key = args[i];
@@ -76,11 +78,44 @@ int main(int argc, char** argv) {
             const int n = std::atoi(value.c_str());
             if (n < 1 || n > 256) return fail("--subdivisions must be between 1 and 256");
             options.subdivisions = n;
+        } else if (key == "--appearance") {
+            auto a = icf::appearanceFromString(value);
+            if (!a) return fail("unexpected value for --appearance: " + value);
+            ctx.appearance = *a;
+        } else if (key == "--idiom") {
+            auto d = icf::idiomFromString(value);
+            if (!d) return fail("unexpected value for --idiom: " + value);
+            ctx.idiom = *d;
         } else {
             return fail("invalid argument name " + key);
         }
     }
     if (output.empty()) return fail("missing --out");
+
+    auto device = rb::Device::create();
+    if (!device) return fail("no Vulkan device: " + device.error());
+
+    // A bundle and a loose SVG take different paths, and the argument says which
+    // by being a directory or not -- the same test `IconBundle::open` makes.
+    if (auto bundle = icf::IconBundle::open(input)) {
+        rb::IconRenderOptions io;
+        io.size = options.width;
+        io.subdivisions = options.subdivisions;
+        io.context = ctx;
+        auto icon = rb::renderIcon(*device, *bundle, io);
+        if (!icon) return fail(icon.error());
+        const std::string wrote =
+            icf::writePng(output, icon->rgba, icon->width, icon->height);
+        if (!wrote.empty()) return fail(wrote);
+        std::fprintf(stdout, "%s: %u x %u, %zu of %zu layer(s) drawn\n", output.c_str(),
+                     icon->width, icon->height, icon->drawn, icon->total);
+        for (const auto& s : icon->skipped) {
+            std::fprintf(stderr, "  grupo %zu / %s: %s\n", s.group, s.layer.c_str(),
+                         s.why.c_str());
+        }
+        for (const auto& g : icon->shapeGaps) std::fprintf(stderr, "  %s\n", g.c_str());
+        return icon->skipped.empty() && icon->shapeGaps.empty() ? 0 : 1;
+    }
 
     bool read = true;
     const std::string svg = readFile(input, read);
@@ -88,9 +123,6 @@ int main(int argc, char** argv) {
 
     auto doc = icf::svg::SvgDocument::parse(svg);
     if (!doc) return fail("not an SVG this reader can open: " + input);
-
-    auto device = rb::Device::create();
-    if (!device) return fail("no Vulkan device: " + device.error());
 
     auto image = rb::renderSvg(*device, *doc, options);
     if (!image) return fail(image.error());

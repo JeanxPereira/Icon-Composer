@@ -18,6 +18,9 @@ add_library(RenderBox STATIC
     Image.cpp
     CoveragePass.cpp
     SvgRenderer.cpp
+    IconRenderer.cpp
+    GradientOracle.cpp
+    AutomaticGradient.cpp
 )
 
 # Shaders are compiled at BUILD time, not loaded at run time. A shader that does
@@ -28,7 +31,7 @@ set(_shader_dir ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${_shader_dir})
 file(GLOB _glsl_deps ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.glsl)
 set(_shader_incs)
-foreach(shader IN ITEMS path_probe.comp path_coverage.comp path_exterior.vert path_exterior.frag)
+foreach(shader IN ITEMS path_probe.comp path_coverage.comp path_exterior.vert path_exterior.frag gradient_probe.comp)
     set(_src ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader})
     set(_out ${_shader_dir}/${shader}.inc)
     add_custom_command(OUTPUT ${_out}
@@ -48,6 +51,7 @@ target_include_directories(RenderBox PUBLIC ${_shader_dir})
 target_include_directories(RenderBox PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 # CoreSVG, because a path buffer is built FROM a parsed path. Still no UI and
 # no Onyx anywhere in this tower.
-target_link_libraries(RenderBox PUBLIC Vulkan::Vulkan IconComposer::CoreSVG)
+# The document model too, now that the compositor walks groups and layers.
+target_link_libraries(RenderBox PUBLIC Vulkan::Vulkan IconComposer::CoreSVG IconComposer::Foundation)
 
 add_library(IconComposer::RenderBox ALIAS RenderBox)

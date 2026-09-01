@@ -284,7 +284,7 @@ e sim quatro.
    estes defaults — `basePosition` `0.0`, `saturationBoost` `0.2`, e quatro
    clareamentos por faixa de brilho, `0.04`, `0.08`, `0.15` e **`-0.05`**. Uma
    rampa paramétrica sobre a cor base, não uma tabela de stops; a faixa mais
-   clara é **escurecida**, não clareada. Doc 03 §18.4 e §19.
+   clara é **escurecida**, não clareada. Doc 03 §18.4, §19 e **§24 — a REGRA, lida**: luminância Rec.709, quatro faixas com fronteiras **fixas no código** em 0,25/0,50/0,75, boost que empurra o canal para longe da luminância, e duas paradas ordenadas por posição.
 5. ~~**Dez modos de mescla contra os dezessete implementados antes**~~ —
    **FECHADO em 2026-09-01 pelo caminho que este item previu.** O
    `RB::Shader::blend` do `default.metallib` tem **56 casos**, selecionados por

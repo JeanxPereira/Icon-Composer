@@ -88,4 +88,11 @@ PathGlobals fitViewBox(const icf::svg::ViewBox& box, std::uint32_t width,
 Result<RenderedImage> renderSvg(Device& device, const icf::svg::SvgDocument& doc,
                                 RenderOptions options = RenderOptions{});
 
+// The same, with the placement given rather than fitted. The icon compositor
+// needs it: a layer's art is not fitted to the canvas, it is placed on it by the
+// document's own scale and translation.
+Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocument& doc,
+                                      const PathGlobals& globals,
+                                      RenderOptions options = RenderOptions{});
+
 }  // namespace rb

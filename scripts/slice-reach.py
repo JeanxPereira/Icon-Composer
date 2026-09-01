@@ -12,9 +12,13 @@ guess.
 WHAT COUNTS AS "IN THE SLICE"
 -----------------------------
 A layer is in the slice when it is drawable with what is gated today: a `solid`
-fill, `normal` blend, no glass, and vector art the CoreSVG reader turns into
-filled paths -- no stroke, gradient, filter, mask, clip path, pattern, `use` or
-embedded raster.
+fill, `normal` blend, no glass, and art the renderer can place -- a PNG, or
+vector art the CoreSVG reader turns into filled paths with no stroke, gradient,
+filter, mask, clip path, pattern, `use` or embedded raster.
+
+RASTER MOVED OUT OF THE BLOCKER LIST on 2026-09-01, when the compositor learned
+to decode and place a PNG. The number this script prints is therefore not
+comparable across that change, which is the point of saying so here.
 
 TWO RULERS, AND THE SECOND IS THE ONE THAT DECIDES
 --------------------------------------------------
@@ -143,8 +147,12 @@ def blockers_of(node, assets: Path, svg_cache: dict) -> tuple[set[str], int]:
             dangling += 1
             bad.add("referência pendurada")
             continue
+        # Raster is no longer a blocker: the compositor decodes PNG and places
+        # it (doc 03 §21, §22). Any OTHER extension still is.
+        if f.suffix.lower() == ".png":
+            continue
         if f.suffix.lower() != ".svg":
-            bad.add("raster (%s)" % f.suffix.lower())
+            bad.add("arte com extensao nao lida (%s)" % f.suffix.lower())
             continue
         if f not in svg_cache:
             text = f.read_text(encoding="utf-8", errors="replace")

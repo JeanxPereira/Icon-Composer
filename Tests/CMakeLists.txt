@@ -19,6 +19,9 @@ add_executable(ic_tests
     test_rb_render.cpp
     test_render_svg.cpp
     test_png.cpp
+    test_icon_render.cpp
+    test_rb_gradient.cpp
+    test_auto_gradient.cpp
 )
 
 target_link_libraries(ic_tests PRIVATE IconComposer::Foundation IconComposer::CliLib IconComposer::CoreSVG IconComposer::RenderBox)
