@@ -1699,15 +1699,36 @@ não os dados. Um inflate que erre por um byte falha ali.
 
 `[ART]` **60 PNGs: 58 decodados, 2 entrelaçados, 55.273.766 pixels.**
 
-`[OBS]` A varredura de mutação sobre este leitor **ainda não fechou**. A
-primeira execução com as 16 mutações do raster devolveu **114 de 119**, e as
-cinco sobreviventes eram guardas sem teste que as fizesse morder — inclusive
-uma em que o teste EXISTIA e media outra coisa: ele truncava o arquivo em 40
-bytes, o que levava o `IDAT` junto, então o erro vinha do zlib vazio e não da
-guarda do `IEND`. Os cinco testes estão escritos; que eles mordam é o que a
-próxima varredura tem de provar.
+### 21.4. As cinco que a varredura cobrou
 
-### 21.4. O que isto ainda NÃO faz
+A primeira execução com as 16 mutações do raster devolveu **114 de 119**. As
+cinco sobreviventes eram guardas escritas sem o teste que as fizesse morder — a
+quarta vez que esse par se separa neste repositório.
+
+| sobrevivente | por que nada a exercia |
+|---|---|
+| complemento do bloco *stored* | nenhuma fixture tinha o `NLEN` quebrado |
+| tabela Huffman sobre-inscrita | nenhum fluxo malformado entrava |
+| empate do Paeth | só difere quando `pb == pc`, e nenhuma imagem natural chega lá |
+| comprimento contra o `IHDR` | nenhum PNG com o cabeçalho mentindo |
+| `IEND` ausente | **o teste existia e media outra coisa** |
+
+`[INF]` A última é a que ensina. O teste truncava o arquivo em 40 bytes — o que
+levava o `IDAT` junto, então o erro vinha do zlib vazio e **não** da guarda do
+`IEND`. E como ele só checava "algum erro", passava verde provando nada. Um
+teste que não nomeia o motivo não distingue a guarda que ele acha que exerce da
+que de fato respondeu.
+
+`[ART]` Duas fixtures tiveram de ser construídas de propósito. O **empate do
+Paeth**: resolvendo `pb == pc` com `pa > pb` chega-se a `a=10, b=40, c=20`, onde
+o correto escolhe `b` e um desempate errado escolhe `c` — vinte de diferença num
+byte. E a **tabela sobre-inscrita**: quatro códigos de um bit onde só existem
+dois, e o **zlib do Python também a recusa** (*"invalid code lengths set"*), o
+que a torna malformada segundo um juiz independente do decodificador sob teste.
+
+`[ART]` Com os cinco testes escritos: **119 de 119**.
+
+### 21.5. O que isto ainda NÃO faz
 
 `[OBS]` Decodificar não é desenhar. As 54 camadas raster continuam sem sair na
 tela: falta o compositor que caminha o documento — grupos, camadas, a

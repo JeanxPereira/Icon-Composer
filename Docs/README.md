@@ -123,15 +123,19 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
 totalmente compreendidos, 1.740 de 1.740 especializações alcançáveis, 61.537
 valores decodados sem uma falha, 55 bundles sem arquivo morto, 1.100 árvores
 renderizadas sem cair em JSON cru, 149 SVGs lidos em geometria com 128 deles
-totalmente compreendidos, 58 dos 60 PNGs decodados, e **103 de 103 mutações
+totalmente compreendidos, 58 dos 60 PNGs decodados, e **119 de 119 mutações
 pegas**.
 
-> `[OBS]` As **16 mutações do raster** (inflate e decodificador de PNG) entraram
-> depois dessa execução e ainda **não** foram varridas de ponta a ponta. A suíte
-> está verde em 213 casos, e a primeira varredura com elas devolveu **114 de
-> 119** — cinco guardas sem teste que as fizesse morder, agora escritas. Que
-> elas mordam é o que a próxima execução tem de provar, e até lá o número desta
-> linha é 103, não 119.
+> **As cinco que a varredura cobrou.** A primeira execução com as 16 mutações do
+> raster devolveu **114 de 119**: complemento do bloco *stored*, tabela Huffman
+> sobre-inscrita, empate do Paeth, comprimento contra o `IHDR` e `IEND` ausente —
+> cinco guardas escritas sem o teste que as fizesse morder.
+>
+> A quinta é a instrutiva: o teste **existia** e media outra coisa. Ele truncava
+> o arquivo em 40 bytes, o que levava o `IDAT` junto, então o erro vinha do zlib
+> vazio e não da guarda do `IEND` — e como ele só checava "algum erro", passava
+> verde provando nada. Um teste que não nomeia o motivo não distingue a guarda
+> que ele acha que exerce da que realmente respondeu.
 
 | # | mutação | asserções avermelhadas |
 |---|---|---|
