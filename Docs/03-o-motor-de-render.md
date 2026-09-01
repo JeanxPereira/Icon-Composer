@@ -670,10 +670,20 @@ Os outros dois não foram lidos.
 O §10 parou porque a geometria do traço ramifica em bits do `RenderState`. Este
 é o levantamento desses bits.
 
-`[BIN]` O estado é a constante de função `RB::Shader::Constant::shader_state`,
-um `i32` embrulhado numa struct e lido inteiro. Nada nomeia os campos dele — o
-layout tem de sair das **máscaras**: máscara de um bit é flag, máscara de bits
-adjacentes é enum, e os valores comparados são os casos desse enum.
+`[BIN]` O estado é a constante de função `RB::Shader::Constant::shader_state`.
+Nada nomeia os campos dele, então o layout tem de sair das **máscaras**: máscara
+de um bit é flag, máscara de bits adjacentes é enum, e os valores comparados são
+os casos desse enum.
+
+> **Correção (2026-09-01, no mesmo dia).** Esta seção dizia que o estado é *"um
+> `i32`"*. **Não é: é um `uint4`.** O inicializador estático o carrega como
+> `<4 x i32>` e guarda as quatro palavras em `shader_state.0` … `.3`. Só a
+> palavra 0 é embrulhada numa struct — `RenderState0`, e o número no nome era a
+> pista que eu não li — e as outras três são lidas direto dos globais.
+>
+> A tabela abaixo cobria **só a palavra 0**, e estava certa sobre ela. O que
+> faltava não parecia faltar: metade não mapeada de um vetor tem exatamente a
+> mesma aparência da metade mapeada.
 
 ### 11.1. O que responde às nossas duas perguntas
 
@@ -702,8 +712,36 @@ agora sabe-se que o braço é um caso de um enum de três bits, não um booleano
   9–11 (`0`/`1024`/`1536`), 10–11 (`==1024`), 16–18, 19–20 (`==524288`),
   23–25, 16–29 (`==1507328`)
 
-`[OBS]` **A semântica de nenhum deles foi medida.** O layout diz onde os campos
-estão e quantos casos cada um tem; não diz o que cada caso significa.
+### 11.2.1. As outras três palavras
+
+`[BIN]` Com o instrumento corrigido: **37 máscaras ao todo**, e as palavras 1, 2
+e 3 quase não são mascaradas dentro das funções — uma cada (palavra 1 bit 14,
+palavra 2 bit 19, palavra 3 bit 1). Elas são consumidas em outro lugar.
+
+### 11.2.2. Onde os bits ganham NOME
+
+`[BIN]` Nos **inicializadores estáticos**. O `air.static_init` decodifica o
+`uint4` em `RB::Shader::Constant::<nome>` um bit por vez, e o nome está no
+próprio `store`:
+
+| constante | palavra | bit |
+|---|---|---|
+| `extended_color` | 3 | 2 |
+| `floating_point_color` | 3 | 3 |
+| `reads_dest` | 3 | 5 |
+| `reads_coverage` | 3 | 6 |
+
+`[OBS]` Quatro das quinze constantes nomeadas resolvem para **um bit único**. As
+outras — `has_coverage`, `spill_reads_color`, `spill_reads_layer`,
+`has_function_table`, `filter_blur_reads_dest` e as variantes `_and_fb_read` —
+são expressões compostas, e não foram decodadas.
+
+### 11.2.3. E o que trava o traço continua sem nome
+
+`[OBS]` Os bits nomeados estão todos na **palavra 3**. Os campos que travam o
+§10 — palavra 0 bits 6–8 e 9–10 — **continuam sem semântica**. O layout diz onde
+eles estão e quantos casos têm; não diz o que cada caso significa, e nenhum
+inicializador estático os batiza.
 
 ### 11.3. Onde a semântica mora, e é outro instrumento
 
