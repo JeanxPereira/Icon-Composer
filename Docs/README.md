@@ -65,7 +65,8 @@ especializações** — 1.040 chaveadas por `appearance`, 616 sem predicado, 82 
 | M2·P2 — o passe `edges`, transcrito | **passa o gate** — GPU × oráculo de CPU, **bit a bit** (doc 03 §8) |
 | M2·P3 — os passes `interior` e `exterior` | **passa o gate** — o leque a partir do `origin` e a cobertura analítica (doc 03 §9) |
 | o gate sobrevive a um crash | **corrigido** — backup em disco com marcador, e as 66 âncoras conferidas antes do primeiro build (doc 03 §9.5, §9.6) |
-| M2·P4…P5 — traço, alvo de render, o pixel | **não começados** |
+| M2·P4 — o traço | **levantado, não transcrito** — os 3 pares, os 3 layouts e a indexação medidos; a geometria ramifica em bits do `RenderState` não decodados (doc 03 §10) |
+| M2·P5 — alvo de render, o pixel | **não começado** |
 
 ## Build
 

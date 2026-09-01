@@ -570,3 +570,97 @@ conserto, não três.
 gate-m1: 66 mutations
 anchors: 66 of 66 resolve
 ```
+
+## 10. O traço — levantado, não transcrito
+
+`[BIN]` O `shader_stroke.metal` são **seis** módulos, e é onde aparecem os
+**primeiros fragment shaders** do pipeline de path: três pares vértice/fragment.
+
+| par | vértice emite além de `position` | struct |
+|---|---|---|
+| `stroke_lines` | `stroke_position` f2, `stroke_radius` f2, `stroke_length` f, `stroke_alpha` h2, `stroke_caps` h2 | `StrokeLinePoint` |
+| `stroke_joins` | `stroke_line0/1/2` f4, `stroke_position` f2, `stroke_alpha` h, `stroke_join` h | `StrokeLinePoint` |
+| `stroke_particles` | `stroke_position` f2, `stroke_alpha` h | `StrokeParticle` |
+
+### 10.1. Os três layouts
+
+`[BIN]` Do `air.struct_type_info`:
+
+```
+RB::Shader::StrokeGlobals       44 bytes, align 4
+   0  packed_float2  view_matrix[3]      afim 2×3
+  24  packed_float2  image_size
+  32  float          depth
+  36  float          image_width
+  40  float          recip_scale
+
+RB::Shader::StrokeLinePoint     16 bytes, align 4
+   0  packed_float2  p
+   8  float          radius
+  12  half           alpha
+  14  short          join
+
+RB::Shader::StrokeParticle      20 bytes, align 4
+   0  packed_float2  p
+   8  packed_half2   n
+  12  packed_half4   param
+```
+
+`[INF]` **`radius` e `alpha` são POR PONTO.** O traço do alvo tem largura e
+opacidade variáveis ao longo do caminho — é um pincel, não o `stroke-width`
+uniforme do SVG. Isso é uma diferença de modelo, não de implementação, e o nosso
+`CoreSVG` hoje só carrega um `stroke-width` escalar.
+
+`[BIN]` O `stroke_lines_vertex` lê do `StrokeGlobals` apenas `view_matrix`,
+`depth` e `recip_scale`. `image_size` e `image_width` não.
+
+### 10.2. A indexação, e ela é muito mais simples que a do path
+
+`[BIN]` Sem cabeçalho, sem soma de prefixo, sem busca binária. Uma instância por
+segmento, quatro vértices, e uma **janela de quatro pontos**:
+
+```
+o segmento desenhado é   points[iid+1] → points[iid+2]
+points[iid] e points[iid+3] são os VIZINHOS, para a direção das junções
+
+vid 0 e 3 → um lado do quad      vid ≤ 1 → a ponta A
+vid 1 e 2 → o outro lado         vid > 1 → a ponta B
+```
+
+`[BIN]` A meia-largura do quad:
+
+```
+halfWidth = max(radius[iid+1], radius[iid+2]) + recip_scale × 0.5
+```
+
+— o meio pixel de folga que o antialiasing precisa.
+
+`[BIN]` A direção é `normalize(P[iid+2] − P[iid+1])`, **com fallback**: quando o
+segmento tem comprimento zero, usa `P[iid+1] − P[iid]`. Um segmento degenerado
+não vira NaN, herda a direção do anterior.
+
+`[BIN]` O campo `join` carrega sentinelas: `join == -3` é testado nos dois
+vizinhos, e `min(join[iid], join[iid+2]) < 0` **descarta** o vértice.
+
+### 10.3. Onde eu parei, e por quê
+
+**A transcrição para aqui.** Depois da direção, a geometria do quad ramifica em
+bits do `RenderState` que não estão decodados:
+
+```
+and i32 %9, 448     →  bits 6–8    (o braço testado é  == 128)
+and i32 %9, 1536    →  bits 9–10
+```
+
+`[OBS]` O que esses bits selecionam não foi medido. Um deles decide se as pontas
+recebem o tratamento de `cap` ligado ao sentinela `-3`; o outro não foi
+investigado.
+
+Transcrever além disso seria **inventar** comportamento — o mesmo erro que este
+projeto recusou nos filtros de SVG (doc 04 §3) e na regra de subdivisão (§7.3).
+O passo que destrava é decodar o `RenderState` do `RB::Shader`, que também
+governa o modo polilinha × cúbicas do §7 (bit 6 ali) e portanto paga duas vezes.
+
+`[BIN]` E do lado fragment, o `stroke_particles_fragment` amostra uma textura e
+usa `fwidth` — é partícula texturizada com antialiasing por derivada de tela.
+Os outros dois não foram lidos.
