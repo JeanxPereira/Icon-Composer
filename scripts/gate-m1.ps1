@@ -13,8 +13,11 @@
 #      unknown to it, not one of the 1,740 specializations may be unreachable by
 #      the resolver, and not one of the 61,537 values it resolves may fail to
 #      decode into a type.
-#   3. A mandatory mutation sweep. Thirty-eight defects go in one at a time, and every
-#      one of them MUST redden the suite. Each is applied to a pristine tree and
+#   3. A mandatory mutation sweep. Forty-one defects go in one at a time, and every
+#      one of them MUST redden the suite WITH AN ASSERTION -- a mutation that
+#      merely crashes the process is caught by accident and is reported as a
+#      failure of the test, because a suite that dies hides every case after it.
+#      Each is applied to a pristine tree and
 #      restored from a byte-exact backup verified by SHA-256 -- never by a git
 #      command, because this repository has no git history to lean on, and a
 #      mutation that silently fails to apply reports a green suite and turns the
@@ -196,11 +199,21 @@ $mutations = @(
        from = 'if (it != style.end()) return it->second;'
        to   = 'if (false) return it->second;' },
     @{ file = "svgdoc"; name = "paint stops inheriting down the tree"
-       from = 'inherited = resolve(e, style, inherited);'
-       to   = 'inherited = resolve(e, style, Inherited{});' },
+       from = 'inherited = resolve(e, style, classDeclarations(e), inherited);'
+       to   = 'inherited = resolve(e, style, classDeclarations(e), Inherited{});' },
     @{ file = "svgdoc"; name = "a rounded rect loses its corner radius"
        from = 'rx = std::min(rx, *w / 2);'
-       to   = 'rx = 0;' }
+       to   = 'rx = 0;' },
+    # ---- the stylesheet ----
+    @{ file = "svgpaint"; name = "a class selector keeps its dot, so nothing matches"
+       from = 'auto& slot = out[std::string(one.substr(1))];'
+       to   = 'auto& slot = out[std::string(one)];' },
+    @{ file = "svgdoc"; name = "the stylesheets are never collected"
+       from = 'b.collectStyles(xml->root);'
+       to   = 'void(0);' },
+    @{ file = "svgdoc"; name = "a class rule never reaches the element"
+       from = 'if (cls != fromClass.end()) return cls->second;'
+       to   = 'if (false) return cls->second;' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"
@@ -256,6 +269,7 @@ Write-Host "pristine: OK`n"
 foreach ($k in $sources.Keys) { $hashes[$k] = (Get-FileHash $sources[$k] -Algorithm SHA256).Hash }
 $caught = 0
 $survivors = @()
+$crashed = @()
 
 try {
     foreach ($m in $mutations) {
@@ -279,8 +293,17 @@ try {
                 $survivors += "$($m.name) [suite stayed green]"
             } else {
                 $n = ([regex]::Matches($r.text, 'FAIL ')).Count
-                Write-Host ("  {0,-56} caught ({1} assertion(s))" -f $m.name, $n)
-                $caught++
+                if ($n -eq 0) {
+                    # A non-zero exit with no FAIL line is a CRASH, not a test
+                    # noticing. It counts as a detection only by accident, and a
+                    # suite that dies stops reporting everything after it -- so
+                    # this is a failure of the TEST, and the gate says so.
+                    Write-Host ("  {0,-56} CRASHED (no assertion fired)" -f $m.name)
+                    $crashed += $m.name
+                } else {
+                    Write-Host ("  {0,-56} caught ({1} assertion(s))" -f $m.name, $n)
+                    $caught++
+                }
             }
         }
         Restore-Sources
@@ -301,6 +324,12 @@ Write-Host "values: $vals decoded, $vbad failed"
 Write-Host "report: $trees trees rendered, $tbad fell back to raw JSON"
 Write-Host "svg:    $svgread of $svgs read into geometry, $svgbad refused"
 Write-Host "sweep:  $caught of $($mutations.Count) mutations caught"
+if ($crashed.Count -gt 0) {
+    Write-Host "`nVERDICT: FAILED -- a mutation that crashes the suite is caught by accident"
+    foreach ($c in $crashed) { Write-Host "  crashed: $c" }
+    Write-Host "  A test that throws instead of asserting hides every case after it."
+    exit 1
+}
 if ($caught -ne $mutations.Count) {
     Write-Host "`nVERDICT: FAILED -- a defect the suite does not see is a defect that ships"
     foreach ($s in $survivors) { Write-Host "  survived: $s" }

@@ -39,4 +39,16 @@ Paint parsePaint(std::string_view value);
 // cascade, no `!important` -- just the declarations of one element.
 std::map<std::string, std::string> parseStyle(std::string_view style);
 
+// A `<style>` element, as a lookup from CLASS NAME (without the dot) to the
+// declarations that class carries.
+//
+// Measured over the corpus's 18 stylesheets: 29 rules, and every one of them a
+// single class selector. No id, no element, no descendant, no pseudo-class, no
+// at-rule. A rule whose selector is anything else is DROPPED rather than applied
+// to everything -- and a first survey of this corpus reported descendant
+// selectors that did not exist, an artifact of a regex that captured the newline
+// before the dot.
+std::map<std::string, std::map<std::string, std::string>> parseStylesheet(
+    std::string_view css);
+
 }  // namespace icf::svg

@@ -78,11 +78,24 @@ void appendPolygon(Path& p, const std::vector<double>& pts, bool close) {
 // the presentation attribute of the same name. 67 of 149 files put their paint
 // in `style`, so a reader that consults only attributes misses most of it.
 std::optional<std::string> property(const Element& e, std::string_view name,
-                                    const std::map<std::string, std::string>& style) {
+                                    const std::map<std::string, std::string>& style,
+                                    const std::map<std::string, std::string>& fromClass) {
+    // CSS's order, and it is not obvious: a PRESENTATION ATTRIBUTE is weaker
+    // than any stylesheet rule, and the `style` attribute is stronger than both.
+    // Reversing the first two paints 35 corpus files with the colour they were
+    // overridden away from.
     auto it = style.find(std::string(name));
     if (it != style.end()) return it->second;
+    auto cls = fromClass.find(std::string(name));
+    if (cls != fromClass.end()) return cls->second;
     if (const std::string* a = e.attribute(name)) return *a;
     return std::nullopt;
+}
+
+std::optional<std::string> property(const Element& e, std::string_view name,
+                                    const std::map<std::string, std::string>& style) {
+    static const std::map<std::string, std::string> none;
+    return property(e, name, style, none);
 }
 
 // What a shape inherits from its ancestry. `opacity` is NOT here: it applies to
@@ -123,7 +136,7 @@ void appendCorner(Path& p, Point from, Point to, Point corner, double kx, double
 // is not read, and `opacity` stays because group compositing is a different
 // idea from paint.
 constexpr std::string_view kPaintAttributes[] = {
-    "class", "opacity", "clip-path", "mask", "filter", "clip-rule",
+    "opacity", "clip-path", "mask", "filter", "clip-rule",
     "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "mix-blend-mode",
 };
 
@@ -143,25 +156,66 @@ struct Builder {
     std::map<std::string, Gradient> gradients;
 
     // One element's paint, resolved against what the ancestry set.
+    // The stylesheets, collected before anything is drawn.
+    std::map<std::string, std::map<std::string, std::string>> sheet;
+
+    // Every `<style>` in the document, wherever it sits. A pass of its own:
+    // nothing requires a stylesheet to be declared before the shapes that use
+    // it, and 18 corpus files put theirs inside `defs`.
+    void collectStyles(const Element& e) {
+        if (e.name == "style") {
+            for (const auto& [cls, decls] : parseStylesheet(e.text)) {
+                for (const auto& d : decls) sheet[cls][d.first] = d.second;
+            }
+            return;
+        }
+        for (const auto& c : e.children) collectStyles(c);
+    }
+
+    // What this element's `class` list contributes, later classes winning.
+    std::map<std::string, std::string> classDeclarations(const Element& e) {
+        std::map<std::string, std::string> out;
+        const std::string* value = e.attribute("class");
+        if (!value) return out;
+        size_t i = 0;
+        while (i < value->size()) {
+            while (i < value->size() && isSpace((*value)[i])) ++i;
+            const size_t start = i;
+            while (i < value->size() && !isSpace((*value)[i])) ++i;
+            if (i == start) break;
+            const std::string name = value->substr(start, i - start);
+            auto it = sheet.find(name);
+            if (it == sheet.end()) {
+                // Not an error: the element keeps what it inherited. But a class
+                // nothing matches usually means a stylesheet that was not read,
+                // and that is worth seeing.
+                unsupported.insert("class:" + name);
+                continue;
+            }
+            for (const auto& d : it->second) out[d.first] = d.second;
+        }
+        return out;
+    }
+
     Inherited resolve(const Element& e, const std::map<std::string, std::string>& style,
-                      Inherited in) {
-        if (auto v = property(e, "fill", style)) {
+                      const std::map<std::string, std::string>& fromClass, Inherited in) {
+        if (auto v = property(e, "fill", style, fromClass)) {
             Paint p = parsePaint(*v);
             if (p.kind == PaintKind::Unreadable) unsupported.insert("paint:fill=" + *v);
             else in.fill = p;
         }
-        if (auto v = property(e, "stroke", style)) {
+        if (auto v = property(e, "stroke", style, fromClass)) {
             Paint p = parsePaint(*v);
             if (p.kind == PaintKind::Unreadable) unsupported.insert("paint:stroke=" + *v);
             else in.stroke = p;
         }
-        if (auto v = property(e, "fill-rule", style)) {
+        if (auto v = property(e, "fill-rule", style, fromClass)) {
             if (*v == "evenodd") in.fillRule = FillRule::EvenOdd;
             else if (*v == "nonzero") in.fillRule = FillRule::NonZero;
             else unsupported.insert("paint:fill-rule=" + *v);
         }
         auto scalar = [&](const char* name, double& slot) {
-            if (auto v = property(e, name, style)) {
+            if (auto v = property(e, name, style, fromClass)) {
                 auto n = numbers(*v);
                 if (n.size() == 1) slot = n[0];
                 else unsupported.insert(std::string("paint:") + name + "=" + *v);
@@ -236,7 +290,7 @@ struct Builder {
         const auto style = e.attribute("style")
                                ? parseStyle(*e.attribute("style"))
                                : std::map<std::string, std::string>{};
-        inherited = resolve(e, style, inherited);
+        inherited = resolve(e, style, classDeclarations(e), inherited);
         Transform here = parent;
         if (const std::string* t = e.attribute("transform")) {
             auto local = parseTransform(*t);
@@ -339,11 +393,13 @@ struct Builder {
             for (const auto& c : e.children) {
                 if (c.name == "linearGradient" || c.name == "radialGradient") {
                     collectGradient(c);
-                } else {
+                } else if (c.name != "style") {  // collected in its own pass
                     unsupported.insert("defs:" + c.name);
                 }
             }
             return;
+        } else if (e.name == "style") {
+            return;  // already collected, and it draws nothing
         } else if (isIgnorable(e.name)) {
             return;  // nothing to draw, and nothing to report
         } else {
@@ -432,6 +488,7 @@ std::optional<SvgDocument> SvgDocument::parse(std::string_view svg) {
     SvgDocument doc;
     doc.viewBox = {n[0], n[1], n[2], n[3]};
     Builder b;
+    b.collectStyles(xml->root);
     b.walk(xml->root, Transform{}, Inherited{});
     doc.shapes = std::move(b.shapes);
     doc.gradients = std::move(b.gradients);

@@ -134,8 +134,8 @@ TEST_CASE(document_reports_an_element_it_does_not_draw) {
 
 // Paint IS read now -- `fill`, `stroke`, `fill-rule`, the opacities, the widths
 // and `style`. What is still not read is named, and the list is short and
-// deliberate: `class` needs a stylesheet nobody parses, and `opacity` is group
-// compositing rather than paint.
+// deliberate: a class nothing matches is named with the class, and `opacity` is
+// group compositing rather than paint.
 TEST_CASE(document_reports_the_paint_it_still_does_not_read) {
     auto d = SvgDocument::parse(
         R"(<svg viewBox="0 0 10 10"><path d="M1 1" fill="#ff0000" stroke="black"
@@ -143,7 +143,7 @@ TEST_CASE(document_reports_the_paint_it_still_does_not_read) {
     REQUIRE(d.has_value());
     CHECK(d->unsupported().count("paint:fill") == 0);     // read
     CHECK(d->unsupported().count("paint:stroke") == 0);   // read
-    CHECK(d->unsupported().count("paint:class") == 1);    // needs a stylesheet
+    CHECK(d->unsupported().count("class:a") == 1);        // no rule matches it
     CHECK(d->unsupported().count("paint:opacity") == 1);  // group compositing
     CHECK(d->unsupported().count("paint:mix-blend-mode") == 1);
 }

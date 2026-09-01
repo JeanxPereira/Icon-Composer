@@ -9,6 +9,7 @@ add_executable(ic_tests
     test_svg_xml.cpp
     test_svg_document.cpp
     test_svg_paint.cpp
+    test_svg_css.cpp
     test_bundle.cpp
     test_cli.cpp
 )

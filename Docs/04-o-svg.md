@@ -173,8 +173,13 @@ um terceiro nome é uma recusa reportada — não um preto plausível.
 `[ART]` Dentro de `style="…"`: `stop-color` 54, `fill` 50, `fill-rule` 34,
 `stop-opacity` 34, `mix-blend-mode` 24, `clip-rule` 22, `fill-opacity` 19.
 `[ART]` Gradientes: `gradientUnits` em 159, `gradientTransform` em 13, um único
-`xlink:href`. Zero `spreadMethod`. `[ART]` Seletores em `<style>`: 16
-descendentes e 13 de classe, e nada mais.
+`xlink:href`. Zero `spreadMethod`. `[ART]` Seletores em `<style>`: **29 regras, todas de
+classe única** — nenhum id, nenhum elemento, nenhum descendente, nenhuma
+pseudo-classe, nenhuma at-rule, nenhum comentário.
+
+> **Correção.** Uma primeira contagem registrou aqui "16 descendentes e 13 de
+> classe". Era artefato do regex, que capturava a quebra de linha antes do ponto
+> e via um espaço onde não havia seletor nenhum. Todas as 29 são `.nome`.
 
 > **E uma coisa que a sonda perdeu e o gate achou.** A varredura em Python
 > classificou `fill` e `stroke` e concluiu que `rgb()` não ocorre. Ocorre — em
@@ -188,30 +193,42 @@ descendentes e 13 de classe, e nada mais.
 | | |
 |---|---|
 | lidos | **149 de 149**, zero recusados |
-| totalmente compreendidos | **98 de 149** |
+| totalmente compreendidos | **128 de 149** |
 | geometria | **477 formas, 6.564 segmentos** |
 | paths | 372 de 373, um `A` recusado |
 
 Lê: `svg`/`g`/`defs`, `path`, `rect` (com cantos arredondados), `circle`,
 `ellipse`, `line`, `polyline`, `polygon`, `transform` acumulado pela árvore,
 `fill`, `stroke`, `fill-rule`, `fill-opacity`, `stroke-opacity`, `stroke-width`,
-`style="…"` com precedência sobre o atributo, herança de pintura pela árvore, e
-os gradientes lineares e radiais com os seus stops.
+`style="…"`, a folha de estilo `<style>` com seletor de classe, herança de
+pintura pela árvore, e os gradientes lineares e radiais com os seus stops.
 
-O que sobra, e é o roteiro da próxima rodada:
+### A cascata
 
-| declinado | em N arquivos | o que falta |
-|---|---|---|
-| `paint:class` | 35 | o seletor de classe do `<style>` |
-| `defs:style` | 18 | a folha de estilo em si |
-| `defs:filter` · `paint:filter` | 9 · 5 | filtros |
-| `paint:opacity` | 7 | opacidade de grupo, que é composição e não pintura |
-| `paint:clip-rule` · `paint:clip-path` · `defs:clipPath` | 4 · 1 · 1 | recorte |
-| `paint:mask` · `mask` · `defs:mask` | 3 · 2 · 1 | máscara |
-| `defs:pattern` · `defs:image` | 3 · 3 | padrão e imagem embutida |
-| `path:A` | 1 | arcos |
-| `gradient:href` | 1 | gradiente que herda os stops de outro |
+`[INF]` A ordem é a do CSS, e não é óbvia:
 
-`[INF]` As duas primeiras linhas são o mesmo trabalho — um mini-CSS de seletor de
-classe e descendente, 29 regras em 18 arquivos — e sozinhas valem mais que todo o
-resto somado.
+```
+atributo de apresentação   <   regra da folha de estilo   <   atributo style=
+```
+
+Um `fill="black"` **perde** para um `.fil0 { fill:#000066 }`. Inverter os dois
+primeiros pinta 35 arquivos com a cor da qual eles foram sobrescritos.
+
+### O que sobra
+
+| declinado | em N arquivos |
+|---|---|
+| `defs:filter` · `paint:filter` | 9 · 5 |
+| `paint:opacity` — opacidade de grupo, que é composição e não pintura | 7 |
+| `paint:clip-rule` · `paint:clip-path` · `defs:clipPath` | 4 · 1 · 1 |
+| `paint:mask` · `mask` · `defs:mask` | 3 · 2 · 1 |
+| `defs:pattern` · `defs:image` | 3 · 3 |
+| `path:A` — arcos | 1 |
+| `gradient:href` — gradiente que herda os stops de outro | 1 |
+| `class:st3`…`st6` | 1 |
+
+`[ART]` A última linha não é limitação do leitor. O
+`PDF-Archiver/AppIcon-text.svg` usa `class="st6"` e **não tem bloco `<style>`
+nenhum** — as classes dele são órfãs no próprio arquivo. O relatório achou uma
+anomalia real, que é exatamente o que um relatório de cobertura serve para
+achar quando não está mentindo.

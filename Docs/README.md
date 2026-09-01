@@ -53,8 +53,7 @@ especializações** — 1.040 chaveadas por `appearance`, 616 sem predicado, 82 
 | resolução de especialização | **passa o gate** — 1.740 de 1.740 alcançáveis; a regra está medida, doc 01 §5 |
 | leitura tipada dos valores (cores, enums, geometria) | **passa o gate** — 61.537 valores decodados, 0 falhas |
 | o bundle (`Assets/`, a referência das imagens) | **passa o gate** — 55 bundles, 0 arquivos mortos, 2 referências penduradas conhecidas |
-| SVG: XML, path, geometria, pintura, gradientes | **passa o gate** — 149/149 lidos, **98 totalmente compreendidos**, 477 formas, 6.564 segmentos |
-| SVG: a folha de estilo (`class` + `<style>`) | **não começada** — 35 e 18 arquivos; doc 04 §7 |
+| SVG: XML, path, geometria, pintura, gradientes, folha de estilo | **passa o gate** — 149/149 lidos, **128 totalmente compreendidos**, 477 formas, 6.564 segmentos |
 | SVG: filtro, máscara, recorte, padrão | **não começados** — e cada um é reportado por arquivo |
 | CLI do `ictool` / `icrtool` | **levantada** — doc 01 §11: comandos, gramática, e o `icrtool` como auxiliar interno |
 | o nosso `ictool` | **passa o gate** — 1.100 árvores renderizadas, nenhuma caindo em JSON cru |
@@ -95,15 +94,15 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
    que o conteúdo deles atravessa intacto. O do *modelo*: **nenhuma chave** dos
    145 documentos pode ser desconhecida, e **nenhuma das 1.740 especializações**
    pode ser inalcançável pelo resolver.
-3. **Uma varredura de mutação obrigatória.** Trinta e oito defeitos entram um a um e cada
+3. **Uma varredura de mutação obrigatória.** Quarenta e um defeitos entram um a um e cada
    um TEM que avermelhar a suíte, aplicados em árvore limpa e restaurados de um
    backup conferido por SHA-256 — nunca por comando de git.
 
 **gate-m1 passou em 2026-08-31** — 145 documentos, 135 byte-exatos, 145 de 145
 totalmente compreendidos, 1.740 de 1.740 especializações alcançáveis, 61.537
 valores decodados sem uma falha, 55 bundles sem arquivo morto, 1.100 árvores
-renderizadas sem cair em JSON cru, 149 SVGs lidos em geometria com 98 deles
-totalmente compreendidos, e **38 de 38 mutações pegas**.
+renderizadas sem cair em JSON cru, 149 SVGs lidos em geometria com 128 deles
+totalmente compreendidos, e **41 de 41 mutações pegas**.
 
 | # | mutação | asserções avermelhadas |
 |---|---|---|
@@ -141,6 +140,9 @@ totalmente compreendidos, e **38 de 38 mutações pegas**.
 | 36 | o atributo de apresentação passa na frente do style | 2 |
 | 37 | pintura deixa de herdar pela árvore | **1** |
 | 38 | rect arredondado perde o raio do canto | **1** |
+| 39 | seletor de classe mantém o ponto, e nada casa | 10 |
+| 40 | as folhas de estilo nunca são coletadas | 5 |
+| 41 | regra de classe nunca chega ao elemento | 5 |
 | 21 | uma sombra despejada como JSON cru | 3 |
 | 22 | camada de vidro deixa de ser marcada | **1** |
 | 23 | a árvore ignora o contexto que recebeu | **1** |
@@ -157,6 +159,13 @@ totalmente compreendidos, e **38 de 38 mutações pegas**.
 > A nº18 é o contra-exemplo instrutivo: nasceu pega por **1** asserção, e virou
 > **3** quando o corpus de bundles passou a incluir documentos que especializam
 > o `image-name` (doc 02 §4). Cobertura de corpus é uma escolha, não um dado.
+>
+> **E a varredura reprova quem passa por acidente.** A nº39 nasceu reportada como
+> "pega com ZERO asserções" — o que é a forma de um *crash*, não de um teste
+> reparando: o teste usava `map::at`, que lança numa chave ausente. Um processo
+> que morre esconde todo caso depois dele. O gate passou a exigir que a mutação
+> avermelhe uma ASSERÇÃO, e trata um crash como defeito **do teste**; corrigido,
+> a nº39 é pega por 10.
 
 ## Ferramentas
 

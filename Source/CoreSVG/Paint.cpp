@@ -156,3 +156,58 @@ std::map<std::string, std::string> parseStyle(std::string_view style) {
 }
 
 }  // namespace icf::svg
+
+namespace icf::svg {
+
+std::map<std::string, std::map<std::string, std::string>> parseStylesheet(std::string_view css) {
+    std::map<std::string, std::map<std::string, std::string>> out;
+    std::string text(css);
+
+    // Comments and a CDATA wrapper are noise around the rules, not rules.
+    for (size_t at = text.find("/*"); at != std::string::npos; at = text.find("/*", at)) {
+        const size_t end = text.find("*/", at + 2);
+        if (end == std::string::npos) {
+            text.erase(at);
+            break;
+        }
+        text.erase(at, end - at + 2);
+    }
+    for (const char* marker : {"<![CDATA[", "]]>"}) {
+        for (size_t at = text.find(marker); at != std::string::npos; at = text.find(marker)) {
+            text.erase(at, std::string(marker).size());
+        }
+    }
+
+    size_t i = 0;
+    while (i < text.size()) {
+        const size_t open = text.find('{', i);
+        if (open == std::string::npos) break;
+        const size_t close = text.find('}', open);
+        if (close == std::string::npos) break;
+        const std::string_view selectors(text.data() + i, open - i);
+        const auto declarations = parseStyle(std::string_view(text.data() + open + 1,
+                                                              close - open - 1));
+        // A comma-separated list is several selectors sharing one body.
+        size_t j = 0;
+        while (j <= selectors.size()) {
+            const size_t comma = selectors.find(',', j);
+            const std::string_view one =
+                trim(selectors.substr(j, comma == std::string_view::npos ? selectors.size() - j
+                                                                         : comma - j));
+            // Only a bare class selector. Anything else -- an id, an element, a
+            // descendant, a pseudo-class -- is DROPPED: applying a rule this
+            // reader cannot target would paint things the rule never named.
+            if (one.size() > 1 && one[0] == '.' &&
+                one.find_first_of(" \t>+~:[#.", 1) == std::string_view::npos) {
+                auto& slot = out[std::string(one.substr(1))];
+                for (const auto& d : declarations) slot[d.first] = d.second;
+            }
+            if (comma == std::string_view::npos) break;
+            j = comma + 1;
+        }
+        i = close + 1;
+    }
+    return out;
+}
+
+}  // namespace icf::svg
