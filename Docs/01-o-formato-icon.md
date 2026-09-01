@@ -278,10 +278,14 @@ e sim quatro.
 2. **`specular` bool contra string.** Medido, não explicado (§7).
 3. **`material` na camada contra `blur-material` no grupo.** Os dois estão
    selados, um deles nunca é escrito, e a relação entre eles é desconhecida.
-4. **O que `automatic-gradient` faz com uma cor só.** A pergunta estava certa
-   sobre **onde**: `[BIN]` o `IconRendering.Icon.Fill.Contents` tem
-   `automaticGradient` como caso próprio, ao lado de `gradient` e distinto dele
-   (doc 03 §17.4). `[OBS]` A **regra** que deriva os stops segue sem leitura.
+4. ~~**O que `automatic-gradient` faz com uma cor só**~~ — **RESPONDIDO
+   ESTRUTURALMENTE em 2026-09-01.** `[BIN]` É caso próprio do
+   `Icon.Fill.Contents`, e a regra vive em
+   `ICRRenderingParameters.Fills.AutomaticGradient`: **seis números** —
+   `basePosition`, `saturationBoost`, e quatro clareamentos por faixa de brilho
+   (`dim`, `midDim`, `midBright`, `bright`). Uma rampa paramétrica sobre a cor
+   base, não uma tabela de stops. Doc 03 §18.4. `[OBS]` Os **valores** dos seis
+   defaults ainda não foram lidos.
 5. ~~**Dez modos de mescla contra os dezessete implementados antes**~~ —
    **FECHADO em 2026-09-01 pelo caminho que este item previu.** O
    `RB::Shader::blend` do `default.metallib` tem **56 casos**, selecionados por

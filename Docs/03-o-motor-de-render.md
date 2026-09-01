@@ -1262,3 +1262,100 @@ candidato natural a alimentar o `RenderState` do §11.
 função do `IconRendering` foi decodada: como um `Icon` vira um `FinalizedIcon`,
 como o `sdf` de cada camada é gerado, e como as chamadas ao `RenderBox` são
 emitidas seguem sem leitura.
+
+## 18. `Icon` → `FinalizedIcon` — o pipeline, pelos seletores
+
+O §17 mapeou os **tipos** e disse que nenhuma função tinha sido lida. O caminho
+mais barato até as funções não foi desmontar: o `IconRendering` é híbrido
+Swift/ObjC, e **seletor de Objective-C sempre sobrevive ao strip**.
+
+`[BIN]` O binário está despido de símbolos Swift — **seis** nomes manglados no
+arquivo inteiro, e só quatro nomes de arquivo-fonte. Mas os seletores estão
+todos lá.
+
+### 18.1. As duas etapas, nomeadas
+
+`[BIN]`
+
+```
+finalizedIconWithDescriptor:error:
+finalizedIconWithSize:scale:deviceClass:appearance:renderingMode:
+finalizedIconWithSize:scale:deviceClass:appearance:renderingMode:la…
+
+renderedIconWithConfiguration:
+renderedFullBleedIconWithConfiguration:
+renderedFullBleedIconWithConfiguration:excludeChicletSpecularHighl…
+renderedLegacyCompatibleIconWithConfiguration:forDeviceClass:
+renderedLegacyCompatibleIconWithConfiguration:forDeviceClass:maskT…
+renderedSystemGlassCompatibleIconWithConfiguration:
+```
+
+`[INF]` São **duas** etapas com fronteira explícita, e é a mesma fronteira que os
+dois modelos do §17.1 anunciam:
+
+```
+Icon  --finalizedIconWithDescriptor:error:-->  FinalizedIcon  --renderedIcon…-->  imagem
+```
+
+`[BIN]` E há **três famílias de saída**, não uma: a normal, a *full bleed* e a
+*legacy compatible* — esta última com `forDeviceClass:`, o que diz que o legado
+depende do dispositivo enquanto a normal não.
+
+### 18.2. E o lado que fala com o `RenderBox`
+
+`[BIN]`
+
+```
+drawShape:fill:alpha:blendMode:
+drawLayerByReference:alpha:blendMode:flags:
+drawLayerWithAlpha:blendMode:
+drawLayer:inContext:   drawInContext:   drawInState:
+drawDisplayList:       drawInDisplayList:   renderDisplayList:flags:
+drawPlaceholder:
+```
+
+`[INF]` `drawShape:fill:alpha:blendMode:` é, campo a campo, o que o §16
+transcreveu: uma forma, um preenchimento, um alpha e um modo de mescla. A
+assinatura da chamada e a assinatura do `composite` são a mesma coisa vista dos
+dois lados.
+
+### 18.3. `ICRRenderingParameters` — os números do render
+
+`[BIN]` Um agregado de sub-estruturas, cada uma um grupo de parâmetros:
+
+| | |
+|---|---|
+| `SimulatedChiclet` | 8 campos de vidro: `useSystemGlass`, `dimmingStrength`, `relativeBackdropBlurRadius`, `resultBlurRadius`, `relativeRefractionStrength`, `relativeRefractionHeight`, `refractionSupersampling`, `gradientSamplesExp` |
+| `Fills` | `automaticGradient`, `systemLightGradient`, `systemDarkGradient` |
+| `SDFGeneration` | `clampThreshold`, `useAdvancedStacking`, `precisePixelFormatThreshold`, `maxRelativeSmoothing` |
+| `SpatialHighlighting`, `TranslucencyEffect`, `ContourGradients`, `ClearMode` (15 campos) | |
+
+### 18.4. E isto responde a pergunta 4 do doc 01
+
+`[BIN]` `ICRRenderingParameters.Fills.AutomaticGradient`:
+
+```
+basePosition          Double
+saturationBoost       Double
+dimLightening         Double
+midDimLightening      Double
+midBrightLightening   Double
+brightLightening      Double
+```
+
+`[INF]` O doc 01 §10.4 perguntava *"o que `automatic-gradient` faz com uma cor
+só"*. A resposta estrutural é: **uma rampa paramétrica de quatro faixas de
+brilho** — escuro, meio-escuro, meio-claro, claro — aplicada sobre a cor base,
+com um impulso de saturação e uma âncora de posição. Não é regra arbitrária nem
+tabela de stops: são **seis números**.
+
+`[OBS]` Os **valores** desses seis não foram lidos. Eles vivem como defaults no
+binário, e lê-los é o próximo passo desta pergunta — não desmontagem, apenas
+achar a inicialização.
+
+### 18.5. O que continua fechado
+
+`[OBS]` **Nenhum corpo de função foi desmontado.** Isto é a superfície: quem
+chama quem, com que argumentos, e que parâmetros existem. Como o `sdf` de cada
+camada é gerado, e o que exatamente o `finalizedIconWithDescriptor:` faz entre
+receber um `Icon` e devolver camadas com imagem e SDF, seguem sem leitura.

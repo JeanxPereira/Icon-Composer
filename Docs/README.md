@@ -72,7 +72,8 @@ especializações** — 1.040 chaveadas por `appearance`, 616 sem predicado, 82 
 | o resolve — cobertura assinada vira alpha | **passa o gate** — `accumulator_shape`, e a regra de preenchimento é **um bit** (doc 03 §14) |
 | a mescla | **levantada** — 56 casos, seletor em `(palavra1 >> 16) & 16383`; fecha a pergunta 5 do doc 01, **6 de 56 decodados** (doc 03 §15) |
 | a cor (`composite`, caminho chapado) | **passa o gate** — premultiplicação, inversão e broadcast, GPU × CPU bit a bit (doc 03 §16) |
-| `IconRendering` — a ponte documento↔motor | **mapeada** — `Icon`, `FinalizedIcon`, os 18 modos de mescla, `Fill.Contents`, `GlobalConfiguration`. **Nenhuma função decodada** (doc 03 §17) |
+| `IconRendering` — a ponte documento↔motor | **mapeada** — `Icon`, `FinalizedIcon`, os 18 modos de mescla, `Fill.Contents`, `GlobalConfiguration` (doc 03 §17) |
+| o pipeline `Icon → FinalizedIcon → imagem` | **levantado pelos seletores** — as duas etapas, as três famílias de saída, e os parâmetros de render; responde a pergunta 4 do doc 01. **Nenhum corpo desmontado** (doc 03 §18) |
 
 ## Build
 
