@@ -78,6 +78,7 @@ especializações** — 1.040 chaveadas por `appearance`, 616 sem predicado, 82 
 | o conversor — SVG desenhado em pixels | **passa o gate** — as peças compostas, conferidas contra a forma fechada pela cadeia inteira. Alcance medido: **22 de 194 camadas**, **0 de 55 documentos** (doc 03 §20) |
 | `icrender` e o PNG | **passam o gate** — binário separado do `ictool`, que segue sem GPU (doc 03 §20.6, §20.7) |
 | os ícones do sistema (Fotos, App Store) | **localizados, não abertos** — não são `.icon`: compilam para `Assets.car` e o motor os lê via CoreUI. Segunda porta de entrada (doc 03 §20.8) |
+| leitura de PNG (`inflate` + decodificador) | **passa o gate** — **58 de 60** do corpus, 55,3 M pixels; fixtures do zlib do Python como produtor independente. Adam7 é lacuna nomeada, 2 de 60 (doc 03 §21) |
 
 ## Build
 
@@ -114,15 +115,23 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
    que o conteúdo deles atravessa intacto. O do *modelo*: **nenhuma chave** dos
    145 documentos pode ser desconhecida, e **nenhuma das 1.740 especializações**
    pode ser inalcançável pelo resolver.
-3. **Uma varredura de mutação obrigatória.** Cento e três defeitos entram um a um e cada
+3. **Uma varredura de mutação obrigatória.** Cento e dezenove defeitos entram um a um e cada
    um TEM que avermelhar a suíte, aplicados em árvore limpa e restaurados de um
    backup conferido por SHA-256 — nunca por comando de git.
 
-**gate-m1 passou em 2026-08-31** — 145 documentos, 135 byte-exatos, 145 de 145
+**gate-m1 passou em 2026-09-01** — 145 documentos, 135 byte-exatos, 145 de 145
 totalmente compreendidos, 1.740 de 1.740 especializações alcançáveis, 61.537
 valores decodados sem uma falha, 55 bundles sem arquivo morto, 1.100 árvores
 renderizadas sem cair em JSON cru, 149 SVGs lidos em geometria com 128 deles
-totalmente compreendidos, e **103 de 103 mutações pegas**.
+totalmente compreendidos, 58 dos 60 PNGs decodados, e **103 de 103 mutações
+pegas**.
+
+> `[OBS]` As **16 mutações do raster** (inflate e decodificador de PNG) entraram
+> depois dessa execução e ainda **não** foram varridas de ponta a ponta. A suíte
+> está verde em 213 casos, e a primeira varredura com elas devolveu **114 de
+> 119** — cinco guardas sem teste que as fizesse morder, agora escritas. Que
+> elas mordam é o que a próxima execução tem de provar, e até lá o número desta
+> linha é 103, não 119.
 
 | # | mutação | asserções avermelhadas |
 |---|---|---|

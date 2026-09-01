@@ -18,6 +18,7 @@ add_executable(ic_tests
     test_rb_coverage.cpp
     test_rb_render.cpp
     test_render_svg.cpp
+    test_png.cpp
 )
 
 target_link_libraries(ic_tests PRIVATE IconComposer::Foundation IconComposer::CliLib IconComposer::CoreSVG IconComposer::RenderBox)

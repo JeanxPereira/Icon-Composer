@@ -57,6 +57,7 @@ $sources = @{
     rbcomp   = Join-Path $root "Source/RenderBox/shaders/PathComposite.glsl"
     rbsvg    = Join-Path $root "Source/RenderBox/SvgRenderer.cpp"
     png      = Join-Path $root "Source/IconComposerFoundation/Png.cpp"
+    inflate  = Join-Path $root "Source/IconComposerFoundation/Inflate.cpp"
 }
 $original = @{}
 $hashes = @{}
@@ -489,7 +490,61 @@ $mutations = @(
        to   = 'if (v >= 1.0f) return static_cast<std::uint8_t>(v * 255.0f);' },
     @{ file = "png"; name = "the colour type says RGB where the data is RGBA"
        from = 'ihdr.push_back(6);  // colour type: RGBA'
-       to   = 'ihdr.push_back(2);  // colour type: RGBA' }
+       to   = 'ihdr.push_back(2);  // colour type: RGBA' },
+    # ---- inflate: the pixels of a PNG are behind it ----
+    #
+    # A wrong inflate rarely produces plausible output -- it produces the wrong
+    # LENGTH, and IHDR fixes that length from a different chunk. Several of
+    # these are caught by that arithmetic rather than by a pixel comparison.
+    @{ file = "inflate"; name = "a back reference copies without overlapping"
+       from = 'for (std::size_t k = 0; k < length; ++k) out.data.push_back(out.data[from + k]);'
+       to   = 'out.data.insert(out.data.end(), out.data.begin() + static_cast<std::ptrdiff_t>(from), out.data.begin() + static_cast<std::ptrdiff_t>(from) + static_cast<std::ptrdiff_t>(length > distance ? distance : length));' },
+    @{ file = "inflate"; name = "a stored block''s length complement is not checked"
+       from = 'if (static_cast<std::uint16_t>(~len) != nlen) return false;'
+       to   = 'if (false) return false;' },
+    @{ file = "inflate"; name = "an over-subscribed Huffman table is accepted"
+       from = 'if (left < 0) return false;'
+       to   = 'if (false) return false;' },
+    @{ file = "inflate"; name = "the Adler-32 is computed but never compared"
+       from = 'if (((b << 16) | a) != want) {'
+       to   = 'if (false) {' },
+    @{ file = "inflate"; name = "the zlib header check value is not verified"
+       from = 'if (((cmf << 8) | flg) % 31u != 0) {'
+       to   = 'if (false) {' },
+    @{ file = "inflate"; name = "the last length-code symbol is dropped from the table"
+       from = 'for (int len = 1; len < 15; ++len) offsets[len + 1] = offsets[len] + counts_[len];'
+       to   = 'for (int len = 1; len < 14; ++len) offsets[len + 1] = offsets[len] + counts_[len];' },
+    @{ file = "inflate"; name = "a repeat of the previous code length starts at 2, not 3"
+       from = 'repeat = 3 + e;'
+       to   = 'repeat = 2 + e;' },
+    # ---- the PNG decoder ----
+    @{ file = "png"; name = "the average filter does not halve"
+       from = 'case 3: v += (a + b) / 2; break;'
+       to   = 'case 3: v += (a + b); break;' },
+    @{ file = "png"; name = "Paeth breaks its tie the wrong way"
+       from = 'return pb <= pc ? b : c;'
+       to   = 'return pb < pc ? b : c;' },
+    @{ file = "png"; name = "the Paeth predictor drops the diagonal neighbour"
+       from = 'const int p = a + b - c;'
+       to   = 'const int p = a + b;' },
+    @{ file = "png"; name = "the up filter reads the current row instead of the one above"
+       from = 'const int b = up ? up[x] : 0;'
+       to   = 'const int b = x >= channels ? cur[x - channels] : 0;' },
+    @{ file = "png"; name = "the decompressed length is not checked against IHDR"
+       from = 'if (raw.data.size() != want) {'
+       to   = 'if (false) {' },
+    @{ file = "png"; name = "only the last IDAT chunk is kept"
+       from = 'idat.insert(idat.end(), body, body + len);'
+       to   = 'idat.assign(body, body + len);' },
+    @{ file = "png"; name = "an interlaced PNG is decoded as though it were not"
+       from = 'if (interlace != 0) {'
+       to   = 'if (false) {' },
+    @{ file = "png"; name = "a three-channel image comes back fully transparent"
+       from = 'if (channels == 3) out.rgba[i * 4 + 3] = 1.0f;'
+       to   = 'if (channels == 3) out.rgba[i * 4 + 3] = 0.0f;' },
+    @{ file = "png"; name = "a truncated file is accepted because IEND is not required"
+       from = 'if (!sawEnd) {'
+       to   = 'if (false) {' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"

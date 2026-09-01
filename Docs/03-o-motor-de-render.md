@@ -1647,3 +1647,70 @@ Há **duas portas de entrada** no motor, e este repositório decodificou uma.
 `[OBS]` Chegar aos ícones do sistema exige extrair o sistema de arquivos do
 IPSW e decodificar os registros `CUILayer` do `Assets.car` — trabalho de uma
 porta que não foi aberta, não uma variação da que foi.
+
+## 21. O raster — o que a medição pôs em primeiro lugar
+
+O §20.1 mediu o que a fatia chapada alcança e ordenou o que falta. O primeiro da
+fila não é engenharia reversa: **raster, 27,8% das camadas**, e todas elas PNG.
+
+### 21.1. O que o corpus realmente é
+
+`[ART]` Medido nos 60 PNGs:
+
+| | |
+|---|---|
+| profundidade de bit | **8**, em todos os 60 |
+| tipo de cor | **RGBA em 45, RGB em 15** — nenhuma paleta, nenhum cinza |
+| filtros de linha | **os cinco ocorrem**; Paeth 7.436 vezes |
+| `IDAT` | **667 chunks** para 60 arquivos — têm de ser concatenados |
+| entrelaçamento Adam7 | **2 de 60** |
+
+`[INF]` Daí o escopo: 8 bits, RGB e RGBA, todos os filtros, muitos `IDAT`, e
+chunks desconhecidos (`eXIf`, `pHYs`, `sRGB`, `gAMA`, `iTXt`, `iCCP`) pulados
+pelo comprimento.
+
+### 21.2. Adam7 é uma LACUNA, não uma decisão de escopo
+
+E a diferença importa. Os três filtros de SVG que o doc 04 §3 recusa são
+recusados porque **o alvo não os lê** — implementá-los faria este renderizador
+divergir do que ele reproduz. Entrelaçamento não é assim: o decodificador da
+Apple lê, então esses dois arquivos são **buraco nosso**.
+
+`[OBS]` Recusado **por nome**, com a contagem escrita — e o gate de corpus
+verifica que continuam sendo **dois**. Se esse número mudar, a nota de escopo em
+`Png.h` está desatualizada e o gate diz isso, em vez de deixar a documentação
+virar mentira em silêncio.
+
+### 21.3. O oráculo é o codificador de outra pessoa
+
+Um decodificador conferido só contra o `encodePng` deste repositório provaria
+que o **par concorda consigo mesmo** — que não é a mesma coisa que provar que
+algum dos dois está certo.
+
+`[ART]` Então as fixtures dos testes são fluxos produzidos pelo **zlib do
+Python**, um deflate separado e muito exercitado, em três níveis de compressão —
+o que entre eles alcança blocos *stored*, Huffman fixo e Huffman dinâmico. Os
+pixels esperados são conhecidos porque o gerador os escolheu.
+
+E o gate de corpus roda sobre os 60 reais, onde a conferência **não é
+comparação**: é a aritmética do próprio `IHDR`. O fluxo descomprimido tem de ter
+exatamente `altura × (stride + 1)` bytes, número que vem de **outro chunk** que
+não os dados. Um inflate que erre por um byte falha ali.
+
+`[ART]` **60 PNGs: 58 decodados, 2 entrelaçados, 55.273.766 pixels.**
+
+`[OBS]` A varredura de mutação sobre este leitor **ainda não fechou**. A
+primeira execução com as 16 mutações do raster devolveu **114 de 119**, e as
+cinco sobreviventes eram guardas sem teste que as fizesse morder — inclusive
+uma em que o teste EXISTIA e media outra coisa: ele truncava o arquivo em 40
+bytes, o que levava o `IDAT` junto, então o erro vinha do zlib vazio e não da
+guarda do `IEND`. Os cinco testes estão escritos; que eles mordam é o que a
+próxima varredura tem de provar.
+
+### 21.4. O que isto ainda NÃO faz
+
+`[OBS]` Decodificar não é desenhar. As 54 camadas raster continuam sem sair na
+tela: falta o compositor que caminha o documento — grupos, camadas, a
+especialização resolvida para um contexto, a arte de cada camada, e a posição e
+opacidade dela. O `renderSvg` do §20 desenha **um** SVG; o que falta é o nível
+acima dele, e é onde o raster entra.

@@ -34,4 +34,42 @@ std::vector<std::uint8_t> encodePng(const std::vector<float>& pixels, std::uint3
 std::string writePng(const std::string& path, const std::vector<float>& pixels,
                      std::uint32_t width, std::uint32_t height);
 
+// ---- reading ------------------------------------------------------------
+//
+// WHAT IT READS, AND THE NUMBER BEHIND THE SCOPE
+// ----------------------------------------------
+// Raster art is 27.8% of the corpus's layers -- the largest single thing the
+// renderer cannot draw (`scripts/slice-reach.py`). Measured over the corpus's
+// 60 PNGs:
+//
+//     bit depth      8, in all 60
+//     colour type    RGBA in 45, RGB in 15 -- no palette, no greyscale
+//     row filters    all five occur; Paeth 7436 times
+//     IDAT           667 chunks across 60 files, so they must be concatenated
+//     interlace      Adam7 in 2 of the 60
+//
+// So: 8-bit RGB and RGBA, every filter, many IDATs, unknown chunks skipped.
+//
+// ADAM7 IS A GAP, NOT A SCOPE DECISION, and the difference matters. The three
+// SVG filters doc 04 §3 refuses are refused because the TARGET does not read
+// them -- implementing them would make this renderer differ from what it
+// reproduces. Interlacing is not like that: Apple's decoder reads it, so those
+// two files are a gap in this reader. It is refused BY NAME rather than decoded
+// wrongly, and the count is written down so it cannot hide.
+
+struct DecodedPng {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    // Straight (NOT premultiplied) RGBA in [0, 1], row major, four per pixel --
+    // the same shape `encodePng` takes, so a decode/encode round trip is a
+    // comparison and not a conversion.
+    std::vector<float> rgba;
+    // Empty on success. A decoder that hands back an empty image and no reason
+    // cannot be told apart from one that read an empty file.
+    std::string error;
+};
+
+DecodedPng decodePng(const std::uint8_t* data, std::size_t size);
+DecodedPng readPng(const std::string& path);
+
 }  // namespace icf

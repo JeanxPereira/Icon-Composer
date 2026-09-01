@@ -10,6 +10,7 @@ add_library(IconComposerFoundation STATIC
     Values.cpp
     IconBundle.cpp
     Png.cpp
+    Inflate.cpp
 )
 
 target_include_directories(IconComposerFoundation PUBLIC
