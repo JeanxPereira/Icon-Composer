@@ -13,7 +13,7 @@
 #      unknown to it, not one of the 1,740 specializations may be unreachable by
 #      the resolver, and not one of the 61,537 values it resolves may fail to
 #      decode into a type.
-#   3. A mandatory mutation sweep. Sixty-six defects go in one at a time, and every
+#   3. A mandatory mutation sweep. Seventy-four defects go in one at a time, and every
 #      one of them MUST redden the suite WITH AN ASSERTION -- a mutation that
 #      merely crashes the process is caught by accident and is reported as a
 #      failure of the test, because a suite that dies hides every case after it.
@@ -49,6 +49,8 @@ $sources = @{
     rbglsl   = Join-Path $root "Source/RenderBox/shaders/PathVertex.glsl"
     rbprobe  = Join-Path $root "Source/RenderBox/shaders/path_probe.comp"
     rboracle = Join-Path $root "Source/RenderBox/PathVertexOracle.cpp"
+    rbfrag   = Join-Path $root "Source/RenderBox/shaders/PathFragment.glsl"
+    rbcov    = Join-Path $root "Source/RenderBox/PathCoverageOracle.cpp"
 }
 $original = @{}
 $hashes = @{}
@@ -356,6 +358,31 @@ $mutations = @(
     @{ file = "rboracle"; name = "the ULP comparison accepts any two floats"
        from = 'return ulpsApart(a.line[2], b.line[2]) <= maxUlps &&
            ulpsApart(a.line[3], b.line[3]) <= maxUlps;'
+       to   = 'return true;' },
+    # ---- the coverage fragments ----
+    @{ file = "rbfrag"; name = "the interior fragment loses the facing sign"
+       from = 'return vec2(0.0, frontFacing ? 1.0 : -1.0);'
+       to   = 'return vec2(0.0, 1.0);' },
+    @{ file = "rbfrag"; name = "the exterior area skips the trapezoid correction"
+       from = '    if (dx != 0.0) {'
+       to   = '    if (false) {' },
+    @{ file = "rbfrag"; name = "the pixel is not truncated to its corner"
+       from = 'vec2 pixel = vec2(ivec2(position.xy));'
+       to   = 'vec2 pixel = position.xy;' },
+    @{ file = "rbfrag"; name = "the edge y span does not clip the pixel's"
+       from = 'precise float y0 = max(pixel.y, pathY.x);'
+       to   = 'precise float y0 = pixel.y;' },
+    @{ file = "rbfrag"; name = "a negative slope is not put back in order"
+       from = 'precise vec2 ordered = (slope < 0.0) ? xs.yx : xs;'
+       to   = 'precise vec2 ordered = xs;' },
+    @{ file = "rbfrag"; name = "the winding sign no longer multiplies the area"
+       from = 'return value * area;'
+       to   = 'return area;' },
+    @{ file = "rbfrag"; name = "the distance loses its half floor"
+       from = 'float r = 1.0 - max(narrowed, 0.0015010833740234375);'
+       to   = 'float r = 1.0 - narrowed;' },
+    @{ file = "rbcov"; name = "the coverage tolerance accepts any two floats"
+       from = 'return (gap < 0 ? -gap : gap) <= static_cast<float>(maxHalfUlps) * 0.00048828125f;'
        to   = 'return true;' }
 )
 

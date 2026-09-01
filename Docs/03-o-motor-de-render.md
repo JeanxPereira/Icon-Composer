@@ -350,10 +350,16 @@ Pergunta aberta.
 
 ## 8. O estágio de vértice, transcrito e conferido contra a GPU
 
-### 8.1. São QUATRO passes, e nenhum fragment shader
+### 8.1. São quatro passes de vértice — e três de fragment
 
-`[BIN]` O `shader_path.metal` não define fragment shader nenhum. Define quatro
-**vertex shaders**, e os varyings de cada um dizem para que serve:
+> **Correção (2026-09-01).** Esta seção afirmava que o `shader_path.metal` **não
+> define fragment shader nenhum**. Errado, e o erro foi de método: eu listei os
+> módulos 58 a 61 e concluí sobre o arquivo inteiro. Os módulos **62, 63 e 64**
+> são exatamente os fragment shaders que eu disse não existirem, e o §12 os
+> transcreve. Uma amostra não é um censo.
+
+`[BIN]` Os quatro **vertex shaders**, e os varyings de cada um dizem para que
+serve:
 
 | passe | emite além de `position` | leitura |
 |---|---|---|
@@ -363,9 +369,8 @@ Pergunta aberta.
 | `path_distance_vertex` | `path_p` (float2), `path_p1p2` (float2) | o campo de distância |
 
 `[INF]` Interior e borda emitindo **só posição** é a assinatura de passes de
-estêncil: a cobertura não sai de um fragment shader, sai da decomposição da
-geometria. Quem carrega o antialiasing é o `exterior`, com a inclinação da
-aresta.
+estêncil. Quem carrega o antialiasing é o `exterior`, com a inclinação da
+aresta — e o §12 mostra o que o fragment faz com ela.
 
 ### 8.2. A indexação, e por que ela exige a busca binária
 
@@ -768,3 +773,97 @@ ela a tabela teria parecido plausível e estaria errada.
 A versão que produziu o que está acima parseia função a função e **recusa**
 qualquer par cujo valor não seja subconjunto da máscara, reportando-o em vez de
 imprimi-lo como se fosse evidência.
+
+## 12. A cobertura — os três fragment shaders
+
+`[BIN]` Módulos 62, 63 e 64 do `shader_path.metal`. Quarenta e três, cento e
+cinquenta e nove, e setenta e cinco linhas de IR: **277 no total**, e é a regra
+de cobertura inteira.
+
+`[BIN]` Os três escrevem no **mesmo alvo de render** — `coverage`, um `half2` na
+localização 1 — e os três deixam o `.x` em zero. Os varyings chegam
+`air.no_perspective` e `air.center`.
+
+### 12.1. O interior é o número de voltas, em quatro instruções
+
+```glsl
+half2(0.0, front_facing ? +1.0 : -1.0)
+```
+
+`[INF]` É a regra de winding inteira. O leque que o passe `interior` desenha a
+partir do `origin` produz triângulos cuja **orientação** carrega o sinal: de
+frente soma um, de costas subtrai. Não há contagem, não há estêncil separado —
+a orientação da primitiva já é o número.
+
+### 12.2. O exterior é a área EXATA do pixel
+
+`[BIN]` `exterior_shape`, e nada nele é amostrado ou aproximado — o trapézio que
+a aresta corta do pixel é integrado em forma fechada:
+
+```
+(px, py) = trunc(position.xy)              o pixel, por truncamento para int16
+y0 = max(py,     path_y.x)                 recorte inferior
+y1 = min(py + 1, path_y.y)                 recorte superior
+x0 = y0·slope + (intercept − px)           a reta, em coordenadas do pixel
+x1 = y1·slope + (intercept − px)
+se slope < 0: troca x0 ↔ x1                põe as pontas em ordem
+área = saturate(y1 − y0) · (1 − saturate(x1))              o retângulo
+se x1 ≠ x0:  área += (saturate(x1) − saturate(x0)) · k     o triângulo
+             onde k = saturate(y1−y0)·(saturate(x0)/2 + saturate(x1)/2 − x0) / (x1−x0)
+coverage = path_value × área
+```
+
+`[INF]` O `x1 ≠ x0` é a aresta **vertical**: nela o retângulo já é a resposta, e
+dividir por zero não seria.
+
+### 12.3. A distância
+
+`[BIN]`
+
+```
+t    = saturate(dot(p, d) · scale)
+v    = p − d·t                              a perpendicular ao segmento
+dist = saturate(length(v))
+result = half(1 − max(half(dist), 0xH1626))
+```
+
+`[BIN]` O `0xH1626` = **0,0015010833740234375**. O piso existe para que um ponto
+exatamente sobre o segmento não volte como cobertura cheia.
+
+`[BIN]` E há **duas** conversões para half: uma antes do `max` e outra no
+`fsub half` do fim. O alvo estreita e permanece estreito.
+
+### 12.4. Onde as três comparações param, e cada uma para em lugar diferente
+
+| estágio | tolerância | por quê |
+|---|---|---|
+| interior | **bit a bit** | é um `select` entre duas constantes; nada pode arredondar |
+| exterior | **4 ULP de float** | a correção de trapézio **divide**, e o Vulkan permite 2,5 ULP no `OpFDiv` |
+| distância | **2⁻¹¹ absolutos** | ver abaixo |
+
+> **A tolerância da distância foi errada por mim duas vezes antes de acertar, e
+> as duas tentativas eram unidades erradas.**
+>
+> O Vulkan permite 3 ULP no `sqrt`. O estágio estreita para half, então esse
+> desacordo sub-ULP em float é **quantizado** em um ULP de half do `dist`. E o
+> `dist` é saturado em [0,1], cuja grade de half mais grossa é **2⁻¹¹** — logo um
+> ULP de half do `dist` vale no máximo 2⁻¹¹ **absolutos**, e isso atravessa o
+> `1 − dist` sem mudar de tamanho.
+>
+> Nem ULP de float nem ULP de half servem, e os dois foram tentados contra a
+> varredura: depois que o resultado é estreitado, o **mesmo intervalo absoluto**
+> lê como **um** ULP perto de 0,998 e **dezesseis** perto de 0,048, porque a
+> grade de half engrossa com a magnitude. O erro é absoluto, então a medida é.
+
+### 12.5. Duas coisas que a varredura achou nos meus TESTES
+
+`[OBS]` **Um ponto cego sistemático.** A mutação que removia o recorte inferior
+(`max(py, path_y.x)`) **sobreviveu**: em todos os casos escritos à mão *e nos mil
+da varredura de arestas*, o `path_y.x` era igual ao `py` do pixel — e aí o `max`
+devolve o mesmo com ou sem ele. Eu testava só a ponta de cima do recorte. O
+`yLow` agora varia na varredura, e há um caso com a aresta começando **dentro**
+do pixel.
+
+`[OBS]` **E a tolerância não mordia** — `return true` no lugar dela deixava a
+suíte verde, porque desligar uma verificação que hoje passa não quebra nada.
+Exatamente a mesma lição do oráculo de vértice (§8.5), repetida no mesmo dia.

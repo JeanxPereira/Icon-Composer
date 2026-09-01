@@ -67,6 +67,7 @@ especializações** — 1.040 chaveadas por `appearance`, 616 sem predicado, 82 
 | o gate sobrevive a um crash | **corrigido** — backup em disco com marcador, e as 66 âncoras conferidas antes do primeiro build (doc 03 §9.5, §9.6) |
 | M2·P4 — o traço | **levantado, não transcrito** — os 3 pares, os 3 layouts e a indexação medidos; a geometria ramifica em bits do `RenderState` não decodados (doc 03 §10) |
 | o `RenderState` do `RB::Shader` | **layout medido; 4 bits nomeados** — é um `uint4`, 37 máscaras; `extended_color`/`floating_point_color`/`reads_dest`/`reads_coverage` resolvidos, mas os campos que travam o traço seguem sem semântica (doc 03 §11) |
+| M2·P4b — os três fragments de cobertura | **passa o gate** — winding, área exata do pixel e distância, GPU × CPU (doc 03 §12) |
 | M2·P5 — alvo de render, o pixel | **não começado** |
 
 ## Build
@@ -103,7 +104,7 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
    que o conteúdo deles atravessa intacto. O do *modelo*: **nenhuma chave** dos
    145 documentos pode ser desconhecida, e **nenhuma das 1.740 especializações**
    pode ser inalcançável pelo resolver.
-3. **Uma varredura de mutação obrigatória.** Sessenta e seis defeitos entram um a um e cada
+3. **Uma varredura de mutação obrigatória.** Setenta e quatro defeitos entram um a um e cada
    um TEM que avermelhar a suíte, aplicados em árvore limpa e restaurados de um
    backup conferido por SHA-256 — nunca por comando de git.
 
@@ -111,7 +112,7 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
 totalmente compreendidos, 1.740 de 1.740 especializações alcançáveis, 61.537
 valores decodados sem uma falha, 55 bundles sem arquivo morto, 1.100 árvores
 renderizadas sem cair em JSON cru, 149 SVGs lidos em geometria com 128 deles
-totalmente compreendidos, e **66 de 66 mutações pegas**.
+totalmente compreendidos, e **74 de 74 mutações pegas**.
 
 | # | mutação | asserções avermelhadas |
 |---|---|---|

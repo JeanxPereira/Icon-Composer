@@ -1,0 +1,52 @@
+#version 450
+// The three path fragment stages, run as COMPUTE against a CPU oracle.
+//
+// Same reason as path_probe.comp: there is no pixel oracle, and a fragment shader
+// cannot be read back the way a compute shader can. The arithmetic lives once, in
+// PathFragment.glsl, and is checked here against the same arithmetic on the host.
+//
+// The inputs are synthetic on purpose. What has to be proven is the FUNCTION --
+// that a given (pixel, edge, winding) produces the area the target produces --
+// and feeding it real geometry would only test the cases that geometry happened
+// to reach.
+#include "PathFragment.glsl"
+
+layout(local_size_x = 64) in;
+
+struct CoverageInput {
+    vec4 position;   // the fragment position
+    vec4 line;       // path_y.x, path_y.y, path_slope, path_intercept
+    vec4 extra;      // path_value, frontFacing, scale, unused
+    vec4 dist;       // path_p.xy, path_p1p2.xy
+};
+
+layout(std430, binding = 0) readonly buffer Inputs {
+    CoverageInput inputs[];
+};
+
+layout(std430, binding = 1) writeonly buffer Outputs {
+    vec4 results[];
+};
+
+layout(push_constant) uniform Control {
+    uint count;
+    uint stage;   // 0 interior, 1 exterior, 2 distance
+} c;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= c.count) return;
+
+    CoverageInput in_ = inputs[i];
+    vec2 out_ = vec2(0.0);
+
+    if (c.stage == 0u) {
+        out_ = rbInteriorFragment(in_.extra.y != 0.0);
+    } else if (c.stage == 1u) {
+        out_ = vec2(0.0, rbExteriorShape(in_.position, in_.line.xy, in_.line.z,
+                                         in_.line.w, in_.extra.x));
+    } else {
+        out_ = vec2(0.0, rbDistanceShape(in_.dist.xy, in_.dist.zw, in_.extra.z));
+    }
+    results[i] = vec4(out_, 0.0, 0.0);
+}
