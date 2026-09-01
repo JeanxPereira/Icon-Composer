@@ -296,7 +296,15 @@ total de vértices:
 %54 = icmp sgt i32 %53, %16              ; comparado com o índice do vértice
 ```
 
-**2. O `count` de cada segmento é uma SOMA DE PREFIXO**, não a contagem dele.
+**2. O `count` de cada segmento é uma SOMA DE PREFIXO EXCLUSIVA** — o índice do
+**primeiro** vértice dele, não a contagem própria e não a soma inclusiva.
+
+> **Correção (2026-09-01).** A primeira leitura desta seção disse só "soma de
+> prefixo", e a implementação saiu **inclusiva**. Errado, e quem pegou foi a
+> medição, não um teste: o IR calcula `local = vertexIndex − count` e alimenta
+> `t = recip_n × local`. Com soma inclusiva o `local` fica **negativo** e todo
+> `t` sai errado. A palavra que faltava valia o bug inteiro.
+
 É o que permite a **busca binária** — o IR parte o intervalo ao meio e compara
 `count` contra o índice do vértice:
 
@@ -338,3 +346,93 @@ cabeçalho — produz o buffer com a forma certa, não com a subdivisão do alvo
 Pergunta aberta.
 
 `urx` e `arg` do `PathGlobals` também não foram lidos.
+
+
+## 8. O estágio de vértice, transcrito e conferido contra a GPU
+
+### 8.1. São QUATRO passes, e nenhum fragment shader
+
+`[BIN]` O `shader_path.metal` não define fragment shader nenhum. Define quatro
+**vertex shaders**, e os varyings de cada um dizem para que serve:
+
+| passe | emite além de `position` | leitura |
+|---|---|---|
+| `path_edges_vertex` | nada | estêncil da borda |
+| `path_interior_vertex` | nada | estêncil do interior |
+| `path_exterior_vertex` | `path_y` (float2), `path_slope` (float) | **antialiasing analítico**: posição relativa à aresta e inclinação dela dão a cobertura exata do pixel |
+| `path_distance_vertex` | `path_p` (float2), `path_p1p2` (float2) | o campo de distância |
+
+`[INF]` Interior e borda emitindo **só posição** é a assinatura de passes de
+estêncil: a cobertura não sai de um fragment shader, sai da decomposição da
+geometria. Quem carrega o antialiasing é o `exterior`, com a inclinação da
+aresta.
+
+### 8.2. A indexação, e por que ela exige a busca binária
+
+`[BIN]` `%13 = shl iid, 5` e `%16 = %13 + (vid >> 1)`:
+
+```
+vertexIndex = iid × 32 + (vid >> 1)
+side        = vid & 1
+```
+
+**Trinta e dois vértices por instância**, e o par `(vid>>1, vid&1)` são as duas
+pontas de uma aresta — 64 `vid` por instância. Uma instância portanto
+**atravessa vários segmentos**, e é exatamente por isso que o segmento de um
+vértice tem de ser *procurado* em vez de indexado.
+
+### 8.3. O transform
+
+`[BIN]`
+
+```
+world = m0·p.x + m1·p.y + m2                    (path_matrix, afim 2×3)
+ndc.x = world.x ·  two_over_size.x − 1.0
+ndc.y = world.y · −two_over_size.y + 1.0        ← Y invertido aqui
+ndc.z = depth · 2^-32                            (0x3DF0000000000000)
+```
+
+`[BIN]` `origin` está no `PathGlobals` no offset 32 e **este estágio não o lê**.
+`urx` e `arg` também não.
+
+`[BIN]` E o vértice que não deve ser desenhado vai para **`(-2, -2, 0, 1)`** —
+fora do volume de clip. A primitiva inteira é descartada pelo clipper, sem
+`discard` e sem branch no fragment.
+
+### 8.4. A avaliação, e a ordem importa de verdade
+
+`[BIN]` O alvo fatora a cúbica assim:
+
+```
+B(t) = u³·p0 + (3tu)·(u·p1 + t·p2) + t³·p3        u = 1 − t
+```
+
+e **não** como `u³·p0 + 3u²t·p1 + 3ut²·p2 + t³·p3`. É a mesma curva e é outro
+float.
+
+> **A varredura provou isso, depois de me reprovar.** A mutação que troca o
+> fatoramento pelo do livro **SOBREVIVEU** na primeira execução: com coordenadas
+> como 0, 10, 50 e 90 as duas ordens caem no mesmo float toda vez. Medido em
+> 620.000 quádruplas aleatórias nos mesmos `t`, elas divergem em **21,7%** dos
+> casos — a afirmação era verdadeira e os meus paths é que eram gentis demais.
+> Entrou um teste com coordenadas que divergem em `t = 0,375` e `t = 0,625`, e
+> aí a mutação é pega. As coordenadas feias daquele teste são o teste.
+
+### 8.5. O gate, sem oráculo de pixel
+
+Não existe oráculo de pixel (spec de arquitetura, 2026-09-01), e o Vulkan de
+núcleo não tem transform feedback para capturar saída de vértice. Então:
+
+- a aritmética mora **uma vez**, em `Source/RenderBox/shaders/PathVertex.glsl`;
+- um **compute shader** a executa para uma grade de `(vid, iid)` e escreve as
+  posições num buffer que dá para ler de volta;
+- `PathVertexOracle.cpp` faz a mesma conta na CPU, na mesma ordem, em `float`;
+- o teste exige que as duas concordem **bit a bit**.
+
+Todo resultado comparado é `precise` no GLSL — sem isso o driver pode fundir
+multiplicação e soma e as duas pontas divergem no último bit por razão nenhuma,
+e o gate teria de aceitar tolerância, que é como um erro pequeno se esconde.
+
+E as mutações cortam **para os dois lados**: mutar o GLSL obriga o oráculo de
+CPU a perceber; mutar o oráculo obriga a GPU. Um diferencial que só pega de um
+lado é um diferencial com metade funcionando.

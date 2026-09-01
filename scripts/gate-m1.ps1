@@ -13,7 +13,7 @@
 #      unknown to it, not one of the 1,740 specializations may be unreachable by
 #      the resolver, and not one of the 61,537 values it resolves may fail to
 #      decode into a type.
-#   3. A mandatory mutation sweep. Fifty defects go in one at a time, and every
+#   3. A mandatory mutation sweep. Fifty-seven defects go in one at a time, and every
 #      one of them MUST redden the suite WITH AN ASSERTION -- a mutation that
 #      merely crashes the process is caught by accident and is reported as a
 #      failure of the test, because a suite that dies hides every case after it.
@@ -46,6 +46,9 @@ $sources = @{
     rbdevice = Join-Path $root "Source/RenderBox/Device.cpp"
     rbbuffer = Join-Path $root "Source/RenderBox/Buffer.cpp"
     rbpath   = Join-Path $root "Source/RenderBox/PathBuffer.cpp"
+    rbglsl   = Join-Path $root "Source/RenderBox/shaders/PathVertex.glsl"
+    rbprobe  = Join-Path $root "Source/RenderBox/shaders/path_probe.comp"
+    rboracle = Join-Path $root "Source/RenderBox/PathVertexOracle.cpp"
 }
 $original = @{}
 $hashes = @{}
@@ -241,11 +244,11 @@ $mutations = @(
     # of these four breaks exactly one of them. A buffer that violates any is
     # still a well-formed array of 32-byte structs -- which is why nothing but a
     # test that knows the convention can tell.
-    @{ file = "rbpath"; name = "convention 2: count is per-segment, not a prefix sum"
-       from = 'running += options.subdivisions;
-        s.count = running;'
-       to   = 's.count = options.subdivisions;
-        running += options.subdivisions;' },
+    @{ file = "rbpath"; name = "convention 2: the prefix sum is inclusive, not exclusive"
+       from = 's.count = running;                                          // convention 2
+        running += options.subdivisions;'
+       to   = 'running += options.subdivisions;
+        s.count = running;                                          // convention 2' },
     @{ file = "rbpath"; name = "convention 3: the header does not carry the start point"
        from = 'setPoint(header.p3, path.segments.front().p[0]);'
        to   = 'void(0);' },
@@ -257,7 +260,35 @@ $mutations = @(
        to   = 's.count = ++running; // a break contributes no vertices, so the' },
     @{ file = "rbpath"; name = "convention 1: the header vertex total is written as a float"
        from = 'std::memcpy(&header.recip_n, &running, sizeof running);'
-       to   = 'header.recip_n = static_cast<float>(running);' }
+       to   = 'header.recip_n = static_cast<float>(running);' },
+    # ---- RenderBox P2: the vertex stage, GPU against a CPU oracle ----
+    #
+    # These cut BOTH ways on purpose. Mutating the GLSL means the CPU oracle has
+    # to notice; mutating the oracle means the GPU has to. A differential that
+    # only ever catches one side is a differential with one working half.
+    @{ file = "rbglsl"; name = "the bezier is evaluated by the textbook formula, not the target's"
+       from = 'precise vec2 inner = vec2(u) * p1 + p2 * t;
+    precise vec2 acc = vec2(u3) * p0 + vec2(k) * inner;'
+       to   = 'precise vec2 inner = vec2(3.0 * u2 * t) * p1 + vec2(3.0 * u * t * t) * p2;
+    precise vec2 acc = vec2(u3) * p0 + inner;' },
+    @{ file = "rbglsl"; name = "the Y axis is not flipped on the way to clip space"
+       from = 'precise float y = world.y * -twoOverSize.y + 1.0;'
+       to   = 'precise float y = world.y * twoOverSize.y - 1.0;' },
+    @{ file = "rbglsl"; name = "a vertex that must not be drawn stays inside the clip volume"
+       from = 'const vec4 kClippedAway = vec4(-2.0, -2.0, 0.0, 1.0);'
+       to   = 'const vec4 kClippedAway = vec4(0.0, 0.0, 0.0, 1.0);' },
+    @{ file = "rbprobe"; name = "the binary search keeps the wrong half"
+       from = 'bool goLeft = segments[mid].count > vertexIndex;'
+       to   = 'bool goLeft = segments[mid].count <= vertexIndex;' },
+    @{ file = "rbprobe"; name = "both ends of an edge get the same t"
+       from = 'float t = seg.recip_n * float(local + int(side));'
+       to   = 'float t = seg.recip_n * float(local);' },
+    @{ file = "rboracle"; name = "the oracle reads p0 from the segment itself, not the one before"
+       from = 'const Vec2 p0 = point(buffer.entries[static_cast<std::size_t>(base - 1)].p3);'
+       to   = 'const Vec2 p0 = point(seg.p3);' },
+    @{ file = "rboracle"; name = "the oracle puts 32 vertex ids in an instance instead of 64"
+       from = 'return instances * 64u;'
+       to   = 'return instances * 32u;' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"

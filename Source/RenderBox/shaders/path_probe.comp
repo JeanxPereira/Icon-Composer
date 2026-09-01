@@ -1,0 +1,82 @@
+#version 450
+// The path vertex stage, run as COMPUTE so its output can be read back and
+// compared against a CPU oracle.
+//
+// WHY A COMPUTE SHADER AND NOT THE VERTEX STAGE ITSELF
+// ----------------------------------------------------
+// There is no pixel oracle for this project -- doc Specs, the architecture note
+// of 2026-09-01. Rendering into an image and eyeballing it proves nothing, and
+// core Vulkan has no transform feedback to capture vertex output with.
+//
+// So the vertex arithmetic is written ONCE, in PathVertex.glsl, and run from
+// here for a grid of (vid, iid). Every clip-space position it computes is
+// compared, bit for bit, against the same arithmetic performed on the CPU. That
+// is a real gate: it cannot pass because the picture looked plausible.
+//
+// The graphics pipeline includes the same file, so the thing under test and the
+// thing that draws cannot drift apart.
+#include "PathVertex.glsl"
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) readonly buffer Segments {
+    CubicSegment segments[];
+};
+
+layout(std430, binding = 1) writeonly buffer Positions {
+    vec4 positions[];
+};
+
+layout(push_constant) uniform Globals {
+    vec2 m0;
+    vec2 m1;
+    vec2 m2;             // path_matrix[3], offsets 0, 8, 16
+    vec2 twoOverSize;    // offset 24
+    vec2 origin;         // offset 32 -- present in the target, unread by this stage
+    float depth;         // offset 40
+    float urx;           // offset 44 -- not decoded
+    float arg;           // offset 48 -- not decoded
+    uint vertexPairs;    // ours: how many (vid) values to evaluate
+} g;
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= g.vertexPairs) return;
+
+    // Two vertices per edge, so a flat index splits back into (vid, iid) the way
+    // the draw call would have supplied them: 32 edge positions per instance,
+    // two vertices each, is 64 vertex ids per instance.
+    uint vid = index % 64u;
+    uint iid = index / 64u;
+
+    int vertexIndex = rbVertexIndex(vid, iid);
+    uint side = vid & 1u;
+
+    vec4 clip = kClippedAway;
+
+    // `[BIN]` The bound: the header's recip_n slot, loaded as an INT.
+    int total = floatBitsToInt(segments[0].recip_n);
+    if (total > vertexIndex) {
+        // `[BIN]` The binary search, with the target's halving order. `base` is
+        // the first real segment; entry 0 is the header.
+        int base = 1;
+        int width = segments[0].count;
+        while (width > 1) {
+            int halfWidth = width >> 1;
+            int mid = base + halfWidth;
+            bool goLeft = segments[mid].count > vertexIndex;
+            width = goLeft ? halfWidth : (width - halfWidth);
+            base = goLeft ? base : mid;
+        }
+
+        CubicSegment seg = segments[base];
+        if (!rbIsSubpathBreak(seg.p1)) {
+            vec2 p0 = segments[base - 1].p3;   // convention 3
+            int local = vertexIndex - seg.count;
+            float t = seg.recip_n * float(local + int(side));
+            vec2 p = rbCubicAt(t, p0, seg.p1, seg.p2, seg.p3);
+            clip = rbToClip(p, g.m0, g.m1, g.m2, g.twoOverSize, g.depth);
+        }
+    }
+    positions[index] = clip;
+}

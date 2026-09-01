@@ -14,6 +14,7 @@ add_executable(ic_tests
     test_cli.cpp
     test_rb_device.cpp
     test_rb_pathbuffer.cpp
+    test_rb_pathvertex.cpp
 )
 
 target_link_libraries(ic_tests PRIVATE IconComposer::Foundation IconComposer::CliLib IconComposer::CoreSVG IconComposer::RenderBox)

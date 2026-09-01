@@ -71,8 +71,11 @@ Result<PathBuffer> buildPathBuffer(const icf::svg::Path& path, BuildOptions opti
         setPoint(s.p1, c1);
         setPoint(s.p2, c2);
         setPoint(s.p3, end);
-        running += options.subdivisions;
+        // EXCLUSIVE, and the difference is not cosmetic: the shader computes
+        // `local = vertexIndex - count` and feeds it to `t = recip_n * local`.
+        // An inclusive sum makes `local` negative and every t wrong.
         s.count = running;                                          // convention 2
+        running += options.subdivisions;
         s.recip_n = 1.0f / static_cast<float>(options.subdivisions);
         // A curve whose control happens to be non-finite would read as a subpath
         // break and silently stop being drawn. Refuse it at the writer instead.

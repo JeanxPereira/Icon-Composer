@@ -62,7 +62,8 @@ especializações** — 1.040 chaveadas por `appearance`, 616 sem predicado, 82 
 | o diferencial IR do vidro (`glassBackground_v1` × QuartzCore) | **medido** — doc 03 §4.1: 12 constantes em comum, **11 com multiplicidade idêntica**. Mesmo fonte. |
 | M2·P0 — a torre `RenderBox`, Vulkan headless | **passa o gate** — device, buffer, submit e leitura de volta em GPU real |
 | M2·P1 — o buffer de path no layout do alvo | **passa o gate** — as 4 convenções do `path_edges_vertex`, medidas no IR (doc 03 §7) |
-| M2·P2…P5 — campo de distância, preenchimento, traço, alvo de render | **não começados** |
+| M2·P2 — o estágio de vértice, transcrito | **passa o gate** — GPU × oráculo de CPU, **bit a bit**, 7 formas de path (doc 03 §8) |
+| M2·P3…P5 — preenchimento, traço, alvo de render | **não começados** |
 
 ## Build
 
@@ -98,7 +99,7 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
    que o conteúdo deles atravessa intacto. O do *modelo*: **nenhuma chave** dos
    145 documentos pode ser desconhecida, e **nenhuma das 1.740 especializações**
    pode ser inalcançável pelo resolver.
-3. **Uma varredura de mutação obrigatória.** Cinquenta defeitos entram um a um e cada
+3. **Uma varredura de mutação obrigatória.** Cinquenta e sete defeitos entram um a um e cada
    um TEM que avermelhar a suíte, aplicados em árvore limpa e restaurados de um
    backup conferido por SHA-256 — nunca por comando de git.
 
@@ -106,7 +107,7 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
 totalmente compreendidos, 1.740 de 1.740 especializações alcançáveis, 61.537
 valores decodados sem uma falha, 55 bundles sem arquivo morto, 1.100 árvores
 renderizadas sem cair em JSON cru, 149 SVGs lidos em geometria com 128 deles
-totalmente compreendidos, e **50 de 50 mutações pegas**.
+totalmente compreendidos, e **57 de 57 mutações pegas**.
 
 | # | mutação | asserções avermelhadas |
 |---|---|---|

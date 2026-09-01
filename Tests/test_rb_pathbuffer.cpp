@@ -48,7 +48,11 @@ TEST_CASE(each_segment_count_is_a_running_total_and_never_decreases) {
         CHECK(b->entries[i].count >= previous);
         previous = b->entries[i].count;
     }
-    CHECK_EQ(b->entries.back().count, b->vertexCount());
+    // The LAST segment's count is where it STARTS, so it is the total minus its
+    // own share -- the sum is exclusive. Asserting equality with the total here
+    // is what an inclusive sum would satisfy, and that is the bug this guards.
+    CHECK_EQ(b->entries.back().count, b->vertexCount() - 4);
+    CHECK_EQ(b->entries[1].count, 0);  // and the first one starts at zero
 }
 
 // Convention 3: p0 is the previous entry's p3, so the header's p3 has to be the
@@ -97,7 +101,10 @@ TEST_CASE(a_break_contributes_no_vertices) {
     auto b = build("M0 0 L1 1 M5 5 L6 6", 4);
     REQUIRE(b.has_value());
     CHECK_EQ(b->vertexCount(), 8);  // two lines, not two lines plus two moves
-    CHECK_EQ(b->entries[3].count, b->entries[2].count);  // the second move
+    // With an exclusive sum a break starts where the segment AFTER it starts:
+    // it consumed no vertices, so the next curve begins at the same index.
+    REQUIRE(b->entries.size() == 5);
+    CHECK_EQ(b->entries[3].count, b->entries[4].count);  // the second move
 }
 
 // A line is a cubic whose controls sit on the chord at a third and two thirds.
