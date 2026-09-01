@@ -18,6 +18,7 @@ preenchida com uma resposta plausível.
 | [00 — Levantamento](00-levantamento.md) | o que existe, o que falta, e as decisões que travavam o resto. **Comece aqui.** |
 | [01 — O formato `.icon`](01-o-formato-icon.md) | o documento que o app edita: chaves, vocabulários, a gramática dos valores, e o que ainda não fechou |
 | [02 — O bundle `.icon`](02-o-bundle-icon.md) | a pasta em volta do documento: `Assets/`, o que mora nele, e a referência que nem sempre resolve |
+| [04 — O SVG](04-o-svg.md) | o que os assets contêm, o que o CoreSVG da Apple lê, e três filtros que ela NÃO lê |
 | [03 — O motor de render](03-o-motor-de-render.md) | o mapa do `IconRendering` sobre o `RenderBox`: os dois metallib, as peças do vidro, e o vocabulário que bate com o do AquaKit |
 | [_confrontar/](_confrontar/README.md) | material do projeto anterior, **sem selo** — lista de perguntas, nunca fonte |
 | [Specs/arquitetura](Specs/2026-08-31-arquitetura-design.md) | as camadas deste repositório, copiadas das do alvo, e onde Onyx e AquaKit entram |
@@ -52,6 +53,8 @@ especializações** — 1.040 chaveadas por `appearance`, 616 sem predicado, 82 
 | resolução de especialização | **passa o gate** — 1.740 de 1.740 alcançáveis; a regra está medida, doc 01 §5 |
 | leitura tipada dos valores (cores, enums, geometria) | **passa o gate** — 61.537 valores decodados, 0 falhas |
 | o bundle (`Assets/`, a referência das imagens) | **passa o gate** — 55 bundles, 0 arquivos mortos, 2 referências penduradas conhecidas |
+| SVG: XML, path data, geometria | **passa o gate** — 149/149 lidos, 477 formas, 6.384 segmentos |
+| SVG: pintura (cor, gradiente, CSS) | **não começada** — e o relatório de cobertura diz isso arquivo a arquivo (doc 04 §6) |
 | CLI do `ictool` / `icrtool` | **levantada** — doc 01 §11: comandos, gramática, e o `icrtool` como auxiliar interno |
 | o nosso `ictool` | **passa o gate** — 1.100 árvores renderizadas, nenhuma caindo em JSON cru |
 | a UI do app | **não levantada** — e não há nib: o app é SwiftUI |
@@ -91,14 +94,15 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
    que o conteúdo deles atravessa intacto. O do *modelo*: **nenhuma chave** dos
    145 documentos pode ser desconhecida, e **nenhuma das 1.740 especializações**
    pode ser inalcançável pelo resolver.
-3. **Uma varredura de mutação obrigatória.** Vinte e quatro defeitos entram um a um e cada
+3. **Uma varredura de mutação obrigatória.** Trinta e dois defeitos entram um a um e cada
    um TEM que avermelhar a suíte, aplicados em árvore limpa e restaurados de um
    backup conferido por SHA-256 — nunca por comando de git.
 
 **gate-m1 passou em 2026-08-31** — 145 documentos, 135 byte-exatos, 145 de 145
 totalmente compreendidos, 1.740 de 1.740 especializações alcançáveis, 61.537
 valores decodados sem uma falha, 55 bundles sem arquivo morto, 1.100 árvores
-renderizadas sem cair em JSON cru, e **24 de 24 mutações pegas**.
+renderizadas sem cair em JSON cru, 149 SVGs lidos em geometria, e **32 de 32
+mutações pegas**.
 
 | # | mutação | asserções avermelhadas |
 |---|---|---|
@@ -122,6 +126,14 @@ renderizadas sem cair em JSON cru, e **24 de 24 mutações pegas**.
 | 18 | imagens coletadas só no contexto base | 3 |
 | 19 | asset sem referência nunca reportado | **1** |
 | 20 | qualquer pasta com um `icon.json` tomada por bundle | **1** |
+| 25 | cúbica suave sempre reflete, mesmo depois de uma reta | **1** |
+| 26 | moveto repetido continua moveto em vez de virar reta | **1** |
+| 27 | linha horizontal esquece o y corrente | **1** |
+| 28 | tag de fechamento não precisa casar com o que fecha | **1** |
+| 29 | dados de caractere descartados | 2 |
+| 30 | lista de transform composta na ordem errada | **1** |
+| 31 | o que o `defs` define nunca é reportado | 2 |
+| 32 | pintura descartada em silêncio em vez de nomeada | 4 |
 | 21 | uma sombra despejada como JSON cru | 3 |
 | 22 | camada de vidro deixa de ser marcada | **1** |
 | 23 | a árvore ignora o contexto que recebeu | **1** |

@@ -13,7 +13,7 @@
 #      unknown to it, not one of the 1,740 specializations may be unreachable by
 #      the resolver, and not one of the 61,537 values it resolves may fail to
 #      decode into a type.
-#   3. A mandatory mutation sweep. Twenty-four defects go in one at a time, and every
+#   3. A mandatory mutation sweep. Thirty-two defects go in one at a time, and every
 #      one of them MUST redden the suite. Each is applied to a pristine tree and
 #      restored from a byte-exact backup verified by SHA-256 -- never by a git
 #      command, because this repository has no git history to lean on, and a
@@ -36,6 +36,9 @@ $sources = @{
     values   = Join-Path $root "Source/IconComposerFoundation/Values.cpp"
     bundle   = Join-Path $root "Source/IconComposerFoundation/IconBundle.cpp"
     report   = Join-Path $root "Source/cli/Report.cpp"
+    svgpath  = Join-Path $root "Source/CoreSVG/Path.cpp"
+    svgxml   = Join-Path $root "Source/CoreSVG/Xml.cpp"
+    svgdoc   = Join-Path $root "Source/CoreSVG/Document.cpp"
 }
 $original = @{}
 $hashes = @{}
@@ -152,7 +155,32 @@ $mutations = @(
        to   = 'const json::Value* image = l.resolve("image-name", Context{});' },
     @{ file = "report"; name = "a dangling reference reported as fine"
        from = 'o << (absent ? "  MISSING  " : "  ok       ")'
-       to   = 'o << (false ? "  MISSING  " : "  ok       ")' }
+       to   = 'o << (false ? "  MISSING  " : "  ok       ")' },
+    # ---- the SVG reader ----
+    @{ file = "svgpath"; name = "a smooth cubic always reflects, even after a line"
+       from = '? Point{2 * current.x - lastControl.x, 2 * current.y - lastControl.y}'
+       to   = '? Point{lastControl.x, lastControl.y}' },
+    @{ file = "svgpath"; name = "a repeated moveto stays a moveto instead of a line"
+       from = "command = 'L';  // a repeated moveto is a lineto"
+       to   = "command = 'M';" },
+    @{ file = "svgpath"; name = "a horizontal line forgets the current y"
+       from = 'current = {base.x + x, current.y};'
+       to   = 'current = {base.x + x, base.y};' },
+    @{ file = "svgxml"; name = "a closing tag need not match what it closes"
+       from = 'return closing == out.name;'
+       to   = 'return true;' },
+    @{ file = "svgxml"; name = "character data dropped, so style and title come back empty"
+       from = 'if (i_ > textStart) {'
+       to   = 'if (false) {' },
+    @{ file = "svgdoc"; name = "transform list composed in the wrong order"
+       from = 'result = t.then(result);'
+       to   = 'result = result.then(t);' },
+    @{ file = "svgdoc"; name = "what defs defines is never reported"
+       from = 'for (const auto& c : e.children) unsupported.insert("defs:" + c.name);'
+       to   = ';' },
+    @{ file = "svgdoc"; name = "paint silently dropped instead of named"
+       from = 'if (a.first == p) unsupported.insert("paint:" + a.first);'
+       to   = 'if (false) unsupported.insert("paint:" + a.first);' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"
@@ -188,6 +216,10 @@ if ($pristine.text -notmatch '(\d+) bundles, (\d+) trees rendered, (\d+) offende
     Write-Host "FAILED: the report gate did not report -- did it run?"; exit 1
 }
 $trees = [int]$Matches[2]; $tbad = [int]$Matches[3]
+if ($pristine.text -notmatch '(\d+) SVGs: (\d+) read, (\d+) refused') {
+    Write-Host "FAILED: the SVG document gate did not report -- did it run?"; exit 1
+}
+$svgs = [int]$Matches[1]; $svgread = [int]$Matches[2]; $svgbad = [int]$Matches[3]
 
 if ($docs -lt 145)  { Write-Host "FAILED: only $docs documents, expected at least 145"; exit 1 }
 if ($exact -lt 135) { Write-Host "FAILED: only $exact byte-exact, expected at least 135"; exit 1 }
@@ -196,6 +228,8 @@ if ($reach -ne $specs) { Write-Host "FAILED: $reach of $specs specializations re
 if ($vbad -ne 0) { Write-Host "FAILED: $vbad values failed to decode"; exit 1 }
 if ($vals -lt 60000) { Write-Host "FAILED: only $vals values decoded, expected 60000+"; exit 1 }
 if ($tbad -ne 0) { Write-Host "FAILED: $tbad tree(s) fell back to raw JSON"; exit 1 }
+if ($svgbad -ne 0) { Write-Host "FAILED: $svgbad SVG(s) refused"; exit 1 }
+if ($svgs -lt 140) { Write-Host "FAILED: only $svgs SVGs, expected 140+"; exit 1 }
 Write-Host "pristine: OK`n"
 
 # ---- 3: the mutation sweep -----------------------------------------------
@@ -245,6 +279,7 @@ Write-Host "writer: $docs documents, $exact byte-exact against Apple's encoder"
 Write-Host "model:  $clean of $docs fully understood, $reach of $specs specializations reachable"
 Write-Host "values: $vals decoded, $vbad failed"
 Write-Host "report: $trees trees rendered, $tbad fell back to raw JSON"
+Write-Host "svg:    $svgread of $svgs read into geometry, $svgbad refused"
 Write-Host "sweep:  $caught of $($mutations.Count) mutations caught"
 if ($caught -ne $mutations.Count) {
     Write-Host "`nVERDICT: FAILED -- a defect the suite does not see is a defect that ships"

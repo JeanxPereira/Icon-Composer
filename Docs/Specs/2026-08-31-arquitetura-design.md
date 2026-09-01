@@ -60,7 +60,7 @@ Icon-Composer/
 
 ```
 IconComposerFoundation  ->  nada. stdlib pura, sem GPU, sem UI.
-CoreSVG                 ->  nada. stdlib pura.
+CoreSVG                 ->  nada. stdlib pura.  [XML, path, geometria de pe]
 RenderBox               ->  Vulkan
 IconRendering           ->  RenderBox, CoreSVG, IconComposerFoundation
 IconComposerKit         ->  IconRendering, IconComposerFoundation, Onyx

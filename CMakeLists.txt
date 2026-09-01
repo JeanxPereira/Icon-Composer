@@ -27,6 +27,7 @@ endif()
 # Each is named after the image of the target it answers for, and each is a clean
 # reimplementation of what that image does, never a copy of it.
 add_subdirectory(Source/IconComposerFoundation)
+add_subdirectory(Source/CoreSVG)
 add_subdirectory(Source/cli)
 
 if(IC_BUILD_TESTS)
