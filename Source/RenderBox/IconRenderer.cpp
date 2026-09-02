@@ -4,10 +4,12 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <optional>
 #include <sstream>
 
 #include "Source/CoreSVG/Document.h"
 #include "Source/RenderBox/AutomaticGradient.h"
+#include "Source/RenderBox/GlassLayer.h"
 #include "Source/IconComposerFoundation/Png.h"
 #include "Source/IconComposerFoundation/Values.h"
 
@@ -52,6 +54,15 @@ LayerPlacement placementOf(const icf::json::Value* position) {
         p.translateY = pos->translation.y;
     }
     return p;
+}
+
+// A sentence said once per render, however many layers provoke it.
+void note(std::vector<std::string>& notes, const std::string& text) {
+    if (text.empty()) return;
+    for (const std::string& n : notes) {
+        if (n == text) return;
+    }
+    notes.push_back(text);
 }
 
 // One layer's art drawn over the accumulator, with `alpha` applied to all of it.
@@ -277,6 +288,24 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
         const icf::Group& group = groups[gi];
         const LayerPlacement gp = placementOf(group.resolve("position", options.context));
 
+        // `[ART]` THE GLASS PARAMETERS ARE ON THE GROUP, NOT ON THE LAYER. All
+        // 280 occurrences of `glass` / `glass-specializations` in the 145 corpus
+        // documents sit inside `groups[].layers[]` and every one of them is a
+        // Bool; no layer carries a glass NUMBER. The group carries the material
+        // (spec §4.1), and the layer's bit says which elements participate --
+        // which is exactly the shape `Icon.Layer.material` +
+        // `Icon.Element.participatesInGlass` predicts.
+        //
+        // Read once per group rather than once per layer: it resolves six keys
+        // through the specialization machinery and the answer cannot differ
+        // between two layers of the same group.
+        GlassMaterialReadError materialError;
+        const std::optional<GlassMaterialDocument> materialDoc =
+            readGlassMaterial(group, options.context, &materialError);
+        const DenormalisedGlass glassNumbers =
+            materialDoc ? denormaliseGlass(glassMaterialFrom(*materialDoc)) : DenormalisedGlass{};
+        const GlassRefraction refraction = glassRefractionFor(glassNumbers, options.size);
+
         for (const icf::Layer& layer : group.layers()) {
             ++out.total;
             const std::string name(layer.name());
@@ -288,10 +317,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             if (boolOr(layer.resolve("hidden", options.context), false)) {
                 continue;  // hidden is an instruction, not a gap
             }
-            if (boolOr(layer.resolve("glass", options.context), false)) {
-                skip("camada de vidro -- o efeito nao foi transcrito");
-                continue;
-            }
+            const bool isGlass = boolOr(layer.resolve("glass", options.context), false);
             if (const icf::json::Value* bm = layer.resolve("blend-mode", options.context)) {
                 if (const std::string* s = textOf(bm)) {
                     if (*s != "normal") {
@@ -339,12 +365,84 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 }
             }
 
+            // ---- the glass, before the layer's own art -------------------
+            //
+            // THE ORDERING, AND IT IS A DECISION. `[INF]` The accumulator as it
+            // stands IS the backdrop -- that is exactly what the target hands
+            // its glass as a texture (spec §4.3: `glassBackground_v1` receives
+            // the backdrop wrapped in an `RB::MultiLevelLayer`, and in an
+            // isolated icon the only possible content of that texture is the
+            // document's own stack so far). So: refract what is underneath
+            // through this layer's shape, composite that, THEN draw this
+            // layer's art over the result.
+            //
+            // THE ALTERNATIVE, which is not what this does: the shape refracts
+            // and the layer's art is NOT painted -- the layer contributing only
+            // a lens. Both readings survive what was measured. `[OBS]` Spec
+            // §4.3 records the question as open, and nothing read settles it.
+            //
+            // Why this one. `Icon.Element.participatesInGlass` is a
+            // PARTICIPATION flag on an element that still carries `contents`
+            // and `fill` -- a lens-only element would not need either. And
+            // `[ART]` 138 of the corpus's 171 glass layers carry their own
+            // `fill`, which under the lens-only reading would be 138 authored
+            // values that nothing consumes. Painting the art is the reading
+            // that leaves no dead data.
+            std::optional<icf::svg::SvgDocument> svg;
             if (ext == ".svg") {
-                auto svg = icf::svg::SvgDocument::parse(readAll(art));
+                svg = icf::svg::SvgDocument::parse(readAll(art));
                 if (!svg) {
                     skip("SVG que este leitor nao abre: " + *imageName);
                     continue;
                 }
+            }
+
+            // A material key that is PRESENT and unreadable is an error, not a
+            // default. Falling through to "no refraction" would be the silent
+            // default this project refuses -- and it would look identical to
+            // the (very common, and legitimate) zero-strength case.
+            if (isGlass && !materialDoc) {
+                skip("vidro: a chave '" + materialError.key + "' do grupo nao le -- " +
+                     materialError.why);
+                continue;
+            }
+
+            if (isGlass && !glassRefractionIsIdentity(refraction)) {
+                // `[ART]` 45 of the corpus's 171 glass layers name `.png` art
+                // and one names `.heic`. A raster has no path to flatten, so
+                // there is no shape to build a field from. This is NOT the same
+                // gap as "the glass is not transcribed" and it does not share
+                // its sentence: the glass IS transcribed, and what is missing
+                // is a field generator that reads a raster's alpha instead of a
+                // contour.
+                if (!svg) {
+                    skip("vidro sobre arte raster: um raster nao tem contorno para achatar e "
+                         "este projeto nao tem gerador de campo a partir do alfa (" +
+                         *imageName + ")");
+                    continue;
+                }
+                const GlassContours shape = flattenSvgToContours(
+                    *svg, placeOnCanvas(svg->viewBox, lp, options.size), options.subdivisions);
+                if (shape.mixedRules) {
+                    skip("vidro: a arte mistura non-zero e even-odd e o campo assina com uma "
+                         "regra so -- escolher uma inverteria o dentro/fora de parte da forma");
+                    continue;
+                }
+                if (shape.contours.empty()) {
+                    skip("vidro: a arte nao fecha nenhum contorno pintado (" + *imageName + ")");
+                    continue;
+                }
+                FieldOptions fo;
+                fo.rule = shape.rule;
+                const FieldImage field =
+                    generateField(shape.contours, options.size, options.size, fo);
+                glassOver(acc, options.size, options.size,
+                          glassDisplacementMap(field, refraction), refraction);
+                note(out.notes, glassRulerNote(options.size));
+                ++out.glassRefracted;
+            }
+
+            if (svg) {
                 RenderOptions ro;
                 ro.width = ro.height = options.size;
                 ro.subdivisions = options.subdivisions;

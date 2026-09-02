@@ -27,6 +27,17 @@
 //
 // Both are marked in the code where they are used. An assumption that is written
 // down can be corrected; one that is merely coded becomes folklore.
+//
+// AND THE GLASS, SINCE 2026-09-02
+// -------------------------------
+// A layer whose `glass` bit is set is no longer skipped. The material comes off
+// the GROUP (`GlassMaterial.h`), the layer's art becomes contours, the contours
+// become a field, the field becomes a displacement map, and the accumulator --
+// which IS the backdrop -- is refracted through it before the layer's own art
+// is drawn on top. `GlassLayer.h` carries the whole chain, the ordering
+// decision, and the two gaps that are named rather than filled: the
+// points-to-pixels ruler (which lands in `RenderedIcon::notes`) and raster art,
+// which has no contour to flatten.
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -64,6 +75,20 @@ struct RenderedIcon {
     std::vector<SkippedLayer> skipped;
     // Shapes inside drawn layers that the SVG renderer itself could not draw.
     std::vector<std::string> shapeGaps;
+
+    // Things that WERE drawn but whose provenance is short of a measurement,
+    // said in words. A gap that changes the pixels and is not reported becomes
+    // folklore the moment the picture looks plausible -- so the glass's
+    // points-to-pixels ruler (`GlassLayer.h`, GAP ONE) announces itself here
+    // instead of scaling quietly. Deduplicated: one sentence per render, not
+    // one per layer.
+    std::vector<std::string> notes;
+
+    // Layers drawn with their glass refracting the backdrop underneath them.
+    // Counted apart from `drawn` because a glass layer whose refraction is the
+    // identity (`refractionStrength == 0`, the read default) draws its art and
+    // refracts nothing, and the two outcomes must be distinguishable.
+    std::size_t glassRefracted = 0;
 };
 
 // The placement of one layer's art on the canvas, in the target's own terms.

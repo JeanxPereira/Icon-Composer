@@ -29,6 +29,7 @@ add_library(RenderBox STATIC
     GlassForeground.cpp
     SdfDisplacement.cpp
     GlassMaterial.cpp
+    GlassLayer.cpp
 )
 
 # Shaders are compiled at BUILD time, not loaded at run time. A shader that does

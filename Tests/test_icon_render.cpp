@@ -255,25 +255,33 @@ TEST_CASE(a_bundle_with_svg_and_png_layers_draws_all_of_them) {
     CHECK(most > 0.5f);
 }
 
-// A layer the compositor cannot draw is NAMED, and a HIDDEN one is not -- the
-// two look the same in a picture and are not the same thing.
-TEST_CASE(a_layer_that_cannot_be_drawn_is_named_and_a_hidden_one_is_not) {
+// A GLASS LAYER NOW DRAWS. This test used to assert the opposite: every layer
+// of this bundle is glass, and until the compositor learned the effect it
+// reported all of them as "camada de vidro -- o efeito nao foi transcrito" and
+// drew nothing. That sentence is retired.
+//
+// What replaces it is not "glass is finished". `[ART]` This bundle's group
+// carries no `refractivity`, so `refractionStrength` stays at its read default
+// of 0, the shader's one argument is 0, and the refraction is the identity --
+// the layer draws its art over an untouched backdrop. `GlassLayer.h` argues
+// that case at length; what matters here is that it is a DRAW and not a skip.
+TEST_CASE(a_glass_layer_draws_instead_of_being_reported_as_untranscribed) {
     Device& d = gpu();
     if (!d.valid()) return;
     const char* dir = std::getenv("IC_CORPUS_DIR");
     REQUIRE(dir && *dir);
-    // Every layer of this bundle is glass, so every one must be reported.
     auto bundle = icf::IconBundle::open(fs::path(dir) / "Apollo-Reborn__Apollo-Reborn__AppIcon");
     REQUIRE(bundle.has_value());
     IconRenderOptions o;
     o.size = 64;
     auto icon = renderIcon(d, *bundle, o);
     REQUIRE(icon.has_value());
-    CHECK_EQ(icon->drawn, std::size_t{0});
-    CHECK(!icon->skipped.empty());
-    bool named = false;
-    for (const auto& s : icon->skipped) named |= s.why.find("vidro") != std::string::npos;
-    CHECK(named);
+    CHECK(icon->drawn > 0);
+    for (const auto& s : icon->skipped) {
+        CHECK(s.why.find("o efeito nao foi transcrito") == std::string::npos);
+    }
+    // Every layer is still accounted for: drawn, named, or deliberately hidden.
+    CHECK(icon->drawn + icon->skipped.size() <= icon->total);
 }
 
 

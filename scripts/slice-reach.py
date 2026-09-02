@@ -16,11 +16,26 @@ fill, `normal` blend, no glass, and art the renderer can place -- a PNG, or
 vector art the CoreSVG reader turns into filled paths, flat or gradient-filled,
 with no stroke, filter, mask, clip path, pattern, `use` or embedded raster.
 
-TWO THINGS HAVE LEFT THE BLOCKER LIST, both on 2026-09-01: RASTER, when the
-compositor learned to decode and place a PNG, and the SVG's `url(#id)` GRADIENT
-paint, when the gradient was transcribed. The number this script prints is
-therefore not comparable across either change -- said here rather than letting a
-rising number look like the corpus changed.
+THREE THINGS HAVE LEFT THE BLOCKER LIST: RASTER and the SVG's `url(#id)`
+GRADIENT paint, both on 2026-09-01, and on 2026-09-02 the GLASS LAYER. The
+number this script prints is therefore not comparable across any of them --
+said here rather than letting a rising number look like the corpus changed.
+
+WHAT "GLASS IS NO LONGER A BLOCKER" MEANS, EXACTLY
+-------------------------------------------------
+The compositor draws a glass layer now (`Source/RenderBox/GlassLayer.h`). The
+layer's `glass` bit is a PARTICIPATION flag; the refraction PARAMETERS live on
+the group, in `refractivity`, and `[ART]` only 5 of the corpus's 271 groups
+carry that key at all -- 2 with a non-zero strength. Where the strength is zero
+the shader's one argument is zero, every displacement offset is exactly zero,
+and the glass layer draws its own art over an untouched backdrop. That is a
+DRAW, not a gap, so it is not counted as a blocker.
+
+ONE GLASS BLOCKER REMAINS, and it is narrower than the old one: a glass layer
+whose group DOES refract and whose art is a RASTER. `generateField` eats
+polylines and a raster has no path to flatten, so there is no shape to build a
+field from. `[ART]` In this corpus that is exactly one layer -- and it happens
+to be one of the only two the corpus could have refracted at all.
 
 TWO RULERS, AND THE SECOND IS THE ONE THAT DECIDES
 --------------------------------------------------
@@ -125,10 +140,75 @@ def fill_kinds(value) -> list[str]:
     return []
 
 
-def blockers_of(node, assets: Path, svg_cache: dict) -> tuple[set[str], int]:
+def group_refraction_strength(group) -> float:
+    """The largest |strength| any resolvable `refractivity` on this GROUP names.
+
+    Group-level only, and deliberately: `[ART]` all 280 occurrences of `glass`
+    are inside layers and none of them carries a number, while `refractivity`
+    occurs only on groups. `[OBS]` The `enabled` bit is NOT consulted, which is
+    what `glassMaterialFrom` does too -- where that bit collapses was never read,
+    and 42 corpus groups are disabled with a non-zero value, so honouring it and
+    ignoring it are different behaviours and nothing says which the target does.
+    """
+    values = []
+    if "refractivity" in group:
+        values.append(group["refractivity"])
+    for entry in (group.get("refractivity" + SUFFIX) or []):
+        if isinstance(entry, dict) and "value" in entry:
+            values.append(entry["value"])
+    worst = 0.0
+    for v in values:
+        if isinstance(v, dict) and isinstance(v.get("strength"), (int, float)):
+            worst = max(worst, abs(float(v["strength"])))
+    return worst
+
+
+def glass_raster_names(groups) -> set[str]:
+    """Art named by a glass layer whose group actually refracts, and is a raster.
+
+    This is the one glass blocker left. It is computed per DOCUMENT rather than
+    inside `blockers_of` because the parameter is on the group and the bit is on
+    the layer, and `blockers_of` is handed one or the other -- pairing them here
+    keeps the layer ruler and the document ruler answering the same question.
+    """
+    blocked: set[str] = set()
+    for g in groups:
+        if group_refraction_strength(g) == 0.0:
+            continue
+        for lay in (g.get("layers") or []):
+            if not any(v is True for v in values_for(lay, "glass")):
+                continue
+            for name in values_for(lay, "image-name"):
+                if isinstance(name, str) and Path(name).suffix.lower() != ".svg":
+                    blocked.add(name)
+    return blocked
+
+
+def unconsumed_material(group) -> bool:
+    """Does this group ask for glass material this renderer does not apply?
+
+    `[OBS]` The three below have no consumer read from the binary, so the
+    renderer carries them and applies none. Anything else about the layer may be
+    perfect and it still will not be the target's pixel.
+    """
+    for v in values_for(group, "translucency"):
+        if isinstance(v, dict) and v.get("enabled") is True:
+            return True
+    for v in values_for(group, "shadow"):
+        if isinstance(v, dict) and v.get("kind") not in (None, "none"):
+            return True
+    for v in values_for(group, "specular"):
+        if v is True or isinstance(v, str):
+            return True
+    return False
+
+
+def blockers_of(node, assets: Path, svg_cache: dict,
+                glass_raster: set[str] | None = None) -> tuple[set[str], int]:
     """What stops `node` from being drawn, and how many names do not resolve."""
     bad: set[str] = set()
     dangling = 0
+    glass_raster = glass_raster or set()
 
     for v in values_for(node, "fill"):
         for k in fill_kinds(v):
@@ -137,12 +217,15 @@ def blockers_of(node, assets: Path, svg_cache: dict) -> tuple[set[str], int]:
     for v in values_for(node, "blend-mode"):
         if isinstance(v, str) and v != "normal":
             bad.add("mescla: %s" % v)
-    for v in values_for(node, "glass"):
-        if v is True:
-            bad.add("camada de vidro")
 
     for name in dict.fromkeys(v for v in values_for(node, "image-name")
                               if isinstance(v, str)):
+        if name in glass_raster:
+            # The glass draws; what is missing is a field generator that reads a
+            # raster's ALPHA instead of a contour. Its own sentence, because
+            # folding it into the retired "glass is not transcribed" would hide
+            # the fact that the glass now draws.
+            bad.add("vidro sobre raster")
         f = assets / name
         if not f.is_file():
             dangling += 1
@@ -170,6 +253,18 @@ def main() -> int:
 
     judged = full_ok = docs_ok = art_absent = dangling = 0
     layers_total = layers_flat = 0
+    # A layer can be DRAWABLE and still not be the target's pixel. `glass` on a
+    # layer makes its group's material apply to it, and three of that material's
+    # fields have NO KNOWN CONSUMER in the binary -- `translucency`,
+    # `shadowOpacity`/`shadowStyle` and `hasSpecular`/`specularPlacement` cross
+    # Swift/ObjC verbatim with no arithmetic and no Max/Power partner (doc 03
+    # §29). This renderer therefore draws such a layer without them.
+    #
+    # That is NOT a blocker: nothing is drawn wrong, and the refraction that IS
+    # decoded runs correctly. But "no named blocker" and "the target's pixel" are
+    # different claims, and a ruler that reports only the first oversells. So the
+    # second number is counted and printed beside it.
+    glass_incomplete = 0
     doc_blockers = Counter()
     layer_blockers = Counter()
     asset_kinds = Counter()
@@ -206,16 +301,21 @@ def main() -> int:
             if f.is_file():
                 asset_kinds[f.suffix.lower() or "(sem extensão)"] += 1
 
+        blocked_art = glass_raster_names(groups)
+
         for g in groups:
             for lay in (g.get("layers") or []):
-                bad, _ = blockers_of(lay, assets, svg_cache)
+                bad, _ = blockers_of(lay, assets, svg_cache, blocked_art)
                 layers_total += 1
                 if bad:
                     layer_blockers.update(bad)
                 else:
                     layers_flat += 1
+                    if any(v is True for v in values_for(lay, "glass")):
+                        if unconsumed_material(g):
+                            glass_incomplete += 1
 
-        why, d = blockers_of(groups, assets, svg_cache)
+        why, d = blockers_of(groups, assets, svg_cache, blocked_art)
         dangling += d
         if why:
             doc_blockers.update(why)
@@ -232,6 +332,12 @@ def main() -> int:
     print("ALCANCE POR CAMADA  — a régua que decide")
     print("  %d de %d camadas desenháveis hoje   %5.1f%%"
           % (layers_flat, layers_total, 100.0 * layers_flat / max(layers_total, 1)))
+    if glass_incomplete:
+        print("  destas, %d desenham SEM o material que o documento pede"
+              % glass_incomplete)
+        print("      translucency, sombra e especular do grupo não têm consumidor")
+        print("      lido no binário (doc 03 §29), então nenhum é aplicado.")
+        print("      Desenhável não é o mesmo que igual ao alvo.")
 
     print("\nALCANCE POR DOCUMENTO  (sobre os %d que dá para julgar)" % judged)
     print("  camadas  %3d/%d  %5.1f%%   o documento inteiro, fundo de fora"
