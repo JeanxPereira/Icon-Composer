@@ -604,9 +604,24 @@ $mutations = @(
     @{ file = "icon"; name = "a hidden layer is drawn anyway"
        from = 'if (boolOr(layer.resolve("hidden", options.context), false)) {'
        to   = 'if (false) {' },
-    @{ file = "icon"; name = "a glass layer is drawn instead of being named"
-       from = 'if (boolOr(layer.resolve("glass", options.context), false)) {'
-       to   = 'if (false) {' },
+    # This slot used to hold "a glass layer is drawn instead of being named",
+    # anchored on the `skip(...)` that stood at IconRenderer.cpp:291 until the
+    # glass was wired in. That branch is gone -- the layer is DRAWN now -- so the
+    # mutation went stale and the pre-flight stopped the sweep before it started,
+    # which is exactly the job it exists for.
+    #
+    # Its successor bites the same claim in the new shape: with `isGlass` forced
+    # false a glass layer becomes an ordinary one, its group's material is never
+    # applied and the backdrop is never refracted.
+    @{ file = "icon"; name = "a glass layer is treated as an ordinary layer"
+       from = 'const bool isGlass = boolOr(layer.resolve("glass", options.context), false);'
+       to   = 'const bool isGlass = false;' },
+    # And the raster gap must stay NAMED rather than silently drawn: with the
+    # identity check dropped, a glass layer whose refraction is a no-op still
+    # walks the whole displacement path.
+    @{ file = "icon"; name = "the zero-refraction short circuit is removed"
+       from = 'if (isGlass && !glassRefractionIsIdentity(refraction)) {'
+       to   = 'if (isGlass) {' },
     @{ file = "icon"; name = "a blend this renderer does not have is drawn as normal"
        from = 'if (*s != "normal") {'
        to   = 'if (false) {' },
@@ -961,6 +976,11 @@ foreach ($m in $mutations) {
 if ($stale.Count -gt 0) {
     Write-Host "FAILED: $($stale.Count) stale anchor(s) -- the code moved and the sweep did not"
     foreach ($x in $stale) { Write-Host "  $x" }
+    # NOTHING WAS MUTATED, so the in-progress marker must not survive. Leaving it
+    # made every later run "recover" by restoring sources from this run's backup
+    # -- harmless while the tree is unchanged, and a way to LOSE an edit made
+    # between the two runs, which is the repair a stale anchor asks for.
+    if (Test-Path $Marker) { Remove-Item $Marker -Force }
     exit 1
 }
 Write-Host "anchors: $($mutations.Count) of $($mutations.Count) resolve`n"

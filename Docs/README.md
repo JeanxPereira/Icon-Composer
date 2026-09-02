@@ -129,7 +129,7 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
    que o conteúdo deles atravessa intacto. O do *modelo*: **nenhuma chave** dos
    145 documentos pode ser desconhecida, e **nenhuma das 1.740 especializações**
    pode ser inalcançável pelo resolver.
-3. **Uma varredura de mutação obrigatória.** Cento e sessenta defeitos entram um a um e cada
+3. **Uma varredura de mutação obrigatória.** Duzentos e nove defeitos entram um a um e cada
    um TEM que avermelhar a suíte, aplicados em árvore limpa e restaurados de um
    backup conferido por SHA-256 — nunca por comando de git.
 
@@ -140,7 +140,38 @@ renderizadas sem cair em JSON cru, 149 SVGs lidos em geometria com 128 deles
 totalmente compreendidos, 58 dos 60 PNGs decodados, e **119 de 119 mutações
 pegas**.
 
-### A varredura hoje: 160 de 160, em cinco fatias
+### 2026-09-02: `gate-m1 passed`, 209 de 209, numa execução única
+
+`[ART]` **A varredura inteira rodou de uma vez e o script imprimiu a frase.**
+
+```
+writer: 145 documents, 135 byte-exact against Apple's encoder
+model:  145 of 145 fully understood, 1740 of 1740 specializations reachable
+values: 61537 decoded, 0 failed
+report: 1100 trees rendered, 0 fell back to raw JSON
+svg:    149 of 149 read into geometry, 0 refused
+sweep:  209 of 209 mutations caught
+
+VERDICT: gate-m1 passed
+```
+
+**417 casos, 0 falhas. Zero sobreviventes.** E o fim foi limpo, não só o veredito:
+zero restaurações e zero divergência de hash no log, o marcador de
+varredura-em-progresso removido, e nenhum arquivo mutado em disco — o que
+aconteceu seis vezes ao longo do dia anterior.
+
+> **Por que esta linha vale mais do que a de baixo.** A seção seguinte registra
+> 160 de 160 em cinco fatias, e diz que a união das fatias **não é a mesma
+> afirmação**. Era verdade e continua sendo. O que mudou é que agora existe a
+> execução única, e é dela que a frase vem.
+
+**A pré-checagem de âncora ganhou o dia antes de a varredura começar.** A primeira
+tentativa parou em milissegundos: a mutação *"uma camada de vidro é desenhada em
+vez de nomeada"* apontava para um `skip` que a ligação do vidro tinha acabado de
+remover. O código andou e a mutação não. Foi substituída por duas que mordem o
+comportamento novo.
+
+### A varredura anterior: 160 de 160, em cinco fatias
 
 `[ART]` **Em 2026-09-02 as 160 mutações foram aplicadas e todas foram pegas** —
 40, 40, 20, 20, 20 e 20 —, com a suíte pristine conferida no início de cada
