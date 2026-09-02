@@ -128,8 +128,8 @@ contagem de ocorrências idêntica.**
 | `0.212646` | 2 × 2 | luma R Rec.709 (`0.2126`) |
 | `0.715332` | 3 × 3 | luma G |
 | `0.072205` | 2 × 2 | luma B Rec.709 (`0.0722`) |
-| `0.212524` | 1 × 1 | luma R SMPTE (`0.2125`) |
-| `0.072083` | 1 × 1 | luma B SMPTE (`0.0721`) |
+| `0.212524` | 1 × 1 | luma R, segundo arredondamento (`0.2125`) — **não SMPTE, ver §28.8** |
+| `0.072083` | 1 × 1 | luma B, segundo arredondamento (`0.0721`) — **não SMPTE, ver §28.8** |
 | `-0.75`, `0.75` | 1 × 1 | |
 | `0.25` | 3 × 1 | **a única que discorda** |
 
@@ -141,8 +141,8 @@ Só de A: `0.001`, `0.300049`, `0.333252`. Só de B: `0.0001`.
 proporção:
 
 ```
-Rec.709   0.2126  0.7152  0.0722   ->  half  0.212646  0.715332  0.072205
-SMPTE     0.2125  0.7154  0.0721   ->  half  0.212524  0.715332  0.072083
+Rec.709 a  0.2126  0.7152  0.0722  ->  half  0.212646  0.715332  0.072205
+Rec.709 b  0.2125  0.7154  0.0721  ->  half  0.212524  0.715332  0.072083
                                                         ^^^^^^^^
                                         as duas colidem no MESMO half
 ```
@@ -150,6 +150,13 @@ SMPTE     0.2125  0.7154  0.0721   ->  half  0.212524  0.715332  0.072083
 `[BIN]` É por isso que R e B aparecem repartidos **2+1** enquanto G aparece **3**:
 o G das duas trincas cai no mesmo valor em meia precisão. A contagem fecha
 sozinha — e fecha **igual dos dois lados**.
+
+> **Correção (§28.8).** A segunda trinca foi chamada aqui de **SMPTE**, e não é:
+> a SMPTE 240M é `0.212 / 0.701 / 0.087` e cai em halfs completamente outros. As
+> duas trincas são a **Rec.709 em dois arredondamentos de quatro casas** — e as
+> duas somam exatamente 1, que é o que torna isso leitura e não semelhança. O
+> argumento desta seção não muda de força: continuam sendo duas trincas, na mesma
+> proporção, com a mesma colisão. O que muda é o nome da segunda.
 
 `[INF]` Dois times implementando vidro independentemente não escrevem ambos as
 duas trincas de luma, na mesma proporção, com a mesma colisão de arredondamento.
@@ -2256,3 +2263,349 @@ em vez de aproximado.
 padrão e transformação, com um controle que cruza o escritor e o leitor. E o
 `…Height` gravado como recíproco é o tipo de detalhe que nenhuma quantidade de
 comparação visual teria encontrado.
+
+## 28. O inventário de constantes das cinco funções do vidro
+
+`[BIN]` As cinco funções *stitchable* do vidro vivem uma por módulo em
+`References/2.0-125/out/metallib-renderbox/`. Esta seção conta **todo literal de
+ponto flutuante** que elas carregam, decodifica os bits, e confere o resultado
+contra o `GlassShader.h` do AquaKit — que leu os mesmos números de **outro
+binário** (QuartzCore), por outro esforço, sem falar com este.
+
+O que a seção **não** faz: ligar constante a nome de uniform. Isso é o §27, e é
+outro instrumento.
+
+### 28.1. O método, e o erro que a primeira versão cometeu
+
+O censo é um script, não um olho. Ele varre o `.ll` linha a linha, ignora
+metadata (`!…`) e comentário (`;…`), e para cada token de literal atribui o tipo
+da **palavra-chave de tipo mais próxima à esquerda na mesma linha**. `half`
+decodifica de `0xH____` como IEEE 754 binary16; `float` e `double` vêm no formato
+hexadecimal de 16 dígitos que o LLVM usa (os bits do `double` equivalente).
+
+> **O que a primeira versão errou, e por que importa.** Ela casava `tipo` +
+> literal **adjacentes** — `half 0xH1419`. Mas o LLVM textual escreve o segundo
+> operando depois de uma vírgula: `fmul half %279, 0xH39A8`. A primeira contagem
+> perdeu **todo literal em posição de segundo operando**, e com ele o `0xH39A8`
+> inteiro — a constante `RingDomainFactor`, que sumiu do censo em vez de aparecer
+> com contagem errada. Sumir em silêncio é a pior forma de errar uma contagem,
+> porque não deixa rastro. A correção foi trocar adjacência por
+> **palavra-chave-mais-próxima**, e o controle é o rodapé de cada varredura: todo
+> token com forma de ponto flutuante que **não** ficou sob uma palavra-chave de
+> tipo é impresso. Nos cinco módulos ele imprime só três coisas, todas inertes: o
+> `14.0` do `target triple`, e os sufixos de versão dos nomes de struct
+> (`struct.RB::Layer.90.483`).
+
+`[ART]` Dois controles a mais, os dois passam:
+
+- **Nenhuma linha de metadata dos cinco módulos contém token de ponto
+  flutuante.** Excluí-las não esconde nada.
+- **Nenhum dos cinco módulos declara constante global de ponto flutuante.** Os
+  únicos `@` globais são a `RB::shaderVariant`, o seu inicializador de constante
+  de função, e dois `__air_sampler_state` (`i64`). Isto **confirma pelo censo** o
+  que o spec do vidro §5.2 afirmava: não existe LUT de gradiente em nenhuma das
+  cinco.
+
+**Trivial**, aqui, quer dizer `0.0`, `±1.0`, `±0.5` e `±2.0` — os valores que
+qualquer expressão produz por acidente estrutural. Eles são contados, mas ficam
+numa tabela à parte, e só os que têm papel identificado aparecem.
+
+### 28.2. A contagem, por função
+
+`[ART]` A varredura completa:
+
+| módulo | função | linhas úteis | ocorrências | distintos | **não-triviais distintos** | ocorr. não-triviais |
+|---|---|---|---|---|---|---|
+| `mod95` | `distanceGradient_v1` | 159 | 16 | 3 | **0** | 0 |
+| `mod96` | `ovalizeGradient_v1` | 66 | 2 | 2 | **0** | 0 |
+| `mod97` | `displacementMap_v1` | 468 | 92 | 19 | **16** | 30 |
+| `mod98` | `glassBackground_v1` | 1443 | 171 | 30 | **22** | 65 |
+| `mod99` | `glassForeground_v1` | 343 | 25 | 12 | **6** | 8 |
+
+`[BIN]` **`distanceGradient_v1` e `ovalizeGradient_v1` não têm constante
+nenhuma.** Os 16 e os 2 literais das duas são `0.0` e `1.0`. As duas funções são
+inteiramente dirigidas por uniform — nada de aritmética embutida a transcrever, e
+nada a conferir contra o AquaKit. Para a transcrição isso é notícia boa: o
+`distanceGradient_v1` é diferença central e normalização, e não esconde número.
+
+### 28.3. `displacementMap_v1` — e são os TRÊS padrões MSAA, não só o de oito
+
+`[BIN]` As 16 constantes do `mod97` são duas famílias, e nada mais.
+
+**A família dos jitters.** `%100 = dfdx(p)` e `%101 = dfdy(p)`; cada tap é
+`p + a·dfdx + b·dfdy`, com `a` e `b` imediatos. Catorze valores distintos, cada um
+com exatamente **2 ocorrências** — uma como `a`, uma como `b`:
+
+| valor | hex `float` | ocorrências |
+|---|---|---|
+| ±0.0625 | `0x3D800000` / `0xBD800000` | 2 + 2 |
+| ±0.125 | `0x3E000000` / `0xBE000000` | 2 + 2 |
+| ±0.1875 | `0x3E400000` / `0xBE400000` | 2 + 2 |
+| ±0.25 | `0x3E800000` / `0xBE800000` | 2 + 2 |
+| ±0.3125 | `0x3EA00000` / `0xBEA00000` | 2 + 2 |
+| ±0.375 | `0x3EC00000` / `0xBEC00000` | 2 + 2 |
+| ±0.4375 | `0x3EE00000` / `0xBEE00000` | 2 + 2 |
+
+`[BIN]` Reagrupados por tap e escritos em **dezesseis avos de pixel**, os três
+ramos do `switch (shaderVariant & 7)` dão:
+
+| `v&7` | taps | padrão, em 1/16 de pixel |
+|---|---|---|
+| 1 | 2 | `(4,4) (−4,−4)` |
+| 2 | 4 | `(−2,−6) (6,−2) (−6,2) (2,6)` |
+| 3–7 | 8 | `(1,−3) (−1,3) (5,1) (−3,−5) (−5,5) (−7,−1) (3,7) (7,−7)` |
+
+`[INF]` **Os três são os padrões MSAA padrão do D3D/Metal, valor a valor e na
+mesma ordem** — não só o de oito, que é o que o spec do vidro (§5.4) tinha
+nomeado. O de 2× e o de 4× também. Isso é a peça mais fácil de gatar do vidro
+inteiro: o oráculo é uma tabela de dezesseis inteiros.
+
+**A família dos normalizadores**, um por ramo, e o único lugar onde o `mod97` usa
+`half`:
+
+| hex | valor | ocorr. | papel |
+|---|---|---|---|
+| `0xH3800` | 0.5 | 1 | divisor do ramo de 2 taps |
+| `0xH3400` | 0.25 | 1 | divisor do ramo de 4 taps |
+| `0xH3000` | 0.125 | 1 | divisor do ramo de 8 taps |
+
+`[BIN]` O ramo de 1 tap (`v&7 == 0`) não multiplica por nada e não chama
+derivada. O `2.0` (`0x40000000`, ×1) é o `disp·2 − 1` do §5.4; os 60 zeros são
+acumuladores e o `lod` fixo das amostras.
+
+### 28.4. `glassBackground_v1` — as 22 não-triviais
+
+`[BIN]` `default_mod98.ll`. Papel lido do contexto da instrução; onde o contexto
+não decide, `[OBS]`.
+
+| hex | valor | ocorr. | papel | selo |
+|---|---|---|---|---|
+| `0xH1419` | 0.0010004043579101562 | **26** | o epsilon universal — piso de `fwidth`, piso de alpha antes do `fdiv` que des-premultiplica, piso do raio antes do `log2` do LOD, piso do raio do anel, e o comparando dos curtos-circuitos | `[BIN]` |
+| `0xH1A0D` | 0.0029544830322265625 | 3 | `EdgeCoverage` A — `fma(A, u, B)` | `[BIN]` |
+| `0xHA869` | −0.034454345703125 | 3 | `EdgeCoverage` B | `[BIN]` |
+| `0xH3162` | 0.168212890625 | 3 | `EdgeCoverage` C | `[BIN]` |
+| `0xHB87C` | −0.560546875 | 3 | `EdgeCoverage` D | `[BIN]` |
+| `0xH3400` | 0.25 | 3 | `EdgeInputScale` — `fmuladd(t, 0.25, 0.5)` antes do `saturate` | `[BIN]` |
+| `0xH4400` | 4.0 | 3 | `EdgeDomainScale` — `fmuladd(sat, 4.0, −2.0)` | `[BIN]` |
+| `0xH39B9` | 0.71533203125 | 3 | luma **G** — o mesmo `half` nas DUAS trincas (§28.8) | `[BIN]` |
+| `0xH32CE` | 0.212646484375 | 2 | luma **R**, trinca A | `[BIN]` |
+| `0xH2C9F` | 0.07220458984375 | 2 | luma **B**, trinca A | `[BIN]` |
+| `0xH34CD` | 0.300048828125 | 2 | `MaxLumaChromaBoost` — `fmuladd(1−t, 0.3, 1)`, o `k ≥ 1` que extrapola de propósito | `[BIN]` |
+| `0xH39A8` | 0.70703125 | 2 | `RingDomainFactor` = 1/√2, multiplicando `d` antes do domínio | `[BIN]` |
+| `0xH32CD` | 0.2125244140625 | 1 | luma **R**, trinca B | `[BIN]` |
+| `0xH2C9D` | 0.07208251953125 | 1 | luma **B**, trinca B | `[BIN]` |
+| `0xHBA00` | −0.75 | 1 | `ClampNegativeFloor` — `clamp(rgb/α, −0.75, u)` no valor des-premultiplicado, re-multiplicado logo depois | `[BIN]` |
+| `0xH4200` | 3.0 | 1 | o `3 − 2c` de Hermite: `fma(−2, c, 3)`, depois `fma(w, isso, 1)` e `c ·` o resultado | `[BIN]` |
+| `0xH3A00` | 0.75 | 1 | `mix(float(bool(x)), x, 0.75)` — mistura um degrau duro com a rampa. A que serve, `[OBS]` | `[BIN]` valor |
+| `0xH3555` | 0.333251953125 | 1 | a lane do meio do normalizador por canal `(0.5, ⅓, 0.5)` da dispersão | `[BIN]` |
+| `0x3F50640000000000` | 0.0010004043579101562 | 1 | o **mesmo** epsilon, promovido a `float`, num `fcmp ogt` de curto-circuito | `[BIN]` |
+| `0xBFD5555560000000` | −0.3333333432674408 | 1 | passo do laço de **3** iterações da dispersão | `[BIN]` |
+| `0x3FD5555560000000` | +0.3333333432674408 | 1 | passo do laço de **4** iterações da dispersão | `[BIN]` |
+| `0x3FC24924A0000000` | 0.1428571492433548 | 1 | 1/7 — normalizador do alpha somado sobre os sete taps | `[BIN]` |
+
+`[BIN]` E três das triviais têm papel identificado, o que as tira do acidente:
+
+| hex | valor | ocorr. | papel |
+|---|---|---|---|
+| `0xH3800` | 0.5 | 11 | **3** como `EdgeInputBias`, **3** como o `+0.5` final do polinômio (`EdgeCoverageBias`), **3** como o `fma(±d, 1/w, 0.5)` da banda, **2** nas lanes externas do normalizador `(0.5, ⅓, 0.5)`. Onze de onze, nenhuma sobra |
+| `0xHC000` | −2.0 | 4 | **3** como `EdgeDomainBias`; a quarta é o `−2` do Hermite `fma(−2, c, 3)` |
+| `0xH4000` | 2.0 | 5 | **cinco** vezes o `2 − k` do perfil de altura `fma(−saturate(sqrt(k(2−k))), amp, amp)` |
+
+`[BIN]` **Os cinco `2.0` são cinco perfis de altura.** O §5.3 do spec nomeava
+dois lóbulos (o externo e o de face); a contagem diz que a mesma expressão de
+altura roda **cinco** vezes no módulo. `[OBS]` A que lóbulo cada uma pertence não
+foi determinado; a contagem é o fato.
+
+`[BIN]` **A `EdgeCoverage` é avaliada exatamente três vezes** (`%289`, `%298`,
+`%346`), e a contagem 3 de A/B/C/D é isso e nada mais. Duas delas — as de `%285`
+e `%294` — são precedidas do fator 1/√2, e a diferença das duas é
+`saturate(Φ(d₁) − Φ(d₂))`: é **literalmente** o `RingShadowBand` do AquaKit,
+instrução a instrução. A terceira (`%342`) **não** leva o 1/√2 e é avaliada
+sozinha.
+
+### 28.5. `glassForeground_v1` — 6, e cinco delas são o `mod98` de novo
+
+`[BIN]` `default_mod99.ll`:
+
+| hex | valor | ocorr. | papel | selo |
+|---|---|---|---|---|
+| `0xH1419` | 0.0010004043579101562 | 3 | epsilon em `half`: um `fcmp olt` de saída antecipada, dois `fmax` de piso | `[BIN]` |
+| `0x3F1A36E2E0000000` | 9.999999747378752e-05 | 1 | `fast_fmax(fwidth(d), 1e-4)` — o piso da derivada, **em `float`** | `[BIN]` |
+| `0xBFD5555560000000` | −0.3333333432674408 | 1 | passo do laço de 3 da dispersão | `[BIN]` |
+| `0x3FD5555560000000` | +0.3333333432674408 | 1 | passo do laço de 4 da dispersão | `[BIN]` |
+| `0x3FC24924A0000000` | 0.1428571492433548 | 1 | 1/7, normalizador do alpha | `[BIN]` |
+| `0xH3555` | 0.333251953125 | 1 | lane do meio de `(0.5, ⅓, 0.5)` | `[BIN]` |
+
+`[INF]` **O bloco de dispersão cromática é o mesmo nos dois módulos, constante por
+constante.** Quatro literais (`±⅓` em `float`, `1/7`, `⅓` em `half`) com a mesma
+contagem e na mesma forma — dois laços de 3 e 4, sete taps, normalizador do alpha
+`1/7` e normalizador por canal `(0.5, ⅓, 0.5)`. Transcrever `AberrateTexture` uma
+vez serve às duas funções.
+
+`[BIN]` E o `(0.5, ⅓, 0.5)` corrige o §5.3 do spec, que dizia "pesos `1/3` e
+normalizador `1/7`": os pesos por canal são **três valores diferentes**, `0.5`
+nas lanes de fora e `⅓` na do meio.
+
+### 28.6. A conferência contra o AquaKit — 15 de 15, bit a bit
+
+`[ART]` O `GlassShader.h` do AquaKit declara as constantes em `float` decimal,
+com o `half` de origem no comentário. O teste é o mais duro disponível: arredondar
+o decimal do AquaKit para `binary16` e comparar **os bits** com o que o `mod98`
+carrega.
+
+| constante (AquaKit) | valor AquaKit | hex no `mod98` | valor `mod98` | ocorr. | bate? |
+|---|---|---|---|---|---|
+| `EdgeCoverageA` | `0.002954483` | `0xH1A0D` | 0.0029544830322265625 | 3 | **sim** |
+| `EdgeCoverageB` | `-0.034454346` | `0xHA869` | −0.034454345703125 | 3 | **sim** |
+| `EdgeCoverageC` | `0.16821289` | `0xH3162` | 0.168212890625 | 3 | **sim** |
+| `EdgeCoverageD` | `-0.56054688` | `0xHB87C` | −0.560546875 | 3 | **sim** |
+| `EdgeCoverageBias` | `0.5` | `0xH3800` | 0.5 | 3 neste papel | **sim** |
+| `EdgeInputScale` | `0.25` | `0xH3400` | 0.25 | 3 | **sim** |
+| `EdgeInputBias` | `0.5` | `0xH3800` | 0.5 | 3 neste papel | **sim** |
+| `EdgeDomainScale` | `4.0` | `0xH4400` | 4.0 | 3 | **sim** |
+| `EdgeDomainBias` | `-2.0` | `0xHC000` | −2.0 | 3 neste papel | **sim** |
+| `RingDomainFactor` | `0.70710677` | `0xH39A8` | 0.70703125 | 2 | **sim** |
+| `LumaRed` | `0.21264648` | `0xH32CE` | 0.212646484375 | 2 | **sim** |
+| `LumaGreen` | `0.71533203` | `0xH39B9` | 0.71533203125 | 3 | **sim** |
+| `LumaBlue` | `0.07220459` | `0xH2C9F` | 0.07220458984375 | 2 | **sim** |
+| `MaxLumaChromaBoost` | `0.3` | `0xH34CD` | 0.300048828125 | 2 | **sim** |
+| `ClampNegativeFloor` | `-0.75` | `0xHBA00` | −0.75 | 1 | **sim** |
+
+**Quinze de quinze.** E não é só o valor que bate: o **papel** bate em cada uma.
+O `ClampNegativeFloor` do AquaKit é descrito como o piso por componente
+`clamp(rgb, −0.75, limite)` **sobre o valor des-premultiplicado**; o `mod98`
+divide por `max(α, ε)` em `%1290`, faz o `clamp` em `%1293` e re-multiplica por α
+em `%1295`. O `MaxLumaChromaBoost` do AquaKit está no `k = 1 + 0.3·(1−t)` de
+`CompressMaxLuma`; o `mod98` escreve `fmuladd(1−t, 0.3, 1)` nas duas ocorrências,
+as duas coladas na trinca de luma A.
+
+`[INF]` Quatro coeficientes de minimax de um polinômio de Φ não coincidem por
+acaso, e um 1/√2 e um −0.75 acompanhando-os no mesmo papel também não. Esta é a
+segunda confirmação independente do veredito **mesmo fonte** do §4.1, e é a mais
+barata de auditar: são bits.
+
+`[OBS]` Uma constante do AquaKit **não tem contraparte** neste censo:
+`BlurFillSampleOffsetScale = 0.25` (QuartzCore `mod61 %246`). O `mod98` tem
+exatamente três `0xH3400`, e as três são `EdgeInputScale`. Não é divergência de
+valor: é **ausência de literal** — no RenderBox esse fator ou vem de uniform ou
+não existe. Não foi determinado qual.
+
+### 28.7. As divergências, e são reais
+
+Uma divergência não é defeito. É informação sobre onde os dois binários deixam de
+ser o mesmo binário.
+
+**1. O epsilon `half`.** `[BIN]` O AquaKit lê `0xH068E` = `0.00010001659` no
+`glass_background_base` do QuartzCore. O `mod98` do RenderBox usa `0xH1419` =
+`0.0010004043579101562`, **26 vezes em `half` mais uma em `float`** — 27 sítios,
+o literal mais frequente do módulo inteiro. **Uma década de diferença**, os dois
+em `half`, os dois no mesmo papel. Confirmado.
+
+**2. O epsilon `float`.** `[BIN]` O AquaKit lê `1e-6` (`0x3EB0C6F7A0000000`) na
+variante `_lpf` do QuartzCore. O `mod99` do RenderBox usa **`1e-4`**
+(`0x3F1A36E2E0000000`), uma vez, em `fast_fmax(fwidth(d), 1e-4)`. **Duas décadas
+de diferença.** Também confirmado.
+
+`[BIN]` E o censo explica **por que existem dois epsilons do lado do RenderBox**,
+o que o spec do vidro §2.1 não tinha: o `mod98` calcula a cobertura em `half`
+(`air.fwidth.f16`, em `%91` e `%171`) e o `mod99` a calcula em `float`
+(`air.fwidth.f32`, em `%86`). Tipo diferente, piso diferente. `[OBS]` Por que o
+RenderBox escolheu 1e-3 e 1e-4 onde o QuartzCore escolheu 1e-4 e 1e-6 não é
+determinável daqui.
+
+**Para a transcrição vale o epsilon do RenderBox**, porque o alvo deste projeto é
+o RenderBox. Mas a diferença é grande o bastante para ser observável: `1e-3`
+contra `1e-4` num piso de `fwidth` muda a cobertura de qualquer aresta cuja
+derivada caia abaixo de um milésimo. Não é ruído de ULP.
+
+**3. Uma contagem que bate sem o papel bater.** `[BIN]` A tabela do spec §2
+registra `EdgeDomainScale`/`Bias` como `3 / 4`. O censo confirma os números — mas
+**só três dos quatro `−2.0` são `EdgeDomainBias`**. O quarto é o `−2` do Hermite
+`fma(−2, c, 3)` em `%1226`, outro subsistema. A contagem estava certa; a leitura
+"quatro vezes o bias do domínio" estaria errada. É a mesma armadilha do §26.2 com
+outra roupa: o número coincidir não é o número significar.
+
+### 28.8. As duas trincas de luma — e a segunda **não** é a SMPTE
+
+`[BIN]` O `mod98` carrega duas trincas de luma, e elas aparecem em três sítios:
+
+| sítio | trinca | forma |
+|---|---|---|
+| `%878` | A = `0xH32CE / 0xH39B9 / 0xH2C9F` | `dot(const, rgb)` — constante no **primeiro** operando |
+| `%1126` | A = `0xH32CE / 0xH39B9 / 0xH2C9F` | `dot(const, rgb)` — constante no **primeiro** operando |
+| `%1062` | B = `0xH32CD / 0xH39B9 / 0xH2C9D` | `dot(rgb, const)` — constante no **segundo** operando |
+
+`[ART]` A aritmética das contagens fecha exata: R vale 2 + 1, B vale 2 + 1, e **G
+vale 3 porque as duas trincas colidem no mesmo `half`**. `0xH39B9` é literalmente
+o mesmo token nas duas — confirmado.
+
+`[BIN]` **Quem usa qual.** A trinca A alimenta as duas instâncias de
+`CompressMaxLuma`: em `%878` e `%1126` o produto escalar é seguido de
+`t = saturate(fma(−y, complemento, 1))`, do `k = fma(1−t, 0.3, 1)` e do
+`mix(t·y, t·rgb, k)` — a transcrição do AquaKit, sem uma instrução sobrando. A
+trinca B alimenta **o especular**: em `%1062` o produto escalar é saturado, entra
+num `fma(u, l, b)`, é **elevado à quarta potência** por dois `fmul` sucessivos e
+vira o peso de um `mix`. São dois subsistemas, e é exatamente o padrão do §26.4 —
+constantes de luminância diferentes querem dizer famílias diferentes.
+
+`[ART]` **A distância entre as duas é 1 ULP em R e 2 ULP em B**, não 1 e 1:
+`0x32CE − 0x32CD = 1`, `0x2C9F − 0x2C9D = 2`.
+
+`[BIN]` **E a trinca B não é a Rec.709 arredondada.** O intervalo de reais que
+arredonda para `0xH32CD` é `[0.21246338, 0.21258545)` e o que arredonda para
+`0xH2C9D` é `[0.07205200, 0.07211304)`. Os coeficientes da Rec.709 — `0.2126` e
+`0.0722`, ou os exatos `0.2126729` e `0.0721750` — caem **fora dos dois**. A
+trinca A cai dentro nos três canais; a B não cai em nenhum dos dois que diferem.
+
+`[BIN]` Também não é a SMPTE 240M (`0.212 / 0.701 / 0.087` → `0xH32C9 / 0xH399C /
+0xH2D91`), nem a Rec.601, nem o `Lum()` do PDF, nem a P3-D65. **Nenhuma delas
+colidiria no G**, que é a impressão digital que o §4.1 usou.
+
+`[BIN]` **E a identidade da trinca B fecha, uma linha depois de onde a análise
+acima parou.** Ela mesma diz que a fonte tem R em `≈0.2125` e B em `≈0.0721`;
+essa trinca existe e é publicada:
+
+```
+A   0.2126  0.7152  0.0722   ->  0xH32CE  0xH39B9  0xH2C9F   soma 1.0000
+B   0.2125  0.7154  0.0721   ->  0xH32CD  0xH39B9  0xH2C9D   soma 1.0000
+```
+
+`[BIN]` Os três canais de B batem, e **as duas somam exatamente 1** — que é o que
+separa isto de um palpite. Dois arredondamentos arbitrários não somam 1 os dois.
+
+`[INF]` **As duas são Rec.709, em dois arredondamentos de quatro casas
+diferentes** — o segundo é o que circula em Poynton e em boa parte da literatura
+de vídeo. Não são dois padrões: é o mesmo padrão copiado de duas referências.
+
+> **O que cada lado errou aqui.** O §4.1 chamou a trinca B de **SMPTE**, e está
+> errado: a SMPTE 240M é `0.212 / 0.701 / 0.087` e cai em `0xH32C9 / 0xH399C /
+> 0xH2D91`, longe nos três canais. **A correção é real e o §4.1 foi corrigido.**
+>
+> Mas a análise que achou o erro concluiu `[OBS]` — identidade indeterminada — e
+> isso passou do ponto na direção oposta. O teste que refutou a SMPTE foi aplicado
+> só contra `0.2126`/`0.0722`, e nunca contra `0.2125`/`0.0721`, que é a trinca
+> que a própria conclusão descreve. **Descartar a hipótese certa por não tê-la
+> testado é o mesmo tipo de erro que promover a errada**, só que mais barato de
+> desfazer.
+
+### 28.9. O que isto fecha, e o que continua aberto
+
+`[ART]` **44 constantes não-triviais distintas** nas cinco funções — 0 + 0 + 16 +
+22 + 6 —, cada uma com bits, valor decimal e contagem medida. **15 conferidas
+contra o AquaKit, 15 batendo bit a bit**, com o papel batendo junto. **Duas
+divergências reais**, as duas no epsilon, as duas confirmadas dos dois lados.
+
+O que a tarefa 2 do spec do vidro pede — `GlassCommon.glsl` + `GlassOracle` com
+prova dupla — tem agora o segundo braço da prova pronto: as constantes não são
+hipótese, são duas leituras independentes do mesmo número, e a lista de quais
+divergem é finita e nomeada.
+
+O que continua `[OBS]`, dito como tal:
+
+| | |
+|---|---|
+| a fonte decimal da trinca de luma B | intervalo conhecido, identidade não |
+| a que serve o `0xH3A00` = 0.75 em `%206` | a aritmética está lida, o papel não |
+| a qual lóbulo pertence cada um dos cinco perfis de altura | a contagem é 5, a atribuição não foi feita |
+| se o `BlurFillSampleOffsetScale` do AquaKit vira uniform no RenderBox ou desaparece | não há literal para comparar |
+| por que o RenderBox escolheu 1e-3/1e-4 onde o QuartzCore escolheu 1e-4/1e-6 | a diferença de tipo explica *haver* dois, não *quais* |
