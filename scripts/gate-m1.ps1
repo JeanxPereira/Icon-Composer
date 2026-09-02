@@ -24,6 +24,16 @@
 #      gate into a lie.
 [CmdletBinding()]
 param(
+    # The sweep can be run in SLICES. It grew past an hour, and on this machine
+    # a run that long does not reliably survive to the end -- three were cut off
+    # mid-sweep, and twice that left a mutated file on disk for the recovery to
+    # find. Slicing lets each invocation finish.
+    #
+    # A SLICE IS NOT A PASS, and the script will not let one be mistaken for
+    # one: with either bound given, the verdict says PARTIAL and names the range,
+    # never "gate-m1 passed". Only a run over every mutation can print that.
+    [int]$From = 0,
+    [int]$To = 0,
     [string]$BuildDir = "build/mingw",
     [string]$CorpusDir = $(if ($env:IC_CORPUS_DIR) { $env:IC_CORPUS_DIR } else { "References/corpus" })
 )
@@ -711,6 +721,25 @@ Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"
 # BEFORE anything is read as pristine: if a previous run died mid-sweep, the tree
 # on disk is still mutated and reading it now would enshrine the mutation AS the
 # pristine text -- the sweep would then "restore" to a defect and pass.
+# The slice, taken BEFORE the anchor pre-flight so a slice checks only its own
+# anchors -- otherwise a stale anchor outside the range would stop a run that
+# was never going to touch it.
+$sweepAll = $mutations
+$sliced = $false
+if ($From -gt 0 -or $To -gt 0) {
+    $sliced = $true
+    $lo = if ($From -gt 0) { $From } else { 1 }
+    $hi = if ($To -gt 0) { $To } else { $mutations.Count }
+    if ($lo -lt 1) { $lo = 1 }
+    if ($hi -gt $mutations.Count) { $hi = $mutations.Count }
+    if ($lo -gt $hi) {
+        Write-Host "FAILED: an empty slice ($lo..$hi) is not a run"
+        exit 1
+    }
+    $mutations = $mutations[($lo - 1)..($hi - 1)]
+    Write-Host "SLICE $lo..$hi of $($sweepAll.Count) -- this is NOT a full gate run`n"
+}
+
 Recover-FromCrashedRun
 
 foreach ($k in $sources.Keys) {
@@ -857,6 +886,11 @@ if ($caught -ne $mutations.Count) {
     Write-Host "`nVERDICT: FAILED -- a defect the suite does not see is a defect that ships"
     foreach ($s in $survivors) { Write-Host "  survived: $s" }
     exit 1
+}
+if ($sliced) {
+    Write-Host "`nVERDICT: PARTIAL -- slice of $($mutations.Count) of $($sweepAll.Count) mutations, all caught."
+    Write-Host "         A slice is not a pass. Run with no -From/-To for the gate."
+    exit 0
 }
 Write-Host "`nVERDICT: gate-m1 passed"
 exit 0

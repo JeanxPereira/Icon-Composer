@@ -482,6 +482,36 @@ TEST_CASE(a_fill_value_the_reader_does_not_know_is_named) {
     CHECK(named);
 }
 
+
+// A shape whose PATH BUFFER cannot be built is named too, and it is a third
+// kind of gap: not an unresolvable reference and not an unreadable value, but
+// geometry the buffer refuses. `buildPathBuffer` declines a path that only
+// moves -- there is no edge to draw -- and that refusal has to reach the
+// caller rather than vanishing into a shape that silently draws nothing.
+TEST_CASE(a_shape_whose_path_buffer_is_refused_is_named) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    const std::string svg = svgWith(
+        "0 0 16 16",
+        "<path d=\"M5 5\" fill=\"#ffffff\"/>"
+        "<path d=\"M0 0 L16 0 L16 16 L0 16 Z\" fill=\"#ffffff\"/>");
+    auto doc = icf::svg::SvgDocument::parse(svg);
+    REQUIRE(doc.has_value());
+    RenderOptions o;
+    o.width = o.height = 16;
+    o.subdivisions = 1;
+    auto img = renderSvg(d, *doc, o);
+    REQUIRE(img.has_value());
+
+    CHECK_EQ(img->drawn, std::size_t{1});
+    REQUIRE(img->skipped.size() == 1);
+    // The reason comes from the buffer itself, so it says WHICH refusal.
+    CHECK(!img->skipped[0].why.empty());
+    CHECK(img->skipped[0].why.find("move") != std::string::npos ||
+          img->skipped[0].why.find("edge") != std::string::npos ||
+          img->skipped[0].why.find("path") != std::string::npos);
+}
+
 // ---- the PNG ------------------------------------------------------------
 
 // The header and the trailer, checked byte by byte, because an encoder that

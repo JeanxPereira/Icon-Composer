@@ -295,6 +295,10 @@ e sim quatro.
    "dezessete implementados antes" eram dezessete de dezoito. Doc 03 §15 e §17.3.
    `[OBS]` A tradução entre a numeração do formato e a do `RenderBox` **não
    existe ainda**: as duas não coincidem nos três pontos ancorados.
+   **Atualização:** os 56 foram lidos inteiros e **16 dos 18** nomes têm
+   candidato único (doc 03 §26.3). Dois seguem com mais de um candidato, e
+   dois dos dezesseis contradizem a leitura anterior — o que decide é o
+   código do `IconRendering` que empacota o modo, ainda não lido.
 6. **O bundle em volta do `icon.json`.** Este documento cobre o JSON. O `.icon` é
    uma pasta, e os SVGs e PNGs ao lado dele não foram levantados.
 7. **A gramática exata da CLI.** O §11 levanta os comandos e as mensagens; o

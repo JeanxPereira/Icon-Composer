@@ -1082,7 +1082,14 @@ antes — decisão pendente, e o caminho para fechá-la é o `IconRendering` e o
 
 `[OBS]` **Seis de 56.** Os outros cinquenta não foram decodados, e a
 correspondência entre os dez nomes do formato e a numeração do `RenderBox` está
-ancorada em três pontos apenas (13, 15, 16). Marcado como aberto em vez de
+ancorada em três pontos apenas (13, 15, 16).
+
+> **Correção (§26).** Os 56 casos foram lidos INTEIROS depois disto, e a
+> aritmética destes três está certa — mas a **atribuição de nome** de 15 e 16 à
+> `darken`/`lighten` do formato estava prematura. Havia duas famílias de
+> min/max e só uma era conhecida quando esta tabela foi escrita. Ver §26.2.
+
+Marcado como aberto em vez de
 completado por analogia com o `CGBlendMode`, cuja numeração **não** bate com esta.
 
 ### 15.4. E o `extended_color` aparece aqui
@@ -1969,3 +1976,114 @@ lugar errado** — pior que não desenhar, porque parece pronto. A camada é
 O mesmo vale para `automatic`/`system`: ele escolhe entre duas rampas enlatadas
 dos parâmetros de render (§24.3), e os **valores** dessas rampas não foram lidos
 além dos dois pares de cinza do §19.5.
+
+## 26. Os 56 modos de mescla, lidos inteiros
+
+`[BIN]` `RB::Shader::(anônimo)::blend(ShaderState, half4, half4)`, em
+`shader_blend.metal`. **56 casos, valores 1 a 56**, mais o default. A tabela
+`caso → destino` é **idêntica em cinco módulos diferentes**, então não é
+específica de módulo.
+
+`[BIN]` E o primeiro argumento é a **origem**: o caso 13 calcula
+`a = src.a + dst.a·(1−src.a)`, que só fecha com essa atribuição.
+
+### 26.1. As bandas
+
+`[BIN]` A numeração é **em faixas**, e elas são limpas:
+
+| faixa | o que é |
+|---|---|
+| **default** | `src` — cópia |
+| **1–10** | **Porter-Duff**, na ordem clear, over, in, out, atop, dst-over, dst-in, dst-out, dst-atop, xor |
+| **11–18** | aritmética barata que dispensa a cauda de composição: plus, screen, plusLighter, exclusion, max, min, `d−s`, `s−d` |
+| **19–23** | **máscara/cobertura** — o `composite` intercepta 19–22 **antes** de chamar o `blend`, escreve cor zero e a cobertura no anexo de duas lanes |
+| **24** | uma segunda entrada de source-over, dividindo o bloco do caso 2 |
+| **25–42** | a família completa separável e não-separável **com** a cauda de composição |
+| **43–53** | operações internas do motor |
+| **54–56** | sentinela, não implementados neste shader |
+
+`[INF]` Screen (12) e exclusion (14) caem na faixa barata **legitimamente**: as
+formas compostas premultiplicadas delas colapsam numa expressão só.
+
+### 26.2. A correção — havia DUAS famílias de min/max
+
+Esta é a parte que corrige o §15.3.
+
+`[BIN]`
+
+| caso | aritmética |
+|---|---|
+| **15 / 16** | `fmax` / `fmin` sobre o vetor de **quatro lanes, alpha incluído** |
+| **27 / 28** | `min(as·d, s·ab)` / `max(as·d, s·ab)` **em três lanes**, mais a cauda de composição e `a = as+ab−as·ab` |
+
+`[INF]` 15/16 são a operação de **função fixa da GPU** (`MTLBlendOperationMin`/
+`Max`): sobre o alpha dão `min(as,ab)`, que não é saída Porter-Duff válida e não
+reduz a source-over quando o outro operando está vazio. 27/28 são
+**literalmente** a `darken`/`lighten` separável do W3C.
+
+`[OBS]` Qual das duas o formato chama de `darken`/`lighten` **o shader não
+decide**. Quem decide é o código do `IconRendering` que empacota o
+`palavra1 >> 16`, e ele não foi lido. Estão registradas as duas candidaturas.
+
+> **O que eu errei, e como.** Quando só 13, 15 e 16 estavam decodados, casar
+> `min`/`max` com `darken`/`lighten` era o único casamento disponível — e eu o
+> registrei como se fosse leitura. Não era: era o **único candidato de um
+> conjunto de um**. Com 27/28 na mesa o casamento deixa de selecionar 15/16, e
+> a lição é que "o único que serve" não é a mesma afirmação que "o que é",
+> mesmo quando as duas coincidem.
+
+E o mesmo cuidado vale para o `plusLighter`: **quatro** casos são aditivos — 11
+(`s+d` incluindo alpha, sem clamp), 13 (`s+d`, alpha de source-over), 43 (`s+d`,
+`a = saturate(as+ab)`) e 44. A aritmética sozinha não escolhe um.
+
+### 26.3. A tradução, 16 de 18 com candidato único
+
+`[INF]` As correspondências, com o que ficou em aberto marcado:
+
+| formato | nome | caso do `RenderBox` |
+|---|---|---|
+| 0 | normal | **2** (também em 24) |
+| 1 | darken | **27** ou 16 — *contestado, §26.2* |
+| 2 | multiply | **25** |
+| 3 | colorBurn | **30** |
+| 4 | plusDarker | 44 ou 40 — **dois candidatos** |
+| 5 | lighten | **28** ou 15 — *contestado* |
+| 6 | screen | **12** |
+| 7 | colorDodge | **29** |
+| 8 | plusLighter | 13, 43 ou 11 — **três candidatos** |
+| 9 | overlay | **26** |
+| 10 | softLight | **31** |
+| 11 | hardLight | **32** |
+| 12 | difference | **33** |
+| 13 | exclusion | **14** |
+| 14 | hue | **36** |
+| 15 | saturation | **37** |
+| 16 | color | **38** |
+| 17 | luminosity | **39** |
+
+### 26.4. Dois achados que a leitura completa entrega
+
+`[BIN]` **O `softLight` do alvo NÃO é a fórmula do W3C.** O caso 31 calcula
+`d + (2s − 1)·d·(1 − d)` — o ramo baixo do W3C aplicado incondicionalmente, uma
+aproximação quadrática. **Não há `sqrt` nem cúbica em lugar nenhum do módulo**,
+que é o que a fórmula completa exigiria.
+
+`[BIN]` **As constantes de luminância se dividem por família.** Os casos 36–39
+(hue, saturation, color, luminosity) usam `0,300 / 0,590 / 0,110` — o `Lum()` do
+PDF. Os casos 45 e 46 usam **Rec.709** `0,2126 / 0,7152 / 0,0722`.
+
+`[INF]` Constantes diferentes querem dizer subsistemas diferentes: 45 e 46 não
+são modos de mescla de cor. Eles são um source-over **chaveado pela luminância
+do fundo**, com o peso elevado à quarta potência.
+
+`[BIN]` E o `extended_color` controla **duas** coisas distintas: na faixa
+Porter-Duff decide se `1−a` passa por `saturate`; no `pdf_mode` decide se o rgb
+mesclado é limitado a `[0, alpha]` — e o sentido é o **inverso** do intuitivo,
+porque o limite roda quando o bit está **ligado**.
+
+### 26.5. A contagem
+
+`[ART]` **56 de 56 blocos lidos.** **39 casados** com fórmula nomeada, **17
+reportados sem casamento** — 19 a 23, 45 a 53 e 54 a 56. Dezesseis dos 18 nomes
+do formato têm candidato único; dois não; e dois dos dezesseis contradizem o que
+esta documentação afirmava antes.

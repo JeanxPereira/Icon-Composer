@@ -78,6 +78,7 @@ especializações** — 1.040 chaveadas por `appearance`, 616 sem predicado, 82 
 | o conversor — SVG desenhado em pixels | **passa o gate** — as peças compostas, conferidas contra a forma fechada pela cadeia inteira. Alcance medido: **22 de 194 camadas**, **0 de 55 documentos** (doc 03 §20) |
 | `icrender` e o PNG | **passam o gate** — binário separado do `ictool`, que segue sem GPU (doc 03 §20.6, §20.7) |
 | os ícones do sistema (Fotos, App Store) | **localizados, não abertos** — não são `.icon`: compilam para `Assets.car` e o motor os lê via CoreUI. Segunda porta de entrada (doc 03 §20.8) |
+| os 56 modos de mescla | **lidos inteiros** — 56 de 56 blocos, 39 casados, as bandas nomeadas; 16 dos 18 nomes do formato com candidato único. **Corrige duas atribuições desta documentação** (doc 03 §26) |
 | o gradiente, ligado no renderizador | **desenha** — `url(#id)` do SVG, linear e radial, `userSpaceOnUse` e `objectBoundingBox`, `gradientTransform`; e o `fill` da camada retinge a arte. Alcance **22 → 79 de 194 camadas** (doc 03 §25) |
 | a regra do `automatic-gradient` | **lida e transcrita** — Rec.709, quatro faixas de fronteira **fixa**, boost e duas paradas ordenadas; fecha a pergunta 4 do doc 01 por inteiro (doc 03 §24) |
 | o gradiente do `RenderBox` | **levantado** — o campo de 4 bits é **4 geometrias × 4 spreads**, decodado por duas funções independentes que concordam; mais o tipo de rampa e o gama (doc 03 §23) |
@@ -88,6 +89,14 @@ especializações** — 1.040 chaveadas por `appearance`, 616 sem predicado, 82 
 C++23, CMake, sem terceiros. `IconComposerFoundation` não linka GPU nem UI, e o
 corpus é apontado por variável de ambiente — um teste que precisa dele e não a
 acha **falha**, não pula.
+
+A varredura pode ser rodada em **fatias**, e uma fatia **nunca** imprime
+`gate-m1 passed`:
+
+```powershell
+powershell -File scripts\gate-m1.ps1                 # o gate
+powershell -File scripts\gate-m1.ps1 -From 1 -To 40  # uma fatia, veredito PARCIAL
+```
 
 ```powershell
 cmake --preset mingw          # ou msvc, mingw-asan, release
@@ -118,7 +127,7 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
    que o conteúdo deles atravessa intacto. O do *modelo*: **nenhuma chave** dos
    145 documentos pode ser desconhecida, e **nenhuma das 1.740 especializações**
    pode ser inalcançável pelo resolver.
-3. **Uma varredura de mutação obrigatória.** Cento e dezenove defeitos entram um a um e cada
+3. **Uma varredura de mutação obrigatória.** Cento e sessenta defeitos entram um a um e cada
    um TEM que avermelhar a suíte, aplicados em árvore limpa e restaurados de um
    backup conferido por SHA-256 — nunca por comando de git.
 
@@ -128,6 +137,29 @@ valores decodados sem uma falha, 55 bundles sem arquivo morto, 1.100 árvores
 renderizadas sem cair em JSON cru, 149 SVGs lidos em geometria com 128 deles
 totalmente compreendidos, 58 dos 60 PNGs decodados, e **119 de 119 mutações
 pegas**.
+
+### A varredura hoje: 160 de 160, em cinco fatias
+
+`[ART]` **Em 2026-09-02 as 160 mutações foram aplicadas e todas foram pegas** —
+40, 40, 20, 20, 20 e 20 —, com a suíte pristine conferida no início de cada
+fatia.
+
+**E mesmo assim esta linha não diz `gate-m1 passed`.** O script reserva essa
+frase para uma execução única sobre a lista inteira, e nenhuma completou: a
+varredura passou de uma hora e foi cortada **quatro vezes** nesta máquina. O
+fatiamento existe por causa disso.
+
+> **Por que a distinção é mantida em vez de arredondada.** A união das fatias
+> cobre as mesmas 160 mutações e verifica a mesma suíte, e é evidência forte. Mas
+> "todas as fatias passaram" e "a varredura passou" são afirmações diferentes, e
+> o valor deste gate vem inteiramente de os números dele serem o que dizem ser. O
+> script recusa a frase; esta documentação também.
+
+**O custo de não ter isso:** a varredura cortada deixou arquivo mutado em disco
+em **seis** ocasiões — `Png.cpp`, `PathBuffer.cpp`, `IconRenderer.cpp`,
+`Inflate.cpp`, `PathComposite.glsl` e antes deles o `PathBuffer.cpp` do reboot.
+Todos restaurados do backup conferido por SHA-256, e nenhum chegou a um commit.
+É a rede que nasceu quando a máquina reiniciou, e ela pagou seis vezes.
 
 > **As cinco que a varredura cobrou.** A primeira execução com as 16 mutações do
 > raster devolveu **114 de 119**: complemento do bloco *stored*, tabela Huffman
