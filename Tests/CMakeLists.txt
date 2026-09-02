@@ -28,6 +28,8 @@ add_executable(ic_tests
     test_rb_mip.cpp
     test_rb_glass_background.cpp
     test_rb_glass_foreground.cpp
+    test_rb_sdf_displacement.cpp
+    test_glass_material.cpp
 )
 
 target_link_libraries(ic_tests PRIVATE IconComposer::Foundation IconComposer::CliLib IconComposer::CoreSVG IconComposer::RenderBox)

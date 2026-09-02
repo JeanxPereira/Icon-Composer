@@ -27,6 +27,8 @@ add_library(RenderBox STATIC
     MipPyramid.cpp
     GlassBackground.cpp
     GlassForeground.cpp
+    SdfDisplacement.cpp
+    GlassMaterial.cpp
 )
 
 # Shaders are compiled at BUILD time, not loaded at run time. A shader that does
@@ -37,7 +39,7 @@ set(_shader_dir ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${_shader_dir})
 file(GLOB _glsl_deps ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.glsl)
 set(_shader_incs)
-foreach(shader IN ITEMS path_probe.comp path_coverage.comp path_exterior.vert path_exterior.frag gradient_probe.comp glass_probe.comp displacement_probe.comp field_probe.comp mip_reduce.comp glass_background_probe.comp glass_foreground_probe.comp)
+foreach(shader IN ITEMS path_probe.comp path_coverage.comp path_exterior.vert path_exterior.frag gradient_probe.comp glass_probe.comp displacement_probe.comp field_probe.comp mip_reduce.comp glass_background_probe.comp glass_foreground_probe.comp sdf_displacement_probe.comp)
     set(_src ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader})
     set(_out ${_shader_dir}/${shader}.inc)
     add_custom_command(OUTPUT ${_out}
