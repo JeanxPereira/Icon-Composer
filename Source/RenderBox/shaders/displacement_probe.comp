@@ -1,23 +1,136 @@
 #version 450
-// STUB probe -- runs the stage as compute so the GPU's answer can be read back
-// and compared with the oracle. Same shape as `path_probe.comp`.
+// Runs `displacementMap_v1` as compute, so the GPU's answer can be read back and
+// held against the oracle -- the same shape as `gradient_probe.comp`.
+//
+// The whole point is that the differential and the renderer include the SAME
+// file: `Displacement.glsl` carries the math and nothing here guesses at it.
+//
+// The one thing this file adds is the sampler. `Displacement.glsl` declares
+// `rbDispSampleSource` / `rbDispSampleMap` as prototypes precisely so the
+// backing can differ between the probe (a storage buffer) and the renderer (a
+// real texture) without the math moving. It is defined BELOW the include, which
+// GLSL allows, because a prototype is enough to compile the call.
 #extension GL_GOOGLE_include_directive : require
 
 #include "Displacement.glsl"
 
 layout(local_size_x = 64) in;
 
-layout(std430, binding = 0) readonly buffer In  { vec4 inputs[]; };
+// One flat float array, because ComputePass binds exactly two storage buffers.
+// Regions, in order: the 21 params floats, the source image, the displacement
+// map, then the probe points. The bases are pushed rather than derived so a
+// layout mistake shows up as a wrong number instead of a silent overlap.
+layout(std430, binding = 0) readonly buffer In { float data[]; };
 layout(std430, binding = 1) writeonly buffer Out { vec4 outputs[]; };
 
 layout(push_constant) uniform Control {
     uint count;
+    uint variant;
     uint stage;
-    uint state;
+    uint tap;
+    uint srcBase;   // float index of source texel 0
+    uint srcW;
+    uint srcH;
+    uint mapBase;
+    uint mapW;
+    uint mapH;
+    uint probeBase; // float index of probe 0; six floats each
 } control;
+
+// The sampler the oracle is gated against: bilinear, normalised coordinates,
+// half-texel centres, clamped at the edge. `[OBS]` The target's own sampler
+// descriptor (`0x807bff0000080a49`) is not decoded -- see Displacement.glsl.
+//
+// The lerp is written as `a + (b - a) * t` because that is what the target's
+// `air.mix` does and what the oracle does; GLSL's `mix` is free to expand the
+// other way and the differential is bit for bit.
+vec4 rbProbeSample(uint base, uint w, uint h, vec2 uv) {
+    if (w == 0u || h == 0u) return vec4(0.0);
+    float fx = uv.x * float(w) - 0.5;
+    float fy = uv.y * float(h) - 0.5;
+    float bx = floor(fx);
+    float by = floor(fy);
+    float tx = fx - bx;
+    float ty = fy - by;
+    int x0 = clamp(int(bx), 0, int(w) - 1);
+    int x1 = clamp(int(bx) + 1, 0, int(w) - 1);
+    int y0 = clamp(int(by), 0, int(h) - 1);
+    int y1 = clamp(int(by) + 1, 0, int(h) - 1);
+    vec4 r;
+    for (int k = 0; k < 4; ++k) {
+        float c00 = data[base + uint((y0 * int(w) + x0) * 4 + k)];
+        float c10 = data[base + uint((y0 * int(w) + x1) * 4 + k)];
+        float c01 = data[base + uint((y1 * int(w) + x0) * 4 + k)];
+        float c11 = data[base + uint((y1 * int(w) + x1) * 4 + k)];
+        precise float top = c00 + (c10 - c00) * tx;
+        precise float bot = c01 + (c11 - c01) * tx;
+        // `precise` on every one of the three lerps, not just the first two: the
+        // driver is otherwise free to contract `a + (b - a) * t` into an fma, and
+        // that is one rounding where the oracle has two. It was worth two ULP on
+        // the single-tap variant before this line was pinned.
+        precise float mid = top + (bot - top) * ty;
+        r[k] = mid;
+    }
+    return r;
+}
+
+vec4 rbDispSampleSource(vec2 uv) {
+    return rbProbeSample(control.srcBase, control.srcW, control.srcH, uv);
+}
+
+vec4 rbDispSampleMap(vec2 uv) {
+    return rbProbeSample(control.mapBase, control.mapW, control.mapH, uv);
+}
+
+RBDispLayer layerAt(uint first) {
+    RBDispLayer L;
+    L.m0 = vec2(data[first + 0u], data[first + 1u]);
+    L.m1 = vec2(data[first + 2u], data[first + 3u]);
+    L.m2 = vec2(data[first + 4u], data[first + 5u]);
+    L.m3 = vec2(data[first + 6u], data[first + 7u]);
+    L.m4 = vec2(data[first + 8u], data[first + 9u]);
+    return L;
+}
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
     if (i >= control.count) return;
-    outputs[i] = inputs[i];
+
+    // `[BIN]` params[0] is the scale, 1..10 is layer A (source, texture t0) and
+    // 11..20 is layer B (the displacement map, texture t1). Reading them here
+    // out of a flat buffer is what pins the 84-byte layout on the GPU side too.
+    float s = data[0];
+    RBDispLayer source = layerAt(1u);
+    RBDispLayer map = layerAt(11u);
+
+    uint b = control.probeBase + i * 6u;
+    vec2 p = vec2(data[b + 0u], data[b + 1u]);
+    vec2 dpdx = vec2(data[b + 2u], data[b + 3u]);
+    vec2 dpdy = vec2(data[b + 4u], data[b + 5u]);
+
+    vec4 result = vec4(0.0);
+    if (control.stage == 0u) {
+        result = rbDisplacementMap(s, source, map, control.variant, p, dpdx, dpdy);
+    } else if (control.stage == 1u) {
+        // The two layer transforms, side by side: xy is the source's uv at p and
+        // zw is the map's.
+        result.xy = rbDispLayerUV(source, p);
+        result.zw = rbDispLayerUV(map, p);
+    } else if (control.stage == 2u) {
+        // The jitter for ONE tap, so the pattern can be checked value by value
+        // rather than in aggregate. `p` here is the point and the tap index
+        // comes from the push constants.
+        vec2 o = rbDispTapOffset(control.variant, int(control.tap));
+        result.xy = rbDispJitter(p, dpdx, dpdy, o.x, o.y);
+        result.zw = o;
+    } else if (control.stage == 3u) {
+        // The decode, with `p` standing in for the sampled map value.
+        result.xy = rbDispDecodeOffset(s, p);
+        result.z = float(rbDispTapCount(control.variant));
+        result.w = rbDispTapScale(control.variant);
+    } else {
+        // The sampler alone, with `p` as a uv straight into the map.
+        result = rbDispSampleMap(p);
+    }
+    outputs[i] = result;
 }

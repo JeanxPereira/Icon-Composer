@@ -1,21 +1,249 @@
 #version 450
-// STUB probe -- runs the stage as compute so the GPU's answer can be read back
-// and compared with the oracle. Same shape as `path_probe.comp`.
-#extension GL_GOOGLE_include_directive : require
+// The backdrop mip pyramid on the GPU: the reduction, the LOD formula, and the
+// trilinear fetch.
+//
+// This file is not split into a `.glsl` and a probe the way the transcribed
+// stages are, and the reason is that there is nothing here for a renderer to
+// include yet: `glassBackground_v1` will read its backdrop through a SAMPLER,
+// with the texture unit doing the filtering, and this compute path exists so
+// the levels the sampler would read can be built and checked against the CPU
+// oracle in `MipPyramid.cpp`. When the glass stage lands and needs a real mip
+// chain in an image, the reduction below is what fills it.
+//
+// WHAT IS TRANSCRIBED: `rbBackdropLod` only, plus the layer UV form it is
+// paired with. The reduction kernel and the trilinear interpolation are OURS --
+// Apple's mip generation was not read. See the header of `MipPyramid.h`.
 
 layout(local_size_x = 64) in;
 
-layout(std430, binding = 0) readonly buffer In  { vec4 inputs[]; };
+// The input is one block for all three stages, so the level table is present
+// (and zero) even for the stages that ignore it. 16 uvec4 is 256 bytes of waste
+// on a reduce dispatch, and it buys one buffer layout instead of three.
+layout(std430, binding = 0) readonly buffer In {
+    uvec4 levels[16];   // (width, height, first texel as a vec4 index, 0)
+    vec4 data[];        // stage 0: the source level. stage 1/2: see below.
+} src;
+
 layout(std430, binding = 1) writeonly buffer Out { vec4 outputs[]; };
 
 layout(push_constant) uniform Control {
-    uint count;
-    uint stage;
-    uint state;
+    uint count;        // invocations, so the tail of the last group returns
+    uint stage;        // 0 reduce, 1 lod, 2 trilinear sample
+    uint srcW;
+    uint srcH;
+    uint dstW;
+    uint dstH;
+    uint levelCount;
+    uint queryBase;    // stage 2: index into data[] of the first query
 } control;
+
+// ---- stage 0: the reduction, which is ours -------------------------------
+
+// The taps along one axis for one destination index. Returns 1, 2 or 3.
+//
+// An even extent is the plain 2-tap box. An ODD extent `2n+1` is the three-tap
+// box, because a 2-tap kernel stepping by two would drop the last source texel
+// and lose the edge of the image without failing anything. Adjacent
+// destinations share their boundary tap; the weights sum to one.
+int rbMipTaps(uint srcExtent, uint dstIndex, out ivec3 offset, out vec3 weight) {
+    int i = int(dstIndex);
+    if (srcExtent <= 1u) {
+        offset = ivec3(0, 0, 0);
+        weight = vec3(1.0, 0.0, 0.0);
+        return 1;
+    }
+    if ((srcExtent & 1u) == 0u) {
+        offset = ivec3(2 * i, 2 * i + 1, 0);
+        weight = vec3(0.5, 0.5, 0.0);
+        return 2;
+    }
+    float n = float(srcExtent >> 1u);
+    float total = float(srcExtent);
+    offset = ivec3(2 * i, 2 * i + 1, 2 * i + 2);
+    weight = vec3((n - float(i)) / total, n / total, (float(i) + 1.0) / total);
+    return 3;
+}
+
+// The 2D kernel is the outer product of the two axes.
+//
+// The sum is formed as `ref + sum(w * (s - ref))`, not as `sum(w * s)`. The two
+// are the same expression rearranged, and this one is EXACT for a constant
+// image: every difference is exactly zero whatever the weights round to, so a
+// flat backdrop stays flat at every level as an identity rather than as a
+// tolerance. `precise` keeps the accumulation from being fused or reassociated,
+// so the CPU oracle can be held to the same bits.
+vec4 rbMipReduce(uint x, uint y) {
+    ivec3 ox, oy;
+    vec3 wx, wy;
+    int nx = rbMipTaps(control.srcW, x, ox, wx);
+    int ny = rbMipTaps(control.srcH, y, oy, wy);
+
+    int rowStride = int(control.srcW);
+    vec4 ref = src.data[oy[0] * rowStride + ox[0]];
+    precise vec4 acc = vec4(0.0);
+    for (int j = 0; j < ny; ++j) {
+        for (int i = 0; i < nx; ++i) {
+            vec4 s = src.data[oy[j] * rowStride + ox[i]];
+            acc += (wx[i] * wy[j]) * (s - ref);
+        }
+    }
+    precise vec4 result = ref + acc;
+    return result;
+}
+
+// ---- stage 1: the LOD formula, transcribed -------------------------------
+
+// `[BIN]` The half nearest 1e-3, `0xH1419` in mod98: 2^-10 * (1 + 25/1024).
+// Written as the exact half because the target's value IS the half; `1e-3` is a
+// different number.
+const float kBackdropRadiusFloor = 1.00040435791015625e-3;
+
+// The value of the nearest half, as a float. mod98 does the floor and the log
+// in half and only widens afterwards, and that narrowing decides WHICH PAIR OF
+// MIPS a radius lands between, so it is reproduced rather than skipped.
+//
+// WHY THIS IS SPELLED OUT INSTEAD OF `packHalf2x16`. It was written that way
+// first, and the differential against the CPU oracle failed on 56 of 90 LOD
+// queries, every one of them by exactly one half ULP and every one of them
+// SMALLER: this adapter's `packHalf2x16` rounds TOWARD ZERO, not to nearest
+// even. GLSL does not require round-to-nearest there -- the conversion is the
+// OpenGL float16 one, whose rounding is implementation defined -- so the
+// built-in is not a definition of anything and the gate would have been
+// measuring the driver. The rounding is therefore written out, round to nearest
+// with ties to even, the same as `halfBitsOf` in `MipPyramid.cpp`.
+//
+// The other direction stays a built-in: `unpackHalf2x16` widens a half to a
+// float, which is exact and has no rounding to get wrong.
+uint rbHalfBits(float v) {
+    uint x = floatBitsToUint(v);
+    uint sign = (x >> 16) & 0x8000u;
+    uint rawExp = (x >> 23) & 0xFFu;
+    uint mantissa = x & 0x7FFFFFu;
+    if (rawExp == 0xFFu) {
+        return sign | 0x7C00u | (mantissa != 0u ? (0x200u | (mantissa >> 13)) : 0u);
+    }
+    int e = int(rawExp) - 127 + 15;
+    if (e >= 0x1F) return sign | 0x7C00u;
+    if (e <= 0) {
+        if (e < -10) return sign;
+        mantissa |= 0x800000u;
+        uint shift = uint(14 - e);
+        uint kept = mantissa >> shift;
+        uint dropped = mantissa & ((1u << shift) - 1u);
+        uint halfway = 1u << (shift - 1u);
+        bool up = dropped > halfway || (dropped == halfway && (kept & 1u) != 0u);
+        return sign | (kept + (up ? 1u : 0u));
+    }
+    uint kept = mantissa >> 13;
+    uint dropped = mantissa & 0x1FFFu;
+    if (dropped > 0x1000u || (dropped == 0x1000u && (kept & 1u) != 0u)) {
+        kept += 1u;
+        if (kept == 0x400u) {
+            kept = 0u;
+            e += 1;
+            if (e >= 0x1F) return sign | 0x7C00u;
+        }
+    }
+    return sign | (uint(e) << 10) | kept;
+}
+
+float rbQuantizeHalf(float v) {
+    return unpackHalf2x16(rbHalfBits(v)).x;
+}
+
+// `[BIN]` lod = fmin(fpext(log2_h(fmax_h(0xH1419, half(radius)))) - m5.x, m5.y)
+//
+//     %372 = air.fmax.f16(half 0xH1419, half %371)
+//     %373 = air.log2.f16(half %372)
+//     %374 = fpext half %373 to float
+//     %381 = fsub float %374, %380          ; m5.x, the bias
+//     %383 = air.fast_fmin.f32(%381, %382)  ; m5.y, the cap
+//
+// Not simplified: the floor and the log are at eleven bits of mantissa and the
+// bias and the cap are at twenty-four, and collapsing that would be an
+// algebraically equal expression that rounds elsewhere.
+//
+// `[OBS]` The last-ULP behaviour of the target's half `log2` unit was not
+// measured. This takes a float log2 and rounds it to half, which is exact
+// wherever log2 itself is exact and within one half ULP everywhere else.
+//
+// `air.fast_fmin` and `min` differ only on NaN, and mod98 carries `nnan` on
+// every one of these instructions.
+float rbBackdropLod(float radius, float bias, float cap) {
+    float floored = max(kBackdropRadiusFloor, rbQuantizeHalf(radius));
+    float logged = rbQuantizeHalf(log2(floored));
+    return min(logged - bias, cap);
+}
+
+// ---- stage 2: the trilinear fetch, which is ours -------------------------
+
+// Bilinear inside one level: normalised UV, half-texel centres, clamped at the
+// edge. Written as `a + (b - a) * t` rather than as `mix` so the CPU oracle can
+// round identically instead of relying on what `mix` expands to.
+//
+// `[OBS]` The target's sampler descriptor was not decoded, so this filter is
+// ours. The layer clamps UV into its own rect before every sample, which is
+// what makes the address mode moot inside the rect.
+vec4 rbMipSampleLevel(uint li, vec2 uv) {
+    uint w = src.levels[li].x;
+    uint h = src.levels[li].y;
+    uint base = src.levels[li].z;
+
+    float fx = uv.x * float(w) - 0.5;
+    float fy = uv.y * float(h) - 0.5;
+    float bx = floor(fx);
+    float by = floor(fy);
+    float tx = fx - bx;
+    float ty = fy - by;
+
+    int hi = int(w) - 1;
+    int vi = int(h) - 1;
+    int x0 = clamp(int(bx), 0, hi);
+    int x1 = clamp(int(bx) + 1, 0, hi);
+    int y0 = clamp(int(by), 0, vi);
+    int y1 = clamp(int(by) + 1, 0, vi);
+
+    vec4 s00 = src.data[base + uint(y0 * int(w) + x0)];
+    vec4 s10 = src.data[base + uint(y0 * int(w) + x1)];
+    vec4 s01 = src.data[base + uint(y1 * int(w) + x0)];
+    vec4 s11 = src.data[base + uint(y1 * int(w) + x1)];
+
+    precise vec4 top = s00 + (s10 - s00) * tx;
+    precise vec4 bottom = s01 + (s11 - s01) * tx;
+    precise vec4 result = top + (bottom - top) * ty;
+    return result;
+}
+
+// The LOD is clamped into [0, levelCount-1] first, so an integral LOD is
+// exactly that level's bilinear sample -- nothing from a neighbouring level
+// leaks into it -- and a LOD past the top of the chain reads the 1x1 level
+// rather than running off the table.
+vec4 rbMipSampleLod(float lod, vec2 uv) {
+    uint last = control.levelCount - 1u;
+    float l = clamp(lod, 0.0, float(last));
+    float lo = floor(l);
+    float f = l - lo;
+    uint i0 = uint(lo);
+    uint i1 = min(i0 + 1u, last);
+    vec4 a = rbMipSampleLevel(i0, uv);
+    vec4 b = rbMipSampleLevel(i1, uv);
+    precise vec4 result = a + (b - a) * f;
+    return result;
+}
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
     if (i >= control.count) return;
-    outputs[i] = inputs[i];
+
+    if (control.stage == 0u) {
+        uint x = i % control.dstW;
+        uint y = i / control.dstW;
+        outputs[i] = rbMipReduce(x, y);
+    } else if (control.stage == 1u) {
+        vec4 q = src.data[i];
+        outputs[i] = vec4(rbBackdropLod(q.x, q.y, q.z), 0.0, 0.0, 0.0);
+    } else {
+        vec4 q = src.data[control.queryBase + i];
+        outputs[i] = rbMipSampleLod(q.z, q.xy);
+    }
 }

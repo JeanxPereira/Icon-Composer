@@ -1,23 +1,76 @@
 #version 450
-// STUB probe -- runs the stage as compute so the GPU's answer can be read back
-// and compared with the oracle. Same shape as `path_probe.comp`.
+// Runs each shared-glass primitive as a compute stage so the GPU's answer can be
+// read back and compared with `GlassOracle` -- the same shape as
+// `gradient_probe.comp` and `path_probe.comp`.
+//
+// The point of a probe is that the renderer and the differential run the SAME
+// FILE: `Glass.glsl` is included here and, later, by the two glass shaders, and
+// nothing anywhere gets its own second copy of the arithmetic.
 #extension GL_GOOGLE_include_directive : require
 
 #include "Glass.glsl"
 
 layout(local_size_x = 64) in;
 
-layout(std430, binding = 0) readonly buffer In  { vec4 inputs[]; };
+// std430 puts every `vec4` on a sixteen-byte boundary, so the whole struct is
+// vec4s and the C++ mirror needs no hand-counted padding.
+struct Input {
+    vec4 a;    // edge: a.x = x. band: (d, amount, invHeight, offset).
+               // aberration combine: a.xyz = acc, a.w = alphaSum.
+    vec4 c;    // colour: c.rgb. c.w = complement, or face opacity.
+    vec4 cm0;
+    vec4 cm1;
+    vec4 cm2;
+};
+
+layout(std430, binding = 0) readonly buffer In { Input inputs[]; };
 layout(std430, binding = 1) writeonly buffer Out { vec4 outputs[]; };
 
 layout(push_constant) uniform Control {
     uint count;
     uint stage;
-    uint state;
+    uint state;   // unused by this family; kept so the pass signature matches
 } control;
+
+const uint kStageEdgeDomain = 0u;
+const uint kStageEdgePolynomial = 1u;
+const uint kStageEdgeCoverage = 2u;
+const uint kStageEdgeInSigma = 3u;
+const uint kStageBandAmount = 4u;
+const uint kStageCompressMaxLuma = 5u;
+const uint kStageFaceMatrixRaw = 6u;
+const uint kStageFaceMatrix = 7u;
+const uint kStageAberrationTap = 8u;
+const uint kStageAberrationCombine = 9u;
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
     if (i >= control.count) return;
-    outputs[i] = inputs[i];
+    Input v = inputs[i];
+    vec4 result = vec4(0.0);
+
+    if (control.stage == kStageEdgeDomain) {
+        result.x = rbGlassEdgeDomain(v.a.x);
+    } else if (control.stage == kStageEdgePolynomial) {
+        result.x = rbGlassEdgePolynomial(v.a.x);
+    } else if (control.stage == kStageEdgeCoverage) {
+        result.x = rbGlassEdgeCoverage(v.a.x);
+    } else if (control.stage == kStageEdgeInSigma) {
+        result.x = rbGlassEdgeCoverageInSigma(v.a.x);
+    } else if (control.stage == kStageBandAmount) {
+        result.x = rbGlassBandAmount(v.a.x, v.a.y, v.a.z, v.a.w);
+    } else if (control.stage == kStageCompressMaxLuma) {
+        result.xyz = rbGlassCompressMaxLuma(v.c.rgb, v.c.w);
+    } else if (control.stage == kStageFaceMatrixRaw) {
+        result.xyz = rbGlassFaceColorMatrixRaw(v.c.rgb, v.cm0, v.cm1, v.cm2);
+    } else if (control.stage == kStageFaceMatrix) {
+        result.xyz = rbGlassApplyFaceColorMatrix(v.c.rgb, v.cm0, v.cm1, v.cm2, v.c.w);
+    } else if (control.stage == kStageAberrationTap) {
+        // The tap is a function of the INDEX alone, so the invocation id is the
+        // input -- there is nothing in the buffer for it to read.
+        result = rbGlassAberrationTap(int(i));
+    } else if (control.stage == kStageAberrationCombine) {
+        result = rbGlassAberrationCombine(v.a.xyz, v.a.w);
+    }
+    outputs[i] = result;
 }

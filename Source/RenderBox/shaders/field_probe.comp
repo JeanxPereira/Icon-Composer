@@ -1,23 +1,70 @@
 #version 450
-// STUB probe -- runs the stage as compute so the GPU's answer can be read back
-// and compared with the oracle. Same shape as `path_probe.comp`.
+// Runs `distanceGradient_v1` as compute, so what the GPU computes can be read
+// back and compared with the oracle -- the same shape as `gradient_probe.comp`.
+//
+// The point of a probe is that the renderer and the differential run the SAME
+// FILE: `DistanceField.glsl` is included here and by nothing else that guesses.
 #extension GL_GOOGLE_include_directive : require
 
 #include "DistanceField.glsl"
 
 layout(local_size_x = 64) in;
 
-layout(std430, binding = 0) readonly buffer In  { vec4 inputs[]; };
+// ONE input buffer holding two different things, because `ComputePass` binds
+// exactly two storage buffers and the transcription needs both its probe points
+// and a texture to sample. So the buffer is indexed by hand: four vec4 per
+// probe from 0, then the field's texels from `fieldBase`. Written out rather
+// than wrapped in a struct because std430 would pad a struct that mixes a
+// texel array in, and the padding is the kind of thing that goes wrong
+// silently.
+layout(std430, binding = 0) readonly buffer In  { vec4 data[]; };
 layout(std430, binding = 1) writeonly buffer Out { vec4 outputs[]; };
 
 layout(push_constant) uniform Control {
     uint count;
-    uint stage;
-    uint state;
+    uint stage;       // 0 = the layer's uv transform alone, 1 = the whole function
+    uint fieldBase;   // index, in vec4, of the first texel in `data`
+    uint fieldW;
+    uint fieldH;
 } control;
+
+// The FIXTURE, not the transcription. `[OBS]` mod95's sampler state is an
+// opaque i64 and its filter was not decoded, so both sides of the differential
+// agree on the simplest fetch that is exactly reproducible: nearest texel,
+// clamp to edge, narrowed to half because the target's texture is `half4`.
+// `rb::FieldTexture::sampleX` performs the same three operations in the same
+// order, and the two must be changed together.
+vec4 rbFieldSample(vec2 uv) {
+    ivec2 size = ivec2(int(control.fieldW), int(control.fieldH));
+    ivec2 c = clamp(ivec2(floor(uv * vec2(size))), ivec2(0), size - ivec2(1));
+    vec4 texel = data[control.fieldBase + uint(c.y * size.x + c.x)];
+    return vec4(rbHalf(texel.x), texel.y, texel.z, texel.w);
+}
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
     if (i >= control.count) return;
-    outputs[i] = inputs[i];
+
+    uint b = i * 4u;
+    vec4 a0 = data[b];        // p.xy, dfdx(p.x), dfdy(p.y)
+    vec4 a1 = data[b + 1u];   // m0, m1
+    vec4 a2 = data[b + 2u];   // m2, m3
+    vec4 a3 = data[b + 3u];   // m4, scale, fallback
+
+    RbFieldLayer L;
+    L.m0 = a1.xy;
+    L.m1 = a1.zw;
+    L.m2 = a2.xy;
+    L.m3 = a2.zw;
+    L.m4 = a3.xy;
+
+    vec2 p = a0.xy;
+
+    if (control.stage == 0u) {
+        // The affine and its clamp alone. Gated bit-for-bit, because nothing in
+        // it rounds beyond the fma the IR names.
+        outputs[i] = vec4(rbFieldUv(L, p), 0.0, 0.0);
+    } else {
+        outputs[i] = rbDistanceGradient(p, a0.z, a0.w, a3.z, a3.w, L);
+    }
 }
