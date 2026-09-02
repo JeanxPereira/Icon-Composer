@@ -22,6 +22,12 @@ add_executable(ic_tests
     test_icon_render.cpp
     test_rb_gradient.cpp
     test_auto_gradient.cpp
+    test_rb_glass.cpp
+    test_rb_displacement.cpp
+    test_rb_field.cpp
+    test_rb_mip.cpp
+    test_rb_glass_background.cpp
+    test_rb_glass_foreground.cpp
 )
 
 target_link_libraries(ic_tests PRIVATE IconComposer::Foundation IconComposer::CliLib IconComposer::CoreSVG IconComposer::RenderBox)
