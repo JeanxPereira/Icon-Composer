@@ -449,6 +449,39 @@ TEST_CASE(the_ramp_holds_past_both_ends_of_its_axis) {
     CHECK(std::fabs(channelAt(*img, 22, 15, 0) - channelAt(*img, 28, 15, 0)) < 0.02f);
 }
 
+
+// A fill VALUE the reader does not know is named too, and it is a different gap
+// from a reference that does not resolve. `[ART]` The corpus's colour vocabulary
+// has exactly two names -- `white` and `black` (doc 04) -- so a third name is a
+// value this reader refuses rather than a colour it guesses at.
+TEST_CASE(a_fill_value_the_reader_does_not_know_is_named) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    const std::string svg = svgWith(
+        "0 0 16 16",
+        "<path d=\"M0 0 L16 0 L16 16 L0 16 Z\" fill=\"chartreuse\"/>"
+        "<path d=\"M0 0 L8 0 L8 8 L0 8 Z\" fill=\"#ffffff\"/>");
+    auto doc = icf::svg::SvgDocument::parse(svg);
+    REQUIRE(doc.has_value());
+    RenderOptions o;
+    o.width = o.height = 16;
+    o.subdivisions = 1;
+    auto img = renderSvg(d, *doc, o);
+    REQUIRE(img.has_value());
+
+    // The value is named ONE LAYER UP, by the document, and the shape keeps the
+    // inherited paint and still draws. That is not the renderer being lax: the
+    // gap is reported where the value was read, which is where a reader can say
+    // WHICH value it was -- `paint:fill=chartreuse`, not "some shape".
+    CHECK_EQ(img->drawn, std::size_t{2});
+    CHECK(img->skipped.empty());
+    bool named = false;
+    for (const auto& e : doc->unsupported()) {
+        named |= e.find("chartreuse") != std::string::npos;
+    }
+    CHECK(named);
+}
+
 // ---- the PNG ------------------------------------------------------------
 
 // The header and the trailer, checked byte by byte, because an encoder that

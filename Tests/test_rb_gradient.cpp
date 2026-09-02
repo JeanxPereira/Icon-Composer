@@ -465,3 +465,68 @@ TEST_CASE(the_gamma_allowance_rejects_a_wrong_transcription) {
     }
     CHECK(!agreesUlps(nudged, right[0], kPowUlps));
 }
+
+// The ends of a stop table HOLD, and holding is not the same as extrapolating.
+//
+// The first version of `rampAtPositions` guarded both ends with an early return,
+// and the mutation sweep proved the guards were redundant: the saturate on the
+// segment parameter already does it. So they were removed, and what is pinned
+// here is the behaviour rather than the branch -- past the last stop the colour
+// stays put, and a version that dropped the saturate would run PAST the last
+// stop's colour instead.
+TEST_CASE(a_stop_table_holds_at_both_ends_rather_than_extrapolating) {
+    std::vector<RampPoint> stops(2);
+    stops[0].location = 0.25f;
+    stops[0].rgba[0] = 0.0f;
+    stops[1].location = 0.75f;
+    stops[1].rgba[0] = 1.0f;
+
+    float out[4];
+    // Inside, the ramp is linear: halfway between the two stops is 0.5.
+    rampAtPositions(stops, 0.5f, out);
+    CHECK(std::fabs(out[0] - 0.5f) < 1e-6f);
+
+    // Past the last stop it HOLDS. Without the saturate this would be 1.5 at
+    // t = 1.0 and 3.0 at t = 2.0 -- a colour no stop names.
+    rampAtPositions(stops, 0.75f, out);
+    CHECK_EQ(out[0], 1.0f);
+    rampAtPositions(stops, 1.0f, out);
+    CHECK_EQ(out[0], 1.0f);
+    rampAtPositions(stops, 5.0f, out);
+    CHECK_EQ(out[0], 1.0f);
+
+    // And before the first, the same the other way: not a negative colour.
+    rampAtPositions(stops, 0.25f, out);
+    CHECK_EQ(out[0], 0.0f);
+    rampAtPositions(stops, 0.0f, out);
+    CHECK_EQ(out[0], 0.0f);
+    rampAtPositions(stops, -3.0f, out);
+    CHECK_EQ(out[0], 0.0f);
+
+    // One stop is a constant, and it is the case that cannot fall through the
+    // segment scan at all.
+    std::vector<RampPoint> single(1);
+    single[0].location = 0.5f;
+    single[0].rgba[1] = 0.7f;
+    rampAtPositions(single, -1.0f, out);
+    CHECK_EQ(out[1], 0.7f);
+    rampAtPositions(single, 9.0f, out);
+    CHECK_EQ(out[1], 0.7f);
+
+    // Two stops at the SAME position: the target's form stores `1/(off1-off0)`,
+    // which is a division by zero there, so what it does is `[OBS]` -- not
+    // measured. This transcription answers with the LATER stop, and that is a
+    // CHOICE pinned so it cannot drift, not a reading. It is at least a defined
+    // answer rather than a NaN, which is the property that matters for a
+    // renderer.
+    std::vector<RampPoint> step(2);
+    step[0].location = 0.5f;
+    step[0].rgba[2] = 0.0f;
+    step[1].location = 0.5f;
+    step[1].rgba[2] = 1.0f;
+    rampAtPositions(step, 0.5f, out);
+    CHECK_EQ(out[2], 1.0f);
+    rampAtPositions(step, 0.4f, out);
+    CHECK_EQ(out[2], 1.0f);
+    CHECK(out[2] == out[2]);   // and never a NaN
+}

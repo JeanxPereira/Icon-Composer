@@ -474,9 +474,9 @@ $mutations = @(
     @{ file = "rbsvg"; name = "the result is left premultiplied"
        from = 'out.rgba[t * 4 + k] = a > 0.0f ? acc[t * 4 + k] / a : 0.0f;'
        to   = 'out.rgba[t * 4 + k] = acc[t * 4 + k];' },
-    @{ file = "rbsvg"; name = "a shape that cannot be drawn is dropped in silence"
-       from = 'out.skipped.push_back({i, shape.element, "valor de fill que este leitor nao le"});'
-       to   = 'if (false) out.skipped.push_back({i, shape.element, "valor de fill que este leitor nao le"});' },
+    @{ file = "rbsvg"; name = "a shape whose path buffer fails is dropped in silence"
+       from = 'out.skipped.push_back({i, shape.element, buffer.error()});'
+       to   = 'if (false) out.skipped.push_back({i, shape.element, buffer.error()});' },
     # ---- the PNG ----
     @{ file = "png"; name = "the stored block length is not complemented"
        from = 'z.push_back(static_cast<std::uint8_t>(~n));'
@@ -632,9 +632,10 @@ $mutations = @(
     @{ file = "grad"; name = "the two-colour gamma is applied unsaturated"
        from = 'if ((state & kStopGamma) != 0u) u = saturate(std::pow(saturate(t), gamma));'
        to   = 'if ((state & kStopGamma) != 0u) u = std::pow(t, gamma);' },
-    @{ file = "grad"; name = "the ramp does not hold past its last stop"
-       from = 'if (t >= stops.back().location) {'
-       to   = 'if (false) {' },
+    @{ file = "grad"; name = "the segment parameter is not saturated, so the ends extrapolate"
+       from = 'float f = span > 0.0f ? (t - lo.location) / span : 1.0f;
+    f = saturate(f);'
+       to   = 'float f = span > 0.0f ? (t - lo.location) / span : 1.0f;' },
     @{ file = "grad"; name = "the stop segment ignores where the stops are"
        from = 'float f = span > 0.0f ? (t - lo.location) / span : 1.0f;'
        to   = 'float f = t;' },

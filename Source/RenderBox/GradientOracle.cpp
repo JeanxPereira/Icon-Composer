@@ -130,14 +130,26 @@ void rampUniform(std::uint32_t state, float t, const std::vector<Stop>& stops,
 void rampAtPositions(const std::vector<RampPoint>& stops, float t, float (&out)[4]) {
     for (int i = 0; i < 4; ++i) out[i] = 0.0f;
     if (stops.empty()) return;
-    if (stops.size() == 1 || t <= stops.front().location) {
+    // One stop is a constant colour, and it is the only case that cannot fall
+    // through: there is no segment to interpolate along.
+    if (stops.size() == 1) {
         for (int i = 0; i < 4; ++i) out[i] = stops.front().rgba[i];
         return;
     }
-    if (t >= stops.back().location) {
-        for (int i = 0; i < 4; ++i) out[i] = stops.back().rgba[i];
-        return;
-    }
+
+    // NO EARLY RETURN FOR t OUTSIDE THE RAMP, and that is deliberate.
+    //
+    // A first version guarded both ends explicitly, and the mutation sweep
+    // showed the guards were REDUNDANT: with `t` past the last stop the scan
+    // below lands on the final segment, computes a parameter above one, and the
+    // saturate brings it back to exactly the last stop's colour. The two
+    // branches were equivalent, so no test could tell them apart -- and a guard
+    // no test can distinguish is not a guard, it is noise that makes the sweep
+    // report a defect nobody can fix.
+    //
+    // `[BIN]` The pad is the target's own: `sample_stops_binary` saturates the
+    // segment parameter before the mix, and that IS what holds the ends flat.
+    //
     // The search the target does with a branchless binary partition. Linear
     // here: the corpus's longest ramp has five stops, and a binary search over
     // five is a way to get the boundaries wrong for no measurable gain.

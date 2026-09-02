@@ -146,10 +146,14 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
                 out.skipped.push_back({i, shape.element, ramp.why});
                 continue;
             }
-        } else if (shape.fill.kind != icf::svg::PaintKind::Color) {
-            out.skipped.push_back({i, shape.element, "valor de fill que este leitor nao le"});
-            continue;
         }
+        // There is NO branch here for a fill value the reader cannot read, and
+        // the mutation sweep is why. `SvgDocument::resolve` never hands one
+        // out: a value it does not know goes into `unsupported()` -- named at
+        // the DOCUMENT, which is where it belongs -- and the shape keeps the
+        // inherited paint. So a branch here could not be reached by any input,
+        // and a guard nothing can reach is dead weight that makes the sweep
+        // report a defect nobody can fix.
         if (shape.path.segments.empty()) continue;
 
         auto buffer = buildPathBuffer(shape.path, BuildOptions{options.subdivisions});
