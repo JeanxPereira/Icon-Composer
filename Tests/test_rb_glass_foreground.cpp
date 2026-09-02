@@ -1379,3 +1379,91 @@ TEST_CASE(the_tap_divisor_is_floored_and_the_alpha_sum_is_not) {
     // agreement above is a choice this scene can see and not a coincidence.
     CHECK(differedFromFloored > 0);
 }
+
+// AND THE SHADER FLOORS IT AT THE SAME NUMBER, which the test above cannot say:
+// everything in it runs on the oracle.
+//
+// `[ART]` The scenes every GPU differential in this file uses have source alphas
+// from 0.30 to 0.86, so `max(sample.a, 0.001)` never once reaches its floor on
+// the GPU -- the guard is present, compiled, and never taken. The mutation sweep
+// found the hole: giving `GlassForeground.glsl` the OTHER epsilon four
+// instructions away (`kRbFgFwidthFloor`, float 1e-4) left the whole suite green,
+// because no probe on any GPU scene had an alpha low enough to tell 0.001 from
+// 0.0001 apart. Two orders of magnitude in an un-premultiply, invisible.
+//
+// So: the same disc and the same layers, with the source's alpha swept across
+// BOTH epsilons -- under 1e-4, between the two, and above the half 0.001 -- and
+// its colour left bright, so `c.rgb / a` is a different number under each floor
+// rather than a perturbation of one. The two heights are zeroed as in the test
+// above, which drives the band profile's input to zero: `sqrt(0)` is exact on
+// any conforming implementation, so the bound carries the divisions alone.
+TEST_CASE(the_gpu_floors_the_tap_divisor_at_the_half_epsilon_the_oracle_uses) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+
+    Scene s = makeScene();
+    s.params[5] = 0.0f;
+    s.params[8] = 0.0f;
+    for (int y = 0; y < s.source.h; ++y) {
+        for (int x = 0; x < s.source.w; ++x) {
+            // 1e-5 doubling to 1.28e-3: four steps below `kRbFgFwidthFloor`,
+            // three between the two epsilons, one above them both.
+            s.source.at(x, y, 3) = std::ldexp(1.0e-5f, (x + y) % 8);
+        }
+    }
+
+    // THE CASE IS NOT VACUOUS, stated first: at a probe in the middle of the
+    // disc the seven taps really do land on alphas the two floors treat
+    // differently, and the divisor they produce is a different float.
+    const ForegroundParams params = s.parsed();
+    const Probe& mid = s.probes[s.probes.size() / 2];
+    float uvField[2], f[4], g[2];
+    foregroundLayerUV(params.field, mid.p[0], mid.p[1], uvField);
+    sampleBilinear(s.field.view(), uvField[0], uvField[1], f);
+    const float dist = foregroundDistance(params.uniforms, f[0]);
+    foregroundGradient(params.uniforms, f[1], f[2], g);
+    float dispR[2], dispA[2], base[2];
+    foregroundRefractionDisplacement(params.uniforms, dist, g, dispR);
+    foregroundAberrationDisplacement(params.uniforms, dist, g, dispA);
+    foregroundBase(mid.p[0], mid.p[1], dispR, base);
+    int parted = 0;
+    for (int i = 0; i < glass::kAberrationTaps; ++i) {
+        float q[2], uv[2], c[4];
+        foregroundTapPoint(base, dispA, glass::aberrationTap(i).offset, q);
+        foregroundLayerUV(params.source, q[0], q[1], uv);
+        sampleBilinear(s.source.view(), uv[0], uv[1], c);
+        const float half = c[3] > glass::kEpsilon ? c[3] : glass::kEpsilon;
+        const float other = c[3] > kForegroundFwidthFloor ? c[3] : kForegroundFwidthFloor;
+        if (!sameBits(c[0] / half, c[0] / other)) ++parted;
+    }
+    std::printf("  [ART] the two epsilons give a different divisor at %d of %d taps\n", parted,
+                glass::kAberrationTaps);
+    CHECK(parted > 0);
+
+    const std::vector<float> got = onGpu(d, s, kWhole);
+    REQUIRE(got.size() == s.probes.size() * 4);
+    int bad = 0;
+    int drawn = 0;
+    for (std::size_t i = 0; i < s.probes.size(); ++i) {
+        float want[4];
+        oracleAt(s, s.probes[i], want);
+        if (want[3] != 0.0f) ++drawn;
+        for (int k = 0; k < 4; ++k) {
+            // Finite on both sides: a divisor of 1e-5 is what the floor exists
+            // to keep out of the un-premultiply.
+            CHECK(std::isfinite(got[i * 4 + k]));
+            if (std::fabs(got[i * 4 + k] - want[k]) >
+                derivedBound(s, s.probes[i], k, /*bandsExact=*/true)) {
+                if (bad < 4) {
+                    std::printf("  FAIL floored tap probe %zu ch %d: gpu %.9g oracle %.9g\n", i, k,
+                                double(got[i * 4 + k]), double(want[k]));
+                }
+                ++bad;
+            }
+        }
+    }
+    CHECK_EQ(bad, 0);
+    // and the sweep reached pixels the stage actually paints, rather than
+    // agreeing on a picture that is everywhere zero.
+    CHECK(drawn > 0);
+}

@@ -532,6 +532,95 @@ TEST_CASE(the_layer_transform_agrees_with_the_gpu) {
     CHECK(held > 0);
 }
 
+// THE NESTING OF THE TWO FUSED MULTIPLY-ADDS, and why the scene above cannot
+// see it.
+//
+// `[BIN]` `%44` is the inner fma, over `p.yy`, and `%45` the outer, over `p.xx`.
+// `DisplacementOracle.cpp` says in as many words that writing it the other way
+// round is the same transform and a different rounding, and this stage is gated
+// bit for bit -- so the order is a claim, not a formatting choice.
+//
+// `[ART]` BUT BOTH LAYERS IN `makeScene` ARE AXIS ALIGNED: `m0.y` and `m1.x` are
+// zero. With a zero cross term the two nestings are not merely close, they are
+// THE SAME BITS -- `fma(y, 0, v)` is `v` exactly, so the inner fma degenerates
+// to its own addend and the order stops existing. Every differential in this
+// file was therefore blind to it by construction, and the mutation sweep found
+// that out: swapping the two lines in the oracle left the whole suite green.
+//
+// A SHEARED layer is what makes the claim observable, and it is a legal layer --
+// nothing in `RB::Layer` says the two columns are orthogonal, and a rotated
+// glass layer produces exactly this. Both halves are asserted: that the two
+// nestings really do part on this input, so the case is not vacuous, and that
+// the GPU lands on the transcribed one.
+TEST_CASE(the_layer_transform_nests_the_y_term_inside_the_x_one) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+
+    Scene s = makeScene();
+    // Sheared, and with a clamp rect wide enough that nothing is held at it -- a
+    // clamp would pin both answers to the same bound and hide the difference.
+    const float a[10] = {0.11f,  0.037f, -0.023f, 0.091f, 0.31f,
+                         -0.17f, -8.0f,  -8.0f,   8.0f,   8.0f};
+    const float b[10] = {0.043f, -0.071f, 0.067f, 0.029f, -0.13f,
+                         0.21f,  -8.0f,   -8.0f,  8.0f,   8.0f};
+    for (int i = 0; i < 10; ++i) {
+        s.params[1 + i] = a[i];
+        s.params[11 + i] = b[i];
+    }
+    s.probes.clear();
+    for (float y = -3.3f; y <= 9.0f; y += 0.37f) {
+        for (float x = -2.9f; x <= 9.0f; x += 0.41f) {
+            Probe p;
+            p.p[0] = x;
+            p.p[1] = y;
+            s.probes.push_back(p);
+        }
+    }
+
+    const DisplacementParams params = s.parsed();
+    // The other nesting, computed the same way the oracle computes its own --
+    // the double-width product of `fma1`, so nothing but the ORDER differs.
+    auto swapped = [](const DisplacementLayer& layer, float x, float y, int k) {
+        const float inner = static_cast<float>(static_cast<double>(x) * layer.m[0][k] +
+                                               static_cast<double>(layer.m[2][k]));
+        const float t = static_cast<float>(static_cast<double>(y) * layer.m[1][k] +
+                                           static_cast<double>(inner));
+        return t < layer.m[3][k] ? layer.m[3][k] : (t > layer.m[4][k] ? layer.m[4][k] : t);
+    };
+
+    int parted = 0;
+    for (const Probe& p : s.probes) {
+        float uv[2];
+        displacementLayerUV(params.source, p.p[0], p.p[1], uv);
+        for (int k = 0; k < 2; ++k) {
+            if (!sameBits(uv[k], swapped(params.source, p.p[0], p.p[1], k))) ++parted;
+        }
+    }
+    std::printf("  [ART] sheared layer: the two nestings part on %d of %d components\n", parted,
+                int(s.probes.size()) * 2);
+    CHECK(parted > 0);
+
+    const std::vector<float> got = onGpu(d, s, 1u, 0u);
+    REQUIRE(got.size() == s.probes.size() * 4);
+    int bad = 0;
+    for (std::size_t i = 0; i < s.probes.size(); ++i) {
+        float uvA[2], uvB[2];
+        displacementLayerUV(params.source, s.probes[i].p[0], s.probes[i].p[1], uvA);
+        displacementLayerUV(params.map, s.probes[i].p[0], s.probes[i].p[1], uvB);
+        if (!agrees(got[i * 4 + 0], uvA[0]) || !agrees(got[i * 4 + 1], uvA[1]) ||
+            !agrees(got[i * 4 + 2], uvB[0]) || !agrees(got[i * 4 + 3], uvB[1])) {
+            if (bad < 3) {
+                std::printf("  FAIL sheared uv p=(%.3f,%.3f)  gpu A(%.9g,%.9g)"
+                            "  cpu A(%.9g,%.9g)\n",
+                            s.probes[i].p[0], s.probes[i].p[1], got[i * 4 + 0], got[i * 4 + 1],
+                            uvA[0], uvA[1]);
+            }
+            ++bad;
+        }
+    }
+    CHECK_EQ(bad, 0);
+}
+
 // The sampler both sides run, checked on its own before it is checked inside the
 // stage -- a disagreement here would otherwise show up as a disagreement in the
 // math. `[OBS]` This is NOT the target's sampler: `@__air_sampler_state` is one

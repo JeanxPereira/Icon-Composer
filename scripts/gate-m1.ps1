@@ -73,6 +73,18 @@ $sources = @{
     gradglsl = Join-Path $root "Source/RenderBox/shaders/Gradient.glsl"
     autograd = Join-Path $root "Source/RenderBox/AutomaticGradient.cpp"
     rbsvg2   = Join-Path $root "Source/RenderBox/SvgRenderer.cpp"
+    glassor  = Join-Path $root "Source/RenderBox/GlassOracle.cpp"
+    glassgl  = Join-Path $root "Source/RenderBox/shaders/Glass.glsl"
+    dispor   = Join-Path $root "Source/RenderBox/DisplacementOracle.cpp"
+    dispgl   = Join-Path $root "Source/RenderBox/shaders/Displacement.glsl"
+    field    = Join-Path $root "Source/RenderBox/DistanceField.cpp"
+    fieldgl  = Join-Path $root "Source/RenderBox/shaders/DistanceField.glsl"
+    mip      = Join-Path $root "Source/RenderBox/MipPyramid.cpp"
+    mipcomp  = Join-Path $root "Source/RenderBox/shaders/mip_reduce.comp"
+    glassbg  = Join-Path $root "Source/RenderBox/GlassBackground.cpp"
+    bggl     = Join-Path $root "Source/RenderBox/shaders/GlassBackground.glsl"
+    glassfg  = Join-Path $root "Source/RenderBox/GlassForeground.cpp"
+    fggl     = Join-Path $root "Source/RenderBox/shaders/GlassForeground.glsl"
 }
 $original = @{}
 $hashes = @{}
@@ -713,7 +725,190 @@ $mutations = @(
                 const double ux = (px - globals.m2[0]) * sx;' },
     @{ file = "rbsvg2"; name = "a reference that does not resolve is drawn anyway"
        from = 'if (!ramp.ok) {'
-       to   = 'if (false) {' }
+       to   = 'if (false) {' },
+    # ---- the glass tower: the shared math ------------------------------------
+    #
+    # Eight stages landed with their own differentials and none of them had a
+    # mutation here, which means the sweep was proving the OLD tower and calling
+    # it the tower. Each of the forty-eight below aims at a CLAIM one of the eight
+    # makes -- a constant read out of the IR, a guard, an ordering, a tap table
+    # -- and not at arithmetic chosen for being easy to break. The plausible
+    # wrong answer is used wherever there is one: AquaKit's epsilon rather than a
+    # random number, float(1/3) rather than a random third, the other Rec. 709
+    # rounding rather than a random triple. A transcriber makes THOSE mistakes.
+    @{ file = "glassor"; name = "the dispersion weight is indexed instead of accumulated"
+       from = 'for (int i = 0; i < index; ++i) w = w + kAberrationStepDown;'
+       to   = 'w = 1.0f - static_cast<float>(index) / 3.0f;' },
+    @{ file = "glassor"; name = "the second dispersion loop does not negate its offset"
+       from = 't.offset = -w;                    // %665: uv - step * w'
+       to   = 't.offset = w;                     // %665: uv - step * w' },
+    @{ file = "glassor"; name = "the compression measures with the speculars rec709 triple"
+       from = 'const float y = dot3(kLumaCompress, rgb);'
+       to   = 'const float y = dot3(kLumaWeight, rgb);' },
+    @{ file = "glassor"; name = "the band profile adds its offset instead of subtracting it"
+       from = 'const float x = saturate((-d - offset) * invHeight);'
+       to   = 'const float x = saturate((-d + offset) * invHeight);' },
+    @{ file = "glassor"; name = "the ycc composite ignores the fills own alpha"
+       from = 'const float k = 1.0f - fillPremultiplied[3];'
+       to   = 'const float k = 1.0f;' },
+    @{ file = "glassor"; name = "the face matrix mixes from its output, not from the input"
+       from = 'for (int i = 0; i < 3; ++i) out[i] = rgb[i] + (f[i] - rgb[i]) * faceOpacity;'
+       to   = 'for (int i = 0; i < 3; ++i) out[i] = f[i] + (rgb[i] - f[i]) * faceOpacity;' },
+    @{ file = "glassgl"; name = "the shader carries AquaKits epsilon instead of the half 0xH1419"
+       from = 'const float kRbGlassEpsilon = 0.00100040435791015625;  // 0xH1419'
+       to   = 'const float kRbGlassEpsilon = 1.0e-4;  // 0xH1419' },
+    @{ file = "glassgl"; name = "the green dispersion scale is float(1/3), not the half"
+       from = 'const vec3 kRbAberrationRgbScale = vec3(0.5, 0.333251953125, 0.5);    // green is the HALF 1/3'
+       to   = 'const vec3 kRbAberrationRgbScale = vec3(0.5, 1.0 / 3.0, 0.5);    // green is the HALF 1/3' },
+    @{ file = "glassgl"; name = "the band profile does not clamp its input"
+       from = 'precise float x = clamp(raw, 0.0, 1.0);'
+       to   = 'precise float x = raw;' },
+    # ---- the glass tower: the displacement ----------------------------------
+    @{ file = "dispor"; name = "an eight-tap jitter offset is permuted"
+       from = '{0.3125f, 0.0625f},   {-0.1875f, -0.3125f},'
+       to   = '{0.0625f, 0.3125f},   {-0.1875f, -0.3125f},' },
+    @{ file = "dispor"; name = "the four-tap variant carries the eight-taps final scale"
+       from = 'case 2: return 0.25f;   // 0xH3400'
+       to   = 'case 2: return 0.125f;  // 0xH3400' },
+    @{ file = "dispor"; name = "the displacement moves the unjittered point"
+       from = 'displacementLayerUV(params.source, offset[0] + q[0], offset[1] + q[1], uvSource);'
+       to   = 'displacementLayerUV(params.source, offset[0] + px, offset[1] + py, uvSource);' },
+    # A ONE-LINE ANCHOR EVEN WHERE THE CODE IS TWO, and it is not a preference:
+    # five of the files below are stored with CRLF while this script is stored
+    # with LF, so a multi-line anchor typed here never matches them. The
+    # pre-flight catches that in milliseconds -- it caught exactly this, six
+    # times, before a single build was paid for -- but the fix belongs in the
+    # anchor rather than in the guard.
+    @{ file = "dispor"; name = "the layer transform nests the x term inside the y one"
+       from = 'const float t = fma1(x, layer.m[0][k], inner);'
+       to   = 'const float t = fma1(y, layer.m[1][k], fma1(x, layer.m[0][k], layer.m[2][k])); (void)inner;' },
+    @{ file = "dispgl"; name = "the per-tap z weight is hoisted to tap zeros"
+       from = 'precise vec4 weighted = t == 0 ? vec4(disp.z) * colour : fma(colour, vec4(disp.z), acc);'
+       to   = 'vec2 q0 = rbDispJitter(p, ddx, ddy, rbDispTapOffset(variant, 0).x, rbDispTapOffset(variant, 0).y);
+        float w0 = rbDispSampleMap(rbDispLayerUV(map, q0)).z;
+        precise vec4 weighted = t == 0 ? vec4(w0) * colour : fma(colour, vec4(w0), acc);' },
+    @{ file = "dispgl"; name = "the decode bias is -2s, so one half is no longer neutral"
+       from = 'precise vec2 result = fma(disp, vec2(s * 2.0), vec2(-s));'
+       to   = 'precise vec2 result = fma(disp, vec2(s * 2.0), vec2(-s * 2.0));' },
+    @{ file = "dispgl"; name = "variant zero reads the derivatives after all"
+       from = 'vec2 ddx = taps == 1 ? vec2(0.0) : dpdx;'
+       to   = 'vec2 ddx = dpdx;' },
+    # ---- the glass tower: the distance field ---------------------------------
+    @{ file = "fieldgl"; name = "the normalize runs on a flat neighbourhood too"
+       from = 'if (any(notEqual(delta, vec2(0.0)))) {'
+       to   = 'if (true) {' },
+    @{ file = "fieldgl"; name = "a zero distance reports full coverage in .w"
+       from = 'return vec4(0.0, u1, u1, 0.0);'
+       to   = 'return vec4(0.0, u1, u1, 1.0);' },
+    @{ file = "fieldgl"; name = "the x taps do not straddle p when dpdx is negative"
+       from = 'vec2 hx = vec2(abs(dpdx), 0.0);'
+       to   = 'vec2 hx = vec2(dpdx, 0.0);' },
+    @{ file = "field"; name = "the oracles zero branch reports coverage instead of none"
+       from = 'out[1] = u1;
+        out[2] = u1;
+        out[3] = 0.0f;'
+       to   = 'out[1] = u1;
+        out[2] = u1;
+        out[3] = 1.0f;' },
+    @{ file = "field"; name = "the central difference is taken in float, not in half"
+       from = 'float g[2] = {fieldNarrowToHalf(right - left), fieldNarrowToHalf(up - down)};'
+       to   = 'float g[2] = {right - left, up - down};' },
+    @{ file = "field"; name = "the coverage band loses its half-pixel offset"
+       from = 'const double cov = -out.distance / w + 0.5;'
+       to   = 'const double cov = -out.distance / w;' },
+    @{ file = "field"; name = "the generator fills every pixel with the even-odd rule"
+       from = 'const bool inside = options.rule == FieldRule::NonZero ? winding != 0 : parity;'
+       to   = 'const bool inside = parity;' },
+    # ---- the glass tower: the mip pyramid ------------------------------------
+    @{ file = "mip"; name = "the backdrop is un-premultiplied by an unfloored alpha"
+       from = 'const float a = std::max(rgba[3], kBackdropRadiusFloor);'
+       to   = 'const float a = rgba[3];' },
+    @{ file = "mip"; name = "the lod cap is applied as a floor"
+       from = 'return std::min(logged - bias, cap);'
+       to   = 'return std::max(logged - bias, cap);' },
+    @{ file = "mip"; name = "an odd extent is reduced by the two-tap box"
+       from = 'if ((srcExtent & 1u) == 0u) {
+        offset[0] = 2 * i;'
+       to   = 'if (true) {
+        offset[0] = 2 * i;' },
+    @{ file = "mip"; name = "the three-tap weights lose their ramp across the row"
+       from = 'weight[0] = (n - static_cast<float>(i)) / total;'
+       to   = 'weight[0] = n / total;' },
+    @{ file = "mip"; name = "the half rounding drops its tie to even"
+       from = 'if (dropped > 0x1000u || (dropped == 0x1000u && (kept & 1u))) {'
+       to   = 'if (dropped > 0x1000u) {' },
+    @{ file = "mip"; name = "an odd extent rounds its next level up"
+       from = 'std::uint32_t nextMipExtent(std::uint32_t extent) { return extent > 1 ? extent / 2 : 1; }'
+       to   = 'std::uint32_t nextMipExtent(std::uint32_t extent) { return extent > 1 ? (extent + 1) / 2 : 1; }' },
+    @{ file = "mipcomp"; name = "the radius floor is AquaKits epsilon, not the half 0xH1419"
+       from = 'const float kBackdropRadiusFloor = 1.00040435791015625e-3;'
+       to   = 'const float kBackdropRadiusFloor = 1.0e-4;' },
+    @{ file = "mipcomp"; name = "the reduction sums the taps instead of their differences"
+       from = 'acc += (wx[i] * wy[j]) * (s - ref);
+        }
+    }
+    precise vec4 result = ref + acc;'
+       to   = 'acc += (wx[i] * wy[j]) * s;
+        }
+    }
+    precise vec4 result = acc;' },
+    # ---- the glass tower: the background pass --------------------------------
+    @{ file = "glassbg"; name = "the blur fill darkens with the max instead of the min"
+       from = 'const float mn = std::fmin(face[i], backdrop[i]);   // %749'
+       to   = 'const float mn = std::fmax(face[i], backdrop[i]);   // %749' },
+    @{ file = "glassbg"; name = "the composite interpolates from the face, not from the shadow"
+       from = 'out[i] = shadowPre[i] + (facePre[i] - shadowPre[i]) * maskValue;  // %1082'
+       to   = 'out[i] = facePre[i] + (shadowPre[i] - facePre[i]) * maskValue;  // %1082' },
+    @{ file = "glassbg"; name = "the specular weighs the face with the compressions triple"
+       from = 'const float y = dot3(faceRgb, glass::kLumaWeight);'
+       to   = 'const float y = dot3(faceRgb, glass::kLumaCompress);' },
+    @{ file = "glassbg"; name = "the short circuit ignores the highlight and the ring shadow"
+       from = 'highlight < glass::kEpsilon && ringShadow < glass::kEpsilon;'
+       to   = 'true;' },
+    @{ file = "glassbg"; name = "the aberration step is not swapped into its result"
+       from = 'out[0] = pr1 * height;                                  // %604, %607'
+       to   = 'out[0] = pr0 * height;                                  // %604, %607' },
+    @{ file = "glassbg"; name = "the ring shadow re-samples with an x offset too"
+       from = 'out[0] = p[0] - 0.0f;'
+       to   = 'out[0] = p[0] - offsetY;' },
+    @{ file = "glassbg"; name = "the ring shadow slot is handed the highlight"
+       from = 'applyRingShadow(col, ringShadowValue, withRing);'
+       to   = 'applyRingShadow(col, highlight, withRing);' },
+    # `p.z + (p.x + p.y)` and `(p.x + p.y) + p.z` are the SAME float -- addition
+    # commutes even where it does not associate -- so the mutation that bites is
+    # the other association, not the other operand order.
+    @{ file = "glassbg"; name = "the blur ramp associates its three bands the other way"
+       from = 'const float sum = prod[2] + s01;'
+       to   = 'const float sum = prod[0] + (prod[1] + prod[2]); (void)s01;' },
+    @{ file = "bggl"; name = "the ring shadow reaches the colour as well as the alpha"
+       from = 'precise vec4 r = col * vec4(1.0 - ringShadow) + vec4(0.0, 0.0, 0.0, ringShadow);'
+       to   = 'precise vec4 r = col * vec4(1.0 - ringShadow) + vec4(ringShadow);' },
+    @{ file = "bggl"; name = "the shadow colour is biased before it is scaled"
+       from = 'precise vec3 rgb = scaled + bias;                          // %444'
+       to   = 'precise vec3 rgb = vec3(vibrancy) * (vec3(f0, f1, f2) + bias);  // %444' },
+    # ---- the glass tower: the foreground pass --------------------------------
+    @{ file = "glassfg"; name = "the aberration lobe rotates where it should reflect"
+       from = 'const float v[2] = {dot2(g, rowY), dot2(g, rowX)};'
+       to   = 'const float v[2] = {dot2(g, rowX), dot2(g, rowY)};' },
+    @{ file = "glassfg"; name = "the alpha sum adds the floored divisor"
+       from = 'alphaSum += c[3];'
+       to   = 'alphaSum += a;' },
+    @{ file = "glassfg"; name = "the edge fade reaches the colour but not the alpha"
+       from = 'for (int k = 0; k < 4; ++k) out[k] = fade * rgba[k];'
+       to   = 'for (int k = 0; k < 3; ++k) out[k] = fade * rgba[k];
+    out[3] = rgba[3];' },
+    @{ file = "glassfg"; name = "the coverage never reaches the resolve"
+       from = 'const float alpha = (edge * coverage) * sevenths;              // %259, %266'
+       to   = 'const float alpha = edge * sevenths;                           // %259, %266' },
+    @{ file = "glassfg"; name = "the gradient reads the fields xy instead of its yz"
+       from = 'foregroundGradient(u, f[1], f[2], g);'
+       to   = 'foregroundGradient(u, f[0], f[1], g);' },
+    @{ file = "fggl"; name = "the tap divisor is floored with the fwidth epsilon"
+       from = 'precise float a = max(c.w, kRbGlassEpsilon);'
+       to   = 'precise float a = max(c.w, kRbFgFwidthFloor);' },
+    @{ file = "fggl"; name = "the coverage cutoff compares against the fwidth floor"
+       from = 'if (f.w < kRbGlassEpsilon) return vec4(0.0);'
+       to   = 'if (f.w < kRbFgFwidthFloor) return vec4(0.0);' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"
