@@ -1,23 +1,93 @@
 #version 450
-// STUB probe -- runs the stage as compute so the GPU's answer can be read back
-// and compared with the oracle. Same shape as `path_probe.comp`.
+// Runs `sdf_glass_displacement` as compute, so the GPU's answer can be read back
+// and held against the oracle -- the same shape as `displacement_probe.comp`,
+// which is this unit's closest sibling (that stage APPLIES the map this one
+// generates).
+//
+// The point of a probe is that the renderer and the differential run the SAME
+// FILE: `SdfDisplacement.glsl` carries the arithmetic and nothing here guesses at
+// any of it. Where the probe needs an intermediate the whole function hides --
+// the mask's ramp, the two profiles -- the intermediate is a function in the
+// shared file rather than a second copy of the expression here.
+//
+// WHY A STAGE SELECTOR AND NOT ONE DISPATCH. The function has two branches
+// (`x < 1` and the `-5.0` cutoff), a division that can produce an infinity and a
+// square root. A differential over the whole thing would prove that two
+// transcriptions agree and say nothing about WHICH line is wrong when they do
+// not; one dispatch per stage is what makes a failure name itself.
 #extension GL_GOOGLE_include_directive : require
 
 #include "SdfDisplacement.glsl"
 
 layout(local_size_x = 64) in;
 
-layout(std430, binding = 0) readonly buffer In  { vec4 inputs[]; };
+// One flat float array, because `ComputePass` binds exactly two storage buffers.
+// Eleven floats per record, mirrored field for field by `Probe` in
+// `Tests/test_rb_sdf_displacement.cpp`:
+//
+//   record[0..3]  field  = (d, gx, gy, coverage)
+//   record[4..7]  params = (height, curvature, offset, mask-offset)
+//   record[8..9]  rot    = (cos, sin)
+//   record[10]    fwidth(t), the derivative the rasteriser would have supplied
+layout(std430, binding = 0) readonly buffer In { float data[]; };
 layout(std430, binding = 1) writeonly buffer Out { vec4 outputs[]; };
 
 layout(push_constant) uniform Control {
     uint count;
     uint stage;
-    uint state;
+    uint stride;      // floats per record
+    uint probeBase;   // float index of record 0
 } control;
+
+const uint kStageWhole = 0u;      // (disp.x, disp.y, alpha, 1.0)
+const uint kStageGeometry = 1u;   // (s, t, w, x)
+const uint kStageProfile = 2u;    // (flat, circ, mag, 1 - mag)
+const uint kStageDirection = 3u;  // (dir.x, dir.y, fade, 1 - mag)
+const uint kStageMask = 4u;       // (ramp, alpha, cutoff fired, coverage)
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
     if (i >= control.count) return;
-    outputs[i] = inputs[i];
+
+    uint b = control.probeBase + i * control.stride;
+    vec4 field = vec4(data[b + 0u], data[b + 1u], data[b + 2u], data[b + 3u]);
+    vec4 params = vec4(data[b + 4u], data[b + 5u], data[b + 6u], data[b + 7u]);
+    vec2 rot = vec2(data[b + 8u], data[b + 9u]);
+    float fwidthT = data[b + 10u];
+
+    vec4 result = vec4(0.0);
+    if (control.stage == kStageWhole) {
+        result = rbSdfGlassDisplacement(field, params, rot, fwidthT);
+    } else if (control.stage == kStageGeometry) {
+        float s = rbSdfDispDepth(field, params);
+        result = vec4(s, rbSdfDispMaskDistance(field, params), rbSdfDispFilterWidth(fwidthT),
+                      rbSdfDispBandCoordinate(s, params.x));
+    } else if (control.stage == kStageProfile) {
+        // The two profiles side by side and the blend of them, so `curvature`'s
+        // endpoints can be checked against the closed forms rather than only
+        // against the other side of the fence.
+        float x = rbSdfDispBandCoordinate(rbSdfDispDepth(field, params), params.x);
+        float flatP = rbSdfDispFlatProfile(x);
+        float circ = rbSdfDispCircularProfile(x);
+        float mag = rbSdfDispMagnitude(flatP, circ, params.y);
+        result = vec4(flatP, circ, mag, 1.0 - mag);
+    } else if (control.stage == kStageDirection) {
+        float s = rbSdfDispDepth(field, params);
+        float w = rbSdfDispFilterWidth(fwidthT);
+        vec2 dir = rbSdfDispDirection(field.yz, rot);
+        float x = rbSdfDispBandCoordinate(s, params.x);
+        float mag = rbSdfDispMagnitude(rbSdfDispFlatProfile(x), rbSdfDispCircularProfile(x),
+                                       params.y);
+        result = vec4(dir.x, dir.y, rbSdfDispFade(s, params.x, w), 1.0 - mag);
+    } else {
+        // The mask, taken apart: the raw ramp BEFORE coverage and cutoff, the
+        // alpha after both, whether the cutoff fired, and the coverage that went
+        // in. A cutoff and a zero coverage both produce an alpha of 0, and this
+        // is what tells them apart on the GPU's side of the fence.
+        float t = rbSdfDispMaskDistance(field, params);
+        float w = rbSdfDispFilterWidth(fwidthT);
+        result = vec4(rbSdfDispMaskRamp(t, w), rbSdfDispAlpha(t, w, field.w),
+                      t < kRbSdfDispBandCutoff ? 1.0 : 0.0, field.w);
+    }
+    outputs[i] = result;
 }
