@@ -2673,3 +2673,315 @@ O que continua `[OBS]`, dito como tal:
 | a qual lóbulo pertence cada um dos cinco perfis de altura | a contagem é 5, a atribuição não foi feita |
 | se o `BlurFillSampleOffsetScale` do AquaKit vira uniform no RenderBox ou desaparece | não há literal para comparar |
 | por que o RenderBox escolheu 1e-3/1e-4 onde o QuartzCore escolheu 1e-4/1e-6 | a diferença de tipo explica *haver* dois, não *quais* |
+
+## 29. Do documento ao uniform — a ponte que NÃO fecha, e por quê
+
+O §27 leu quem escreve cada byte dos 256 do `BackgroundUniforms` a partir de
+**83 chaves no estilo `CIFilter`**. O que faltava era o outro lado: os oito
+campos que o documento `.icon` carrega (`IconRendering.Icon.GlassMaterial`)
+chegam a essas chaves **como**?
+
+**Resposta curta: não chegam.** Nesta versão, dentro deste corpus, o
+`glassBackground_v1` **não é alcançável** a partir do `IconRendering`. O que o
+`IconRendering` faz com o `GlassMaterial` foi lido, e é outra coisa — e a regra
+do §6.2 do spec do vidro se aplica na direção que ela previa: o vidro do
+`glassBackground` continua **nomeado e não desenhado**.
+
+Esta seção registra as peças que foram lidas, e a fronteira exata.
+
+### 29.1. Quem seleciona o empacotador dos 75 — e é um `CAFilter`
+
+`[BIN]` O `RenderBox.arm64` **tem tabela de símbolos** (11.996 entradas), e ela
+nomeia diretamente as funções que o §27 tinha achado por contagem:
+
+| endereço | símbolo |
+|---|---|
+| `0x0E6D44` | `(anonymous)::CAFilterContext::glass_background_filter()` |
+| `0x0E7D60` | `(anonymous)::CAFilterContext::glass_foreground_filter()` |
+| `0x0E80AC` | `(anonymous)::CAFilterContext::float_value(NSString*, double)` |
+| `0x0E5E38` | `RBDrawingStateAddCAFilter` |
+
+`[BIN]` O ajudante `(objeto, chave, default) -> double` do §27.2 é
+`CAFilterContext::float_value(NSString*, double)`. O "objeto" é o **`CAFilter`**;
+as 83 chaves são **chaves de `CAFilter`**, não de shader.
+
+`[BIN]` E o seletor está escrito em texto. Em `RBDrawingStateAddCAFilter` o tipo
+do filtro é comparado com `isEqualToString:` contra CFStrings:
+
+| endereço | CFString | destino |
+|---|---|---|
+| `0x0E655C` → `0x0E6570` | `"glassBackground"` (CFString em `0x191020`) | `glass_background_filter()` |
+| `0x0E65C4` → `0x0E65D8` | `"glassForeground"` (CFString em `0x191040`) | `glass_foreground_filter()` |
+
+`[INF]` Os 75 uniforms são preenchidos quando **um `CAFilter` cujo `type` é
+`"glassBackground"`** é anexado a uma camada que o RenderBox desenha. Quem
+constrói esse `CAFilter` — e portanto quem escolhe os 75 valores — é quem cria o
+filtro, não o RenderBox.
+
+`[ART]` E **ninguém neste corpus o cria**. A string `glassBackground` aparece
+**3 vezes no `RenderBox.arm64` e 0 vez** em `CoreSVG`, `IconComposer`,
+`IconComposerFoundation`, `IconComposerKit`, `IconRendering`, `icrtool` e
+`ictool`. Dos cinco *system shaders* que o RenderBox exporta —
+`RBSystemShaderDistanceGradient`, `OvalizeGradient`, `DisplacementMap`,
+`GlassBackground` (`0x19DD40`), `GlassForeground` (`0x19DD48`) — o
+`IconRendering` importa **exatamente um**: `_RBSystemShaderDisplacementMap`.
+
+> **Isto é a leitura, não a desistência.** A pergunta "como os 8 campos viram os
+> 75 slots" pressupunha que o Icon Composer desenha `glassBackground_v1`. Ele não
+> desenha. O caminho dos 75 é o vidro do **sistema** (um `CAFilter` montado fora
+> destes binários, no QuartzCore/CoreMaterial); o caminho do ícone é outro, e
+> esse foi lido abaixo.
+
+### 29.2. `Icon.GlassMaterial` — o layout, lido dos acessores exportados
+
+`[BIN]` O `IconRendering.arm64` exporta *getter*, *setter* e *modify* por
+propriedade, e o corpo do getter é uma instrução. Isso dá o offset sem
+inferência:
+
+| byte | B | campo | acessor |
+|---|---|---|---|
+| `+0x00` | 1 | `hasSpecular: Bool` | `0x38DB8` |
+| `+0x01` | 1 | `shadowStyle: ShadowStyle` | `0x38DC8` |
+| `+0x08` | 8 | `shadowOpacity: Double` | `0x37F1C` |
+| `+0x10` | 8 | `translucency: Double` | `0x38DF0` |
+| `+0x18` | 8 | `blurStrength: Double` | `0x38E00` |
+| `+0x20` | 8 | `refractionHeight: Double` | `0x38E10` |
+| `+0x28` | 8 | `refractionStrength: Double` | `0x38E20` |
+| `+0x30` | 1 | `specularPlacement: SpecularPlacement` | `0x38E30` |
+
+`[BIN]` Os dois enums são bytes densos, na ordem do metadado de reflexão:
+`ShadowStyle` = `automatic 0`, `none 1`, `vibrant 2`, `neutral 3`;
+`SpecularPlacement` = `automatic 0`, `inside 1`, `outside 2`.
+
+`[BIN]` E há **duas propriedades derivadas** que o metadado de campos não lista,
+porque são computadas — as duas saem só do `shadowStyle`:
+
+```
+hasShadow                (0x38F58)  =  shadowStyle != .none      ; cmp #1, cset ne
+shadowInfusesGlyphColor  (0x38FB0)  =  shadowStyle == .vibrant   ; cmp #2, cset eq
+```
+
+`[INF]` `neutral` e `automatic`, portanto, **desenham sombra e não infundem
+cor**; só `vibrant` infunde. Um transcritor que tratasse `neutral` como "sem
+sombra" erraria o pixel, e o nome não avisaria.
+
+`[BIN]` Há ainda um init de conveniência de 5 argumentos em `0x38E58`
+(`hasSpecular`, `shadowStyle`, `shadowOpacity`, `translucency`, `blurStrength`)
+que preenche o resto de uma constante em `0x93B30`:
+**`refractionHeight = 0.5`, `refractionStrength = 0.0`,
+`specularPlacement = automatic`.** A mesma constante é usada em `0x0BC98` quando
+o `ICRIconLayer` **não responde** a `refractionHeight` — o *fallback* de
+compatibilidade.
+
+`[BIN]` A travessia Swift↔ObjC existe e é direta: `0x0BBC0` lê os oito de um
+`ICRIconLayer` por `objc_msgSend` (`hasSpecular`, `shadowStyle`,
+`shadowOpacity`, `translucency`, `blurStrength`, e — atrás de um
+`respondsToSelector:` — `refractionHeight`, `refractionStrength`,
+`specularPlacement`) e monta o struct; `0x25588`–`0x255F8` faz o caminho inverso
+com os oito `set…:`. **Nenhuma aritmética nos dois sentidos** — é transporte,
+não conversão.
+
+### 29.3. Os sete números da normalização, com endereço e valor
+
+`[BIN]` Os campos de `ICRRenderingParameters` cujos nomes têm forma de
+mapeamento têm offset lido do getter exportado, não deduzido de layout:
+
+| offset | campo | getter |
+|---|---|---|
+| `+0x1E8` | `blurStrengthMax` | `0x61F68` |
+| `+0x1F0` | `refractionHeightMin` | `0x61F88` |
+| `+0x1F8` | `refractionHeightMax` | `0x61FA8` |
+| `+0x200` | `refractionHeightPower` | `0x61FC8` |
+| `+0x208` | `refractionStrengthMax` | `0x61FE8` |
+| `+0x210` | `refractionStrengthPower` | `0x62008` |
+| `+0x218` | `refractionSupersampling: Int` | `0x62018` |
+| `+0x220` | `shouldClampPlusLBlending: Bool` | `0x62038` |
+| `+0x228` | `defaultChicletCornerRadius` | `0x62058` |
+
+`[BIN]` E o construtor agregado do §19 (`0x5E838`) escreve exatamente nesses
+offsets, com os valores vindos de `__TEXT.__const`:
+
+| endereço | instrução | offsets | valores |
+|---|---|---|---|
+| `0x5EAC8` | `stp q0, q1, [x19, #0x1E0]` | `+0x1E0`…`+0x1F8` | `0.005`, **`64.0`**, **`12.8`**, **`256.0`** |
+| `0x5EAD4` | `str q0, [x19, #0x200]` | `+0x200`, `+0x208` | **`1.0`**, **`640.0`** |
+| `0x5EADC` | `str x23, [x19, #0x210]` | `+0x210` | **`1.0`** |
+| `0x5EAE4` | `str x24, [x19, #0x218]` | `+0x218` | **`2`** |
+| `0x5EAE8` | `strb w22, [x19, #0x220]` | `+0x220` | **`true`** |
+| `0x5EAFC` | `str x8, [x19, #0x228]` | `+0x228` | **`266.24`** |
+
+Os pools: `0x985D0` = (`0.005`, `64.0`), `0x985E0` = (`12.8`, `256.0`),
+`0x985F0` = (`1.0`, `640.0`).
+
+`[INF]` A escala é a tela de **1024**: `266.24 = 1024 × 0.26`, `12.8 = 1024/80`,
+`256 = 1024/4`, `640 = 1024 × 0.625`. Os números são pontos num ícone de 1024,
+não frações.
+
+> **O controle desta tabela, e ele é duplo.** Primeiro: o getter de
+> `sdfGeneration` (`0x61AA4`) lê `+0x1C8`, `+0x1D0`, `+0x1D8`, `+0x1E0` — quatro
+> campos que **terminam exatamente em `+0x1E8`**, que é onde o metadado de
+> reflexão diz que `blurStrengthMax` começa. Duas fontes independentes, mesmo
+> byte. Segundo: os seis `Double` seguintes ao alvo, em `+0x258`…`+0x280`, são o
+> `SpatialHighlighting` (`alignmentRange`, `intensityPower`, `minIntensity`,
+> `spreadPower`, `heightPower`, `maxExtraHeight`), e o `ctormap` lê ali
+> `0.3141592653589793`, `2.0`, `0.5`, `2.0`, `2.0`, `1.0` — e há um consumidor,
+> em `0x12550`, que usa **esses seis, nessa ordem, nesses papéis**, com π
+> literal em `0x125F0` como alvo da interpolação de `spread`. Um grupo de seis
+> cujo nome, offset, valor e uso concordam é o que valida a régua com que os
+> sete acima foram lidos.
+
+### 29.4. A aritmética da desnormalização — lida, em `0x4A708`
+
+`[BIN]` Existe **um único lugar** em todo o `IconRendering.arm64` que chama
+`_pow` com esses parâmetros (`__text` decodificado a 100%; `_pow` é o stub
+`0x8DDF4`, e os sete chamadores são `0x125C8`, `0x125EC`, `0x12620` — o
+`SpatialHighlighting` acima — e `0x4A728`, `0x4A768`, `0x4A998`, `0x4A9D8`). Os
+quatro últimos são o mesmo par de expressões em dois ramos do mesmo corpo.
+Transcritas de `0x4A708`:
+
+```
+; altura  —  params +0x1F0 / +0x1F8 / +0x200
+h = fminnm(x, 1.0)                 ; teto em 1
+h = (h >= 0) ? h : 0               ; piso em 0
+h = pow(h, refractionHeightPower)
+out_height = refractionHeightMin + (refractionHeightMax - refractionHeightMin) * h
+
+; forca   —  params +0x208 / +0x210
+m = fminnm(|s|, 1.0)
+g = copysign(1.0, s)               ; bsl v2, v4(1.0), v3(s)
+g = (s == 0 || isnan(s)) ? 0 : g
+out_strength = refractionStrengthMax * g * pow(m, refractionStrengthPower)
+```
+
+`[BIN]` E o desfoque, em `0x4A948`, sem `pow` e **sem piso**:
+
+```
+radius = min(b, 1.0) * blurStrengthMax     ; -> addBlurFilterWithRadius:opaque:
+```
+
+`[INF]` A assimetria é informação: a **altura** é grampeada nos dois lados; a
+**força** preserva o sinal (uma força negativa inverte a refração) e grampeia só
+o módulo; o **desfoque** só tem teto — um `blurStrength` negativo produziria raio
+negativo. Quem transcrever com `clamp(0,1)` nos três erra o caso negativo da
+força, que é justamente o que o sinal preservado existe para permitir.
+
+`[BIN]` **A base.** As seis cargas são `[x20+0x250]`, `[+0x258]`, `[+0x260]`,
+`[+0x268]`, `[+0x270]`, `[+0x278]`, com `x20` = `swiftself`. O deslocamento
+contra os offsets lidos dos getters é constante, `0x68` — o
+`ICRRenderingParameters` está embutido em `self+0x68`. `[BIN]` A confirmação
+independente disso não é o encaixe: é `0x10CAC`, `ldr x23, [x20, #0x280]`, cujo
+valor vai — depois de dois testes de faixa — para `-[RBShader setVariant:]`.
+`0x280 − 0x68 = 0x218`, e `+0x218` é `refractionSupersampling: Int`. Um inteiro
+usado como variante de shader é exatamente o que aquele nome promete, e é o
+sétimo campo consecutivo do bloco.
+
+### 29.5. Para onde os desnormalizados vão — e é `displacementMap`, não `glassBackground`
+
+`[BIN]` A altura e a força saem de `0x4A708` direto para `0x10C14`, e essa
+função faz duas coisas, as duas legíveis:
+
+**(a) um estilo de display-list.** `-[RBDisplayList addStyle:data:]` com
+`w2 = 3`. O `RBDrawingStateAddStyle` do RenderBox (`0x40AB0`) despacha por tabela
+de saltos em `0x15E440`, e o caso 3 chama
+`RB::DisplayList::State::add_glass_displacement(...)` (`0xF39F0`) e o
+serializador XML `RB::XML::DisplayList::add_glass_displacement` (`0xEDB24`). Esse
+serializador **nomeia cada campo do blob**, e o despachante confirma cada offset:
+
+| byte | B | nome no XML | o que o `IconRendering` escreve |
+|---|---|---|---|
+| `+0x00` | 1 | `component` (canal do campo de distância) | `0` |
+| `+0x01` | 1 | `gradient` (`sampled`, …) | `1` |
+| `+0x04` | 8 | `range` (`float2`) | `(v, −v)` |
+| `+0x0C` | 4 | `offset` | `0` |
+| `+0x10` | 4 | `height` | altura em **texels do SDF** |
+| `+0x14` | 4 | `curvature` | `1.0` (const `0x93988`) |
+| `+0x18` | 4 | `angle` | `0.0` (const `0x93988`) |
+| `+0x1C` | 4 | `mask-offset` | `0` |
+
+`[BIN]` A conversão de pontos para texels está em `0x10C8C`:
+`height = out_height × (n − 2) / [self+0x568]`, com `n` vindo de uma chamada que
+devolve a dimensão do campo de distância.
+
+**(b) o shader.** `-[RBShader initWithSystemShader:]` com
+`_RBSystemShaderDisplacementMap` (GOT `0xC5880`), **um** argumento —
+`setArgumentBytes:atIndex:0 type:1 count:1` com o `float` **`−out_strength`** —,
+`setVariant:` com `refractionSupersampling`, e
+`addFilterLayerWithShader:border:layerBorder:bounds:flags:`.
+
+`[ART]` O mesmo par de chamadas aparece uma segunda vez, em `0x805B8`/`0x805F4`,
+com o mesmo estilo 3, a mesma constante `(1.0, 0.0)` de `curvature`/`angle` e o
+mesmo `−strength`. São dois sítios, um padrão.
+
+`[BIN]` E o irmão do estilo 3 existe: o caso **2** da mesma tabela é
+`add_glass_highlight` (`0xF3550`), cujo blob o XML (`0xED778`) nomeia inteiro —
+`component`, `gradient`, `color` (`float4`), `color-space`, `headroom`, `range`,
+`offset`, `height`, `angle`, `spread`, `bias`, `curvature`, em `0x3C` bytes.
+`[ART]` O `IconRendering` usa os estilos `0`, `1`, `3`, `9` e `10`, e **nunca o
+2** — o especular do ícone não passa pelo `glass-highlight` do RenderBox.
+
+`[INF]` Portanto o vidro que o Icon Composer realmente desenha é
+`displacementMap_v1` (a refração) mais um desfoque de CoreAnimation, e não
+`glassBackground_v1`. O §28.3 já tinha o inventário de constantes dessa função —
+é essa, e não a de 75 uniforms, que o alvo precisa transcrever primeiro.
+
+### 29.6. O elo que NÃO foi lido, dito como tal
+
+`[OBS]` **O dado que entra em `0x4A708` não foi rastreado até
+`GlassMaterial.refractionHeight`.** No ramo que se consegue seguir sem
+suposição, o valor normalizado vem de um global protegido por `swift_once`
+(*token* `0xCDE68`, corpo `0xCDE70`) cujo inicializador, `0x3DAA0`, escreve
+**quatro `1.0`** (`fmov v0.2d, #1.0; stp q0, q0, [x8]`). O `IconRendering` foi
+compilado com WMO: a função recebe um descritor de desenho de `0xC0` bytes
+copiado inteiro de um elemento de array (`0x439D4`–`0x43A84`), e os campos do
+material já estão dissolvidos dentro dele.
+
+Então o que está lido é: **os nomes, os offsets, os valores, a aritmética e o
+consumidor**. O que **não** está lido é a atribuição do argumento — que
+`x = material.refractionHeight`. Que seja ele é `[INF]` a partir de três coisas
+que não são o encaixe: o nome da constante (`refractionHeightMin/Max/Power`
+contra o único `refractionHeight` do sistema de tipos), o grampo em `[0,1]` antes
+do `pow` (que só faz sentido para um parâmetro normalizado), e a saída em pontos
+de uma tela de 1024. É `[INF]`, e fica marcado assim.
+
+### 29.7. Os oito campos, um a um
+
+| campo | o que está estabelecido | selo |
+|---|---|---|
+| `hasSpecular` | offset `+0x00`; trafega literalmente por `ICRIconLayer.hasSpecular`; **nenhuma** aritmética lida; não passa pelo `glass-highlight` do RenderBox | `[BIN]` transporte · `[OBS]` consumo |
+| `shadowStyle` | offset `+0x01`, enum denso 0–3; `hasShadow = (≠ none)`, `shadowInfusesGlyphColor = (== vibrant)`, lidos de `0x38F58`/`0x38FB0` | `[BIN]` |
+| `shadowOpacity` | offset `+0x08`; transporte lido; consumo não lido | `[BIN]` layout · `[OBS]` consumo |
+| `translucency` | offset `+0x10`; transporte lido; **não há** `translucencyMax`/`Power` em `ICRRenderingParameters`; consumo não lido | `[BIN]` layout · `[OBS]` consumo |
+| `blurStrength` | offset `+0x18`; `radius = min(b,1) × blurStrengthMax`, `blurStrengthMax = 64.0`; destino `addBlurFilterWithRadius:opaque:` | `[BIN]` aritmética · `[INF]` que o `b` seja este campo |
+| `refractionHeight` | offset `+0x20`; `min + (max−min)·pow(clamp01(h), p)` com `12.8 / 256.0 / 1.0`; vira `height` do `glass-displacement`, convertido a texels | `[BIN]` aritmética · `[INF]` a entrada |
+| `refractionStrength` | offset `+0x28`; `max · sign(s) · pow(min(\|s\|,1), p)` com `640.0 / 1.0`; vira o **único** argumento do `displacementMap_v1`, **negado** | `[BIN]` aritmética · `[INF]` a entrada |
+| `specularPlacement` | offset `+0x30`, enum denso 0–2; transporte lido; consumo não lido | `[BIN]` layout · `[OBS]` consumo |
+
+### 29.8. O que um implementador ainda não tem
+
+1. `[OBS]` **Qualquer** valor para os 75 slots do `glassBackground_v1` a partir
+   de um documento. Eles vêm de um `CAFilter` de tipo `"glassBackground"` que
+   nenhum binário deste corpus constrói. Fechar isso exige o **QuartzCore**, que
+   não está em `References/`.
+2. `[OBS]` A ligação do argumento: que o `x` de `0x4A708` seja
+   `material.refractionHeight`. Fechá-la exige seguir o descritor de `0xC0` bytes
+   do §29.6 até quem o preenche.
+3. `[OBS]` O consumo de `translucency`, `shadowOpacity` e `specularPlacement`.
+   Nenhum deles tem par `Max`/`Power` em `ICRRenderingParameters`; a normalização
+   deles, se existe, tem outra forma.
+4. `[OBS]` O `range` do `RBDisplayListGlassDisplacement`: os campos estão
+   nomeados e os offsets lidos, mas o valor `v` que o `IconRendering` escreve
+   como `(v, −v)` não foi atribuído a nenhuma grandeza nomeada.
+5. `[OBS]` `useSystemGlass` (`false` por padrão, §19.3) e `useOS26Compositing`:
+   os dois existem e os dois trocam de caminho de composição; qual caminho cada
+   um liga não foi lido.
+
+> **Por que isto é um resultado e não uma falha.** A hipótese que abriu a
+> investigação — "o `refractionHeight` do documento é desnormalizado por
+> `min + (max−min)·pow(h,power)`" — estava **certa na forma e certa nos
+> números**, e teria sido fácil parar aí e declarar a ponte fechada. O que
+> impediu foi perguntar *onde os desnormalizados desembocam*: e desembocam no
+> `displacementMap_v1`, com um argumento e um estilo de oito campos nomeados —
+> não nos 75 slots. Uma transcrição que tivesse alimentado o `glassBackground_v1`
+> com esses números produziria uma imagem plausível e **errada em toda parte**,
+> porque o alvo estaria desenhando o vidro do sistema onde o Icon Composer
+> desenha o dele.
