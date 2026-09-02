@@ -2087,3 +2087,172 @@ porque o limite roda quando o bit está **ligado**.
 reportados sem casamento** — 19 a 23, 45 a 53 e 54 a 56. Dezesseis dos 18 nomes
 do formato têm candidato único; dois não; e dois dos dezesseis contradizem o que
 esta documentação afirmava antes.
+
+## 27. A ponte dos uniforms do vidro — quem escreve qual byte
+
+`[BIN]` O `RB::Shader::Glass::BackgroundUniforms` tem **256 bytes e 75 campos**, e
+o IR dá o offset, a largura e a aritmética de cada um — e **nenhum nome**. Estas
+são funções `!air.visible`, não *entry points*: não há nó `!air.buffer`, e os
+únicos nomes que o AIR guarda são os sete argumentos da função.
+
+`[BIN]` E `RenderBox.arm64` carrega **83 chaves no estilo `CIFilter`** numa corrida
+contígua em `0x16E7D8`–`0x16EF66`, embrulhadas em 83 CFStrings de índices
+**contíguos e na mesma ordem**.
+
+Nome parecido não prova slot igual — é a armadilha do §15.3, onde "o único
+candidato de um conjunto de um" foi registrado como leitura. **Quem decide é o
+código que preenche a struct.**
+
+### 27.1. Os dois empacotadores, achados por contagem
+
+`[BIN]` Varrendo as 345.723 instruções do `__text` e resolvendo todo par
+`adrp`+`add` que cai no bloco de CFStrings: **83 de 83 chaves são referenciadas**,
+e elas se concentram em duas funções.
+
+| função | chaves | struct |
+|---|---|---|
+| `0x0E6D40` | **75** | `BackgroundUniforms` (256 B) |
+| `0x0E7D48` | 12 | `ForegroundUniforms` (72 B) |
+| `0x0E5E28` | 1 | — |
+
+`[INF]` 75 chaves numa função e 75 campos na struct não é coincidência: é o
+empacotador.
+
+### 27.2. A forma, e ela é a mesma em todas as 75
+
+`[BIN]` Cada campo é três instruções e uma chamada:
+
+```
+adrp/add x1, <a CFString da chave>
+fmov     d0, <o DEFAULT, imediato ou do pool>
+mov      x0, x19                       ; o objeto
+bl       0xE80AC                       ; (objeto, chave, default) -> double
+fcvt     s0, d0                        ; para float,  ou fcvt h0 para half
+str      s0, [sp, #<offset>]           ; ESTE store É a ligação
+```
+
+`[BIN]` E entre o `fcvt` e o `str` mora a **transformação**, que é informação
+tanto quanto o offset. O caso mais frequente é o recíproco guardado:
+
+```
+fdiv  s1, 1.0, s0
+fcmp  s0, #0.0
+fcsel s0, s1, s11, gt        ; s11 = 0 --> altura zero vira ZERO, não infinito
+```
+
+`[INF]` Toda chave `…Height` é gravada como **1/altura**, com guarda em zero. O
+shader não divide: ele já recebe o inverso. Transcrever a divisão no shader daria
+o mesmo pixel na maioria dos casos e o pixel errado exatamente em altura zero.
+
+### 27.3. O controle positivo — dois artefatos independentes concordando
+
+O instrumento é `scripts/glassbridge.py`, e o que o torna leitura e não palpite é
+o controle:
+
+> Todo store que a ferramenta resolve tem que cair **dentro de um único campo que
+> o IR declara**. Um store de 4 bytes começando no offset de um `half`, ou um de 8
+> bytes atravessando a borda de um `half4`, denuncia aritmética de endereço errada.
+
+`[ART]` **54 de 54 stores dentro da struct caem dentro de um campo declarado.**
+E os dois lados foram produzidos por gente diferente para fins diferentes: o
+empacotador ARM64 **escreve**, o `default_mod98.ll` **lê**. Eles concordam sobre o
+layout.
+
+`[ART]` O `ForegroundUniforms` passa o mesmo controle, 5 de 5.
+
+> **O que a primeira versão errou.** Ela emparelhava a chave com o próximo store
+> numa pilha, e o compilador intercala: **oito offsets em colisão e seis chaves
+> repetidas**. Colisão é assinatura de emparelhamento errado, não de um binário
+> que sobrescreve o próprio campo. A correção foi seguir o **valor** — do `d0` da
+> chamada, pelos `fcvt` e pela aritmética, até o `str` — e **matar `v0`–`v7` em
+> toda chamada**, porque são caller-saved. Sem essa morte um valor sobrevive a uma
+> chamada dentro de um registrador que o callee possui e reaparece ligado a um
+> slot que nunca tocou. As colisões caíram de oito para zero.
+
+### 27.4. A tabela
+
+`[BIN]` **54 chaves ligadas, 138 dos 256 bytes.** O `default` é o valor que o
+alvo usa quando o documento não diz nada; *runtime* quer dizer que o default vem
+de um registrador que este instrumento não constantifica.
+
+| byte | B | chave | default | transformação |
+|---|---|---|---|---|
+| 0 | 4 | `inputInnerRefractionAmount` | -150 |  |
+| 4 | 4 | `inputInnerRefractionHeight` | 60 | `fdiv fcsel` |
+| 8 | 4 | `inputOuterRefractionAmount` | 100 |  |
+| 12 | 4 | `inputOuterRefractionHeight` | 50 | `fdiv fcsel` |
+| 16 | 4 | `inputRefractionDistance0` | -11 |  |
+| 20 | 4 | `inputRefractionDistance1` | -3 |  |
+| 24 | 4 | `inputBlurRadius` | 30 | `fmul` |
+| 28 | 4 | `inputBleedBlurRadius` | 100 | `fadd` |
+| 32 | 4 | `inputBleedAmount` | 400 |  |
+| 36 | 4 | `inputBleedHeight` | 500 | `fdiv fcsel` |
+| 40 | 4 | `inputShadowAmount` | 200 |  |
+| 44 | 4 | `inputShadowHeight` | 250 | `fdiv fcsel` |
+| 56 | 4 | `inputShadowBlurRadius` | 25 | `fadd` |
+| 60 | 4 | `inputShadowRadius` | 25 | `fdiv fcsel` |
+| 136 | 4 | `inputShadowVibrancyContribution` | 1 |  |
+| 144 | 2 | `inputBlurOpacity0` | 1 |  |
+| 146 | 2 | `inputBlurOpacity1` | 0.1 |  |
+| 148 | 2 | `inputBlurOpacity2` | *runtime* |  |
+| 150 | 2 | `inputBlurOpacity3` | 0.4 |  |
+| 152 | 2 | `inputBlurDistance0` | -450 |  |
+| 154 | 2 | `inputBlurDistance1` | -3 |  |
+| 156 | 2 | `inputBlurDistance2` | *runtime* |  |
+| 158 | 2 | `inputBlurDistance3` | *runtime* |  |
+| 160 | 2 | `inputBleedDistance0` | -400 |  |
+| 162 | 2 | `inputBleedDistance1` | -42 |  |
+| 164 | 2 | `inputBleedOpacity` | 0.2 |  |
+| 166 | 2 | `inputFaceOpacity` | 1 |  |
+| 168 | 2 | `inputBleedDarkenBlend` | *runtime* | `fcsel` |
+| 172 | 2 | `inputShadowDistanceOffset` | -50 |  |
+| 174 | 2 | `inputShadowOpacity` | 1 |  |
+| 176 | 2 | `inputRefractionOpacity` | 0.75 |  |
+| 178 | 2 | `inputMaxHeadroom` | 1.2 | `fadd fdiv fsub fcsel` |
+| 180 | 2 | `inputSDRGradientDistance0` | -2.5 |  |
+| 182 | 2 | `inputSDRGradientDistance1` | -1.5 | `fsub fdiv` |
+| 188 | 2 | `inputFaceColorMatrixMaxLuma` | 1 | `fsub fmadd fcsel fcsel fsub` |
+| 190 | 2 | `inputSDRHoldingToneWhite` | 0.97 |  |
+| 192 | 2 | `inputAberrationAmount` | 1 |  |
+| 194 | 2 | `inputAberrationHeight` | 20 | `fdiv` |
+| 196 | 2 | `inputAberrationOffset` | 1 |  |
+| 202 | 2 | `inputRingShadowOffset` | *runtime* |  |
+| 204 | 2 | `inputRingShadowStrokeWidth` | *runtime* |  |
+| 206 | 2 | `inputRingShadowBlurRadius` | *runtime* |  |
+| 208 | 2 | `inputRingShadowOpacity` | *runtime* |  |
+| 210 | 2 | `inputRingShadowMask` | 1 |  |
+| 212 | 2 | `inputKeyFillHighlightHeight` | *runtime* |  |
+| 220 | 2 | `inputKeyFillHighlightSpread` | *runtime* | `fdiv fadd` |
+| 222 | 2 | `inputKeyFillHighlightEffectOffset` | -2 |  |
+| 224 | 2 | `inputKeyFillHighlightColorBias` | *runtime* |  |
+| 226 | 2 | `inputBlurFillBlurRadius` | 1 | `fmul` |
+| 228 | 2 | `inputBlurFillLightenOpacity` | 4 |  |
+| 230 | 2 | `inputBlurFillDarkenOpacity` | *runtime* |  |
+| 232 | 2 | `inputBlurFillNormalOpacity` | *runtime* |  |
+| 236 | 2 | `inputBleedColorMatrixBlack` | *runtime* | `fcsel` |
+| 238 | 2 | `inputBleedColorMatrixBlack` | *runtime* | `fcsel` |
+
+### 27.5. O que NÃO está ligado, e por quê
+
+`[ART]` Os 118 bytes restantes, nomeados em vez de preenchidos:
+
+| faixa | bytes | leitura |
+|---|---|---|
+| `+64`…`+135`, `+140`…`+143` | 76 | **as três matrizes de cor.** `White`, `Black`, `Saturation` e `FillColor` **não** são gravadas chave a chave: passam pela montagem composta YCC, uma chave alimentando várias entradas. O AquaKit transcreveu essa rotina do lado do QuartzCore (`MakeYCCCompositeMatrix`); ligá-la aqui é trabalho à parte |
+| `+48`…`+55` | 8 | `inputShadowOffset`, um `float2` — a ferramenta viu o store numa passada anterior e o perdeu ao endurecer a morte de registradores. `[OBS]` |
+| `+170`, `+184`…`+187`, `+198`…`+201`, `+214`…`+219`, `+234`…`+235`, `+240`…`+255` | 34 | `[OBS]` não resolvidos. Alguns são as chaves de matriz; os de `+240` em diante o empacotador provavelmente escreve em bloco |
+
+`[INF]` A cobertura de 138 de 256 **não é uma barra de progresso**: os 76 bytes
+das matrizes têm produtor conhecido e transcrito noutro projeto, então o que
+falta de verdade são os 42 bytes da última linha.
+
+### 27.6. O que isto fecha
+
+O spec do vidro (`Docs/Specs/2026-09-02-vidro.md` §6) nomeava esta ligação como o
+**risco que podia não fechar**, com a regra de que sem ela o vidro ficaria nomeado
+em vez de aproximado.
+
+**Fechou.** As chaves deixam de ser hipótese: 54 delas têm byte, largura, valor
+padrão e transformação, com um controle que cruza o escritor e o leitor. E o
+`…Height` gravado como recíproco é o tipo de detalhe que nenhuma quantidade de
+comparação visual teria encontrado.

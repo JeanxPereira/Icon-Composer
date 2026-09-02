@@ -78,6 +78,7 @@ especializações** — 1.040 chaveadas por `appearance`, 616 sem predicado, 82 
 | o conversor — SVG desenhado em pixels | **passa o gate** — as peças compostas, conferidas contra a forma fechada pela cadeia inteira. Alcance medido: **22 de 194 camadas**, **0 de 55 documentos** (doc 03 §20) |
 | `icrender` e o PNG | **passam o gate** — binário separado do `ictool`, que segue sem GPU (doc 03 §20.6, §20.7) |
 | os ícones do sistema (Fotos, App Store) | **localizados, não abertos** — não são `.icon`: compilam para `Assets.car` e o motor os lê via CoreUI. Segunda porta de entrada (doc 03 §20.8) |
+| **a ponte dos uniforms do vidro** | **lida** — os 83 nomes de chave do `RenderBox` ligados a byte, largura, default e transformação; 54 chaves, 138 dos 256 bytes, com controle cruzando o empacotador ARM64 e o IR do shader (doc 03 §27) |
 | os 56 modos de mescla | **lidos inteiros** — 56 de 56 blocos, 39 casados, as bandas nomeadas; 16 dos 18 nomes do formato com candidato único. **Corrige duas atribuições desta documentação** (doc 03 §26) |
 | o gradiente, ligado no renderizador | **desenha** — `url(#id)` do SVG, linear e radial, `userSpaceOnUse` e `objectBoundingBox`, `gradientTransform`; e o `fill` da camada retinge a arte. Alcance **22 → 79 de 194 camadas** (doc 03 §25) |
 | a regra do `automatic-gradient` | **lida e transcrita** — Rec.709, quatro faixas de fronteira **fixa**, boost e duas paradas ordenadas; fecha a pergunta 4 do doc 01 por inteiro (doc 03 §24) |
