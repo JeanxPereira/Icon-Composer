@@ -45,6 +45,19 @@ or an 8-byte store crossing out of a `half4`, means the address arithmetic is
 wrong -- and it is the exact failure that would otherwise produce a plausible,
 confident, wrong table.
 
+WHAT THE CONTROL DOES NOT CATCH, and it caught the author out
+-------------------------------------------------------------
+It detects a store that STRADDLES a boundary. It does not detect a whole table
+TRANSLATED by a multiple of the field granularity: shift every offset by 16 and
+each one still sits inside some declared field, so the control still says PASS.
+The foreground base was wrong by exactly that for a while, and this control was
+green the whole time.
+
+So the base is taken from the store that ZEROES the struct -- an instruction that
+names the address -- and never from shifting until the first key lands on byte 0.
+That shortcut presumes the first key is the first field, which is false here:
+mod99's bytes 0..15 hold the field decode and no key writes them.
+
 WHAT IT DOES NOT ANSWER
 -----------------------
 The three colour matrices (bytes 80..151) are NOT bound here, and the tool says
@@ -81,7 +94,16 @@ KEY_LO, KEY_HI = 0x16E7D8, 0x16EF80
 # `[BIN]` The two packers, found by counting how many of the 83 keys each
 # function references: 75 in one, 12 in the other, 1 stray. Not hand-picked.
 BACKGROUND = (0x0E6D40, 1100, 0xC0, 256)
-FOREGROUND = (0x0E7D48, 600, 0x68, 72)
+# `[BIN]` The foreground base is NAMED by the store that zeroes the struct --
+# `stp xzr, xzr, [sp, #0x58]` at 0x0E7D84 -- not inferred from where a key lands.
+#
+# It was 0x68 here first, and that number came from shifting the base until the
+# first key sat at byte 0. That is an ASSUMPTION wearing a measurement's clothes:
+# it presumes the first key is the first field, and mod99 says otherwise -- bytes
+# 0..15 hold the field decode, which no key writes, and `inputRefractionAmount`
+# begins at byte 16. Sixteen bytes of error, invisible because every key still
+# landed inside a declared field and the control still passed.
+FOREGROUND = (0x0E7D48, 600, 0x58, 72)
 
 # `[BIN]` The field layout of BackgroundUniforms, read from the LLVM struct type
 # in default_mod98.ll and cross-checked against its TBAA member list. This is

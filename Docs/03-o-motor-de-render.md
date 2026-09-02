@@ -2253,7 +2253,48 @@ de um registrador que este instrumento não constantifica.
 das matrizes têm produtor conhecido e transcrito noutro projeto, então o que
 falta de verdade são os 42 bytes da última linha.
 
-### 27.6. O que isto fecha
+### 27.6. O empacotador do foreground, corrigido — e a base era um palpite
+
+`[BIN]` A tabela do `ForegroundUniforms` publicada acima saiu com a base errada, e
+o erro é instrutivo. A base foi escolhida deslocando até a primeira chave cair no
+byte 0 — o que **pressupõe que a primeira chave é o primeiro campo**. O `mod99`
+diz que não é: os bytes 0..15 guardam a decodificação do campo de distância, e
+**nenhuma chave os escreve**.
+
+`[BIN]` A base verdadeira é `0x58`, e ela é **nomeada por uma instrução**:
+`stp xzr, xzr, [sp, #0x58]` em `0x0E7D84`, o store que zera a struct. Dezesseis
+bytes de diferença.
+
+`[BIN]` Os 18 floats, com a leitura do `mod99` junto:
+
+| byte | conteúdo |
+|---|---|
+| 0, 4 | escala e viés da distância — **não ligados a chave**, vêm de uma chamada em `0x0E8CE4` |
+| 8, 12 | escala e viés do gradiente — mesma origem |
+| 16, 20, 24 | `inputRefractionAmount` · `1/inputRefractionHeight` · `inputRefractionOffset` |
+| 28, 32, 36 | `inputAberrationAmount` · `1/inputAberrationHeight` · `inputAberrationOffset` |
+| 40, 44 | `cos` e `sin` de `inputAberrationAngle` |
+| 48, 52, 56, 60 | `inputEdgeStart` · `End` · `OpacityStart` · `OpacityEnd` |
+| 64, 68 | `cos` e `sin` de `inputRefractionAngle` |
+
+`[BIN]` E os dois `…Height`, **e só eles**, caem exatamente nos dois floats pelos
+quais o `mod99` multiplica a distância — que é a confirmação de que o
+deslocamento agora está certo, e não só consistente.
+
+`[ART]` Os bytes 16..71 batem **campo a campo** com o bloco que o AquaKit leu do
+QuartzCore. Dois times, dois binários, um layout.
+
+> **A fraqueza do controle, que este erro expôs.** O controle positivo do §27.3
+> pega store que **atravessa** fronteira de campo. Ele **não** pega uma tabela
+> inteira **transladada** por um múltiplo da granularidade: desloque tudo em 16 e
+> cada offset continua dentro de algum campo declarado. Ele disse `PASS` o tempo
+> todo com a base errada.
+>
+> Um controle que não distingue os dois casos não é inútil — é um controle com
+> alcance declarado, e o alcance dele agora está escrito. A base passou a sair da
+> instrução que a nomeia.
+
+### 27.7. O que isto fecha
 
 O spec do vidro (`Docs/Specs/2026-09-02-vidro.md` §6) nomeava esta ligação como o
 **risco que podia não fechar**, com a regra de que sem ela o vidro ficaria nomeado
