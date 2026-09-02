@@ -1,23 +1,159 @@
 #version 450
-// STUB probe -- runs the stage as compute so the GPU's answer can be read back
-// and compared with the oracle. Same shape as `path_probe.comp`.
+// Runs each block of `glassBackground_v1` as a compute stage so the GPU's answer
+// can be read back and held against `GlassBackground.cpp` -- the same shape as
+// `glass_probe.comp` and `displacement_probe.comp`.
+//
+// The point of a probe is that the renderer and the differential run the SAME
+// FILE: `GlassBackground.glsl` is included here and, later, by the glass pass,
+// and nothing anywhere gets a second copy of the arithmetic.
+//
+// WHY THE STAGE IS A PUSH CONSTANT AND NOT A BRANCH IN THE SHADER'S CALLER.
+// mod98 is sixty-five basic blocks. A differential over the whole function would
+// prove only that two large transcriptions agree and would say nothing about
+// WHICH block is wrong when they do not. One dispatch per block is what makes a
+// failure name itself.
 #extension GL_GOOGLE_include_directive : require
 
 #include "GlassBackground.glsl"
 
 layout(local_size_x = 64) in;
 
-layout(std430, binding = 0) readonly buffer In  { vec4 inputs[]; };
+// One flat float array, because `ComputePass` binds exactly two storage buffers.
+// Each invocation reads `stride` floats starting at `probeBase + i * stride`.
+// The layout inside a record is per stage and is mirrored, field for field, by
+// `Probe` in `Tests/test_rb_glass_background.cpp`:
+//
+//   a = record[0..3]   b = record[4..7]   c = record[8..11]   e = record[12..15]
+//   m = record[16..27] -- a 3x4 colour matrix, row major
+layout(std430, binding = 0) readonly buffer In { float data[]; };
 layout(std430, binding = 1) writeonly buffer Out { vec4 outputs[]; };
 
 layout(push_constant) uniform Control {
     uint count;
     uint stage;
-    uint state;
+    uint stride;      // floats per record
+    uint probeBase;   // float index of record 0
 } control;
+
+const uint kStageDecodeDistance = 0u;
+const uint kStageDecodeGradient = 1u;
+const uint kStageCoverage = 2u;
+const uint kStageMask = 3u;
+const uint kStageShadowPoint = 4u;
+const uint kStageRingShadowPoint = 5u;
+const uint kStageKeyFillHighlight = 6u;
+const uint kStageRingShadow = 7u;
+const uint kStageShadowHeight = 8u;
+const uint kStageShadowCoverage = 9u;
+const uint kStageShadowColor = 10u;
+const uint kStageShadowPremultiplied = 11u;
+const uint kStageInnerHeight = 12u;
+const uint kStageBlurRadiusRamp = 13u;
+const uint kStageFlatBlurRadius = 14u;
+const uint kStageRefractPoint = 15u;
+const uint kStageAberrationHeight = 16u;
+const uint kStageAberrationStep = 17u;
+const uint kStageBlurFill = 18u;
+const uint kStageOuterHeight = 19u;
+const uint kStageOuterWeight = 20u;
+const uint kStageOuterMix = 21u;
+const uint kStageUnpremultiply = 22u;
+const uint kStageFaceColor = 23u;
+const uint kStageSpecularWeight = 24u;
+const uint kStageSpecular = 25u;
+const uint kStageIsZero = 26u;
+const uint kStageComposite = 27u;
+const uint kStageApplyRingShadow = 28u;
+const uint kStageHighlightFillColor = 29u;
+const uint kStageApplyKeyFillHighlight = 30u;
+const uint kStageFade = 31u;
+const uint kStageClampHeadroom = 32u;
+const uint kStageSpecularHeight = 33u;
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
     if (i >= control.count) return;
-    outputs[i] = inputs[i];
+    uint base = control.probeBase + i * control.stride;
+
+    vec4 a = vec4(data[base + 0u], data[base + 1u], data[base + 2u], data[base + 3u]);
+    vec4 b = vec4(data[base + 4u], data[base + 5u], data[base + 6u], data[base + 7u]);
+    vec4 c = vec4(data[base + 8u], data[base + 9u], data[base + 10u], data[base + 11u]);
+    vec4 e = vec4(data[base + 12u], data[base + 13u], data[base + 14u], data[base + 15u]);
+    vec4 m0 = vec4(data[base + 16u], data[base + 17u], data[base + 18u], data[base + 19u]);
+    vec4 m1 = vec4(data[base + 20u], data[base + 21u], data[base + 22u], data[base + 23u]);
+    vec4 m2 = vec4(data[base + 24u], data[base + 25u], data[base + 26u], data[base + 27u]);
+
+    vec4 r = vec4(0.0);
+
+    if (control.stage == kStageDecodeDistance) {
+        r.x = rbBgDecodeDistance(a.x, a.y, a.z);
+    } else if (control.stage == kStageDecodeGradient) {
+        r.xy = rbBgDecodeGradient(a.xy, a.z, a.w);
+    } else if (control.stage == kStageCoverage) {
+        r.x = rbBgCoverage(a.x, a.y);
+    } else if (control.stage == kStageMask) {
+        r.x = rbBgMask(a.x, a.y);
+    } else if (control.stage == kStageShadowPoint) {
+        r.xy = rbBgShadowSamplePoint(a.xy, a.zw);
+    } else if (control.stage == kStageRingShadowPoint) {
+        r.xy = rbBgRingShadowSamplePoint(a.xy, a.z);
+    } else if (control.stage == kStageKeyFillHighlight) {
+        r.x = rbBgKeyFillHighlight(a.x, a.y, a.z, a.w, b.xy, b.z, b.w,
+                                   c.x, c.y, c.z, c.w, e.x);
+    } else if (control.stage == kStageRingShadow) {
+        r.x = rbBgRingShadow(a.x, a.y, a.z, a.w, b.x, b.y, b.z);
+    } else if (control.stage == kStageShadowHeight) {
+        r.x = rbBgShadowHeight(a.x, a.y, a.z, a.w);
+    } else if (control.stage == kStageShadowCoverage) {
+        r.x = rbBgShadowCoverage(a.x, a.y, a.z, a.w);
+    } else if (control.stage == kStageShadowColor) {
+        r = rbBgShadowColor(a.xyz, a.w != 0.0, b.x, m0, m1, m2, b.y);
+    } else if (control.stage == kStageShadowPremultiplied) {
+        r = rbBgShadowPremultiplied(a, b.x);
+    } else if (control.stage == kStageInnerHeight) {
+        r.x = rbBgInnerRefractionHeight(a.x, a.y, a.z);
+    } else if (control.stage == kStageBlurRadiusRamp) {
+        r.x = rbBgBlurRadiusRamp(a, b.xyz, b.w, c.x, c.y);
+    } else if (control.stage == kStageFlatBlurRadius) {
+        r.x = rbBgFlatBlurRadius(a.x, a.y);
+    } else if (control.stage == kStageRefractPoint) {
+        r.xy = rbBgRefractPoint(a.xy, a.zw, b.x);
+    } else if (control.stage == kStageAberrationHeight) {
+        r.x = rbBgAberrationHeight(a.x, a.y, a.z, a.w);
+    } else if (control.stage == kStageAberrationStep) {
+        r.xy = rbBgAberrationStep(a.xy, a.z, a.w, b.x);
+    } else if (control.stage == kStageBlurFill) {
+        r.xyz = rbBgBlurFill(a.xyz, b.xyz, c.x, c.y, c.z);
+    } else if (control.stage == kStageOuterHeight) {
+        r.x = rbBgOuterRefractionHeight(a.x, a.y, a.z);
+    } else if (control.stage == kStageOuterWeight) {
+        r.x = rbBgOuterRefractionWeight(a.x, a.y, a.z, a.w);
+    } else if (control.stage == kStageOuterMix) {
+        r = rbBgOuterRefractionMix(a, b, c.x);
+    } else if (control.stage == kStageUnpremultiply) {
+        r = rbBgUnpremultiply(a);
+    } else if (control.stage == kStageFaceColor) {
+        r.xyz = rbBgFaceColor(a.xyz, a.w, b.x, m0, m1, m2);
+    } else if (control.stage == kStageSpecularWeight) {
+        r.x = rbBgSpecularWeight(a.x, b.xyz, c.x, c.y, c.z, c.w, e.x);
+    } else if (control.stage == kStageSpecular) {
+        r = rbBgSpecular(a, b.xyz, c.x, m0, m1, m2);
+    } else if (control.stage == kStageIsZero) {
+        r.x = rbBgIsZero(a.x, a.y, a.z, a.w) ? 1.0 : 0.0;
+    } else if (control.stage == kStageComposite) {
+        r = rbBgComposite(a, b, c.x);
+    } else if (control.stage == kStageApplyRingShadow) {
+        r = rbBgApplyRingShadow(a, b.x);
+    } else if (control.stage == kStageHighlightFillColor) {
+        r.xyz = rbBgHighlightFillColor(a.xyz, a.w, b.x, b.y, m0, m1, m2, b.z, b.w);
+    } else if (control.stage == kStageApplyKeyFillHighlight) {
+        r = rbBgApplyKeyFillHighlight(a, b.w, b.xyz, c.x, c.y, m0, m1, m2, c.z, c.w, e.x);
+    } else if (control.stage == kStageFade) {
+        r = rbBgFade(a, b.x, b.y, b.z, b.w, c.x);
+    } else if (control.stage == kStageClampHeadroom) {
+        r = rbBgClampHeadroom(a, b.x);
+    } else if (control.stage == kStageSpecularHeight) {
+        r.x = rbBgSpecularHeight(a.x, a.y, a.z);
+    }
+    outputs[i] = r;
 }

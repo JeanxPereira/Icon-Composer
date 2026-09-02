@@ -1,23 +1,188 @@
 #version 450
-// STUB probe -- runs the stage as compute so the GPU's answer can be read back
-// and compared with the oracle. Same shape as `path_probe.comp`.
+// Runs `glassForeground_v1` as compute, so the GPU's answer can be read back and
+// held against the oracle -- the same shape as `displacement_probe.comp`.
+//
+// The whole point is that the differential and the renderer include the SAME
+// file: `GlassForeground.glsl` carries the math and nothing here guesses at it.
+//
+// This file adds exactly two things the math deliberately does not own: the two
+// samplers, declared as prototypes in `GlassForeground.glsl` so the probe can
+// back them with a storage buffer and the renderer with real textures, and the
+// unpacking of the 152-byte params buffer out of a flat float array -- which is
+// what pins that layout on the GPU side as well as in the oracle.
 #extension GL_GOOGLE_include_directive : require
 
 #include "GlassForeground.glsl"
 
 layout(local_size_x = 64) in;
 
-layout(std430, binding = 0) readonly buffer In  { vec4 inputs[]; };
+// One flat float array, because ComputePass binds exactly two storage buffers.
+// Regions, in order: the 38 params floats, the source image, the field image,
+// then the probes. The bases are pushed rather than derived, so a layout mistake
+// shows up as a wrong number instead of a silent overlap.
+layout(std430, binding = 0) readonly buffer In { float data[]; };
 layout(std430, binding = 1) writeonly buffer Out { vec4 outputs[]; };
 
 layout(push_constant) uniform Control {
     uint count;
     uint stage;
-    uint state;
+    uint tap;
+    uint srcBase;    // float index of source texel 0
+    uint srcW;
+    uint srcH;
+    uint fldBase;    // float index of field texel 0
+    uint fldW;
+    uint fldH;
+    uint probeBase;  // float index of probe 0; twelve floats each
 } control;
+
+// The sampler the oracle is gated against: bilinear, normalised coordinates,
+// half-texel centres, clamped at the edge, and identical to
+// `displacement_probe.comp`'s down to the factoring of the lerp. `[OBS]` The
+// target's own descriptor (`0x807BFF0000080A49`) is not decoded --
+// `GlassForeground.glsl` says so where the prototypes are declared.
+//
+// The lerp is `a + (b - a) * t` because that is what `air.mix` does and what the
+// oracle does, and every one of the three is `precise`: a driver is otherwise
+// free to contract it into an fma, which is one rounding where the oracle has
+// two.
+vec4 rbFgProbeSample(uint base, uint w, uint h, vec2 uv) {
+    if (w == 0u || h == 0u) return vec4(0.0);
+    float fx = uv.x * float(w) - 0.5;
+    float fy = uv.y * float(h) - 0.5;
+    float bx = floor(fx);
+    float by = floor(fy);
+    float tx = fx - bx;
+    float ty = fy - by;
+    int x0 = clamp(int(bx), 0, int(w) - 1);
+    int x1 = clamp(int(bx) + 1, 0, int(w) - 1);
+    int y0 = clamp(int(by), 0, int(h) - 1);
+    int y1 = clamp(int(by) + 1, 0, int(h) - 1);
+    vec4 r;
+    for (int k = 0; k < 4; ++k) {
+        float c00 = data[base + uint((y0 * int(w) + x0) * 4 + k)];
+        float c10 = data[base + uint((y0 * int(w) + x1) * 4 + k)];
+        float c01 = data[base + uint((y1 * int(w) + x0) * 4 + k)];
+        float c11 = data[base + uint((y1 * int(w) + x1) * 4 + k)];
+        precise float top = c00 + (c10 - c00) * tx;
+        precise float bot = c01 + (c11 - c01) * tx;
+        precise float mid = top + (bot - top) * ty;
+        r[k] = mid;
+    }
+    return r;
+}
+
+vec4 rbFgSampleSource(vec2 uv) {
+    return rbFgProbeSample(control.srcBase, control.srcW, control.srcH, uv);
+}
+
+vec4 rbFgSampleField(vec2 uv) {
+    return rbFgProbeSample(control.fldBase, control.fldW, control.fldH, uv);
+}
+
+// `[BIN]` The layer at float 18 is the one sampled through `t0` and the layer at
+// float 28 the one sampled through `t1`; five `float2` each.
+RBFgLayer rbFgLayerAt(uint first) {
+    RBFgLayer L;
+    L.m0 = vec2(data[first + 0u], data[first + 1u]);
+    L.m1 = vec2(data[first + 2u], data[first + 3u]);
+    L.m2 = vec2(data[first + 4u], data[first + 5u]);
+    L.m3 = vec2(data[first + 6u], data[first + 7u]);
+    L.m4 = vec2(data[first + 8u], data[first + 9u]);
+    return L;
+}
+
+// `[BIN]` The 72-byte uniform block, float by float. Reading it here rather than
+// through a std140 uniform is what makes the byte offsets in
+// `GlassForeground.h` a claim this side also has to satisfy.
+RBFgUniforms rbFgUniformsAt() {
+    RBFgUniforms u;
+    u.distanceScale = data[0];
+    u.distanceBias = data[1];
+    u.gradientScale = data[2];
+    u.gradientBias = data[3];
+    u.refractionAmount = data[4];
+    u.invRefractionHeight = data[5];
+    u.refractionOffset = data[6];
+    u.aberrationAmount = data[7];
+    u.invAberrationHeight = data[8];
+    u.aberrationOffset = data[9];
+    u.aberrationDir = vec2(data[10], data[11]);
+    u.edgeStart = data[12];
+    u.edgeEnd = data[13];
+    u.edgeOpacityStart = data[14];
+    u.edgeOpacityEnd = data[15];
+    u.refractionDir = vec2(data[16], data[17]);
+    return u;
+}
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
     if (i >= control.count) return;
-    outputs[i] = inputs[i];
+
+    RBFgUniforms u = rbFgUniformsAt();
+    RBFgLayer source = rbFgLayerAt(18u);
+    RBFgLayer field = rbFgLayerAt(28u);
+
+    uint b = control.probeBase + i * 12u;
+    vec2 p = vec2(data[b + 0u], data[b + 1u]);
+    float fwidthD = data[b + 2u];
+    float a0 = data[b + 3u];
+    float a1 = data[b + 4u];
+    float a2 = data[b + 5u];
+    float a3 = data[b + 6u];
+    float a4 = data[b + 7u];
+    float a5 = data[b + 8u];
+
+    vec4 result = vec4(0.0);
+    if (control.stage == 0u) {
+        result = rbGlassForeground(u, source, field, p, fwidthD);
+    } else if (control.stage == 1u) {
+        // The two layer transforms side by side: xy is the source's uv at p and
+        // zw is the field's. They are DIFFERENT transforms in the target and a
+        // swap would otherwise only show as a slightly wrong picture.
+        result.xy = rbFgLayerUV(source, p);
+        result.zw = rbFgLayerUV(field, p);
+    } else if (control.stage == 2u) {
+        // The decode: the distance, the gradient and the UNSATURATED edge.
+        vec4 f = rbFgSampleField(rbFgLayerUV(field, p));
+        float d = rbFgDistance(u, f.x);
+        result.x = d;
+        result.yz = rbFgGradient(u, f.yz);
+        result.w = rbFgEdgeRaw(d, fwidthD);
+    } else if (control.stage == 3u) {
+        // The two displacements. Their difference is the whole of the
+        // dispersion, and the aberration's component swap lives here.
+        vec4 f = rbFgSampleField(rbFgLayerUV(field, p));
+        float d = rbFgDistance(u, f.x);
+        vec2 g = rbFgGradient(u, f.yz);
+        result.xy = rbFgRefractionDisplacement(u, d, g);
+        result.zw = rbFgAberrationDisplacement(u, d, g);
+    } else if (control.stage == 4u) {
+        // The edge fade alone, with `a0` standing in for the distance so the
+        // range endpoints can be driven straight past their limits.
+        result = vec4(rbFgEdgeFade(u, a0));
+    } else if (control.stage == 5u) {
+        // The resolve alone: acc, then the alpha sum, the coverage and the raw
+        // edge. Separated out because it is the one place the shared
+        // `rbGlassAberrationCombine` is NOT what the target does.
+        result = rbFgResolve(vec3(a0, a1, a2), a3, a4, a5);
+    } else if (control.stage == 6u) {
+        // One named tap of the seven: where it lands and the uv it becomes.
+        // An aggregate comparison would not see the ladder permuted.
+        vec4 f = rbFgSampleField(rbFgLayerUV(field, p));
+        float d = rbFgDistance(u, f.x);
+        vec2 g = rbFgGradient(u, f.yz);
+        vec2 base = rbFgBase(p, rbFgRefractionDisplacement(u, d, g));
+        vec2 dispA = rbFgAberrationDisplacement(u, d, g);
+        vec4 tap = rbGlassAberrationTap(int(control.tap));
+        result.xy = rbFgTapPoint(base, dispA, tap.x);
+        result.zw = rbFgLayerUV(source, result.xy);
+    } else if (control.stage == 7u) {
+        // The samplers alone, with `p` as a uv straight into each.
+        result = rbFgSampleSource(p);
+    } else {
+        result = rbFgSampleField(p);
+    }
+    outputs[i] = result;
 }

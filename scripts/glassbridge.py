@@ -93,7 +93,16 @@ KEY_LO, KEY_HI = 0x16E7D8, 0x16EF80
 
 # `[BIN]` The two packers, found by counting how many of the 83 keys each
 # function references: 75 in one, 12 in the other, 1 stray. Not hand-picked.
-BACKGROUND = (0x0E6D40, 1100, 0xC0, 256)
+# `[BIN]` The background base is NAMED by the eight `stp q0, q0, [sp, #n]` that
+# zero the struct: n = 0xB0, 0xD0 ... 0x190, sixteen bytes each pair, covering
+# 0xB0..0x1AF -- exactly 256 bytes, exactly sizeof(BackgroundUniforms).
+#
+# It was 0xC0 here first, for the same bad reason the foreground base was 0x68:
+# the first key stores to [sp, #0xC0], and taking that as byte 0 presumes the
+# first key is the first field. Both packers open with 16 bytes that NO key
+# writes -- the decode pairs -- so both were off by exactly 16, and the control
+# passed both times because a uniform translation does not straddle anything.
+BACKGROUND = (0x0E6D40, 1100, 0xB0, 256)
 # `[BIN]` The foreground base is NAMED by the store that zeroes the struct --
 # `stp xzr, xzr, [sp, #0x58]` at 0x0E7D84 -- not inferred from where a key lands.
 #

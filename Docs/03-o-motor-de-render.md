@@ -2184,74 +2184,97 @@ de um registrador que este instrumento não constantifica.
 
 | byte | B | chave | default | transformação |
 |---|---|---|---|---|
-| 0 | 4 | `inputInnerRefractionAmount` | -150 |  |
-| 4 | 4 | `inputInnerRefractionHeight` | 60 | `fdiv fcsel` |
-| 8 | 4 | `inputOuterRefractionAmount` | 100 |  |
-| 12 | 4 | `inputOuterRefractionHeight` | 50 | `fdiv fcsel` |
-| 16 | 4 | `inputRefractionDistance0` | -11 |  |
-| 20 | 4 | `inputRefractionDistance1` | -3 |  |
-| 24 | 4 | `inputBlurRadius` | 30 | `fmul` |
-| 28 | 4 | `inputBleedBlurRadius` | 100 | `fadd` |
-| 32 | 4 | `inputBleedAmount` | 400 |  |
-| 36 | 4 | `inputBleedHeight` | 500 | `fdiv fcsel` |
-| 40 | 4 | `inputShadowAmount` | 200 |  |
-| 44 | 4 | `inputShadowHeight` | 250 | `fdiv fcsel` |
-| 56 | 4 | `inputShadowBlurRadius` | 25 | `fadd` |
-| 60 | 4 | `inputShadowRadius` | 25 | `fdiv fcsel` |
-| 136 | 4 | `inputShadowVibrancyContribution` | 1 |  |
-| 144 | 2 | `inputBlurOpacity0` | 1 |  |
-| 146 | 2 | `inputBlurOpacity1` | 0.1 |  |
-| 148 | 2 | `inputBlurOpacity2` | *runtime* |  |
-| 150 | 2 | `inputBlurOpacity3` | 0.4 |  |
-| 152 | 2 | `inputBlurDistance0` | -450 |  |
-| 154 | 2 | `inputBlurDistance1` | -3 |  |
-| 156 | 2 | `inputBlurDistance2` | *runtime* |  |
-| 158 | 2 | `inputBlurDistance3` | *runtime* |  |
-| 160 | 2 | `inputBleedDistance0` | -400 |  |
-| 162 | 2 | `inputBleedDistance1` | -42 |  |
-| 164 | 2 | `inputBleedOpacity` | 0.2 |  |
-| 166 | 2 | `inputFaceOpacity` | 1 |  |
-| 168 | 2 | `inputBleedDarkenBlend` | *runtime* | `fcsel` |
-| 172 | 2 | `inputShadowDistanceOffset` | -50 |  |
-| 174 | 2 | `inputShadowOpacity` | 1 |  |
-| 176 | 2 | `inputRefractionOpacity` | 0.75 |  |
-| 178 | 2 | `inputMaxHeadroom` | 1.2 | `fadd fdiv fsub fcsel` |
-| 180 | 2 | `inputSDRGradientDistance0` | -2.5 |  |
-| 182 | 2 | `inputSDRGradientDistance1` | -1.5 | `fsub fdiv` |
-| 188 | 2 | `inputFaceColorMatrixMaxLuma` | 1 | `fsub fmadd fcsel fcsel fsub` |
-| 190 | 2 | `inputSDRHoldingToneWhite` | 0.97 |  |
-| 192 | 2 | `inputAberrationAmount` | 1 |  |
-| 194 | 2 | `inputAberrationHeight` | 20 | `fdiv` |
-| 196 | 2 | `inputAberrationOffset` | 1 |  |
-| 202 | 2 | `inputRingShadowOffset` | *runtime* |  |
-| 204 | 2 | `inputRingShadowStrokeWidth` | *runtime* |  |
-| 206 | 2 | `inputRingShadowBlurRadius` | *runtime* |  |
-| 208 | 2 | `inputRingShadowOpacity` | *runtime* |  |
-| 210 | 2 | `inputRingShadowMask` | 1 |  |
-| 212 | 2 | `inputKeyFillHighlightHeight` | *runtime* |  |
-| 220 | 2 | `inputKeyFillHighlightSpread` | *runtime* | `fdiv fadd` |
-| 222 | 2 | `inputKeyFillHighlightEffectOffset` | -2 |  |
-| 224 | 2 | `inputKeyFillHighlightColorBias` | *runtime* |  |
-| 226 | 2 | `inputBlurFillBlurRadius` | 1 | `fmul` |
-| 228 | 2 | `inputBlurFillLightenOpacity` | 4 |  |
-| 230 | 2 | `inputBlurFillDarkenOpacity` | *runtime* |  |
-| 232 | 2 | `inputBlurFillNormalOpacity` | *runtime* |  |
-| 236 | 2 | `inputBleedColorMatrixBlack` | *runtime* | `fcsel` |
-| 238 | 2 | `inputBleedColorMatrixBlack` | *runtime* | `fcsel` |
+| 16 | 4 | `inputInnerRefractionAmount` | -150 |  |
+| 20 | 4 | `inputInnerRefractionHeight` | 60 | `fdiv fcsel` |
+| 24 | 4 | `inputOuterRefractionAmount` | 100 |  |
+| 28 | 4 | `inputOuterRefractionHeight` | 50 | `fdiv fcsel` |
+| 32 | 4 | `inputRefractionDistance0` | -11 |  |
+| 36 | 4 | `inputRefractionDistance1` | -3 |  |
+| 40 | 4 | `inputBlurRadius` | 30 | `fmul` |
+| 44 | 4 | `inputBleedBlurRadius` | 100 | `fadd` |
+| 48 | 4 | `inputBleedAmount` | 400 |  |
+| 52 | 4 | `inputBleedHeight` | 500 | `fdiv fcsel` |
+| 56 | 4 | `inputShadowAmount` | 200 |  |
+| 60 | 4 | `inputShadowHeight` | 250 | `fdiv fcsel` |
+| 72 | 4 | `inputShadowBlurRadius` | 25 | `fadd` |
+| 76 | 4 | `inputShadowRadius` | 25 | `fdiv fcsel` |
+| 152 | 4 | `inputShadowVibrancyContribution` | 1 |  |
+| 160 | 2 | `inputBlurOpacity0` | 1 |  |
+| 162 | 2 | `inputBlurOpacity1` | 0.1 |  |
+| 164 | 2 | `inputBlurOpacity2` | *runtime* |  |
+| 166 | 2 | `inputBlurOpacity3` | 0.4 |  |
+| 168 | 2 | `inputBlurDistance0` | -450 |  |
+| 170 | 2 | `inputBlurDistance1` | -3 |  |
+| 172 | 2 | `inputBlurDistance2` | *runtime* |  |
+| 174 | 2 | `inputBlurDistance3` | *runtime* |  |
+| 176 | 2 | `inputBleedDistance0` | -400 |  |
+| 178 | 2 | `inputBleedDistance1` | -42 |  |
+| 180 | 2 | `inputBleedOpacity` | 0.2 |  |
+| 182 | 2 | `inputFaceOpacity` | 1 |  |
+| 184 | 2 | `inputBleedDarkenBlend` | *runtime* | `fcsel` |
+| 188 | 2 | `inputShadowDistanceOffset` | -50 |  |
+| 190 | 2 | `inputShadowOpacity` | 1 |  |
+| 192 | 2 | `inputRefractionOpacity` | 0.75 |  |
+| 194 | 2 | `inputMaxHeadroom` | 1.2 | `fadd fdiv fsub fcsel` |
+| 196 | 2 | `inputSDRGradientDistance0` | -2.5 |  |
+| 198 | 2 | `inputSDRGradientDistance1` | -1.5 | `fsub fdiv` |
+| 204 | 2 | `inputFaceColorMatrixMaxLuma` | 1 | `fsub fmadd fcsel fcsel fsub` |
+| 206 | 2 | `inputSDRHoldingToneWhite` | 0.97 |  |
+| 208 | 2 | `inputAberrationAmount` | 1 |  |
+| 210 | 2 | `inputAberrationHeight` | 20 | `fdiv` |
+| 212 | 2 | `inputAberrationOffset` | 1 |  |
+| 218 | 2 | `inputRingShadowOffset` | *runtime* |  |
+| 220 | 2 | `inputRingShadowStrokeWidth` | *runtime* |  |
+| 222 | 2 | `inputRingShadowBlurRadius` | *runtime* |  |
+| 224 | 2 | `inputRingShadowOpacity` | *runtime* |  |
+| 226 | 2 | `inputRingShadowMask` | 1 |  |
+| 228 | 2 | `inputKeyFillHighlightHeight` | *runtime* |  |
+| 236 | 2 | `inputKeyFillHighlightSpread` | *runtime* | `fdiv fadd` |
+| 238 | 2 | `inputKeyFillHighlightEffectOffset` | -2 |  |
+| 240 | 2 | `inputKeyFillHighlightColorBias` | *runtime* |  |
+| 242 | 2 | `inputBlurFillBlurRadius` | 1 | `fmul` |
+| 244 | 2 | `inputBlurFillLightenOpacity` | 4 |  |
+| 246 | 2 | `inputBlurFillDarkenOpacity` | *runtime* |  |
+| 248 | 2 | `inputBlurFillNormalOpacity` | *runtime* |  |
+| 252 | 2 | `inputBleedColorMatrixBlack` | *runtime* | `fcsel` |
+| 254 | 2 | `inputBleedColorMatrixBlack` | *runtime* | `fcsel` |
 
-### 27.5. O que NÃO está ligado, e por quê
+### 27.5. A base estava errada em 16 bytes, e o controle passou assim mesmo
 
-`[ART]` Os 118 bytes restantes, nomeados em vez de preenchidos:
+`[BIN]` A primeira publicação desta tabela usava base `0xC0`, porque é ali que a
+primeira chave grava. **Tomar isso como o byte 0 pressupõe que a primeira chave é
+o primeiro campo**, e nos dois empacotadores isso é falso.
+
+`[BIN]` A base verdadeira é `0xB0`, e ela é **nomeada por instruções**: os oito
+`stp q0, q0, [sp, #n]` que zeram a struct, com `n` = `0xB0, 0xD0 … 0x190`,
+cobrindo `0xB0..0x1AF` — **exatamente 256 bytes, exatamente o `sizeof` da
+struct**. Toda a coluna de bytes acima subiu 16.
+
+`[BIN]` E a confirmação de que agora está certo, e não só consistente: o buraco
+das matrizes cai em **`+80..+151`, exatamente o bloco dos nove `half4`** que o IR
+declara. Com a base errada ele caía em `+64..+135`, atravessando fronteira de
+campo sem significar nada. Além disso `inputShadowOffset`, que é um `float2`,
+pousa em `+64` — o único `[2 x float]` no meio da struct.
+
+`[ART]` Os 118 bytes não ligados, nomeados em vez de preenchidos:
 
 | faixa | bytes | leitura |
 |---|---|---|
-| `+64`…`+135`, `+140`…`+143` | 76 | **as três matrizes de cor.** `White`, `Black`, `Saturation` e `FillColor` **não** são gravadas chave a chave: passam pela montagem composta YCC, uma chave alimentando várias entradas. O AquaKit transcreveu essa rotina do lado do QuartzCore (`MakeYCCCompositeMatrix`); ligá-la aqui é trabalho à parte |
-| `+48`…`+55` | 8 | `inputShadowOffset`, um `float2` — a ferramenta viu o store numa passada anterior e o perdeu ao endurecer a morte de registradores. `[OBS]` |
-| `+170`, `+184`…`+187`, `+198`…`+201`, `+214`…`+219`, `+234`…`+235`, `+240`…`+255` | 34 | `[OBS]` não resolvidos. Alguns são as chaves de matriz; os de `+240` em diante o empacotador provavelmente escreve em bloco |
+| `+0`…`+15` | 16 | **os dois pares de decodificação** (distância e gradiente). Nenhuma chave os escreve, nos DOIS empacotadores — é por isso que os dois erros de base foram de exatamente 16 |
+| `+80`…`+151`, `+156`…`+159` | 76 | **as três matrizes de cor.** `White`, `Black`, `Saturation` e `FillColor` não são gravadas chave a chave: passam pela montagem composta YCC, uma chave alimentando várias entradas. O AquaKit transcreveu essa rotina do lado do QuartzCore (`MakeYCCCompositeMatrix`) |
+| `+64`…`+71` | 8 | `inputShadowOffset`, um `float2` — a ferramenta o viu numa passada anterior e o perdeu ao endurecer a morte de registradores. `[OBS]` |
+| `+186`, `+200`…`+203`, `+214`…`+217`, `+230`…`+235`, `+250` | 18 | `[OBS]` não resolvidos. E um deles tem explicação: `[BIN]` resolvendo todo `getelementptr` do `mod98`, **74 dos 75 campos são lidos — o byte 202 nunca é** |
 
-`[INF]` A cobertura de 138 de 256 **não é uma barra de progresso**: os 76 bytes
-das matrizes têm produtor conhecido e transcrito noutro projeto, então o que
-falta de verdade são os 42 bytes da última linha.
+> **O erro, e por que ele passou duas vezes.** A mesma escolha errada foi feita
+> nos dois empacotadores: deslocar a base até a primeira chave cair no byte 0. O
+> controle positivo do §27.3 disse `PASS` nas duas vezes, porque ele detecta store
+> que **atravessa** fronteira e não tabela inteira **transladada** por múltiplo da
+> granularidade.
+>
+> A lição não é sobre aritmética, é sobre origem: a base agora sai da instrução
+> que **zera a struct**, que a nomeia diretamente. Um número que encaixa não é o
+> mesmo que um número que foi lido — e quando o encaixe é a única evidência,
+> qualquer deslocamento que preserve o alinhamento encaixa igual.
 
 ### 27.6. O empacotador do foreground, corrigido — e a base era um palpite
 
