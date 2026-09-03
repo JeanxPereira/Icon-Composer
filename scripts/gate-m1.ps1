@@ -78,6 +78,8 @@ $sources = @{
     dispor   = Join-Path $root "Source/RenderBox/DisplacementOracle.cpp"
     dispgl   = Join-Path $root "Source/RenderBox/shaders/Displacement.glsl"
     field    = Join-Path $root "Source/RenderBox/DistanceField.cpp"
+    fillres  = Join-Path $root "Source/RenderBox/FillResolve.cpp"
+    sysfill  = Join-Path $root "Source/RenderBox/SystemFill.cpp"
     fieldgl  = Join-Path $root "Source/RenderBox/shaders/DistanceField.glsl"
     mip      = Join-Path $root "Source/RenderBox/MipPyramid.cpp"
     mipcomp  = Join-Path $root "Source/RenderBox/shaders/mip_reduce.comp"
@@ -924,6 +926,119 @@ $mutations = @(
     @{ file = "fggl"; name = "the coverage cutoff compares against the fwidth floor"
        from = 'if (f.w < kRbGlassEpsilon) return vec4(0.0);'
        to   = 'if (f.w < kRbFgFwidthFloor) return vec4(0.0);' }
+
+    # ---- the fill resolution: the seven tags and the TWO converters -------
+    #
+    # Every anchor below is a SINGLE line, checked to occur exactly once. Both
+    # `FillResolve.cpp` and this script were verified for line endings first:
+    # the source is CRLF and this script is LF, so a multi-line anchor could
+    # never match -- the trap that stopped a sweep in milliseconds once already.
+    @{ file = "fillres"; name = "the light rendition maps to the dark appearance"
+       from = 'case Rendition::LightColor: return icf::Appearance::Light;'
+       to   = 'case Rendition::LightColor: return icf::Appearance::Dark;' },
+    @{ file = "fillres"; name = "the dark rendition maps to the light appearance"
+       from = 'case Rendition::DarkColor:  return icf::Appearance::Dark;'
+       to   = 'case Rendition::DarkColor:  return icf::Appearance::Light;' },
+    @{ file = "fillres"; name = "a tint rendition stops collapsing onto tinted"
+       from = 'case Rendition::LightTint:  return icf::Appearance::Tinted;'
+       to   = 'case Rendition::LightTint:  return icf::Appearance::Light;' },
+    @{ file = "fillres"; name = "a clear rendition stops collapsing onto tinted"
+       from = 'case Rendition::DarkClear:  return icf::Appearance::Tinted;'
+       to   = 'case Rendition::DarkClear:  return icf::Appearance::Dark;' },
+    # The arm nobody predicted, and the one a light/dark-only test set misses.
+    @{ file = "fillres"; name = "the tinted background is a ramp instead of clear"
+       from = 'return solidOf(iconColorClear());'
+       to   = 'return systemOf(SystemFill::Light);' },
+    # The layer's `automatic` reads its own fill at the LIGHT slot, not at the
+    # slot being rendered, and THIS is the line that chooses it. Point it at the
+    # appearance being rendered and the inheritance operator becomes identity.
+    @{ file = "fillres"; name = "the layer inherits from the slot being rendered"
+       from = 'lightCtx.appearance = icf::Appearance::Light;'
+       to   = 'lightCtx.appearance = ctx.appearance;' },
+    # WHY THE OBVIOUS ANCHOR IS NOT THE ONE USED. The first version of this
+    # mutation pointed at the RECURSIVE call instead --
+    #   `layerFillFrom(*lightSlotFill, icf::Appearance::Light, nullptr)` -> `appearance`
+    # -- and it SURVIVED, because the two forms are provably indistinguishable:
+    # the third argument is `nullptr`, so for kind `Automatic` either the light
+    # terminator fires or the `!lightSlotFill` guard does, and the other six
+    # kinds never read the appearance at all. Every input gives the same answer.
+    #
+    # That is an EQUIVALENT MUTANT, not a hole in the tests, and it is recorded
+    # here rather than left in the list. A sweep that reports a defect nobody
+    # can fix teaches people to ignore the sweep. The `Light` in that recursive
+    # call stays in the source because it is what the binary passes -- faithful
+    # and unobservable are not in conflict.
+    @{ file = "fillres"; name = "the light-slot terminator keys on dark"
+       from = 'if (appearance == icf::Appearance::Light) return noFill();'
+       to   = 'if (appearance == icf::Appearance::Dark) return noFill();' },
+    @{ file = "fillres"; name = "a layer with no light slot refuses instead of drawing"
+       from = 'if (!lightSlotFill) return noFill();'
+       to   = 'if (!lightSlotFill) return refuse("no light slot");' },
+    # `[BIN]` The ONE site of four that reads `orientation`, and the order the
+    # constructor at 0x10C1DC takes its two points in.
+    @{ file = "fillres"; name = "the layer ramp takes its start from the stop point"
+       from = 'p.start = {fill.orientation->start.x, fill.orientation->start.y};'
+       to   = 'p.start = {fill.orientation->stop.x, fill.orientation->stop.y};' },
+    @{ file = "fillres"; name = "the layer ramp takes its end from the start point"
+       from = 'p.end = {fill.orientation->stop.x, fill.orientation->stop.y};'
+       to   = 'p.end = {fill.orientation->start.x, fill.orientation->start.y};' },
+
+    # ---- the canned ramps, the opacity rewrite, the placement ------------
+    #
+    # THE SHARPEST ONE IS THE OPACITY. Both canned ramps carry alpha 1.0, where
+    # replacing and multiplying give the same number, so NO corpus case can tell
+    # the two rules apart -- only the dedicated test can. If this mutation
+    # survives, that test is decoration.
+    @{ file = "sysfill"; name = "the stop opacity is multiplied instead of replaced"
+       from = 's.rgba[3] = opacity;'
+       to   = 's.rgba[3] = in.rgba[3] * opacity;' },
+    # A grey short one digit still rounds to the same sRGB byte. What it no
+    # longer equals is the double that 245/255 produces.
+    @{ file = "sysfill"; name = "the light ramp loses a digit off its second grey"
+       from = 'return buildSystemRamp(1.0, 0.9607843137254902);'
+       to   = 'return buildSystemRamp(1.0, 0.960784313725490);' },
+    @{ file = "sysfill"; name = "the dark ramp moves one double off its second grey"
+       from = 'return buildSystemRamp(0.12156862745098039, 0.058823529411764705);'
+       to   = 'return buildSystemRamp(0.12156862745098039, 0.05882352941176471);' },
+    @{ file = "sysfill"; name = "the ramp stops are laid out back to front"
+       from = 'stops[0].location = 0.0;'
+       to   = 'stops[0].location = 1.0;' },
+    @{ file = "sysfill"; name = "the second ramp stop sits on the first"
+       from = 'stops[1].location = 1.0;'
+       to   = 'stops[1].location = 0.0;' },
+    @{ file = "sysfill"; name = "a canned ramp stop is born transparent"
+       from = 'stops[0].rgba[3] = 1.0;'
+       to   = 'stops[0].rgba[3] = 0.0;' },
+    # The axis this project spent a whole spec unable to read.
+    @{ file = "sysfill"; name = "the default axis runs across instead of down"
+       from = 'p.end = {0.0, 1.0};'
+       to   = 'p.end = {1.0, 0.0};' },
+    @{ file = "sysfill"; name = "the default axis does not start at the origin"
+       from = 'p.start = {0.0, 0.0};'
+       to   = 'p.start = {0.0, 1.0};' },
+    @{ file = "sysfill"; name = "a placement the document named is overridden by the default"
+       from = 'const GradientPlacement p = placement.has_value() ? *placement : defaultGradientPlacement();'
+       to   = 'const GradientPlacement p = defaultGradientPlacement();' },
+    @{ file = "sysfill"; name = "the resolved system fill carries a placement"
+       from = 'out.placement = std::nullopt;'
+       to   = 'out.placement = defaultGradientPlacement();' },
+    # The refusal is the point: the chiclet-aligned rect was never read, so
+    # there is no number to return. Falling back to the bounding box would draw
+    # something plausible on a geometry nobody measured, and the header forbids
+    # it -- this proves the ban is enforced and not merely written down.
+    @{ file = "sysfill"; name = "the unread chiclet rect falls back to the bounding box"
+       from = 'if (source == SystemFillRectSource::BoundingRect) return boundingRect;'
+       to   = 'return boundingRect;' },
+
+    # ---- the renderer wiring --------------------------------------------
+    #
+    # Being MORE correct than the target is the defect here: the background
+    # converter never reads `orientation`, so honouring it is a different pixel.
+    # The note is how the divergence stays visible, and dropping it makes the
+    # renderer quietly claim a fidelity it does not have.
+    @{ file = "icon"; name = "the discarded background orientation is not reported"
+       from = 'note(out.notes, kDiscardedBackgroundOrientationNote);'
+       to   = '(void)0;' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"
