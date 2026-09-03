@@ -78,6 +78,7 @@ especializações** — 1.040 chaveadas por `appearance`, 616 sem predicado, 82 
 | o conversor — SVG desenhado em pixels | **passa o gate** — as peças compostas, conferidas contra a forma fechada pela cadeia inteira. Alcance medido: **22 de 194 camadas**, **0 de 55 documentos** (doc 03 §20) |
 | `icrender` e o PNG | **passam o gate** — binário separado do `ictool`, que segue sem GPU (doc 03 §20.6, §20.7) |
 | os ícones do sistema (Fotos, App Store) | **localizados, não abertos** — não são `.icon`: compilam para `Assets.car` e o motor os lê via CoreUI. Segunda porta de entrada (doc 03 §20.8) |
+| **o `fill` do documento — os 7 casos e os DOIS conversores** | **desenha** — e `automatic` é **duas operações com o mesmo nome**: no fundo é a rampa de chiclet, com um terceiro braço que ninguém previu (`IconColor.clear` sob `tinted`); na camada **não é cor nenhuma**, é herança de especialização do slot `light`. O `automatic-gradient` e o `linear-gradient` sem `orientation` vieram junto, pelo eixo default `(0,0)→(0,1)`. A régua vai de 111 para **145 camadas** e de **1 para 33 documentos completos** — e a mesma medição diz que **10 dos 18 documentos novos são variantes de cor de um único desenho** (doc 03 §30, spec §7) |
 | **o vidro do ícone** | **desenha** — e o achado é que o ícone NÃO usa o `glassBackground_v1`: o `IconRendering` importa **um** dos cinco shaders de sistema, o `_RBSystemShaderDisplacementMap`. A régua vai de 79 para **111 camadas**, e a própria régua imprime que **32 delas desenham sem o material que o documento pede** (doc 03 §29, spec §9.1) |
 | **a ponte dos uniforms do vidro** | **lida** — os 83 nomes de chave do `RenderBox` ligados a byte, largura, default e transformação; 54 chaves, 138 dos 256 bytes, com controle cruzando o empacotador ARM64 e o IR do shader (doc 03 §27) |
 | os 56 modos de mescla | **lidos inteiros** — 56 de 56 blocos, 39 casados, as bandas nomeadas; 16 dos 18 nomes do formato com candidato único. **Corrige duas atribuições desta documentação** (doc 03 §26) |
@@ -98,7 +99,20 @@ A varredura pode ser rodada em **fatias**, e uma fatia **nunca** imprime
 ```powershell
 powershell -File scripts\gate-m1.ps1                 # o gate
 powershell -File scripts\gate-m1.ps1 -From 1 -To 40  # uma fatia, veredito PARCIAL
+
+powershell -File scripts\gate-worktree.ps1           # o gate, num worktree isolado
 ```
+
+**Prefira a terceira linha.** A varredura muta os fontes um a um durante uma hora
+e quarenta, e nesse intervalo a árvore não é segura para tocar — uma edição feita
+ao lado ou é confundida com mutação, ou é restaurada por cima. O runner dá à
+varredura um checkout e um build próprios (`git worktree add --detach
+D:/CodingProjects/Icon-Composer-gate main`, uma vez), e aponta o corpus — que é
+quase todo gitignored — para a árvore principal, onde é lido e nunca escrito.
+
+Isso também **contém o dano**: quando uma execução é morta no meio, o arquivo
+mutado fica em disco, porque um `kill` não roda a limpeza. Num worktree esse
+arquivo é um checkout descartável, e não a árvore em que se trabalha.
 
 ```powershell
 cmake --preset mingw          # ou msvc, mingw-asan, release
@@ -129,9 +143,12 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
    que o conteúdo deles atravessa intacto. O do *modelo*: **nenhuma chave** dos
    145 documentos pode ser desconhecida, e **nenhuma das 1.740 especializações**
    pode ser inalcançável pelo resolver.
-3. **Uma varredura de mutação obrigatória.** Duzentos e nove defeitos entram um a um e cada
-   um TEM que avermelhar a suíte, aplicados em árvore limpa e restaurados de um
-   backup conferido por SHA-256 — nunca por comando de git.
+3. **Uma varredura de mutação obrigatória.** Duzentas e trinta e uma mutações
+   entram uma a uma, e cada uma TEM que avermelhar a suíte — aplicada em árvore
+   limpa e restaurada de um
+   backup conferido por SHA-256 — nunca por comando de git. Desde 2026-09-03 a
+   varredura roda num **worktree dedicado** (`scripts/gate-worktree.ps1`), para
+   parar de tomar a árvore de trabalho como refém por uma hora e quarenta.
 
 **gate-m1 passou em 2026-09-01** — 145 documentos, 135 byte-exatos, 145 de 145
 totalmente compreendidos, 1.740 de 1.740 especializações alcançáveis, 61.537

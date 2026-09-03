@@ -235,3 +235,76 @@ onde o alvo o ignora** — a tarefa 7 existe por isso.
 - O `automatic-gradient` sai da lista de armas não implementadas, e o §4.4 do
   spec do gradiente ganha a nota de que a razão dele caiu.
 - Cada lacuna do §5.1 está **nomeada** no relatório do `icrender`, com o motivo.
+
+---
+
+## 7. O resultado, medido
+
+*2026-09-03. As nove tarefas rodaram; isto é o que elas entregaram.*
+
+`[ART]` A régua, medida por mim contra a régua anterior tirada do próprio git
+(`4ef51b8`) e rodada sobre o mesmo corpus:
+
+| régua | antes | depois | o §6 prometia |
+|---|---|---|---|
+| camadas | 111 (57,2%) | **145 (74,7%)** | 145 |
+| documentos (camadas) | 15 (27,3%) | **33 (60,0%)** | 33 |
+| documentos **completos** (fundo *e* camadas) | **1** (1,8%) | **33** (60,0%) | — |
+| suíte | 417 casos | **478 casos, 0 falhas** | — |
+| mutações | 209 | **231** | — |
+
+A linha dos documentos completos é a que mede o que realmente mudou: até ontem o
+`fill` da raiz não era lido, e as camadas eram compostas **sobre nada**. Um só
+documento do corpus fechava inteiro. Agora fecham 33.
+
+### 7.1. E o número dos documentos vende mais do que vale
+
+`[ART]` Os **+18 documentos** não são 18 desenhos. **Dez deles são o
+`DimensionDev__Flare`** — `AppIcon` e mais nove variantes de cor (`_black`,
+`_blue`, `_cyan`, `_light_blue`, `_orange`, `_red`, `_teal`, `_white`,
+`_yellow`) — e os dez apontam para **os mesmos dois SVGs, byte a byte**
+(`Group.svg` e `Group-2.svg`, conferidos por SHA-256). O que muda entre eles é o
+`fill`, que é exatamente a peça que este spec ligou.
+
+Os outros oito são distintos, inclusive os três do `CodeEdit`
+(`CodeEditAlphaIcon`, `CodeEditBetaIcon`, `CodeEditDevIcon`), que **não** são
+variantes de cor: os conjuntos de assets deles têm hashes diferentes.
+
+**São 9 desenhos distintos, não 18.** Dito aqui porque "60% dos documentos" é
+verdadeiro e induz a erro sozinho, e porque um corpus público tem clusters — a
+régua conta documentos, e documentos não são amostras independentes.
+
+### 7.2. A ressalva da régua ficou MAIOR, e é para ficar
+
+`[ART]` **Das 145 camadas desenháveis, 51 desenham SEM o material que o documento
+pede** — eram 32 quando o vidro ligou. O número subiu porque mais camadas de
+vidro passaram a ser alcançáveis, não porque algo regrediu: `translucency`,
+sombra e especular do grupo seguem sem consumidor lido no binário (doc 03 §29),
+então nenhum é aplicado.
+
+`scripts/slice-reach.py` imprime as duas linhas, e a segunda diz o essencial:
+**desenhável não é o mesmo que igual ao alvo.**
+
+### 7.3. O que o §6 prometia e o que veio a mais
+
+O §6 previa 125 camadas e 29 documentos com o `automatic` sozinho, e 140 e 32
+com o `automatic-gradient` junto. Vieram **145 e 33**, e a diferença não é sorte:
+o mesmo `placement: nil` que deu eixo ao `automatic-gradient` fechou o último
+buraco do `linear-gradient` de camada — uma rampa que não nomeia `orientation`
+era recusada e agora desenha no eixo vertical padrão. `[ART]` São **26 dos 48**
+`linear-gradient` de camada do corpus.
+
+O `scripts/slice-reach.py` registra os três estágios separados (125/29 → 140/32
+→ 145/33) para que a promessa do spec continue conferível depois do fato.
+
+### 7.4. As correções que este trabalho carrega
+
+1. **O doc 03 §24.3 estava errado.** Ele atribuía "55 fills de camada + 28 de
+   fundo" ao `Icon.Fill.Contents.system`. **Só os 28 do fundo viram `.system`**;
+   os 55 da camada nunca chegam lá, porque na camada o `automatic` é herança de
+   especialização e não cor. Corrigido no doc 03 §30.4.
+2. **O §4.4 do spec do gradiente perdeu a razão de ser.** Ele recusava o
+   `automatic-gradient` porque o eixo nunca tinha sido lido. Foi lido.
+3. **O `orientation` do fundo agora é descartado de propósito e nomeado.** O
+   alvo o ignora em três dos quatro sítios; honrá-lo seria um pixel diferente do
+   dele. O descarte vai para `RenderedIcon::notes`.

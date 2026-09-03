@@ -2985,3 +2985,175 @@ de uma tela de 1024. É `[INF]`, e fica marcado assim.
 > com esses números produziria uma imagem plausível e **errada em toda parte**,
 > porque o alvo estaria desenhando o vidro do sistema onde o Icon Composer
 > desenha o dele.
+
+---
+
+## 30. O `fill` do documento — e são DOIS conversores com o mesmo nome
+
+*2026-09-03. A ponta que faltava entre o documento e o motor: até aqui o `fill`
+da raiz não era lido, e as camadas eram compostas sobre nada.*
+
+A investigação começou de uma hipótese — *"`automatic` é o gradiente de chiclet
+do sistema, com a aparência escolhendo o polo"* — e ela estava **metade certa**.
+A metade errada é a que mudou o desenho.
+
+### 30.1. As sete tags, lidas de uma instrução que as NOMEIA
+
+Tudo pende da numeração dos casos, então ela não foi assumida a partir da ordem
+em que o JSON os escreve. `[BIN]` `Fill.Kind.displayName`, em
+`IconComposerFoundation 0x0A8D40`, é uma cadeia de `csel` sobre *small strings*
+de Swift; decodificar os imediatos devolve os nomes que a UI mostra:
+
+| tag | caso | `displayName` |
+|---|---|---|
+| 0 | `none` | "None" |
+| 1 | `automatic` | "Automatic" |
+| 2 | `solid` | "Solid" |
+| 3 | `automaticGradient` | **"Standard Gradient"** |
+| 4 | `linearGradient` | **"Custom Gradient"** |
+| 5 | `systemLight` | "System Light" |
+| 6 | `systemDark` | "System Dark" |
+
+Os dois nomes em negrito não aparecem em lugar nenhum do formato em disco — são
+rótulo de UI, e servem aqui como **confirmação independente** de que a tag 3 é o
+gradiente do sistema e a 4 é o do autor, e não o contrário.
+
+### 30.2. Os dois conversores, com limites exatos
+
+`[BIN]` O `IconComposerKit.arm64` importa **exatamente seis** construtores de
+`Icon.Fill` e mais nada, e todos os sítios de chamada vivem em **duas** funções,
+cujos limites o `LC_FUNCTION_STARTS` dá sem ambiguidade:
+
+| função | é o quê | como se sabe |
+|---|---|---|
+| `0x10AD9C`–`0x10B080` | o fill do **fundo / chiclet** | o único chamador desce para `Icon(name:chiclet:layers:…)` |
+| `0x10B7EC`–`0x10C448` | o fill da **camada** | chama `Layer.fill`, `Layer.isGlass`, `Layer.frame`, e termina em `Icon.Element(contents:bounds:fill:…)` |
+
+**As duas leem o mesmo tipo do documento e dão respostas diferentes.** É por isso
+que "o que `automatic` significa" não tem uma resposta só.
+
+### 30.3. No FUNDO — a hipótese sobrevive, com um braço que ninguém previu
+
+`[BIN]` `0x10AEF4`:
+
+```
+and  w8, w26, #0xff        ; w26 = rendition.sourceAppearance
+cmp  w8, #2
+b.lo -> systemLightChicletGradient    ; base(0), light(1)
+b.eq -> systemDarkChicletGradient     ; dark(2)
+     -> IconColor.clear ; Fill.solid(clear)   ; tinted(3)
+```
+
+**Sob `tinted`, o fundo `automatic` é TRANSPARENTE.** Não é um cinza neutro e não
+é um gradiente: é `IconColor.clear = (0,0,0,0)`. Um conjunto de testes que só
+exercitasse `light` e `dark` — o reflexo natural, já que a rampa tem dois polos —
+passaria verde sem nunca tocar este braço.
+
+`[BIN]` E o `none` do fundo percorre **o mesmo bloco, byte a byte**. No fundo,
+`none` não quer dizer "não desenhe".
+
+### 30.4. Na CAMADA — não é cor nenhuma
+
+`[BIN]` O fill da camada é resolvido **duas vezes**, em dois slots de
+especialização. O segundo, em `0x10BD90`, monta o slot com a aparência **forçada
+a `light`**: `mov w9,#0x100 ; bfxil w9,w0,#0,#8`.
+
+E o `automatic` da camada, em `0x10C0FC`–`0x10C138`, é:
+
+> **"o que o fill DESTA MESMA camada resolve na aparência `light`"** — uma cópia
+> verbatim daquele buffer. E sob `light` ele próprio vira **`nil`**.
+
+Não é `.system`, não é cor: é um **operador de herança de especialização**, e o
+terminador que o impede de recursar para sempre é a própria aparência `light`.
+`none` na camada é `Element.fill = nil` — sem override, a arte fica com as cores
+que ela já tem.
+
+> **Isto corrige o §24.3 desta documentação**, que atribuía "55 fills de camada +
+> 28 de fundo" ao `Icon.Fill.Contents.system`. **Só os 28 do fundo viram
+> `.system`.** Os 55 da camada nunca chegam lá.
+
+### 30.5. E o corpus previu isso antes de eu contar
+
+`[ART]` A leitura faz duas previsões falsificáveis sobre 145 documentos, e as
+duas fecham em divisões limpas `0/N`, sempre do lado que a leitura exige:
+
+| previsão | medido |
+|---|---|
+| `none` no fundo seria indistinguível de `automatic`, logo redundante | **0 ocorrências** (contra 49 na camada) |
+| `system-light`/`system-dark` são vocabulário de chiclet, logo só de fundo | **0 na camada** (33 no fundo) |
+
+`[ART]` E o fato que mais restringe: **toda camada `automatic` nomeia arte
+(51/51), toda camada `none` nomeia arte (40/40), e as 159 camadas sem chave
+`fill` também.** O `fill` não é o que faz a camada existir — a arte é. Um fill
+que substituísse a arte tornaria `none` e "sem chave" a mesma afirmação, e o
+corpus mantém as duas, 49 e 159 vezes.
+
+### 30.6. As duas rampas, e o alpha que é REESCRITO
+
+`[BIN]` O construtor em `IconRendering 0x3E680` escreve exatamente **duas
+paradas**, com `r == g == b` e alpha `1.0`:
+
+| | parada 0 @ `0.0` | parada 1 @ `1.0` |
+|---|---|---|
+| `systemLightGradient` | `1.0` (255) | `0.9607843137254902` (245) |
+| `systemDarkGradient` | `0.12156862745098039` (31) | `0.058823529411764705` (15) |
+
+`[BIN]` E o `resolve` **reescreve o alpha de cada parada** com a opacidade do
+fill em vez de multiplicar: o helper em `0x3CFF4` lê `r,g,b` de
+`+0x00/+0x08/+0x10` e a localização de `+0x20`, **pulando o alpha da origem em
+`+0x18`**.
+
+> **Por que essa distinção precisou de um teste próprio.** As duas rampas
+> carregam alpha `1.0`, onde substituir e multiplicar dão o mesmo número.
+> **Nenhum caso do corpus consegue separar as duas regras** — só um teste
+> dedicado. A mutação que troca uma pela outra existe no gate exatamente para
+> provar que esse teste não é decoração.
+
+### 30.7. O eixo — o que afundou o `automatic-gradient` está lido
+
+O spec do gradiente (`2026-09-01-gradiente.md` §4.4) deixou o `automatic-gradient`
+**não implementado e nomeado**: os seis parâmetros estavam medidos e **o eixo
+nunca tinha sido**. Essa razão caiu.
+
+`[BIN]` `Icon.Fill.resolve`, em `IconRendering 0x3CE80`, escolhe entre as duas
+rampas por `cmp x8, #1` e **zera a região de placement**, gravando
+`Optional<GradientPlacement> = .none`. E `.none` tem significado definido —
+`GradientPlacement.default`, em `IconRendering 0x38CF4`:
+
+```
+start = (0.0, 0.0)
+end   = (0.0, 1.0)
+```
+
+`[BIN]` O caminho de desenho substitui o nil por esse default (`0x1BAB8`), em
+coordenadas **unitárias de um retângulo**: `ponto = rect.origin + unit *
+(largura, altura)`. E os **três sítios conversores passam `placement: nil`** para
+o `automaticGradient`, então ele herda o eixo vertical padrão.
+
+**O `automatic-gradient` está inteiramente especificado**, e o mesmo nil fechou o
+último buraco do `linear-gradient`: uma rampa de camada que não nomeia
+`orientation` era recusada, e agora desenha nesse eixo. `[ART]` São **26 dos 48**
+`linear-gradient` de camada do corpus — o caso comum, não a borda.
+
+### 30.8. O `orientation` é descartado em três dos quatro sítios
+
+`[BIN]` Só o caminho de `linearGradient` **de camada** constrói um
+`GradientPlacement` a partir do `orientation` do documento. O conversor do
+chiclet lê `primaryColor` e `secondaryColor` e **nunca toca** no `orientation`.
+
+`[ART]` Um `linear-gradient` de **fundo** com `orientation` desenha no eixo
+vertical padrão de qualquer maneira, e o corpus tem 8 ocorrências na raiz mais 6
+em especializações. Aqui **o nosso renderizador seria mais correto que o alvo**,
+e ser mais correto é a divergência: o `IconRenderer` descarta o `orientation` do
+fundo e **nomeia o descarte** em `RenderedIcon::notes`, para que a diferença
+apareça em vez de ser silenciosamente boa.
+
+### 30.9. O que segue sem leitura
+
+| | por quê |
+|---|---|
+| **o retângulo do alinhamento ao chiclet** | `[BIN]` `supportsChicletAlignmentForSystemFills` é `true` por default, e quando ligado o rect é origem `(0,0)` com um `CGSize` do contexto de desenho. `[OBS]` **Se esse tamanho é o canvas, o chiclet ou o quadro full-bleed não foi lido.** A implementação desenha sobre o `boundingRect` da própria forma e **recusa** o outro caminho, em vez de chutar o rect |
+| a lateralidade de y do display list | `[OBS]` na rampa clara (255→245) é quase invisível; **na escura (31→15) não é** |
+| o `Bool` do `.system(_, Double, Bool)` | `[OBS]` os três construtores gravam `1`; nenhum escritor de `0` foi achado |
+| o espaço de cor das rampas | `[OBS]` `IconColor` são quatro `Double` sem tag de espaço |
+| `ResolvedFill`, `promoteNoneFillsToEachAppearance` | `[OBS]` localizados, não lidos. São do **editor**, não do caminho de render |
