@@ -145,17 +145,66 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
    pode ser inalcançável pelo resolver.
 3. **Uma varredura de mutação obrigatória.** Duzentas e trinta e uma mutações
    entram uma a uma, e cada uma TEM que avermelhar a suíte — aplicada em árvore
-   limpa e restaurada de um
-   backup conferido por SHA-256 — nunca por comando de git. Desde 2026-09-03 a
-   varredura roda num **worktree dedicado** (`scripts/gate-worktree.ps1`), para
-   parar de tomar a árvore de trabalho como refém por uma hora e quarenta.
+   limpa e restaurada de um backup conferido por SHA-256, nunca por comando de
+   git. Desde 2026-09-03 a varredura roda num **worktree dedicado**
+   (`scripts/gate-worktree.ps1`), para parar de tomar a árvore de trabalho como
+   refém por duas horas.
 
-**gate-m1 passou em 2026-09-01** — 145 documentos, 135 byte-exatos, 145 de 145
+**gate-m1 passou em 2026-09-03** — 145 documentos, 135 byte-exatos, 145 de 145
 totalmente compreendidos, 1.740 de 1.740 especializações alcançáveis, 61.537
 valores decodados sem uma falha, 55 bundles sem arquivo morto, 1.100 árvores
 renderizadas sem cair em JSON cru, 149 SVGs lidos em geometria com 128 deles
-totalmente compreendidos, 58 dos 60 PNGs decodados, e **119 de 119 mutações
+totalmente compreendidos, 58 dos 60 PNGs decodados, e **231 de 231 mutações
 pegas**.
+
+A primeira passagem foi em **2026-09-01, com 119 mutações**. A lista cresceu
+119 → 160 → 209 → 231, e cada crescimento é uma frente nova ganhando guardas —
+o raster, o gradiente, o vidro, o `fill`. As execuções anteriores estão
+registradas abaixo, com as suas datas, porque um número de mutação só quer dizer
+alguma coisa junto do código que ele mordia.
+
+### 2026-09-03: `gate-m1 passed`, 231 de 231, e desta vez num worktree
+
+`[ART]` **A varredura inteira rodou de uma vez, e pela primeira vez sem tomar a
+árvore de trabalho como refém.**
+
+```
+writer: 145 documents, 135 byte-exact against Apple's encoder
+model:  145 of 145 fully understood, 1740 of 1740 specializations reachable
+values: 61537 decoded, 0 failed
+report: 1100 trees rendered, 0 fell back to raw JSON
+svg:    149 of 149 read into geometry, 0 refused
+sweep:  231 of 231 mutations caught
+
+VERDICT: gate-m1 passed
+```
+
+**478 casos, 0 falhas. Zero sobreviventes.** E o fim foi limpo: zero restaurações
+e zero divergência de hash no log, o marcador de varredura-em-progresso removido,
+e nenhum arquivo mutado em disco.
+
+**O que mudou não foi o gate, foi onde ele roda.** As 22 mutações novas são do
+`fill` (doc 03 §30) e as duas tentativas anteriores de rodar a lista inteira
+foram **mortas** — uma na mutação ~123, outra aos 6 minutos —, e cada morte
+deixou um arquivo mutado na árvore em que se trabalha. `scripts/gate-worktree.ps1`
+dá à varredura um checkout e um build próprios; a árvore principal ficou livre
+durante as duas horas, e a documentação desta seção foi escrita e commitada nela
+**enquanto a varredura corria**.
+
+> **Duas ressalvas, ditas em vez de arredondadas.**
+>
+> A varredura testou o commit `6e46d1f`, ao qual o worktree se sincronizou no
+> início. O commit `1fcc8e5`, que veio depois, é **só documentação** — nenhum
+> arquivo que a varredura muta foi tocado —, então o veredito vale para o código
+> destas duas revisões. Se ele tivesse tocado código, não valeria, e a régua seria
+> a data e não o commit.
+>
+> A restauração manual **ainda foi necessária uma vez neste dia**, e foi a nona
+> do projeto: a fatia que rodava na árvore principal antes do worktree existir
+> teve de ser morta, e deixou o `IconBundle.cpp` com o filtro de `unusedAssets`
+> forçado a `if (false)`. Backup conferido contra o `HEAD` antes de qualquer
+> escrita. É a última ocorrência com essa causa: a partir daqui a varredura não
+> roda mais onde se edita.
 
 ### 2026-09-02: `gate-m1 passed`, 209 de 209, numa execução única
 

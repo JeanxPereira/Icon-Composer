@@ -257,6 +257,17 @@ A linha dos documentos completos é a que mede o que realmente mudou: até ontem
 `fill` da raiz não era lido, e as camadas eram compostas **sobre nada**. Um só
 documento do corpus fechava inteiro. Agora fecham 33.
 
+`[ART]` **E o gate fechou: `gate-m1 passed`, 231 de 231, numa execução única.**
+Zero sobreviventes, zero restaurações e zero divergência de hash no log. As 22
+mutações que este trabalho acrescentou foram todas pegas — inclusive a que
+troca a *reescrita* do alpha por uma multiplicação, que **nenhum caso do corpus
+consegue distinguir** e que existe só para provar que o teste dedicado do §30.6
+não é decoração.
+
+As duas tentativas anteriores de rodar a lista inteira tinham sido mortas. A
+diferença não foi o gate: foi rodá-lo num worktree dedicado
+(`scripts/gate-worktree.ps1`), com a árvore de trabalho livre ao lado.
+
 ### 7.1. E o número dos documentos vende mais do que vale
 
 `[ART]` Os **+18 documentos** não são 18 desenhos. **Dez deles são o
