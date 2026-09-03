@@ -299,8 +299,11 @@ e sim quatro.
    candidato único (doc 03 §26.3). Dois seguem com mais de um candidato, e
    dois dos dezesseis contradizem a leitura anterior — o que decide é o
    código do `IconRendering` que empacota o modo, ainda não lido.
-6. **O bundle em volta do `icon.json`.** Este documento cobre o JSON. O `.icon` é
-   uma pasta, e os SVGs e PNGs ao lado dele não foram levantados.
+6. ~~**O bundle em volta do `icon.json`**~~ — **FECHADO.** O `.icon` é uma pasta,
+   e ela tem documento próprio: **doc 02**, com `Assets/`, a resolução de
+   `image-name` e as referências penduradas. Os SVGs têm o **doc 04**. Os dois
+   passam o gate — 55 bundles sem arquivo morto, 149 SVGs lidos em geometria.
+   Este item ficou aberto na página depois de o trabalho estar feito.
 7. **A gramática exata da CLI.** O §11 levanta os comandos e as mensagens; o
    conjunto completo de argumentos por comando, não.
 
