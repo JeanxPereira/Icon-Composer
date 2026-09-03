@@ -80,6 +80,7 @@ $sources = @{
     field    = Join-Path $root "Source/RenderBox/DistanceField.cpp"
     fillres  = Join-Path $root "Source/RenderBox/FillResolve.cpp"
     sysfill  = Join-Path $root "Source/RenderBox/SystemFill.cpp"
+    blend    = Join-Path $root "Source/RenderBox/BlendMode.cpp"
     fieldgl  = Join-Path $root "Source/RenderBox/shaders/DistanceField.glsl"
     mip      = Join-Path $root "Source/RenderBox/MipPyramid.cpp"
     mipcomp  = Join-Path $root "Source/RenderBox/shaders/mip_reduce.comp"
@@ -1061,7 +1062,32 @@ $mutations = @(
     # blend provoked it is a count, not a report.
     @{ file = "icon"; name = "the group blend gap does not name the mode"
        from = 'skip("mescla de grupo ''" + *groupBlend + "'' -- o grupo inteiro "'
-       to   = 'skip("mescla de grupo -- o grupo inteiro "' }
+       to   = 'skip("mescla de grupo -- o grupo inteiro "' },
+
+    # ---- as duas tabelas da mescla ---------------------------------------
+    #
+    # A PRIMEIRA E A QUE IMPORTA. `plus_lighter` (43) e `plus_darker` (44) sao
+    # vizinhos na `cg_table` e adjacentes no CGBlendMode (27 e 26), e foram os
+    # DOIS que o casamento por formula deixou ambiguos. Troca-los e exatamente o
+    # erro que uma leitura descuidada comete, e o unico teste que o pega e o que
+    # confere contra a numeracao publica do CoreGraphics.
+    @{ file = "blend"; name = "the two plus modes are swapped in the cg table"
+       from = '    44,  // CG 26 plusDarker      -> plus_darker'
+       to   = '    43,  // CG 26 plusDarker      -> plus_darker' },
+    @{ file = "blend"; name = "plus-lighter takes the neighbouring CG constant"
+       from = '    27,  // plusLighter -> CG plusLighter'
+       to   = '    26,  // plusLighter -> CG plusLighter' },
+    # O bug que um `static_cast` entre os dois enums produziria: no formato
+    # `plusLighter` e a tag 1, e a tag 1 do motor e `darken`.
+    @{ file = "blend"; name = "the format enum is bridged by tag, as a cast would"
+       from = '        case icf::BlendMode::PlusLighter: return BlendMode::PlusLighter;'
+       to   = '        case icf::BlendMode::PlusLighter: return BlendMode::Darken;' },
+    @{ file = "blend"; name = "every mode answers with the same json spelling"
+       from = '        if (r.mode == mode) return r.key;'
+       to   = '        if (r.mode == mode) return "normal";' },
+    @{ file = "blend"; name = "the first two shader case names are transposed"
+       from = '    "copy", "clear", "source_over", "source_in", "source_out", "source_atop",'
+       to   = '    "clear", "copy", "source_over", "source_in", "source_out", "source_atop",' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"
