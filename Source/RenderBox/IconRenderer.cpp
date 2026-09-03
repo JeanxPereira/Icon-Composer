@@ -9,7 +9,10 @@
 
 #include "Source/CoreSVG/Document.h"
 #include "Source/RenderBox/AutomaticGradient.h"
+#include "Source/RenderBox/FillResolve.h"
 #include "Source/RenderBox/GlassLayer.h"
+#include "Source/RenderBox/GradientOracle.h"
+#include "Source/RenderBox/SystemFill.h"
 #include "Source/IconComposerFoundation/Png.h"
 #include "Source/IconComposerFoundation/Values.h"
 
@@ -135,100 +138,202 @@ std::vector<float> placeRaster(const icf::DecodedPng& img, const LayerPlacement&
 }
 
 
-// The layer's own fill, turned into what the renderer paints with.
+// A document colour as four floats. The grey spaces carry two components
+// (luminance, alpha) and the RGB spaces four, and `Values.h` deliberately does
+// not normalise the two into one shape -- that is a rendering decision, and
+// this is where it is made.
+void asColour(const icf::Color& c, float (&rgba)[4]) {
+    const bool grey = c.count < 3;
+    rgba[0] = static_cast<float>(c.components[0]);
+    rgba[1] = static_cast<float>(grey ? c.components[0] : c.components[1]);
+    rgba[2] = static_cast<float>(grey ? c.components[0] : c.components[2]);
+    rgba[3] = static_cast<float>(grey ? c.components[1] : c.components[3]);
+}
+
+// `RampStop` (the resolver's, in doubles) into `RampPoint` (the compositor's,
+// in floats). Two types rather than one because the resolution is arithmetic on
+// the binary's own constants and the composite is a shader's; converting once,
+// here, is cheaper than a shared type that has to be right for both.
+std::vector<RampPoint> rampPointsOf(const std::vector<RampStop>& stops) {
+    std::vector<RampPoint> out;
+    out.reserve(stops.size());
+    for (const RampStop& s : stops) {
+        RampPoint p;
+        for (int k = 0; k < 4; ++k) p.rgba[k] = static_cast<float>(s.rgba[k]);
+        p.location = static_cast<float>(s.location);
+        out.push_back(p);
+    }
+    return out;
+}
+
+// A placed axis as the map the compositor evaluates: a target pixel to the
+// ramp's parameter, which is the projection onto the axis divided by its own
+// length. False when the axis has no length -- there is no direction to project
+// onto, and picking one would be inventing the gradient's direction.
+bool axisToMap(const GradientAxis& axis, double (&m)[6]) {
+    const double dx = axis.end.x - axis.start.x;
+    const double dy = axis.end.y - axis.start.y;
+    const double len2 = dx * dx + dy * dy;
+    if (len2 == 0.0) return false;
+    m[0] = dx / len2;
+    m[1] = dy / len2;
+    m[2] = -(axis.start.x * dx + axis.start.y * dy) / len2;
+    return true;
+}
+
+// The background, written into an accumulator that is still empty.
 //
-// `[INF]` The art gives the shape and the fill gives the colour -- see the note
-// on `FillOverride`. `why` is filled when a fill kind is recognised but cannot
-// be honoured, so the layer is NAMED rather than drawn in the art's colours,
-// which would look like a render and be a different picture.
-FillOverride overrideFor(const icf::Fill& fill, const LayerPlacement& placement,
-                         std::uint32_t size, std::string& why) {
-    FillOverride out;
-    auto asColour = [](const icf::Color& c, float (&rgba)[4]) {
-        const bool grey = c.count < 3;
-        rgba[0] = static_cast<float>(c.components[0]);
-        rgba[1] = static_cast<float>(grey ? c.components[0] : c.components[1]);
-        rgba[2] = static_cast<float>(grey ? c.components[0] : c.components[2]);
-        rgba[3] = static_cast<float>(grey ? c.components[1] : c.components[3]);
-    };
-
-    switch (fill.kind) {
-        case icf::FillKind::None:
-            return out;
-
-        case icf::FillKind::Solid:
-            if (fill.colors.empty()) return out;
-            out.kind = FillOverride::Kind::Solid;
-            asColour(fill.colors.front(), out.colour);
-            return out;
-
-        case icf::FillKind::LinearGradient: {
-            // `[ART]` The document's linear gradient carries EXACTLY two stops --
-            // 48 of 48 in the corpus -- plus an `orientation` whose start and
-            // stop are points in the unit square. Which is the target's ramp
-            // kind 0, the two-colour mix (doc 03 §23.4).
-            if (fill.colors.size() < 2 || !fill.orientation) {
-                why = "linear-gradient sem duas cores ou sem orientacao";
-                return out;
+// It WRITES rather than composites, and that is a claim about the caller: the
+// background is the first thing painted, so there is nothing underneath to hold
+// back. The form is the premultiplied one the accumulator keeps while layers
+// stack.
+void paintBackground(std::vector<float>& acc, std::uint32_t size,
+                     const FillOverride& paint) {
+    for (std::uint32_t y = 0; y < size; ++y) {
+        for (std::uint32_t x = 0; x < size; ++x) {
+            float colour[4] = {paint.colour[0], paint.colour[1], paint.colour[2],
+                               paint.colour[3]};
+            if (paint.kind == FillOverride::Kind::Ramp) {
+                const double px = static_cast<double>(x) + 0.5;
+                const double py = static_cast<double>(y) + 0.5;
+                const double t = paint.m[0] * px + paint.m[1] * py + paint.m[2];
+                rampAtPositions(paint.stops, static_cast<float>(t), colour);
             }
-            out.kind = FillOverride::Kind::Ramp;
-            out.stops.resize(2);
-            out.stops[0].location = 0.0f;
-            out.stops[1].location = 1.0f;
-            asColour(fill.colors[0], out.stops[0].rgba);
-            asColour(fill.colors[1], out.stops[1].rgba);
-
-            // The unit square is the CANVAS, and the layer's placement does not
-            // move it: a layer's fill covers the layer, and the orientation is
-            // given in the same fractions for every layer. `[OBS]` That the unit
-            // square is the canvas rather than the layer's own box is NOT
-            // measured -- the corpus cannot tell them apart while every
-            // orientation runs corner to corner.
-            (void)placement;
-            const double sx = fill.orientation->stop.x - fill.orientation->start.x;
-            const double sy = fill.orientation->stop.y - fill.orientation->start.y;
-            const double len2 = sx * sx + sy * sy;
-            if (len2 == 0.0) {
-                why = "linear-gradient com orientacao de comprimento zero";
-                out.kind = FillOverride::Kind::None;
-                return out;
-            }
-            const double k = 1.0 / static_cast<double>(size);   // pixels -> unit square
-            out.m[0] = sx / len2 * k;
-            out.m[1] = sy / len2 * k;
-            out.m[2] = -(fill.orientation->start.x * sx + fill.orientation->start.y * sy) / len2;
-            return out;
+            const std::size_t i = (static_cast<std::size_t>(y) * size + x) * 4;
+            for (int k = 0; k < 3; ++k) acc[i + k] = colour[k] * colour[3];
+            acc[i + 3] = colour[3];
         }
-
-        case icf::FillKind::AutomaticGradient: {
-            if (fill.colors.empty()) {
-                why = "automatic-gradient sem cor base";
-                return out;
-            }
-            // The STOPS are derivable -- doc 03 §24 read the rule. Where the
-            // AXIS goes is not: that function returns stops, not a placement,
-            // and §24.4 records the geometry as untraced. Deriving the colours
-            // and then inventing an axis would put real colours in the wrong
-            // places, so the layer is named instead.
-            why = "automatic-gradient: as paradas sao derivaveis (doc 03 §24) mas o "
-                  "EIXO nao foi medido -- inventa-lo poria cores certas em lugar errado";
-            return out;
-        }
-
-        case icf::FillKind::Automatic:
-        case icf::FillKind::SystemLight:
-        case icf::FillKind::SystemDark:
-            why = "fill de sistema: escolhe entre duas rampas enlatadas dos parametros "
-                  "de render, cujos valores nao foram lidos (doc 03 §24.3)";
-            return out;
-
-        default:
-            why = "fill que este renderizador nao le";
-            return out;
     }
 }
 
+// Does this colour carry display-p3 components that nothing converts?
+bool isUnconvertedP3(const icf::Color& c) { return c.space == icf::ColorSpace::DisplayP3; }
+
+bool fillCarriesP3(const ResolvedFill& f) {
+    switch (f.contents) {
+        case ResolvedFill::Contents::Solid:
+        case ResolvedFill::Contents::AutomaticGradient:
+            return isUnconvertedP3(f.primary);
+        case ResolvedFill::Contents::Gradient:
+            return isUnconvertedP3(f.primary) || isUnconvertedP3(f.secondary);
+        case ResolvedFill::Contents::System:
+            // `[BIN]` The canned ramps are four bare `Double`s with no space
+            // tag at all -- a different gap, named in `SystemFill.h`, and not
+            // this one.
+            return false;
+    }
+    return false;
+}
+
 }  // namespace
+
+const char* const kChicletRectNote =
+    "fill de sistema desenhado sobre o boundingRect da propria forma: `[BIN]` "
+    "supportsChicletAlignmentForSystemFills e true por padrao e troca esse rect por "
+    "origem (0,0) com um CGSize do contexto de desenho, e `[OBS]` se esse tamanho e o "
+    "canvas, o chiclet ou o quadro full-bleed NAO FOI LIDO -- systemFillRect devolve "
+    "nullopt nesse braco de proposito, entao nao ha numero a chutar";
+
+const char* const kGradientAxisDirectionNote =
+    "`[OBS]` o eixo padrao (0,0)->(0,1) foi lido, a DIRECAO dele nao: a lateralidade de "
+    "y do display list do RB nunca foi estabelecida, entao qual ponta da forma recebe a "
+    "primeira parada e qual recebe a segunda esta indeterminado -- quase invisivel na "
+    "rampa clara (255->245), nao na escura (31->15)";
+
+const char* const kDiscardedBackgroundOrientationNote =
+    "`[BIN]` o conversor de fundo le primaryColor e secondaryColor e NUNCA toca em "
+    "orientation: a orientacao que este documento nomeia no fill de raiz e descartada e "
+    "o gradiente desenha no eixo vertical padrao -- honra-la seria mais correto que o "
+    "alvo, e portanto um pixel diferente";
+
+const char* const kBackgroundShapeNote =
+    "o fundo e pintado sobre o quadrado inteiro do canvas: `[OBS]` a geometria do "
+    "chiclet -- o raio de canto que o recortaria -- nao foi lida, entao nao ha forma a "
+    "que cortar";
+
+const char* const kRasterFillNote =
+    "o fill do documento nao alcanca a arte raster desta camada: o override so chega ao "
+    "caminho vetorial, e `[OBS]` se o alvo repinta um elemento raster do mesmo jeito que "
+    "repinta um vetorial nao foi lido";
+
+const char* const kBackgroundP3Note =
+    "fundo com componentes display-p3 desenhado SEM conversao de espaco -- a matriz "
+    "nunca foi medida do alvo, e desenha-los como sRGB os desloca em silencio";
+
+PlacementRect artPlacementRect(const icf::svg::ViewBox& box, const LayerPlacement& p,
+                               std::uint32_t size) {
+    // Derived from `placeOnCanvas` rather than recomputed beside it: the art's
+    // box and the art's pixels have to agree, and two copies of the same
+    // arithmetic is how they stop agreeing.
+    const PathGlobals g = placeOnCanvas(box, p, size);
+    const double sx = static_cast<double>(g.m0[0]);
+    const double sy = static_cast<double>(g.m1[1]);
+    PlacementRect r;
+    r.x = static_cast<double>(g.m2[0]) + sx * box.x;
+    r.y = static_cast<double>(g.m2[1]) + sy * box.y;
+    r.width = sx * (box.width > 0 ? box.width : 1.0);
+    r.height = sy * (box.height > 0 ? box.height : 1.0);
+    return r;
+}
+
+FillOverride fillPaint(const ResolvedFill& fill, const PlacementRect& shapeRect,
+                       std::string& why) {
+    FillOverride out;
+    switch (fill.contents) {
+        case ResolvedFill::Contents::Solid:
+            out.kind = FillOverride::Kind::Solid;
+            asColour(fill.primary, out.colour);
+            return out;
+
+        case ResolvedFill::Contents::Gradient:
+            // `[BIN]` `.gradient(primary, secondary, placement:)` -- two
+            // colours and nothing between them, which is the target's ramp kind
+            // 0, the two-colour mix (doc 03 §23.4).
+            out.stops.resize(2);
+            out.stops[0].location = 0.0f;
+            out.stops[1].location = 1.0f;
+            asColour(fill.primary, out.stops[0].rgba);
+            asColour(fill.secondary, out.stops[1].rgba);
+            break;
+
+        case ResolvedFill::Contents::AutomaticGradient:
+            // THE REFUSAL THAT IS BEING WITHDRAWN HERE.
+            // `2026-09-01-gradiente.md` §4.4 left `automatic-gradient` undrawn
+            // and said why: the six parameters of the derivation were measured
+            // and THE AXIS HAD NEVER BEEN READ, so deriving the colours would
+            // have put real colours in invented places.
+            //
+            // `[BIN]` The axis is read, and it was not on the gradient at all:
+            // `IconColor.LinearGradient` carries only `stops`, the geometry is
+            // a separate `GradientPlacement`, all three `automaticGradient`
+            // sites pass `placement: nil`, and nil is a defined value --
+            // `GradientPlacement.default`, `(0,0)->(0,1)`, substituted by the
+            // draw path at `0x1BAB8`. §4.4's reason is gone, which is why this
+            // case now draws instead of naming itself.
+            out.stops = rampPointsOf(automaticGradient(fill.primary));
+            break;
+
+        case ResolvedFill::Contents::System:
+            // `[BIN]` The two canned chiclet ramps, with every stop's alpha
+            // REWRITTEN by the fill's opacity rather than multiplied
+            // (`SystemFill.h`). The placement a `.system` resolve leaves behind
+            // is always nil, so this always takes the default axis below.
+            out.stops = rampPointsOf(resolveSystemFill(fill.ramp, fill.opacity).stops);
+            break;
+    }
+
+    // `placeGradient` performs the substitution itself, so the nil arrives here
+    // as a nil and is not pre-resolved by the caller. That the substitution is
+    // the finding is exactly why it is not spread across call sites.
+    const GradientAxis axis = placeGradient(fill.placement, shapeRect);
+    if (!axisToMap(axis, out.m)) {
+        why = "gradiente cujo eixo colapsa num ponto: nao ha direcao onde projetar";
+        out.stops.clear();
+        return out;
+    }
+    out.kind = FillOverride::Kind::Ramp;
+    return out;
+}
 
 LayerPlacement compose(const LayerPlacement& g, const LayerPlacement& l) {
     LayerPlacement out;
@@ -283,6 +388,64 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
 
     const icf::IconDocument doc = bundle.document();
     const std::vector<icf::Group> groups = doc.groups();
+
+    // ---- the background, before anything else --------------------------
+    //
+    // `[ART]` All 145 corpus documents carry a root `fill`, and until today
+    // none of them was read: the layers were composited over nothing. The
+    // BACKGROUND converter is a different function from the layer one, in the
+    // target as here, and the two disagree about the two words that matter --
+    // `none` takes the system path on the background and answers nil on a
+    // layer; `automatic` is a chiclet ramp on the background and an inheritance
+    // operator on a layer.
+    //
+    // The rect is the whole canvas. That is what "the shape's own bounding
+    // rect" means for a shape that is the background -- see `kBackgroundShapeNote`
+    // for the part of it that is not read.
+    {
+        const FillResolution bg = resolveBackgroundFill(doc.json(), options.context);
+        if (bg.outcome == FillOutcome::Refused) {
+            out.backgroundGap = "fill de raiz que este renderizador nao pinta: " + bg.why;
+        } else if (bg.outcome == FillOutcome::Resolved) {
+            const PlacementRect canvas{0.0, 0.0, static_cast<double>(options.size),
+                                       static_cast<double>(options.size)};
+            std::string why;
+            const FillOverride paint = fillPaint(bg.fill, canvas, why);
+            if (!why.empty()) {
+                out.backgroundGap = why;
+            } else {
+                paintBackground(acc, options.size, paint);
+                out.backgroundPainted = true;
+                note(out.notes, kBackgroundShapeNote);
+                if (paint.kind == FillOverride::Kind::Ramp) {
+                    note(out.notes, kGradientAxisDirectionNote);
+                }
+                if (bg.fill.contents == ResolvedFill::Contents::System) {
+                    note(out.notes, kChicletRectNote);
+                }
+                if (fillCarriesP3(bg.fill)) note(out.notes, kBackgroundP3Note);
+
+                // THE CORRECTION OF §5.2, and it is deliberately a step
+                // BACKWARDS in cleverness. `[BIN]` The background converter
+                // reads `primaryColor` and `secondaryColor` and never touches
+                // `orientation`; `[ART]` 61 background resolutions over the
+                // corpus name one anyway, and `backgroundPlacements` is 0. So
+                // this renderer must not honour it -- being more correct than
+                // the target is a different pixel, which for a reproduction is
+                // the wrong kind of right. Said out loud when a document
+                // actually asked, so the discarding is visible in the report
+                // and not only in the source.
+                if (const icf::json::Value* node =
+                        icf::resolve(doc.json(), "fill", options.context)) {
+                    if (auto parsed = icf::fillFrom(*node)) {
+                        if (parsed->orientation) {
+                            note(out.notes, kDiscardedBackgroundOrientationNote);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     for (std::size_t gi = 0; gi < groups.size(); ++gi) {
         const icf::Group& group = groups[gi];
@@ -349,20 +512,20 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             std::transform(ext.begin(), ext.end(), ext.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
-            // The layer's own fill, if it has one. A fill this renderer knows
-            // by name but cannot honour NAMES the layer -- drawing the art in
-            // its own colours instead would be a different picture wearing the
-            // look of a finished one.
-            FillOverride paint;
-            if (const icf::json::Value* f = layer.resolve("fill", options.context)) {
-                if (auto parsed = icf::fillFrom(*f)) {
-                    std::string why;
-                    paint = overrideFor(*parsed, lp, options.size, why);
-                    if (!why.empty()) {
-                        skip(why);
-                        continue;
-                    }
-                }
+            // The layer's own fill, if it has one, through the LAYER converter
+            // -- which is a different function from the background's, and
+            // answers differently to the same word.
+            //
+            // `NoFill` is not a gap and not a failure: it is the target's
+            // `Icon.Element.fill == nil`, which is what `none` produces and
+            // what an `automatic` produces when it terminates. The element
+            // keeps the art's own colours. `[ART]` That is 152 of the 156 firings
+            // of `automatic` in the corpus, so a renderer that painted
+            // something here would repaint 152 layers that must stay as drawn.
+            const FillResolution fill = resolveLayerFill(layer, options.context);
+            if (fill.outcome == FillOutcome::Refused) {
+                skip("fill de camada que este renderizador nao pinta: " + fill.why);
+                continue;
             }
 
             // ---- the glass, before the layer's own art -------------------
@@ -394,6 +557,32 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 if (!svg) {
                     skip("SVG que este leitor nao abre: " + *imageName);
                     continue;
+                }
+            }
+
+            // The paint is built AFTER the art, because a gradient needs the
+            // rect it is placed against and that rect is the art's own box.
+            FillOverride paint;
+            if (fill.outcome == FillOutcome::Resolved) {
+                if (svg) {
+                    std::string why;
+                    paint = fillPaint(fill.fill,
+                                      artPlacementRect(svg->viewBox, lp, options.size), why);
+                    if (!why.empty()) {
+                        skip(why);
+                        continue;
+                    }
+                    if (paint.kind == FillOverride::Kind::Ramp && !fill.fill.placement) {
+                        note(out.notes, kGradientAxisDirectionNote);
+                    }
+                    if (fill.fill.contents == ResolvedFill::Contents::System) {
+                        note(out.notes, kChicletRectNote);
+                    }
+                } else {
+                    // Not a skip: the raster IS drawn, with its own colours.
+                    // Skipping it would trade a wrong colour for a missing
+                    // layer, which is a bigger lie in a picture.
+                    note(out.notes, kRasterFillNote);
                 }
             }
 

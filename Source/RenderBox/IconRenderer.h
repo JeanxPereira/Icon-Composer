@@ -28,6 +28,43 @@
 // Both are marked in the code where they are used. An assumption that is written
 // down can be corrected; one that is merely coded becomes folklore.
 //
+// AND THE FILL, SINCE 2026-09-03
+// ------------------------------
+// The document's `fill` is no longer read by this file. `FillResolve.h` reads
+// it -- twice, because the target reads it twice: a BACKGROUND converter and a
+// LAYER converter that answer differently to the same word. This file consumes
+// those answers and turns them into paint.
+//
+// Three consequences show in the pictures:
+//
+//   1. THE BACKGROUND IS DRAWN. Until now `renderIcon` drew layers over
+//      nothing, and the root `fill` -- which every one of the 145 corpus
+//      documents carries -- was not read at all.
+//   2. `automatic` DRAWS. On the background it is a system chiclet ramp, or,
+//      under `tinted`, `IconColor.clear`. On a LAYER it is not a colour: it is
+//      what that same layer resolves at the `light` slot, which `[ART]` is nil
+//      in 152 of its 156 corpus firings -- the art keeps its own colours.
+//   3. `automatic-gradient` DRAWS. `2026-09-01-gradiente.md` §4.4 refused it
+//      because THE AXIS HAD NEVER BEEN READ. It has been: all three converter
+//      sites pass `placement: nil`, and nil is `GradientPlacement.default`,
+//      `(0,0)->(0,1)`. The reason for that refusal is gone.
+//
+// AND THE ORIENTATION THE BACKGROUND THROWS AWAY
+// ----------------------------------------------
+// `[BIN]` Exactly one of the four gradient-constructing sites reads the
+// document's `orientation`: the LAYER's `linear-gradient`. A BACKGROUND
+// `linear-gradient` that names an orientation draws on the default vertical
+// axis anyway. `[ART]` 61 background resolutions over the corpus name an
+// orientation the target discards. Honouring it here would be more correct than
+// the target and therefore a different pixel, so the background's axis comes
+// from `resolveBackgroundFill`, which passes the nil as a literal.
+//
+// THREE THINGS DRAWN WITHOUT BEING READ, AND THEY SAY SO IN `notes`
+// ------------------------------------------------------------------
+// `kChicletRectNote`, `kGradientAxisDirectionNote` and `kBackgroundShapeNote`.
+// Each names a gap that changes the pixels; none of them is a reason to refuse
+// to draw, and none of them is allowed to be silent.
+//
 // AND THE GLASS, SINCE 2026-09-02
 // -------------------------------
 // A layer whose `glass` bit is set is no longer skipped. The material comes off
@@ -45,7 +82,9 @@
 #include "Source/IconComposerFoundation/IconBundle.h"
 #include "Source/IconComposerFoundation/IconDocument.h"
 #include "Source/RenderBox/Device.h"
+#include "Source/RenderBox/FillResolve.h"
 #include "Source/RenderBox/SvgRenderer.h"
+#include "Source/RenderBox/SystemFill.h"
 
 namespace rb {
 
@@ -84,6 +123,18 @@ struct RenderedIcon {
     // one per layer.
     std::vector<std::string> notes;
 
+    // The document's root `fill` -- the icon's background -- counted APART from
+    // the layers. `drawn`, `total` and `skipped` are the layer ruler, and the
+    // corpus gate asserts `drawn + skipped <= total` on it; a background folded
+    // into those numbers would break that arithmetic and, worse, would make a
+    // document with one layer and a background read as two layers.
+    bool backgroundPainted = false;
+    // Non-empty when the root `fill` is present and could not be turned into
+    // paint. `[ART]` All 145 corpus documents carry a root `fill`, so an empty
+    // `backgroundGap` with `backgroundPainted == false` means the document
+    // named none -- which no corpus document does.
+    std::string backgroundGap;
+
     // Layers drawn with their glass refracting the backdrop underneath them.
     // Counted apart from `drawn` because a glass layer whose refraction is the
     // identity (`refractionStrength == 0`, the read default) draws its art and
@@ -108,6 +159,87 @@ LayerPlacement compose(const LayerPlacement& group, const LayerPlacement& layer)
 // The globals that place `box` on the canvas under `p`, for a square target.
 PathGlobals placeOnCanvas(const icf::svg::ViewBox& box, const LayerPlacement& p,
                           std::uint32_t size);
+
+// ---- the fill, from a resolution to paint --------------------------------
+
+// The rect a fill's gradient is placed against, in TARGET PIXELS.
+//
+// `[BIN]` The draw path resolves a placement against the `boundingRect` of the
+// shape being filled (`0x1BC8C`), and the unit-to-rect mapping is
+// `SystemFill.h`'s `placeUnitPoint`. So the rect is not decoration: it is where
+// the axis gets its length and its offset.
+//
+// `[OBS]` WHICH rect an `Icon.Element` reports there -- the `bounds` it is
+// constructed with, the art's viewBox, or the tight bounding box of the paths
+// actually drawn -- was not read. This returns the art's viewBox as placed on
+// the canvas, which is the box the element's own `contents` declare.
+//
+// This replaces an earlier assumption. Until now a layer `linear-gradient` took
+// its `orientation`'s unit square to be THE CANVAS, marked `[OBS]` because the
+// corpus cannot tell the two apart while every orientation runs corner to
+// corner. The rect is now read, so the assumption is retired rather than kept
+// beside the reading.
+PlacementRect artPlacementRect(const icf::svg::ViewBox& box, const LayerPlacement& p,
+                               std::uint32_t size);
+
+// A resolved fill turned into what the compositor paints with, against
+// `shapeRect`.
+//
+// `why` is set, and the returned paint is `Kind::None`, when a fill that
+// resolved cannot be painted -- which is one case only: a gradient whose
+// placement collapses to a point, where there is no axis to project onto.
+// `[ART]` No corpus fill does that; the guard exists because a document could.
+//
+// Exposed so the whole corpus can be swept through it with no GPU: the
+// interesting failures of this function are arithmetic, and a sweep that needed
+// a device would not run in the places that most need it.
+FillOverride fillPaint(const ResolvedFill& fill, const PlacementRect& shapeRect,
+                       std::string& why);
+
+// ---- what is drawn without having been read ------------------------------
+//
+// Each of these lands in `RenderedIcon::notes`, deduplicated, the way
+// `glassRulerNote` does. They are not skip reasons: the pixel IS drawn. They
+// exist because a gap that changes the picture and is not said out loud becomes
+// folklore the moment the picture looks plausible.
+
+// `[BIN]` `ICRRenderingParameters+0x360` --
+// `supportsChicletAlignmentForSystemFills`, written `1` by the default
+// initialiser -- makes a `.system` fill's rect origin `(0,0)` with a `CGSize`
+// from the drawing context instead of the shape's bounding rect.
+// `[OBS]` Whether that size is the canvas, the chiclet or the full-bleed frame
+// was NOT read, and `SystemFill::systemFillRect` answers `nullopt` for it on
+// purpose. So this renderer draws on the bounding rect -- the branch the target
+// takes when alignment is off -- and says so here.
+extern const char* const kChicletRectNote;
+
+// `[OBS]` The default axis is `(0,0)->(0,1)` and that is read. Which END of the
+// shape receives the first stop is not: the y-handedness of the RB display list
+// was never established. On the light chiclet ramp the two answers differ by
+// four parts in 255; on the dark one, 31 against 15, they do not.
+extern const char* const kGradientAxisDirectionNote;
+
+// `[BIN]` The background converter reads `primaryColor` and `secondaryColor`
+// and never touches `orientation`. Said only when the document actually named
+// one, because the note is about THIS document having asked for something the
+// target throws away -- not about the rule.
+extern const char* const kDiscardedBackgroundOrientationNote;
+
+// `[OBS]` The background is painted over the whole canvas square. The chiclet's
+// own geometry -- the corner radius that would clip it -- was not read, so
+// there is no shape to cut it to.
+extern const char* const kBackgroundShapeNote;
+
+// The layer's fill reaches the VECTOR path only. `[ART]` 45 of the corpus's
+// layers name `.png` art and some of those carry a fill; the raster is placed
+// with its own colours. `[OBS]` Whether the target retints a raster element the
+// way it retints a vector one was not read, so this is named rather than
+// guessed in either direction.
+extern const char* const kRasterFillNote;
+
+// `[OBS]` display-p3 components drawn without a conversion matrix, the same gap
+// `RenderedImage::unconvertedP3` reports for a shape's own paint.
+extern const char* const kBackgroundP3Note;
 
 Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                                 IconRenderOptions options = IconRenderOptions{});

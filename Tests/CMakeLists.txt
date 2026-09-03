@@ -33,6 +33,7 @@ add_executable(ic_tests
     test_glass_layer.cpp
     test_fill_resolve.cpp
     test_system_fill.cpp
+    test_automatic_fill.cpp
 )
 
 target_link_libraries(ic_tests PRIVATE IconComposer::Foundation IconComposer::CliLib IconComposer::CoreSVG IconComposer::RenderBox)

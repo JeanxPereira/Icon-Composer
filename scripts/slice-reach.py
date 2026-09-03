@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""How far a flat-fill renderer reaches into the corpus.
+"""How far this renderer reaches into the corpus.
 
 WHY THIS RUNS BEFORE THE CODE
 -----------------------------
@@ -11,15 +11,62 @@ guess.
 
 WHAT COUNTS AS "IN THE SLICE"
 -----------------------------
-A layer is in the slice when it is drawable with what is gated today: a `solid`
-fill, `normal` blend, no glass, and art the renderer can place -- a PNG, or
-vector art the CoreSVG reader turns into filled paths, flat or gradient-filled,
-with no stroke, filter, mask, clip path, pattern, `use` or embedded raster.
+A layer is in the slice when it is drawable with what is gated today: any of the
+seven `fill` kinds, a `normal` blend, and art the renderer can place -- a PNG,
+or vector art the CoreSVG reader turns into filled paths, flat or
+gradient-filled, with no stroke, filter, mask, clip path, pattern, `use` or
+embedded raster.
 
 THREE THINGS HAVE LEFT THE BLOCKER LIST: RASTER and the SVG's `url(#id)`
 GRADIENT paint, both on 2026-09-01, and on 2026-09-02 the GLASS LAYER. The
 number this script prints is therefore not comparable across any of them --
 said here rather than letting a rising number look like the corpus changed.
+
+AND ON 2026-09-03, THE `fill` LEFT IT ENTIRELY
+----------------------------------------------
+`Source/RenderBox/FillResolve.h` reads the document's seven `Fill.Kind` cases
+through the target's TWO converters, and `IconRenderer` now paints all seven --
+on the background as well as on a layer, which is new: until today the root
+`fill` was not read at all and the layers were composited over nothing.
+
+Three retirements arrived together, and they are one work item and not three:
+
+  `automatic`           on a layer it is not a colour, it is what that same
+                        layer resolves at the `light` slot; on the background it
+                        is a system chiclet ramp, or `IconColor.clear` under
+                        `tinted`.
+  `automatic-gradient`  `2026-09-01-gradiente.md` §4.4 refused it because THE
+                        AXIS HAD NEVER BEEN READ. It has been: every converter
+                        site passes `placement: nil`, and nil means
+                        `GradientPlacement.default`, `(0,0)->(0,1)`.
+  `linear-gradient`     the same nil closed its last hole. A layer ramp that
+                        names no `orientation` was refused before; it now draws
+                        on that default axis, and `[ART]` that is 26 of the
+                        corpus's 48 layer `linear-gradient` fills -- the common
+                        case, not an edge.
+
+STAGED, so the spec's promise stays checkable: with `automatic` alone the layer
+ruler reads 125 and the document ruler 29; with `automatic-gradient` too, 140
+and 32; with the `linear-gradient` hole closed as well, 145 and 33.
+
+WHAT THIS SCRIPT STILL DOES NOT CONSULT, and it is why its layer count runs
+ahead of the renderer's own: `hidden`, and whether a layer names art in the
+context being drawn. It counts EVERY REACHABLE VALUE by design (see the
+specialization note below), so a layer hidden in one context and drawn in
+another counts as drawable here and is not drawn there. `[ART]` Over this corpus
+that difference is 5 layers: this script says 145 and `renderIcon` at the base
+appearance draws 140.
+
+AND WHAT IS DRAWN WITHOUT HAVING BEEN READ. A `fill` that no longer blocks is
+not a `fill` that is finished. `[OBS]` The background is painted over the whole
+canvas square because the chiclet's corner geometry was never read; `[OBS]` a
+`.system` fill is placed on the shape's bounding rect because
+`supportsChicletAlignmentForSystemFills` is true by default and the `CGSize` it
+substitutes was not read; and `[OBS]` the direction of the default axis is
+undetermined, which is nearly invisible on the 255->245 ramp and is not on
+31->15. The renderer names all three in `RenderedIcon::notes` on every render
+that provokes them. Drawable is not the same as the target's pixel -- the same
+distinction this script already draws for the glass material.
 
 WHAT "GLASS IS NO LONGER A BLOCKER" MEANS, EXACTLY
 -------------------------------------------------
@@ -88,7 +135,14 @@ from pathlib import Path
 
 SUFFIX = "-specializations"
 FILL_MODIFIERS = {"orientation"}
-FLAT_FILLS = {"solid", "none"}
+
+# The seven `Fill.Kind` cases the renderer paints -- which, since 2026-09-03, is
+# all seven of them. Kept as a set rather than deleted with the check it guards:
+# the vocabulary is closed today, and an EIGHTH case appearing in a future
+# document should show up as a named blocker rather than be drawn as whatever
+# the reader made of it.
+DRAWN_FILLS = {"none", "automatic", "solid", "automatic-gradient", "linear-gradient",
+               "system-light", "system-dark"}
 
 # What the CoreSVG reader turns into filled paths today, and what it does not.
 SVG_BLOCKERS = {
@@ -212,7 +266,7 @@ def blockers_of(node, assets: Path, svg_cache: dict,
 
     for v in values_for(node, "fill"):
         for k in fill_kinds(v):
-            if k not in FLAT_FILLS:
+            if k not in DRAWN_FILLS:
                 bad.add("fill de camada: %s" % k)
     for v in values_for(node, "blend-mode"):
         if isinstance(v, str) and v != "normal":
@@ -322,7 +376,11 @@ def main() -> int:
         else:
             docs_ok += 1
             in_slice.append(b.name)
-        if not (why | (bgf - FLAT_FILLS)):
+        # The BACKGROUND is drawn now too, so this is no longer "the layers
+        # work and the fill is anyone's guess". `[OBS]` It is still not the
+        # target's pixel: the chiclet's corner geometry and the rect a
+        # chiclet-aligned system fill uses were not read -- see the header.
+        if not (why | (bgf - DRAWN_FILLS)):
             full_ok += 1
 
     n = len(bundles)
