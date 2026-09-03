@@ -30,6 +30,8 @@ add_library(RenderBox STATIC
     SdfDisplacement.cpp
     GlassMaterial.cpp
     GlassLayer.cpp
+    FillResolve.cpp
+    SystemFill.cpp
 )
 
 # Shaders are compiled at BUILD time, not loaded at run time. A shader that does

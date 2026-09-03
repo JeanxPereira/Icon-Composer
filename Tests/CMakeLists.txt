@@ -31,6 +31,8 @@ add_executable(ic_tests
     test_rb_sdf_displacement.cpp
     test_glass_material.cpp
     test_glass_layer.cpp
+    test_fill_resolve.cpp
+    test_system_fill.cpp
 )
 
 target_link_libraries(ic_tests PRIVATE IconComposer::Foundation IconComposer::CliLib IconComposer::CoreSVG IconComposer::RenderBox)
