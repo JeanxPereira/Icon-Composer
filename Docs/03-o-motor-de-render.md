@@ -652,7 +652,18 @@ segmento tem comprimento zero, usa `P[iid+1] − P[iid]`. Um segmento degenerado
 não vira NaN, herda a direção do anterior.
 
 `[BIN]` O campo `join` carrega sentinelas: `join == -3` é testado nos dois
-vizinhos, e `min(join[iid], join[iid+2]) < 0` **descarta** o vértice.
+vizinhos, e `min(join[iid+1], join[iid+2]) < 0` **descarta** o vértice.
+
+> **Correção (2026-09-03).** Esta linha dizia `min(join[iid], join[iid+2])`, e o
+> índice estava errado por um. `[BIN]` Em `default_mod68.ll` o `air.min.s.i16`
+> recebe `%42` e `%54`, e os dois `getelementptr` que os produzem indexam
+> `%21 + 1` e `%21 + 2` — **os dois extremos do segmento desenhado**. O
+> `join[iid]` é lido (em `%30`), mas só para o teste `== -3`.
+>
+> A diferença não é cosmética: com o índice errado, **o primeiro segmento de
+> todo subpath seria descartado**, porque o ponto de índice `iid` é o fantasma
+> que carrega o `-3`. O erro foi achado quando o layout que a CPU emite foi lido
+> (§31) e não fechou com o que esta linha afirmava.
 
 ### 10.3. Onde eu parei, e por quê
 
@@ -3157,3 +3168,125 @@ apareça em vez de ser silenciosamente boa.
 | o `Bool` do `.system(_, Double, Bool)` | `[OBS]` os três construtores gravam `1`; nenhum escritor de `0` foi achado |
 | o espaço de cor das rampas | `[OBS]` `IconColor` são quatro `Double` sem tag de espaço |
 | `ResolvedFill`, `promoteNoneFillsToEachAppearance` | `[OBS]` localizados, não lidos. São do **editor**, não do caminho de render |
+
+---
+
+## 31. O fluxo de pontos do traço — a regra da CPU, e o `miterlimit` não é da GPU
+
+*2026-09-03. O §10 parou por causa dos bits do `RenderState`; o §30-bis os
+nomeou. Sobrava o outro lado: **quem alimenta o buffer**. Transcrever a
+geometria da GPU e enchê-la com um buffer chutado seria pior do que não
+transcrever, porque produziria imagem plausível.*
+
+### 31.1. O achado que decide onde o `miterlimit` mora
+
+`[BIN]` `RB::(anônimo)::apply_miter_limit(float2 d_in, float2 d_out, float m)`,
+em **`0x11DE6C`–`0x11DF00`**, desmontada inteira com cobertura 100%:
+
+```
+s0 = dot(normalize(d_in), normalize(d_out))    ; o cosseno da virada
+s1 = (1 + s0) * s2                             ; s2 = m
+fcmp  s1, #2.0
+csel  w8, #2, wzr, mi                          ; s1 < 2  ->  2 (bevel), senao 0 (miter)
+ldr   s1, [x9, #0xe40]                         ; 0x161E40 = 0.99f
+fcmp  s0, s1
+csinc w0, w8, wzr, le                          ; s0 > 0.99  ->  1 (round)
+```
+
+`[BIN]` E `m` é **`miterlimit²`**: `flatten_points` guarda o quadrado em
+`Flattener+0x24` (`fmul s9, s3, s3` em `0x11CE9C`). Então
+`(1 + cos)·ml² < 2` ⇔ `ml² < 2/(1+cos)`, que é **a regra do SVG e do
+CoreGraphics, exata**.
+
+> **Consequência para qualquer transcrição.** O `miterlimit` **não chega à
+> GPU**. O campo `join` de cada ponto já vem degenerado: a CPU roda esta regra
+> por ponto e escreve `0`, `1` ou `2`. Um renderizador que guardasse o
+> `miterlimit` para o shader estaria implementando um alvo diferente.
+
+`[BIN]` A decisão por ponto, de `Stroke::Flattener<Point>::lineto` (`0x11DD70`)
+e `flush_lineto` (`0x11DE2C`):
+
+| situação | `join` escrito |
+|---|---|
+| `raio ≤ Flattener[0x2c]` | **1** (round), sempre. `[0x2c] = bezier_flatness()/escala`, e `RB::bezier_flatness()` (`0x110CA0`) devolve **0,25** — traço mais fino que meio pixel não ganha junção |
+| `LineJoin` global = `bevel` | **2**, sem teste de limite |
+| `LineJoin` global = `round` | **1**, sem teste — e `1` **não emite primitiva de junção nenhuma** |
+| `LineJoin` global = `miter` | `apply_miter_limit` por ponto |
+
+### 31.2. Os sentinelas negativos, e são três coisas diferentes
+
+`[BIN]`
+
+| valor | onde | o que é |
+|---|---|---|
+| **−3** | `lineto` `0xA9D58`, `finish_subpath` `0xAA29C` | o **ponto-fantasma espelhado** fora de uma ponta ABERTA, nas duas pontas: `2·P₀ − P₁` e `2·P_{k−1} − P_{k−2}`, com raio e alpha copiados do vizinho real |
+| **−1** | `finish_subpath` `0xAA2C0`/`0xAA2D4` | a **duplicata de wrap-around** de um subpath FECHADO |
+| **−1** | `lineto` `0xA9EF0` | **separador de corte por clip**, posição `(0,0)`, raio `0` |
+| **−2** | `lineto` `0xA9E7C`, `finish_subpath` `0xAA228`/`0xAA260` | **ponta `butt` OBLÍQUA**, em par ordenado `[−2][2]` no início e `[2][−2]` no fim |
+
+`[BIN]` **Não existe sentinela de separação entre subpaths**, e não é preciso:
+dois `−3` adjacentes fazem o teste `min(join[iid+1], join[iid+2]) < 0` do §10.2
+descartar sozinho toda janela que atravessaria de um subpath para o outro.
+
+### 31.3. O layout do buffer, e a folga é de um ponto em cada ponta
+
+`[BIN]` Subpath **aberto** de `k` pontos reais → `N_sub = k + 2`:
+
+```
+idx 0        2·P₀ − P₁                  join = −3
+idx 1        P₀                         join =  1
+idx 2..k−1   P₁ … P_{k−2}               join = por ponto (§31.1)
+idx k        P_{k−1}                    join =  1
+idx k+1      2·P_{k−1} − P_{k−2}        join = −3
+```
+
+`[BIN]` Subpath **fechado** → `N_sub = k + 3`: o slot fantasma da frente é
+**sobrescrito** com o penúltimo ponto real (`join = −1`), o ponto inicial recebe
+o join da costura, e uma cópia do segundo ponto real é **anexada** com
+`join = −1`.
+
+`[BIN]` `add_point` (`0xAA54C`) **descarta em silêncio** um ponto cuja posição
+seja idêntica à do anterior — o buffer **não é uma transcrição 1:1** da
+polilinha. E `new_buffer` (`0xAA6A8`) usa buffers de `0x800` bytes = 128 pontos,
+copiando os **dois últimos** do buffer velho ao trocar.
+
+`[BIN]` As contagens de instância, de `draw_buffer` (`0xAA3E0`):
+
+| passada | `FunctionType` | instâncias | janela |
+|---|---|---|---|
+| linhas | **14** | `N − 3` | `P[iid..iid+3]`, segmento `P[iid+1]→P[iid+2]` |
+| junções | **15** | `N − 2` | `P[iid..iid+2]`, junção em `P[iid+1]` |
+
+`[BIN]` A passada de junções só é emitida quando algum `join ∈ {−2, 0, 2}` —
+`add_point` (`0xAA62C`) liga a flag com `(1 << (join+2)) & 0x15`, que coincide
+bit a bit com o `switch` do `stroke_joins_vertex`.
+
+### 31.4. `StrokeInfo`, e a largura NÃO está nele
+
+`[BIN]` De `Coverage::Stroke<RBStrokeRef>::get_info` (`0x47C9C`) cruzado com
+`draw_stroke` (`0xA90F0`):
+
+| off | conteúdo |
+|---|---|
+| `+0x00` | kind: `0` linhas, `1` partículas |
+| `+0x04` | `RB::LineCap` → palavra 0, bits 6–8 |
+| `+0x05` | `RB::LineJoin` → palavra 0, bits 9–10 |
+| `+0x08` | payload de 14 bits → **palavra 1**, bits 16–29. `[OBS]` semântica não lida |
+| `+0x0C` | `== 1` → palavra 0, bit 11 |
+| `+0x10` | **miterlimit** |
+
+`[BIN]` **Negativo nomeado: a largura não está no `StrokeInfo`.** Ela vive em
+`StrokeablePath+0x18` e chega à GPU **só** como o campo `radius` por ponto, com
+`flatten_points` (`0x11D020`) guardando `{ width * 0.5f, 1.0f }` como o
+`Stroke::Point` constante. **`radius = largura/2`, `alpha = 1.0`** num traço
+uniforme.
+
+### 31.5. O que continua sem leitura
+
+| | por quê |
+|---|---|
+| o gatilho prático do par `−2`/`2` | `[BIN]` o mecanismo está lido inteiro. `[OBS]` O que não se mediu é qual produtor faz a tangente registrada divergir da corda. No caminho `Flattener` puro ela **nunca** diverge, então sem dash o par pode ser omitido e o buffer continua correto |
+| `StrokeInfo+0x08` | `[OBS]` os 14 bits que vão para a palavra 1 |
+| como uma junção `round` é pintada | `[OBS]` `join == 1` não emite primitiva de junção. Não afeta o corpus (`miter` nos 35), mas é buraco para cobrir os três joins |
+| o braço de partículas | `[OBS]` `kind == 1`, e um terceiro braço em `0xA9670` |
+| **a junção de costura desenhada duas vezes** | `[OBS]` num subpath fechado, `idx 1` e `idx k+1` são o mesmo ponto com o mesmo join e os mesmos vizinhos, e **os dois caem no intervalo da passada de junções**. Inofensivo sob cobertura por união; não sob mescla aditiva. Lido, e **não se sabe se é intencional** |
