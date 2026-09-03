@@ -1038,7 +1038,30 @@ $mutations = @(
     # renderer quietly claim a fidelity it does not have.
     @{ file = "icon"; name = "the discarded background orientation is not reported"
        from = 'note(out.notes, kDiscardedBackgroundOrientationNote);'
-       to   = '(void)0;' }
+       to   = '(void)0;' },
+
+    # ---- the GROUP's blend, which this renderer read off the layer only -----
+    #
+    # THE DEFECT THESE TWO GUARD WAS SILENT, and that is why both exist. Until
+    # 2026-09-03 the group's `blend-mode` was never read: twelve corpus
+    # documents were composited as `normal` and the report came back EMPTY.
+    # Nothing went red, because nothing looked.
+    #
+    # The first mutation restores exactly that defect. The second is its mirror,
+    # and it is the one a careless fix would survive: refusing EVERY group that
+    # carries the key -- `normal` included -- also makes the first test pass,
+    # and turns a value that means "do nothing" into a gap.
+    @{ file = "icon"; name = "the group's blend mode is never read"
+       from = 'if (*s != "normal") groupBlend = s;'
+       to   = 'if (false) groupBlend = s;' },
+    @{ file = "icon"; name = "a group blending as normal is refused along with the rest"
+       from = 'if (*s != "normal") groupBlend = s;'
+       to   = 'groupBlend = s;' },
+    # And the reason has to NAME the mode. A gap reported without saying which
+    # blend provoked it is a count, not a report.
+    @{ file = "icon"; name = "the group blend gap does not name the mode"
+       from = 'skip("mescla de grupo ''" + *groupBlend + "'' -- o grupo inteiro "'
+       to   = 'skip("mescla de grupo -- o grupo inteiro "' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"

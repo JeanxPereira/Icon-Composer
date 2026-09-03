@@ -126,6 +126,17 @@ std::string oneLayer(const std::string& extra) {
            "        }\n      ]\n    }\n  ]\n}\n";
 }
 
+// The same one-layer document, but with `extra` on the GROUP instead of on the
+// layer. `oneLayer` puts it on the layer, and the two are different keys in
+// different places -- which is exactly the distinction this fixture exists to
+// let a test make.
+std::string groupWith(const std::string& groupExtra) {
+    return "{\n  \"groups\" : [\n    {\n      " + groupExtra + "\"layers\" : [\n        {\n"
+           "          \"image-name\" : \"square.svg\",\n"
+           "          \"name\" : \"only\"\n"
+           "        }\n      ]\n    }\n  ]\n}\n";
+}
+
 // The alpha at the very centre of the canvas, where a centred 512-point square
 // on a 1024-point canvas always covers.
 float centreAlpha(const RenderedIcon& img) {
@@ -344,6 +355,46 @@ TEST_CASE(a_blend_mode_that_is_not_transcribed_is_named) {
     CHECK_EQ(icon->drawn, std::size_t{0});
     REQUIRE(icon->skipped.size() == 1);
     CHECK(icon->skipped[0].why.find("multiply") != std::string::npos);
+}
+
+// A blend on the GROUP is the case the corpus actually uses -- `plus-lighter`
+// sits on a group 17 times against 5 on a layer -- and until 2026-09-03 this
+// renderer read the key only off the layer. A group-level blend was therefore
+// composited as `normal` with an EMPTY report: the wrong picture, and nothing
+// saying so, in twelve corpus documents.
+//
+// The `drawn == 0` here is the whole point. Before the fix it was 1.
+TEST_CASE(a_blend_mode_on_the_group_is_named_and_not_drawn_as_normal) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 64;
+    const TempBundle plus(groupWith("\"blend-mode\" : \"plus-lighter\",\n      "));
+    auto b = icf::IconBundle::open(plus.path());
+    REQUIRE(b.has_value());
+    auto icon = renderIcon(d, *b, o);
+    REQUIRE(icon.has_value());
+    CHECK_EQ(icon->drawn, std::size_t{0});
+    REQUIRE(icon->skipped.size() == 1);
+    CHECK(icon->skipped[0].why.find("plus-lighter") != std::string::npos);
+    CHECK(icon->skipped[0].why.find("grupo") != std::string::npos);
+}
+
+// And `normal` on the group is not a gap: the same document with the key set
+// to the value that means "do nothing" has to draw. Without this, the guard
+// above would pass just as well if it refused EVERY group carrying the key.
+TEST_CASE(a_normal_blend_on_the_group_is_not_a_gap) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 64;
+    const TempBundle plain(groupWith("\"blend-mode\" : \"normal\",\n      "));
+    auto b = icf::IconBundle::open(plain.path());
+    REQUIRE(b.has_value());
+    auto icon = renderIcon(d, *b, o);
+    REQUIRE(icon.has_value());
+    CHECK_EQ(icon->drawn, std::size_t{1});
+    CHECK(icon->skipped.empty());
 }
 
 // The placement, end to end and in PIXELS: the same square moved up by a

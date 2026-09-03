@@ -469,6 +469,27 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             materialDoc ? denormaliseGlass(glassMaterialFrom(*materialDoc)) : DenormalisedGlass{};
         const GlassRefraction refraction = glassRefractionFor(glassNumbers, options.size);
 
+        // `blend-mode` LIVES ON THE GROUP TOO, and the group is where it is
+        // actually used: over the 145 documents `plus-lighter` appears **17
+        // times on a group against 5 on a layer** (spec 2026-09-03 §2.5).
+        //
+        // Until 2026-09-03 this loop read the key only off the LAYER, so a
+        // group-level blend was composited as `normal` and NOTHING was
+        // reported. That is the failure this project treats as worse than not
+        // drawing: a plausible picture that is wrong, with a clean report.
+        // Twelve corpus documents were coming out that way.
+        //
+        // Blending a group is not blending a layer. The whole group has to be
+        // drawn into a target of its own and only then mixed, so it cannot be
+        // handled by choosing a blend function per layer -- which is why the
+        // answer here is a named refusal and not a quiet approximation.
+        const std::string* groupBlend = nullptr;
+        if (const icf::json::Value* gbm = group.resolve("blend-mode", options.context)) {
+            if (const std::string* s = textOf(gbm)) {
+                if (*s != "normal") groupBlend = s;
+            }
+        }
+
         for (const icf::Layer& layer : group.layers()) {
             ++out.total;
             const std::string name(layer.name());
@@ -480,6 +501,17 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             if (boolOr(layer.resolve("hidden", options.context), false)) {
                 continue;  // hidden is an instruction, not a gap
             }
+            // The group's blend outranks the layer's: a layer drawn `normal`
+            // inside a group that is itself mixed with `plus-lighter` is not
+            // this layer's pixel either. Reported per layer, because `skipped`
+            // is a per-layer list and a group-shaped gap would be invisible in
+            // the count that the ruler and the report both read.
+            if (groupBlend) {
+                skip("mescla de grupo '" + *groupBlend + "' -- o grupo inteiro "
+                     "precisaria de alvo proprio antes de ser misturado");
+                continue;
+            }
+
             const bool isGlass = boolOr(layer.resolve("glass", options.context), false);
             if (const icf::json::Value* bm = layer.resolve("blend-mode", options.context)) {
                 if (const std::string* s = textOf(bm)) {
