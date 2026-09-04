@@ -36,6 +36,7 @@ add_executable(ic_tests
     test_blend_mode.cpp
     test_blend_formula.cpp
     test_stroke_geometry.cpp
+    test_stroke_render.cpp
     test_automatic_fill.cpp
 )
 

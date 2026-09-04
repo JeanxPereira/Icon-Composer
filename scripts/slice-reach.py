@@ -9,6 +9,30 @@ Before writing the connector, this measures what that connector would actually
 be able to draw, so the target after it is chosen by the corpus and not by a
 guess.
 
+AND ON 2026-09-04 THE TWO BIGGEST BLOCKERS LEFT TOGETHER
+---------------------------------------------------------
+The painted STROKE and the BLEND both stopped blocking, and they had to go
+together: measured by removing each family and re-judging, the stroke alone
+freed 4 documents and the blend alone freed 4, while the two together freed
+14. Six documents were held by both and by nothing else, so neither front
+delivered them alone.
+
+  stroke   `StrokeRender` flattens, emits the point stream the target's CPU
+           emits (doc 03 §31), and evaluates the fragment's own coverage
+           (§10, §30-bis). Only a stroke painted with a GRADIENT still blocks,
+           and no corpus document has one.
+  blend    the ten modes the format can spell are transcribed and the
+           compositor mixes per layer; a blended GROUP gets a target of its
+           own.
+
+ONE COMBINATION IS STILL REFUSED, AND IT COSTS EXACTLY THE DIFFERENCE
+BETWEEN THE PROMISE AND THE NUMBER. A group that blends AND carries glass is
+not drawn: glass refracts its backdrop, and in a target of its own that
+backdrop is empty, while in the canvas the blend would mix it in twice. Which
+the target does was never read. The spec promised 178 layers and 47 documents;
+the ruler says 169 and 40, and 169+9 = 178, 40+7 = 47 -- the shortfall IS that
+refusal, to the layer.
+
 WHAT COUNTS AS "IN THE SLICE"
 -----------------------------
 A layer is in the slice when it is drawable with what is gated today: any of the
@@ -48,6 +72,8 @@ Three retirements arrived together, and they are one work item and not three:
 STAGED, so the spec's promise stays checkable: with `automatic` alone the layer
 ruler reads 125 and the document ruler 29; with `automatic-gradient` too, 140
 and 32; with the `linear-gradient` hole closed as well, 145 and 33.
+
+And on 2026-09-04, with the stroke and the blend: **169 and 40**.
 
 WHAT THIS SCRIPT STILL DOES NOT CONSULT, and it is why its layer count runs
 ahead of the renderer's own: `hidden`, and whether a layer names art in the
@@ -146,7 +172,12 @@ DRAWN_FILLS = {"none", "automatic", "solid", "automatic-gradient", "linear-gradi
 
 # What the CoreSVG reader turns into filled paths today, and what it does not.
 SVG_BLOCKERS = {
-    "traço pintado": re.compile(r'stroke\s*[=:]\s*["\']?\s*(?!none)[#a-z0-9(]', re.I),
+    # O TRACO CHAPADO SAIU DAQUI EM 2026-09-04. `StrokeRender` o desenha:
+    # ponto a ponto pelo fluxo que a CPU do alvo emite (doc 03 §31), cobertura
+    # pelo fragment (§10, §30-bis), e a largura escalada pelo mapa. O que
+    # continua bloqueando e so o traco pintado com GRADIENTE, que nenhum
+    # documento do corpus usa -- os 35 sao chapados, 31 hex e 4 `white`.
+    "traço com url(#)": re.compile(r'stroke\s*[=:]\s*["\']?\s*url\(', re.I),
     "filtro": re.compile(r"<\s*filter[\s>]|filter\s*[=:]", re.I),
     "máscara": re.compile(r"<\s*mask[\s>]|mask\s*[=:]", re.I),
     "clip-path": re.compile(r"clip-path\s*[=:]", re.I),
@@ -154,6 +185,35 @@ SVG_BLOCKERS = {
     "use": re.compile(r"<\s*use[\s>]", re.I),
     "raster embutido": re.compile(r"<\s*image[\s>]", re.I),
 }
+
+
+# `[BIN]` Os dez modos que o formato sabe soletrar (doc 01 §6), e os dez estao
+# transcritos. Uma grafia fora desta lista nao pode vir de um `.icon` valido, e
+# se vier e lacuna e nao `normal`.
+KNOWN_BLENDS = {
+    "normal", "plus-lighter", "plus-darker", "overlay", "multiply",
+    "soft-light", "hard-light", "darken", "lighten", "screen",
+}
+
+
+def group_blend_over_glass(groups) -> set:
+    """Grupos que mesclam E tem camada de vidro -- a combinacao nao lida."""
+    bad = set()
+    for g in groups or []:
+        modes = set()
+        for k, v in g.items():
+            if k == "blend-mode" and isinstance(v, str):
+                modes.add(v)
+            if k == "blend-mode-specializations":
+                for e in (v or []):
+                    if isinstance(e, dict) and isinstance(e.get("value"), str):
+                        modes.add(e["value"])
+        if not (modes - {"normal"}):
+            continue
+        if any(x is True for lay in (g.get("layers") or [])
+               for k, x in lay.items() if k == "glass"):
+            bad.add("mescla de grupo sobre vidro")
+    return bad
 
 
 def values_for(node, key: str):
@@ -268,9 +328,18 @@ def blockers_of(node, assets: Path, svg_cache: dict,
         for k in fill_kinds(v):
             if k not in DRAWN_FILLS:
                 bad.add("fill de camada: %s" % k)
+    # A MESCLA SAIU DAQUI EM 2026-09-04, com uma excecao medida. Os dez modos
+    # que o formato sabe soletrar estao todos transcritos (doc 03 §30-ter), o
+    # compositor mescla por camada, e um grupo mesclado ganha alvo proprio.
+    #
+    # A excecao e o grupo que mescla E carrega vidro: o vidro refrata o fundo, e
+    # com alvo proprio esse fundo esta vazio. Qual dos dois o alvo faz nao foi
+    # lido. Isso NAO se decide olhando uma chave: precisa do grupo inteiro, e
+    # por isso e calculado em `group_blend_over_glass` e unido aqui pelo
+    # chamador em vez de sair deste laco.
     for v in values_for(node, "blend-mode"):
-        if isinstance(v, str) and v != "normal":
-            bad.add("mescla: %s" % v)
+        if isinstance(v, str) and v != "normal" and v not in KNOWN_BLENDS:
+            bad.add("mescla nao soletravel: %s" % v)
 
     for name in dict.fromkeys(v for v in values_for(node, "image-name")
                               if isinstance(v, str)):
@@ -358,8 +427,10 @@ def main() -> int:
         blocked_art = glass_raster_names(groups)
 
         for g in groups:
+            glassy = group_blend_over_glass([g])
             for lay in (g.get("layers") or []):
                 bad, _ = blockers_of(lay, assets, svg_cache, blocked_art)
+                bad |= glassy
                 layers_total += 1
                 if bad:
                     layer_blockers.update(bad)
@@ -370,6 +441,7 @@ def main() -> int:
                             glass_incomplete += 1
 
         why, d = blockers_of(groups, assets, svg_cache, blocked_art)
+        why |= group_blend_over_glass(groups)
         dangling += d
         if why:
             doc_blockers.update(why)

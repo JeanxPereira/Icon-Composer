@@ -98,6 +98,9 @@ struct RenderedImage {
     std::vector<float> rgba;
 
     std::size_t drawn = 0;
+    // Strokes are counted apart from fills: one shape can contribute both,
+    // and a single number could not say whether the stroke front is running.
+    std::size_t strokesDrawn = 0;
     std::vector<SkippedShape> skipped;
     // Drawn, but with components that were never converted out of display-p3.
     std::vector<std::size_t> unconvertedP3;

@@ -81,6 +81,13 @@ public:
         write(dir_ / "Assets" / "square.svg",
               "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\">"
               "<path d=\"M0 0 L512 0 L512 512 L0 512 Z\" fill=\"#ffffff\"/></svg>");
+        // A cross with NO fill and a fat blue stroke. The only ink it can
+        // produce is the stroke, so a renderer that drops strokes renders it
+        // blank -- which is what happened until 2026-09-04.
+        write(dir_ / "Assets" / "cross.svg",
+              "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\">"
+              "<path d=\"M128 256 L384 256 M256 128 L256 384\" fill=\"none\""
+              " stroke=\"#0000ff\" stroke-width=\"32\"/></svg>");
         // A second square in a colour, so two layers can be told apart when
         // they overlap.
         write(dir_ / "Assets" / "red.svg",
@@ -125,6 +132,15 @@ private:
     }
     fs::path dir_;
 };
+
+// One layer naming a chosen asset. `oneLayer` hardcodes `square.svg`, and a
+// test about the STROKE needs art whose only ink is one.
+std::string oneLayerOf(const std::string& asset) {
+    return "{\n  \"groups\" : [\n    {\n      \"layers\" : [\n        {\n"
+           "          \"image-name\" : \"" + asset + "\",\n"
+           "          \"name\" : \"only\"\n"
+           "        }\n      ]\n    }\n  ]\n}\n";
+}
 
 std::string oneLayer(const std::string& extra) {
     return "{\n  \"groups\" : [\n    {\n      \"layers\" : [\n        {\n"
@@ -733,4 +749,44 @@ TEST_CASE(a_layer_blend_premultiplies_its_art_before_mixing) {
     CHECK_EQ(icon->drawn, std::size_t{1});
     CHECK(std::fabs(alphaAt(*icon, 32, 32) - 0.5f) < 0.02f);
     CHECK(std::fabs(channelAt(*icon, 32, 32, 0) - 1.0f) < 0.02f);
+}
+
+// END TO END: a shape whose only ink is its STROKE. `cross.svg` has
+// `fill="none"`, so every pixel it produces comes through the stroke path --
+// document, reader, flattener, point stream, coverage, composite.
+//
+// Until 2026-09-04 this rendered blank with an EMPTY report, which is the
+// defect the test exists to keep dead. `[ART]` 31 corpus layers over 10
+// documents carry a painted stroke, the largest single blocker on the ruler.
+TEST_CASE(a_shape_whose_only_ink_is_its_stroke_draws) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 64;
+    const TempBundle b(oneLayerOf("cross.svg"));
+    auto bundle = icf::IconBundle::open(b.path());
+    REQUIRE(bundle.has_value());
+    auto icon = renderIcon(d, *bundle, o);
+    REQUIRE(icon.has_value());
+    CHECK_EQ(icon->drawn, std::size_t{1});
+
+    // The arms of the cross: the centre is on both, and points along each
+    // arm are on the stroke and nowhere near the other one.
+    CHECK(alphaAt(*icon, 32, 32) > 0.9f);
+    // The viewBox is 512 on a 1024-point canvas, so the art occupies HALF the
+    // target: the arms run 24..40 px, not 16..48. The first draft of this test
+    // probed at 20 and got a correct blank -- the sonde was wrong, not the
+    // renderer, and that is worth a line because the two look identical from
+    // a red test.
+    CHECK(alphaAt(*icon, 28, 32) > 0.9f);
+    CHECK(alphaAt(*icon, 36, 32) > 0.9f);
+    CHECK(alphaAt(*icon, 32, 28) > 0.9f);
+    // ...and it STOPS there, which is the butt cap arriving end to end.
+    CHECK(alphaAt(*icon, 44, 32) < 0.01f);
+    // BLUE, not the red of `square.svg` -- proof the stroke PAINT arrived.
+    CHECK(channelAt(*icon, 32, 32, 2) > 0.9f);
+    CHECK(channelAt(*icon, 32, 32, 0) < 0.1f);
+    // A corner the cross does not reach stays empty, or the assertions
+    // above would pass on a renderer that flooded the canvas.
+    CHECK(alphaAt(*icon, 4, 4) < 0.01f);
 }

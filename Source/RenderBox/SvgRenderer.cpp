@@ -1,5 +1,7 @@
 #include "Source/RenderBox/SvgRenderer.h"
 
+#include "Source/RenderBox/StrokeRender.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -129,8 +131,15 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
         // `none` is not an error and not a gap: the shape is deliberately
         // unpainted, and reporting it as skipped would bury the real gaps in
         // noise. It is simply not drawn.
+        //
+        // A STROKE STILL COUNTS AS PAINT. `fill="none"` with a stroke is the
+        // normal way to draw a line, and this early exit dropped every such
+        // shape before the stroke code below could see it -- which is how the
+        // end-to-end test came back with a blank canvas and `drawn == 1`.
+        const bool strokePaints = shape.stroke.kind != icf::svg::PaintKind::None &&
+                                  shape.strokeWidth > 0.0;
         if (shape.fill.kind == icf::svg::PaintKind::None &&
-            options.override.kind == FillOverride::Kind::None) {
+            options.override.kind == FillOverride::Kind::None && !strokePaints) {
             continue;
         }
         ResolvedGradient ramp;
@@ -185,7 +194,9 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
         const double sx = globals.m0[0] != 0.0f ? 1.0 / globals.m0[0] : 0.0;
         const double sy = globals.m1[1] != 0.0f ? 1.0 / globals.m1[1] : 0.0;
 
-        for (std::size_t t = 0; t < texels; ++t) {
+        const bool fillPaints = shape.fill.kind != icf::svg::PaintKind::None ||
+                                options.override.kind != FillOverride::Kind::None;
+        for (std::size_t t = 0; fillPaints && t < texels; ++t) {
             // `[BIN]` The signed area the edges accumulate lands in the SECOND
             // channel of the half2 target; the first carries the other half of
             // the pair. Doc 03 §12 and §13.
@@ -236,6 +247,67 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
             for (int k = 0; k < 3; ++k) dst[k] = colour[k] * srcA + dst[k] * inv;
             dst[3] = srcA + dst[3] * inv;
         }
+
+        // THE STROKE, after the fill and over it, which is the order SVG
+        // defines. Until 2026-09-04 this loop drew the fill and dropped the
+        // stroke SILENTLY -- a plausible picture with a clean report, the same
+        // defect the group blend carried. `[ART]` It is the corpus's largest
+        // single blocker: 31 layers over 10 documents.
+        if (shape.stroke.kind != icf::svg::PaintKind::None && shape.strokeWidth > 0.0) {
+            if (shape.stroke.kind == icf::svg::PaintKind::Reference) {
+                // `[ART]` No corpus stroke paints with a gradient -- all 35 are
+                // flat, 31 hex and 4 `white`. Named rather than approximated
+                // with the first stop.
+                out.skipped.push_back({i, shape.element,
+                                       "o traco pinta com url(#...) e so traco chapado"
+                                       " esta transcrito"});
+            } else {
+                StrokePlacement sp;
+                sp.m0[0] = globals.m0[0];
+                sp.m0[1] = globals.m0[1];
+                sp.m1[0] = globals.m1[0];
+                sp.m1[1] = globals.m1[1];
+                sp.m2[0] = globals.m2[0];
+                sp.m2[1] = globals.m2[1];
+                sp.scale = std::sqrt(static_cast<double>(globals.m0[0]) * globals.m0[0] +
+                                     static_cast<double>(globals.m0[1]) * globals.m0[1]);
+
+                // `[ART]` The corpus names no `stroke-linecap` and no
+                // `stroke-linejoin` in any of its 35 stroked SVGs, so these are
+                // the SVG defaults and not a choice this renderer is making.
+                // `stroke-miterlimit` IS named -- 22.9256, in eleven places --
+                // and the reader does not carry it yet, so the SVG default of 4
+                // stands and the difference only shows on a corner sharper than
+                // about 29 degrees.
+                StrokeParams params;
+                params.cap = LineCap::Butt;
+                params.join = LineJoin::Miter;
+                params.miterLimit = 4.0;
+
+                const std::vector<float> cov =
+                    rasteriseStroke(shape, sp, options.width, options.height,
+                                    options.subdivisions, params);
+                if (!cov.empty()) {
+                    const float sr = static_cast<float>(shape.stroke.color.r);
+                    const float sg = static_cast<float>(shape.stroke.color.g);
+                    const float sb = static_cast<float>(shape.stroke.color.b);
+                    const float sa = static_cast<float>(shape.stroke.color.a);
+                    if (shape.stroke.color.displayP3) out.unconvertedP3.push_back(i);
+                    for (std::size_t t = 0; t < texels; ++t) {
+                        const float a = cov[t] * sa;
+                        if (a <= 0.0f) continue;
+                        const float inv2 = 1.0f - a;
+                        float* d2 = &acc[t * 4];
+                        d2[0] = sr * a + d2[0] * inv2;
+                        d2[1] = sg * a + d2[1] * inv2;
+                        d2[2] = sb * a + d2[2] * inv2;
+                        d2[3] = a + d2[3] * inv2;
+                    }
+                    ++out.strokesDrawn;
+                }
+            }
+        }
+
         ++out.drawn;
     }
 
