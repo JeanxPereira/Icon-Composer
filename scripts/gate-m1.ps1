@@ -1174,7 +1174,34 @@ $mutations = @(
        to   = '    return alpha * smoothstep01((half - sd) / (s * 2.0));' },
     @{ file = "strokegeo"; name = "the lines pass runs one instance too many"
        from = '    return pointCount < 3 ? 0 : pointCount - 3;'
-       to   = '    return pointCount < 3 ? 0 : pointCount - 2;' }
+       to   = '    return pointCount < 3 ? 0 : pointCount - 2;' },
+
+    # ---- a mescla ligada no compositor ------------------------------------
+    #
+    # Um acumulador JA e premultiplicado. Passa-lo pelo caminho reto multiplica
+    # o alpha duas vezes -- invisivel onde o alpha e 1, que e quase todo o
+    # corpus, e por isso a mutacao existe.
+    @{ file = "icon"; name = "a group accumulator is premultiplied a second time"
+       from = '            sc.rgba[k] = src[i + k];'
+       to   = '            sc.rgba[k] = src[i + k] * src[i + 3];' },
+    @{ file = "icon"; name = "the group is composited straight onto the canvas"
+       from = '        std::vector<float>& target = blendTheGroup ? groupAcc : acc;'
+       to   = '        std::vector<float>& target = acc;' },
+    @{ file = "icon"; name = "the group result is never mixed back in"
+       from = '        if (blendTheGroup) blendPremulOver(acc, groupAcc, *groupMode);'
+       to   = '        (void)0;' },
+    # A RECUSA sobre vidro e a decisao mais cara deste trabalho -- ela custa 8
+    # documentos. Se ela cair sem ninguem notar, o renderizador passa a desenhar
+    # refracao sobre fundo vazio e a reportar sucesso.
+    @{ file = "icon"; name = "a blended group over glass is drawn anyway"
+       from = '        const bool blendTheGroup = groupBlend && groupMode && !groupHasGlass;'
+       to   = '        const bool blendTheGroup = groupBlend && groupMode;' },
+    # O pulo de alpha zero que `over` faz e que `blendOver` NAO pode fazer:
+    # plus-darker tem termo que nao some com origem transparente.
+    @{ file = "icon"; name = "the blend path skips a transparent source like source-over does"
+       from = '        BlendColour s;'
+       to   = '        if (a <= 0.0f) continue;
+        BlendColour s;' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"

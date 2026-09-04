@@ -130,6 +130,17 @@ std::string oneLayer(const std::string& extra) {
 // layer. `oneLayer` puts it on the layer, and the two are different keys in
 // different places -- which is exactly the distinction this fixture exists to
 // let a test make.
+// Both at once: `groupExtra` on the group, `layerExtra` on the layer. The glass
+// bit lives on the LAYER while the blend lives on the group, and no fixture
+// could put them in the same place.
+std::string groupAndLayer(const std::string& groupExtra, const std::string& layerExtra) {
+    return "{\n  \"groups\" : [\n    {\n      " + groupExtra +
+           "\"layers\" : [\n        {\n"
+           "          \"image-name\" : \"square.svg\",\n"
+           "          \"name\" : \"only\"" + layerExtra + "\n"
+           "        }\n      ]\n    }\n  ]\n}\n";
+}
+
 std::string groupWith(const std::string& groupExtra) {
     return "{\n  \"groups\" : [\n    {\n      " + groupExtra + "\"layers\" : [\n        {\n"
            "          \"image-name\" : \"square.svg\",\n"
@@ -342,7 +353,11 @@ TEST_CASE(a_layers_opacity_reaches_the_pixels) {
 
 // A blend this renderer does not have is NAMED rather than drawn as normal --
 // drawing it anyway would produce a plausible picture that is wrong.
-TEST_CASE(a_blend_mode_that_is_not_transcribed_is_named) {
+// A layer blend now DRAWS. This test asserted the opposite until 2026-09-04,
+// and it was right then: the compositor had only source-over. Replacing the
+// assertion rather than deleting the case keeps the history legible -- the
+// name changed because the behaviour did.
+TEST_CASE(a_layer_blend_mode_draws_instead_of_being_refused) {
     Device& d = gpu();
     if (!d.valid()) return;
     IconRenderOptions o;
@@ -352,19 +367,42 @@ TEST_CASE(a_blend_mode_that_is_not_transcribed_is_named) {
     REQUIRE(b.has_value());
     auto icon = renderIcon(d, *b, o);
     REQUIRE(icon.has_value());
+    CHECK_EQ(icon->drawn, std::size_t{1});
+    CHECK(icon->skipped.empty());
+}
+
+// ...and a spelling the reader does not know is still a NAMED gap. This is the
+// only reachable refusal left on the layer path: the format can spell ten modes
+// and all ten are transcribed, so `blendIsTranscribed` returning false cannot
+// happen from a real document. That branch guards against a mode being added
+// to the vocabulary without arithmetic, and it is UNREACHABLE today -- said
+// here because an unreachable branch nobody admits to is how dead code starts
+// looking like coverage.
+TEST_CASE(a_blend_spelling_the_reader_does_not_know_is_named) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 64;
+    const TempBundle odd(oneLayer(",\n          \"blend-mode\" : \"color-burn\""));
+    auto b = icf::IconBundle::open(odd.path());
+    REQUIRE(b.has_value());
+    auto icon = renderIcon(d, *b, o);
+    REQUIRE(icon.has_value());
     CHECK_EQ(icon->drawn, std::size_t{0});
     REQUIRE(icon->skipped.size() == 1);
-    CHECK(icon->skipped[0].why.find("multiply") != std::string::npos);
+    CHECK(icon->skipped[0].why.find("color-burn") != std::string::npos);
 }
 
 // A blend on the GROUP is the case the corpus actually uses -- `plus-lighter`
-// sits on a group 17 times against 5 on a layer -- and until 2026-09-03 this
-// renderer read the key only off the layer. A group-level blend was therefore
-// composited as `normal` with an EMPTY report: the wrong picture, and nothing
-// saying so, in twelve corpus documents.
+// sits on a group 17 times against 5 on a layer. Until 2026-09-03 the renderer
+// read the key only off the layer and composited such a group as `normal` with
+// an EMPTY report; that day it started refusing; today it DRAWS, by giving the
+// group a target of its own and mixing the result.
 //
-// The `drawn == 0` here is the whole point. Before the fix it was 1.
-TEST_CASE(a_blend_mode_on_the_group_is_named_and_not_drawn_as_normal) {
+// All three states are worth remembering, because only the middle one was ever
+// wrong: refusing was honest, drawing is better, and drawing silently was the
+// defect.
+TEST_CASE(a_blend_mode_on_the_group_draws_through_its_own_target) {
     Device& d = gpu();
     if (!d.valid()) return;
     IconRenderOptions o;
@@ -374,10 +412,34 @@ TEST_CASE(a_blend_mode_on_the_group_is_named_and_not_drawn_as_normal) {
     REQUIRE(b.has_value());
     auto icon = renderIcon(d, *b, o);
     REQUIRE(icon.has_value());
+    CHECK_EQ(icon->drawn, std::size_t{1});
+    CHECK(icon->skipped.empty());
+}
+
+// ...EXCEPT over glass, which is still refused and says why.
+//
+// Glass refracts its backdrop. In a group with its own target the backdrop is
+// empty; in the canvas the blend would mix it in twice. `[OBS]` Which the
+// target does was never read -- the question does not arise until a group gets
+// its own buffer. `[ART]` Eight corpus documents hit this, so the refusal
+// costs real reach, and that is the point: the alternative buys reach with a
+// picture nobody measured.
+TEST_CASE(a_blended_group_containing_glass_is_refused_with_its_reason) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 64;
+    const TempBundle glassy(groupAndLayer(
+        "\"blend-mode\" : \"plus-lighter\",\n      ",
+        ",\n          \"glass\" : true"));
+    auto b = icf::IconBundle::open(glassy.path());
+    REQUIRE(b.has_value());
+    auto icon = renderIcon(d, *b, o);
+    REQUIRE(icon.has_value());
     CHECK_EQ(icon->drawn, std::size_t{0});
     REQUIRE(icon->skipped.size() == 1);
-    CHECK(icon->skipped[0].why.find("plus-lighter") != std::string::npos);
-    CHECK(icon->skipped[0].why.find("grupo") != std::string::npos);
+    CHECK(icon->skipped[0].why.find("vidro") != std::string::npos);
+    CHECK(icon->skipped[0].why.find("refracao") != std::string::npos);
 }
 
 // And `normal` on the group is not a gap: the same document with the key set

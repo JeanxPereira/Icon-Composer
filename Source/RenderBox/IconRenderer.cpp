@@ -9,6 +9,7 @@
 
 #include "Source/CoreSVG/Document.h"
 #include "Source/RenderBox/AutomaticGradient.h"
+#include "Source/RenderBox/BlendFormula.h"
 #include "Source/RenderBox/FillResolve.h"
 #include "Source/RenderBox/GlassLayer.h"
 #include "Source/RenderBox/GradientOracle.h"
@@ -68,6 +69,25 @@ void note(std::vector<std::string>& notes, const std::string& text) {
     notes.push_back(text);
 }
 
+// A whole GROUP's accumulator mixed into the canvas, both sides PREMULTIPLIED.
+//
+// Not the same function as `blendOver`: that one takes straight colour with a
+// separate alpha, because that is the shape a layer's art arrives in. An
+// accumulator is already premultiplied, and running it through the straight
+// path would multiply the alpha in twice.
+void blendPremulOver(std::vector<float>& dst, const std::vector<float>& src,
+                     BlendMode mode) {
+    for (std::size_t i = 0; i + 3 < dst.size(); i += 4) {
+        BlendColour sc, dc;
+        for (int k = 0; k < 4; ++k) {
+            sc.rgba[k] = src[i + k];
+            dc.rgba[k] = dst[i + k];
+        }
+        const BlendColour o = rb::blend(mode, sc, dc);
+        for (int k = 0; k < 4; ++k) dst[i + k] = static_cast<float>(o.rgba[k]);
+    }
+}
+
 // One layer's art drawn over the accumulator, with `alpha` applied to all of it.
 void over(std::vector<float>& acc, const std::vector<float>& src, float alpha) {
     for (std::size_t i = 0; i + 3 < acc.size(); i += 4) {
@@ -76,6 +96,37 @@ void over(std::vector<float>& acc, const std::vector<float>& src, float alpha) {
         const float inv = 1.0f - a;
         for (int k = 0; k < 3; ++k) acc[i + k] = src[i + k] * a + acc[i + k] * inv;
         acc[i + 3] = a + acc[i + 3] * inv;
+    }
+}
+
+// The same composite under a blend mode.
+//
+// `acc` is PREMULTIPLIED and `src` is straight with its alpha in the fourth
+// channel -- which is what `over` above already assumes, and the reason this
+// function premultiplies before calling `rb::blend` rather than after. Getting
+// that backwards would be invisible wherever alpha is 1, which is most of the
+// corpus.
+//
+// The `a <= 0` skip that `over` does is NOT repeated here. Source-over leaves
+// the destination alone for a transparent source, but `plus-darker` does not:
+// its slack term is a function of the two alphas and is zero only when they
+// sum below one. Skipping would silently turn it into source-over exactly
+// where it differs.
+void blendOver(std::vector<float>& acc, const std::vector<float>& src, float alpha,
+               BlendMode mode) {
+    if (mode == BlendMode::Normal) {
+        over(acc, src, alpha);
+        return;
+    }
+    for (std::size_t i = 0; i + 3 < acc.size(); i += 4) {
+        const float a = src[i + 3] * alpha;
+        BlendColour s;
+        s.rgba[3] = a;
+        for (int k = 0; k < 3; ++k) s.rgba[k] = src[i + k] * a;
+        BlendColour d;
+        for (int k = 0; k < 4; ++k) d.rgba[k] = acc[i + k];
+        const BlendColour out = rb::blend(mode, s, d);
+        for (int k = 0; k < 4; ++k) acc[i + k] = static_cast<float>(out.rgba[k]);
     }
 }
 
@@ -484,11 +535,45 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
         // handled by choosing a blend function per layer -- which is why the
         // answer here is a named refusal and not a quiet approximation.
         const std::string* groupBlend = nullptr;
+        std::optional<BlendMode> groupMode;
         if (const icf::json::Value* gbm = group.resolve("blend-mode", options.context)) {
             if (const std::string* s = textOf(gbm)) {
-                if (*s != "normal") groupBlend = s;
+                if (*s != "normal") {
+                    groupBlend = s;
+                    groupMode = blendModeFromKey(*s);
+                    if (groupMode && !blendIsTranscribed(*groupMode)) groupMode.reset();
+                }
             }
         }
+
+        // A BLENDED GROUP THAT CONTAINS GLASS IS STILL REFUSED, and this is the
+        // one place where drawing would be easy and wrong.
+        //
+        // Glass refracts its BACKDROP. Composited into a target of its own, the
+        // group's backdrop is empty, so the refraction would sample nothing;
+        // composited into the canvas, the blend would mix the backdrop in
+        // twice. `[OBS]` Which of the two the target does was not read -- the
+        // question does not even arise until a group is given its own buffer,
+        // and no measurement of it exists.
+        //
+        // `[ART]` It is not a corner: 8 corpus documents put a non-normal blend
+        // and a glass layer on the same group, `insidegui/AssetCatalogTinkerer`
+        // and `RuntimeViewer` among them. Refusing costs real reach, and
+        // guessing would buy it with a picture nobody measured.
+        bool groupHasGlass = false;
+        if (groupBlend) {
+            for (const icf::Layer& l : group.layers()) {
+                if (boolOr(l.resolve("glass", options.context), false)) {
+                    groupHasGlass = true;
+                    break;
+                }
+            }
+        }
+
+        const bool blendTheGroup = groupBlend && groupMode && !groupHasGlass;
+        std::vector<float> groupAcc;
+        if (blendTheGroup) groupAcc.assign(texels * 4, 0.0f);
+        std::vector<float>& target = blendTheGroup ? groupAcc : acc;
 
         for (const icf::Layer& layer : group.layers()) {
             ++out.total;
@@ -506,19 +591,36 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             // this layer's pixel either. Reported per layer, because `skipped`
             // is a per-layer list and a group-shaped gap would be invisible in
             // the count that the ruler and the report both read.
-            if (groupBlend) {
-                skip("mescla de grupo '" + *groupBlend + "' -- o grupo inteiro "
-                     "precisaria de alvo proprio antes de ser misturado");
+            if (groupBlend && !blendTheGroup) {
+                skip(groupHasGlass
+                         ? ("mescla de grupo '" + *groupBlend + "' sobre um grupo com"
+                            " vidro -- o fundo que a refracao amostra nesse caso nao"
+                            " foi lido")
+                         : ("mescla de grupo '" + *groupBlend + "' -- grafia ou modo"
+                            " que este leitor nao desenha"));
                 continue;
             }
 
             const bool isGlass = boolOr(layer.resolve("glass", options.context), false);
+
+            // The LAYER's blend mode, resolved rather than refused. The eight
+            // modes the format cannot spell cannot appear here; what can is a
+            // spelling this project does not know, and that is a gap, never a
+            // silent `normal`.
+            BlendMode layerBlend = BlendMode::Normal;
             if (const icf::json::Value* bm = layer.resolve("blend-mode", options.context)) {
                 if (const std::string* s = textOf(bm)) {
-                    if (*s != "normal") {
-                        skip("mescla '" + *s + "' -- so o caminho chapado esta transcrito");
+                    const std::optional<BlendMode> parsed = blendModeFromKey(*s);
+                    if (!parsed) {
+                        skip("mescla '" + *s + "' -- grafia que este leitor nao conhece");
                         continue;
                     }
+                    if (!blendIsTranscribed(*parsed)) {
+                        skip("mescla '" + *s + "' -- o modo existe no motor e nao"
+                             " esta transcrito aqui");
+                        continue;
+                    }
+                    layerBlend = *parsed;
                 }
             }
 
@@ -657,7 +759,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 fo.rule = shape.rule;
                 const FieldImage field =
                     generateField(shape.contours, options.size, options.size, fo);
-                glassOver(acc, options.size, options.size,
+                glassOver(target, options.size, options.size,
                           glassDisplacementMap(field, refraction), refraction);
                 note(out.notes, glassRulerNote(options.size));
                 ++out.glassRefracted;
@@ -674,7 +776,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 for (const auto& s : drew->skipped) {
                     out.shapeGaps.push_back(name + " / " + *imageName + ": " + s.why);
                 }
-                over(acc, drew->rgba, static_cast<float>(opacity));
+                blendOver(target, drew->rgba, static_cast<float>(opacity), layerBlend);
                 ++out.drawn;
             } else if (ext == ".png") {
                 const icf::DecodedPng png = icf::readPng(art.string());
@@ -683,12 +785,14 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                     continue;
                 }
                 const std::vector<float> placed = placeRaster(png, lp, options.size);
-                over(acc, placed, static_cast<float>(opacity));
+                blendOver(target, placed, static_cast<float>(opacity), layerBlend);
                 ++out.drawn;
             } else {
                 skip("arte com extensao que este leitor nao le: " + *imageName);
             }
         }
+
+        if (blendTheGroup) blendPremulOver(acc, groupAcc, *groupMode);
     }
 
     out.rgba.assign(texels * 4, 0.0f);
