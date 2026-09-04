@@ -27,6 +27,12 @@ It reads only the subset the corpus uses: `path` with `M m L l H h V v C c Z z`,
 or from a `.class` in a `<style>` block. Anything else it REFUSES by name --
 guessing would make the oracle agree with us for the wrong reason.
 
+A PROPERTY CAN ARRIVE FOUR WAYS -- a `.class` rule, a presentation attribute,
+the element's own `style`, or inheritance -- and this reads all four, in that
+precedence. It read two of them at first, and one Jellify path reported 2929
+differing pixels because its `fill-rule` and its `stroke:none` were in a
+`style` attribute nobody was looking at.
+
 `fill` AND `stroke` INHERIT, and this reads them down the tree. Twelve
 `insidegui` squircles reported 15152 differing pixels each -- ninety per cent of
 the image -- because `fill="none"` sat on the outer `<g>` and the stroke on the
@@ -314,15 +320,12 @@ def main():
     bx, by, bw, bh = [float(x) for x in NUM.findall(vb.group(1))][:4]
 
     # `fill-rule` from a `<style>` class, which is how CorelDRAW writes it.
-    rules = {}
-    strokes = set()
+    class_props = {}
     for cls, body in re.findall(r'\.([A-Za-z0-9_-]+)\s*\{([^}]*)\}', text):
-        r = re.search(r'fill-rule\s*:\s*([a-z]+)', body)
-        if r:
-            rules[cls] = r.group(1)
-        st = re.search(r'stroke\s*:\s*([^;}\s]+)', body)
-        if st and st.group(1) != 'none':
-            strokes.add(cls)
+        d = {}
+        for k, v in re.findall(r'([a-z-]+)\s*:\s*([^;}]+)', body):
+            d[k.strip()] = v.strip()
+        class_props[cls] = d
     doc_rule = re.search(r'style\s*=\s*"[^"]*fill-rule\s*:\s*([a-z]+)', text)
 
     # Anything drawable that is not a `<path>` is REFUSED by name. Skipping it
@@ -342,21 +345,41 @@ def main():
     # transform onto the one it inherits. The first version refused a nested
     # document outright, which was 55 of the corpus's 149 files.
     def attr(tag, name):
-        m = re.search(name + r'\s*=\s*"([^"]*)"', tag)
+        m = re.search(r'\b' + name + r'\s*=\s*"([^"]*)"', tag)
         return m.group(1).strip() if m else None
 
+    def style_of(tag, prop):
+        st = attr(tag, 'style')
+        if not st:
+            return None
+        m = re.search(r'(?:^|;)\s*' + prop + r'\s*:\s*([^;]+)', st)
+        return m.group(1).strip() if m else None
+
+    def prop(tag, name):
+        """A property on THIS element, by the precedence SVG defines."""
+        v = style_of(tag, name)
+        if v is not None:
+            return v
+        cls = attr(tag, 'class')
+        for n in (cls.split() if cls else []):
+            if n in class_props and name in class_props[n]:
+                return class_props[n][name]
+        return attr(tag, name)
+
     # (matrix, fill, stroke) -- the last two INHERIT, which is the whole point.
-    stack = [((1.0, 0.0, 0.0, 1.0, 0.0, 0.0), None, None)]
+    stack = [((1.0, 0.0, 0.0, 1.0, 0.0, 0.0), None, None, None)]
     for tag in re.findall(r'<[^>]*>', text):
         if re.match(r'<g\b', tag):
-            m, pf, ps = stack[-1]
+            m, pf, ps, pr = stack[-1]
             t = parse_transform(attr(tag, 'transform') or '')
             a, b, c, d, e2, f2 = m
             A, B, C, D, E, F = t
             comp = (a * A + c * B, b * A + d * B,
                     a * C + c * D, b * C + d * D,
                     a * E + c * F + e2, b * E + d * F + f2)
-            stack.append((comp, attr(tag, 'fill') or pf, attr(tag, 'stroke') or ps))
+            stack.append((comp, prop(tag, 'fill') or pf,
+                          prop(tag, 'stroke') or ps,
+                          prop(tag, 'fill-rule') or pr))
             if tag.rstrip().endswith('/>'):
                 stack.pop()
             continue
@@ -366,10 +389,10 @@ def main():
             continue
         if not re.match(r'<path\b', tag):
             continue
-        gm, inhFill, inhStroke = stack[-1]
+        gm, inhFill, inhStroke, inhRule = stack[-1]
 
-        eff_fill = attr(tag, 'fill') or inhFill
-        eff_stroke = attr(tag, 'stroke') or inhStroke
+        eff_fill = prop(tag, 'fill') or inhFill
+        eff_stroke = prop(tag, 'stroke') or inhStroke
         if eff_stroke and eff_stroke != 'none':
             raise SystemExit('REFUSED: this path is STROKED, and this oracle only fills.'
                              ' The difference would be our stroke, not a defect.')
@@ -392,13 +415,9 @@ def main():
             raise SystemExit('REFUSED: this path is STROKED, and this oracle only fills.'
                              ' The difference would be our stroke, not a defect.')
 
-        rule = None
-        cm = re.search(r'class\s*=\s*"([^"]*)"', tag)
-        if cm and cm.group(1).strip() in rules:
-            rule = rules[cm.group(1).strip()]
-        fr = re.search(r'fill-rule\s*=\s*"([a-z]+)"', tag)
-        if fr:
-            rule = fr.group(1)
+        rule = prop(tag, 'fill-rule')
+        if rule is None:
+            rule = inhRule
         if rule is None and doc_rule:
             rule = doc_rule.group(1)
         evenodd = (rule == 'evenodd')

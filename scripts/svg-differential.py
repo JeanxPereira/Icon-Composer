@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Every corpus SVG, ours against the independent oracle.
 
-`svg-oracle.py` settles ONE file. This runs it over the corpus and reports three
-numbers: how many agreed, how many the oracle REFUSED (its own gaps, named), and
-how many DIFFERED -- which is the only column that says anything about us.
+`svg-oracle.py` settles ONE file. This runs it over the corpus and reports four
+columns: agreed, differed, what the ORACLE refused, and what WE refused.
 
-The refusals are the honest part. An oracle that filled a stroked path, or
-guessed at an arc, would report a difference that is its own blind spot; this
-counts those separately and never mixes them into the verdict.
+The refusals are the honest part, and there are TWO kinds. An oracle that
+filled a stroked path, or guessed at an arc, would report a difference that is
+its own blind spot. And OUR renderer names its own gaps on stderr -- a gradient
+whose stops arrive through an `xlink:href` it does not follow, say -- and a file
+where we deliberately drew nothing is not a file where we disagree.
+
+Both are counted apart and neither is mixed into the verdict. Only the DIFFER
+column says anything about either implementation.
 
     python scripts/svg-differential.py [--size 128] [--limit N]
 """
@@ -42,6 +46,7 @@ def main():
     tmp = Path(tempfile.mkdtemp(prefix='svgdiff-'))
     agreed = differed = 0
     refused = Counter()
+    ours_refused = Counter()
     worst = []
 
     for n, svg in enumerate(svgs, 1):
@@ -50,7 +55,15 @@ def main():
                             '--size', str(args.size)],
                            capture_output=True, text=True)
         if not png.is_file():
-            refused['o nosso nao desenhou'] += 1
+            ours_refused['nao produziu imagem'] += 1
+            continue
+        # A shape WE skipped, with a reason, is our named gap -- not a
+        # disagreement. Comparing against a picture we deliberately left
+        # incomplete would blame the oracle for our own honesty.
+        err = (r.stderr or '')
+        if 'shape ' in err or 'nao desenhado' in err:
+            why = err.strip().splitlines()[0].strip()
+            ours_refused[why[:58]] += 1
             continue
         o = subprocess.run([sys.executable, str(ORACLE), str(svg),
                             '--size', str(args.size), '--against', str(png)],
@@ -79,6 +92,9 @@ def main():
     print('  DIFEREM:                                    %d' % differed)
     print('  o oraculo RECUSOU (lacuna dele, nomeada):   %d' % sum(refused.values()))
     for why, k in refused.most_common():
+        print('      %-58s %d' % (why, k))
+    print('  o NOSSO recusou, ja nomeando o motivo:       %d' % sum(ours_refused.values()))
+    for why, k in ours_refused.most_common():
         print('      %-58s %d' % (why, k))
     if worst:
         print('\n  os que diferem, por quantidade de pixels:')
