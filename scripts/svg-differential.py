@@ -60,10 +60,18 @@ def main():
         # A shape WE skipped, with a reason, is our named gap -- not a
         # disagreement. Comparing against a picture we deliberately left
         # incomplete would blame the oracle for our own honesty.
-        err = (r.stderr or '')
-        if 'shape ' in err or 'nao desenhado' in err:
-            why = err.strip().splitlines()[0].strip()
-            ours_refused[why[:58]] += 1
+        #
+        # A NOTE IS NOT A REFUSAL. `display-p3 desenhado SEM conversao` says the
+        # shape WAS drawn and its colour space was not converted -- and this
+        # compares ALPHA, which a colour space cannot touch. Counting it as a
+        # refusal took 16 files out of the comparison for nothing, which is the
+        # same over-refusal the oracle had to be cured of.
+        lines = [ln.strip() for ln in (r.stderr or '').strip().splitlines() if ln.strip()]
+        undrawn = [ln for ln in lines
+                   if 'nao desenhado' in ln
+                   or ('shape ' in ln and 'desenhado SEM conversao' not in ln)]
+        if undrawn:
+            ours_refused[undrawn[0][:58]] += 1
             continue
         o = subprocess.run([sys.executable, str(ORACLE), str(svg),
                             '--size', str(args.size), '--against', str(png)],
