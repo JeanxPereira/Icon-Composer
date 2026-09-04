@@ -33,6 +33,7 @@ add_library(RenderBox STATIC
     FillResolve.cpp
     SystemFill.cpp
     BlendMode.cpp
+    BlendFormula.cpp
 )
 
 # Shaders are compiled at BUILD time, not loaded at run time. A shader that does

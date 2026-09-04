@@ -34,6 +34,7 @@ add_executable(ic_tests
     test_fill_resolve.cpp
     test_system_fill.cpp
     test_blend_mode.cpp
+    test_blend_formula.cpp
     test_automatic_fill.cpp
 )
 

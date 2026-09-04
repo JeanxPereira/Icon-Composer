@@ -81,6 +81,7 @@ $sources = @{
     fillres  = Join-Path $root "Source/RenderBox/FillResolve.cpp"
     sysfill  = Join-Path $root "Source/RenderBox/SystemFill.cpp"
     blend    = Join-Path $root "Source/RenderBox/BlendMode.cpp"
+    blendfx  = Join-Path $root "Source/RenderBox/BlendFormula.cpp"
     fieldgl  = Join-Path $root "Source/RenderBox/shaders/DistanceField.glsl"
     mip      = Join-Path $root "Source/RenderBox/MipPyramid.cpp"
     mipcomp  = Join-Path $root "Source/RenderBox/shaders/mip_reduce.comp"
@@ -1087,7 +1088,50 @@ $mutations = @(
        to   = '        if (r.mode == mode) return "normal";' },
     @{ file = "blend"; name = "the first two shader case names are transposed"
        from = '    "copy", "clear", "source_over", "source_in", "source_out", "source_atop",'
-       to   = '    "clear", "copy", "source_over", "source_in", "source_out", "source_atop",' }
+       to   = '    "clear", "copy", "source_over", "source_in", "source_out", "source_atop",' },
+
+    # ---- a aritmetica da mescla -------------------------------------------
+    #
+    # `overlay` e `hard_light` sao a MESMA funcao com os operandos trocados, e a
+    # unica coisa que os separa e em qual lado o ramo testa. Sao os dois casos
+    # em que o casamento por formula sozinho nao decide -- por isso as duas
+    # mutacoes abaixo existem em par.
+    @{ file = "blendfx"; name = "overlay branches on the source, becoming hard-light"
+       from = '                b[k] = (d > 0.5 * ab) ? (2.0 * (s * ab + d * (as - s)) - as * ab)'
+       to   = '                b[k] = (s > 0.5 * as) ? (2.0 * (s * ab + d * (as - s)) - as * ab)' },
+    @{ file = "blendfx"; name = "hard-light branches on the backdrop, becoming overlay"
+       from = '                b[k] = (s > 0.5 * as) ? (as * ab - 2.0 * (ab - d) * (as - s))'
+       to   = '                b[k] = (d > 0.5 * ab) ? (as * ab - 2.0 * (ab - d) * (as - s))' },
+    # O pareamento cruzado dos alphas. Invisivel sempre que os dois alphas sao
+    # iguais -- que era o caso de TODOS os outros testes deste arquivo ate o
+    # teste de alphas mistos ser escrito por causa desta mutacao.
+    @{ file = "blendfx"; name = "darken pairs each side with its own alpha"
+       from = '                b[k] = std::min(as * d, ab * s);'
+       to   = '                b[k] = std::min(ab * d, as * s);' },
+    # O piso do alpha do soft-light: sem ele, um fundo transparente divide por
+    # zero e o resultado deixa de ser um numero.
+    @{ file = "blendfx"; name = "soft-light divides by the raw backdrop alpha"
+       from = '                const double floorA = std::max(ab, kSoftLightAlphaFloor);'
+       to   = '                const double floorA = ab;' },
+    # O `screen` nao tem cauda de composicao -- ele esta na banda barata. Usar o
+    # alpha no lugar do canal transforma-o na cauda e muda o numero.
+    @{ file = "blendfx"; name = "screen is folded into the composition tail"
+       from = '                out.rgba[k] = src.rgba[k] + dst.rgba[k] * (1.0 - src.rgba[k]);'
+       to   = '                out.rgba[k] = src.rgba[k] + dst.rgba[k] * (1.0 - as);' },
+    # A folga negativa que separa plus-darker de plus-lighter, com o sinal
+    # invertido: vira mais claro que o mais claro.
+    @{ file = "blendfx"; name = "the plus-darker slack has its sign flipped"
+       from = '            const double slack = (mode == BlendMode::PlusDarker) ? (a - sum) : 0.0;'
+       to   = '            const double slack = (mode == BlendMode::PlusDarker) ? (sum - a) : 0.0;' },
+    @{ file = "blendfx"; name = "the composition tail adds the alphas without the product"
+       from = '    out.rgba[3] = as + ab - as * ab;'
+       to   = '    out.rgba[3] = as + ab;' },
+    # E a recusa: um modo nao transcrito TEM que ser perguntavel. Se ele se
+    # declara pronto, o renderizador reporta fidelidade que nao tem -- o mesmo
+    # defeito que o silencio da mescla de grupo era.
+    @{ file = "blendfx"; name = "an untranscribed mode claims to be transcribed"
+       from = '            return false;'
+       to   = '            return true;' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"
