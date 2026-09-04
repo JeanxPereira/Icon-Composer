@@ -3527,3 +3527,119 @@ são o `RB::FunctionType`, e é ele que diz qual leitura vale.**
 `shader_blend` e ao `mod100`. **Não há `shader_blend` entre os consumidores** —
 são os quatro módulos do traço mais `uber_vertex` e `uber_fragment`, e os dois
 uber só as têm porque **inlinam** o traço.
+
+## 34. O vidro dentro de um grupo que mescla — a pergunta era um falso dilema
+
+O §8.1 do spec `2026-09-03-mescla-e-traco.md` deixou em aberto a única coisa que
+separa as 169 camadas de hoje das 178 prometidas, e a deixou como um dilema:
+
+> `[OBS]` Um grupo que mescla e carrega vidro não é desenhado. O vidro refrata o
+> seu fundo: num alvo próprio esse fundo está vazio, e na tela a mescla
+> misturaria o fundo duas vezes. Qual das duas o alvo faz não foi lido.
+
+`[BIN]` **Nenhuma das duas.** O fundo que o vidro refrata não é lido do destino:
+ele é **desenhado dentro de uma camada, de propósito, antes de o filtro existir**.
+
+### 34.1. O RenderBox tem DUAS formas de item para cada filtro
+
+`[BIN]` Cada filtro do `RenderBox` aparece no display list de duas maneiras
+distintas, e os símbolos as nomeiam:
+
+| forma | símbolo | o que consome |
+|---|---|---|
+| própria | `DisplayList::GenericFilter<F>::render(...)` | o conteúdo do próprio item |
+| do fundo | `DisplayList::BackdropFilterItem<F>` | o que já está atrás |
+
+`[BIN]` **Onze** filtros declaram `GenericFilter<F>::make_backdrop_item(Builder&)`
+— e só **nove** têm um `BackdropFilterItem<F>` instanciado no binário. Os dois
+que declaram e não têm são `Filter::GaussianBlur` e `Filter::Distance`.
+
+`[BIN]` Os dois efeitos de vidro — `GlassDisplacementEffect` e
+`GlassHighlightEffect` — estão entre os nove. **A rota do fundo existe para o
+vidro.** O que este parágrafo mede é que ela existe, não que ela seja tomada.
+
+### 34.2. O caminho que o `IconRendering` realmente monta
+
+`[BIN]` O `_RBSystemShaderDisplacementMap` é o único *system shader* que o
+`IconRendering` importa (§29.1), e ele chega ao display list por **dois** sítios,
+os dois com a mesma forma:
+
+```
+beginLayer                                            ← abre uma camada, sem flags
+addStyle:data:
+[[RBShader alloc] initWithSystemShader: …]            ← o mapa de deslocamento
+setArgumentBytes:atIndex:type:count:flags:
+setVariant:
+addFilterLayerWithShader:border:layerBorder:bounds:flags:
+```
+
+| sítio | função | flags |
+|---|---|---|
+| `0x00010DC4` | `0x00010C14` | `w4 = #0` |
+| `0x0008066C` | `0x0008036C` | `w4 = #0` |
+
+`[BIN]` E `-[RBDisplayList addFilterLayerWithShader:border:layerBorder:bounds:flags:]`
+(`0x00040A18`) **fecha a camada antes de filtrar**:
+
+```
+Builder::end_layer(const State&)          0x000C9B4C
+Builder::restore(bool)                    0x000C9670
+add_shader_filter_layer(…, Layer*, …)     0x000408D4   ← tail call
+```
+
+`[BIN]` `add_shader_filter_layer` termina em
+`DisplayList::State::add_custom_effect(Builder&, CustomShader::Closure&,
+Layer*, float2, float2, const Rect&, OptionSet<CustomEffect::Flag>)`
+(`0x000F4CC0`), com os flags traduzidos por `shader_effect_flags(unsigned)`
+(`0x000407B0`) — e `shader_effect_flags(0)` é **0**.
+
+> **A leitura, em uma frase.** O vidro é um `CustomEffect` sobre uma `Layer*` que
+> o chamador **abriu, preencheu e fechou**. A fonte da refração é essa camada, e
+> não uma captura implícita do destino.
+
+### 34.3. Por que isto desfaz o dilema
+
+O §8.1 supunha que o alvo próprio de um grupo chegasse ao vidro **vazio**. Não
+chega: quem monta o vidro desenha dentro dele antes de anexar o filtro. Então a
+mescla do grupo compõe esse resultado **uma vez**, e o fundo não entra duas.
+
+`[INF]` Para o nosso renderizador isso quer dizer que **vidro dentro de grupo que
+mescla não é um caso especial**: o grupo vai para o seu alvo, o vidro refrata o
+que foi desenhado nesse alvo abaixo dele, e a mescla do grupo se aplica ao
+resultado. Nenhuma captura de fundo precisa existir para desbloquear os 9
+camadas e os 7 documentos.
+
+### 34.4. O que continua NÃO lido
+
+`[OBS]` **Qual** conteúdo os dois sítios desenham dentro da camada antes de
+fechá-la. A cadeia foi seguida até `ldur x24, [x22, #-0x20]` e parada ali; se o
+que entra é a arte do grupo apenas, ou a do ícone inteiro, isto não diz.
+
+`[OBS]` **O significado dos bits de `flags:` públicos.** O
+`RBDrawingStateBeginLayer` (`0x0003B9FC`) traduz o argumento público para
+`OptionSet<DisplayList::Layer::Flag>` por
+`w8 = w19 & (0x7B − (w19 & 4))`, mais `| 0x80` quando `w19 & 0xA0`. Dos 21
+sítios de `beginLayerWithFlags:` no `IconRendering`, catorze passam `0`, seis
+passam `1` e um passa `0x80`.
+
+`[OBS]` **E uma pista que NÃO fecha, registrada como pista.** O único sítio de
+`0x80` (`0x0004A96C`) vem logo depois de um `addBlurFilterWithRadius:opaque:`
+(`0x0004A960`), o que sugeriria "camada que lê o fundo". Mas o §34.1 mediu que
+**não existe `BackdropFilterItem<GaussianBlur>` neste binário**, e um desfoque de
+fundo precisaria dele. As duas medições não se conciliam, então nenhuma
+conclusão é tirada daqui.
+
+### 34.5. Os instrumentos
+
+Quatro, em `scripts/macho.py`, cada um com um comando:
+
+| comando | o que responde |
+|---|---|
+| `syms` | a `LC_SYMTAB` de uma fatia fina, filtrada por substring |
+| `fn` | a função que contém um endereço, por `LC_FUNCTION_STARTS` |
+| `xref` | quem faz `BL`/`B` para um endereço |
+| `dis` | uma janela desmontada, com os alvos de chamada nomeados |
+
+O `IconRendering` **não tem nome de símbolo Swift** na `LC_SYMTAB` — 1.793
+entradas, nenhuma `$s` com endereço —, e é por isso que o `fn` existe: sem ele
+não há como dizer onde uma função começa neste binário.
