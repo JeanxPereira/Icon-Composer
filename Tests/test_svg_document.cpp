@@ -69,10 +69,43 @@ TEST_CASE(document_reads_the_view_box) {
     CHECK(d->shapes.empty());
 }
 
-// All 149 corpus files declare one (doc 04 §2). Without it there is no user
-// space, and every coordinate in the file means nothing in particular.
-TEST_CASE(document_refuses_an_svg_with_no_view_box) {
-    CHECK(!SvgDocument::parse("<svg width='16' height='16'/>").has_value());
+// NO `viewBox` FALLS BACK TO THE VIEWPORT, and this test used to assert the
+// opposite. Its reason was that all 149 corpus files declare one -- true, and
+// not a reason: SVG 1.1 §7.7 says the viewport establishes the user coordinate
+// system when `viewBox` is absent, so the box is `0 0 width height`.
+//
+// `[OBS]` What Apple's CoreSVG does was never measured; this follows the
+// specification and says so. The file that exposed it came from outside the
+// corpus -- an ordinary `<svg width="1000px" height="1000px">` that this reader
+// could not open at all.
+TEST_CASE(an_svg_with_no_view_box_takes_its_viewport) {
+    auto d = SvgDocument::parse("<svg width='16' height='16'/>");
+    REQUIRE(d.has_value());
+    CHECK(d->viewBox.x == 0.0);
+    CHECK(d->viewBox.y == 0.0);
+    CHECK(d->viewBox.width == 16.0);
+    CHECK(d->viewBox.height == 16.0);
+
+    // `px` IS the user unit, and it is the spelling real files use.
+    auto p = SvgDocument::parse("<svg width='1000px' height='500px'/>");
+    REQUIRE(p.has_value());
+    CHECK(p->viewBox.width == 1000.0);
+    CHECK(p->viewBox.height == 500.0);
+}
+
+// What is still refused, and each for its own reason.
+TEST_CASE(document_refuses_what_it_cannot_place) {
+    // Neither a box nor a viewport: there really is no user space to infer.
+    CHECK(!SvgDocument::parse("<svg/>").has_value());
+    CHECK(!SvgDocument::parse("<svg width='16'/>").has_value());
+    // A percentage is a fraction of a viewport this reader does not have.
+    CHECK(!SvgDocument::parse("<svg width='100%' height='100%'/>").has_value());
+    // A unit that is not the user unit is refused rather than read as one.
+    CHECK(!SvgDocument::parse("<svg width='10cm' height='10cm'/>").has_value());
+    // Zero and negative are not viewports.
+    CHECK(!SvgDocument::parse("<svg width='0' height='16'/>").has_value());
+    CHECK(!SvgDocument::parse("<svg width='-4' height='16'/>").has_value());
+    // And the root still has to be an `svg`.
     CHECK(!SvgDocument::parse("<notsvg viewBox='0 0 1 1'/>").has_value());
 }
 

@@ -480,13 +480,50 @@ std::optional<SvgDocument> SvgDocument::parse(std::string_view svg) {
     if (!xml) return std::nullopt;
     if (xml->root.name != "svg") return std::nullopt;
 
-    const std::string* vb = xml->root.attribute("viewBox");
-    if (!vb) return std::nullopt;  // no user space; every coordinate is meaningless
-    const auto n = numbers(*vb);
-    if (n.size() != 4) return std::nullopt;
-
+    // NO `viewBox` IS NOT NO USER SPACE. This line used to refuse such a
+    // document, with the comment "every coordinate is meaningless" -- and that
+    // is wrong: SVG 1.1 §7.7 says the viewport establishes the user coordinate
+    // system when `viewBox` is absent, so the effective box is
+    // `0 0 width height`.
+    //
+    // `[ART]` It went unnoticed because ALL 149 corpus SVGs carry a `viewBox`;
+    // the first file to hit it came from outside the corpus, and a valid,
+    // ordinary SVG could not be opened.
+    //
+    // `[OBS]` What Apple's CoreSVG does here was NOT measured. The rule below
+    // is the SVG specification's, not a transcription, and it is the reason
+    // this comment says which of the two it is. A document with neither a
+    // `viewBox` nor a `width`/`height` is still refused: then there really is
+    // no user space to infer.
     SvgDocument doc;
-    doc.viewBox = {n[0], n[1], n[2], n[3]};
+    const std::string* vb = xml->root.attribute("viewBox");
+    if (vb) {
+        const auto n = numbers(*vb);
+        if (n.size() != 4) return std::nullopt;
+        doc.viewBox = {n[0], n[1], n[2], n[3]};
+    } else {
+        const std::string* ws = xml->root.attribute("width");
+        const std::string* hs = xml->root.attribute("height");
+        if (!ws || !hs) return std::nullopt;
+        // `width` is a LENGTH, not a bare number: `1000px` is the ordinary
+        // spelling and `numbers()` returns nothing for it, because the `p`
+        // makes it stop with no digits consumed. `px` is the user unit in SVG
+        // 1.1 §4.2, so it is stripped; every other unit -- and a percentage,
+        // which is a fraction of a viewport this reader does not have -- is
+        // refused rather than read as if it were user units.
+        auto lengthOf = [](const std::string& text) -> std::optional<double> {
+            std::string_view v(text);
+            while (!v.empty() && isSpace(v.back())) v.remove_suffix(1);
+            if (v.size() > 2 && v.substr(v.size() - 2) == "px") v.remove_suffix(2);
+            const auto n = numbers(v);
+            if (n.size() != 1 || n[0] <= 0.0) return std::nullopt;
+            return n[0];
+        };
+        const auto w = lengthOf(*ws);
+        const auto h = lengthOf(*hs);
+        if (!w || !h) return std::nullopt;
+        doc.viewBox = {0.0, 0.0, *w, *h};
+    }
     Builder b;
     b.collectStyles(xml->root);
     b.walk(xml->root, Transform{}, Inherited{});

@@ -1255,7 +1255,28 @@ $mutations = @(
        to   = '        const std::size_t gi = gr;' },
     @{ file = "icon"; name = "the layers inside a group keep the array order"
        from = '        std::reverse(backToFront.begin(), backToFront.end());'
-       to   = '        (void)0;' }
+       to   = '        (void)0;' },
+
+    # ---- o viewBox ausente -------------------------------------------------
+    #
+    # NENHUM dos 149 SVGs do corpus dispensa o viewBox, entao este caminho nunca
+    # foi exercitado ate um arquivo de fora chegar -- um `<svg width="1000px"
+    # height="1000px">` comum, que o leitor recusava INTEIRO. As duas mutacoes
+    # abaixo existem porque um caminho sem corpus e exatamente o que a varredura
+    # tem de cobrir: nao ha 145 documentos por tras dele.
+    @{ file = "svgdoc"; name = "an svg with no view box is refused again"
+       from = '        if (!ws || !hs) return std::nullopt;'
+       to   = '        return std::nullopt;' },
+    # `px` E a unidade de usuario. Recusa-la devolve o leitor ao estado em que
+    # ele nao abria o arquivo, porque `1000px` e a grafia que os arquivos usam.
+    @{ file = "svgdoc"; name = "the px suffix stops being the user unit"
+       from = '            if (v.size() > 2 && v.substr(v.size() - 2) == "px") v.remove_suffix(2);'
+       to   = '            (void)0;' },
+    # E o oposto: uma unidade que NAO e a de usuario nao pode ser lida como se
+    # fosse. `10cm` valeria 10, e a arte sairia cem vezes maior do que e.
+    @{ file = "svgdoc"; name = "a length in centimetres is read as user units"
+       from = '            if (n.size() != 1 || n[0] <= 0.0) return std::nullopt;'
+       to   = '            if (n.empty() || n[0] <= 0.0) return std::nullopt;' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"
