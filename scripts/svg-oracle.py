@@ -27,6 +27,12 @@ It reads only the subset the corpus uses: `path` with `M m L l H h V v C c Z z`,
 or from a `.class` in a `<style>` block. Anything else it REFUSES by name --
 guessing would make the oracle agree with us for the wrong reason.
 
+AND IT REFUSES EVERY DRAWABLE IT CANNOT READ, rather than skipping it. That is
+the same lesson twice: eight `CodeEdit` labels first reported ~5000 differing
+pixels each, and all of them were a `<rect rx="102">` that our renderer draws
+and this file silently ignored. A blind spot that stays quiet becomes a defect
+report against the other implementation.
+
 IT DOES NOT DRAW STROKES, and it refuses a stroked path rather than filling it
 and reporting the missing stroke as OUR defect. That is not hypothetical: the
 first run over `apollo_ring_large.svg` reported 389 differing pixels, and every
@@ -313,14 +319,12 @@ def main():
             strokes.add(cls)
     doc_rule = re.search(r'style\s*=\s*"[^"]*fill-rule\s*:\s*([a-z]+)', text)
 
-    # Every `<path>` with the transform of every `<g>` that encloses it. The
-    # corpus never nests groups more than one deep, and a deeper one is REFUSED
-    # rather than flattened wrongly.
-    if len(re.findall(r'<g\b', text)) > 1:
-        raise SystemExit('REFUSED: more than one <g>; this oracle does not nest')
-    g = re.search(r'<g\b[^>]*>', text)
-    gm = parse_transform(re.search(r'transform\s*=\s*"([^"]*)"', g.group()).group(1)
-                         if g and 'transform' in g.group() else '')
+    # Anything drawable that is not a `<path>` is REFUSED by name. Skipping it
+    # would attribute its absence to the other implementation.
+    for el in ('rect', 'circle', 'ellipse', 'polygon', 'polyline', 'line',
+               'use', 'text', 'image'):
+        if re.search(r'<' + el + r'\b', text):
+            raise SystemExit('REFUSED: <%s> is a drawable this oracle does not read' % el)
 
     s = min(args.size / (bw if bw > 0 else 1.0), args.size / (bh if bh > 0 else 1.0))
     e = (args.size - s * bw) * 0.5 - s * bx
@@ -328,7 +332,30 @@ def main():
 
     total = bytearray(args.size * args.size)
     count = 0
-    for tag in re.findall(r'<path\b[^>]*>', text):
+    # A real stack, because `<g>` nests and each level multiplies its own
+    # transform onto the one it inherits. The first version refused a nested
+    # document outright, which was 55 of the corpus's 149 files.
+    stack = [(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)]
+    for tag in re.findall(r'<[^>]*>', text):
+        if re.match(r'<g\b', tag):
+            tm = re.search(r'transform\s*=\s*"([^"]*)"', tag)
+            m = stack[-1]
+            t = parse_transform(tm.group(1) if tm else '')
+            a, b, c, d, e2, f2 = m
+            A, B, C, D, E, F = t
+            stack.append((a * A + c * B, b * A + d * B,
+                          a * C + c * D, b * C + d * D,
+                          a * E + c * F + e2, b * E + d * F + f2))
+            if tag.rstrip().endswith('/>'):
+                stack.pop()
+            continue
+        if re.match(r'</g\s*>', tag):
+            if len(stack) > 1:
+                stack.pop()
+            continue
+        if not re.match(r'<path\b', tag):
+            continue
+        gm = stack[-1]
         dm = re.search(r'\sd\s*=\s*"([^"]*)"', tag)
         if not dm:
             continue
