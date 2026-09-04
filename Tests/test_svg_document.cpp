@@ -100,8 +100,14 @@ TEST_CASE(document_refuses_what_it_cannot_place) {
     CHECK(!SvgDocument::parse("<svg width='16'/>").has_value());
     // A percentage is a fraction of a viewport this reader does not have.
     CHECK(!SvgDocument::parse("<svg width='100%' height='100%'/>").has_value());
-    // A unit that is not the user unit is refused rather than read as one.
+    // A unit that is not the user unit is refused rather than read as one --
+    // and the guard that does it is `numbers()` returning EMPTY at the `c`,
+    // not the size check below. A gate mutation proved that by surviving.
     CHECK(!SvgDocument::parse("<svg width='10cm' height='10cm'/>").has_value());
+    // What the size check actually guards: a `width` that is not ONE number.
+    // `10 20` is not a length, and taking the first of the two would place the
+    // art in a viewport nobody wrote.
+    CHECK(!SvgDocument::parse("<svg width='10 20' height='16'/>").has_value());
     // Zero and negative are not viewports.
     CHECK(!SvgDocument::parse("<svg width='0' height='16'/>").has_value());
     CHECK(!SvgDocument::parse("<svg width='-4' height='16'/>").has_value());
