@@ -356,3 +356,93 @@ duplicação que o cluster do `Flare`, que valeu +18 documentos e só 9 desenhos
 - O doc 03 ganha a correção do §11.1 (o consumidor não é o `shader_blend`) e a
   refutação da inferência do mesmo parágrafo.
 - Cada lacuna do §5 está nomeada no relatório do `icrender`, com o motivo.
+
+---
+
+## 8. O resultado, medido
+
+*2026-09-04. As dez tarefas rodaram; isto é o que elas entregaram.*
+
+`[ART]` A régua, medida contra a anterior tirada do próprio git:
+
+| régua | antes | depois | o §6 prometia |
+|---|---|---|---|
+| camadas | 145 (74,7%) | **169 (87,1%)** | 178 |
+| documentos | 33 (60,0%) | **40 (72,7%)** | 47 |
+| suíte | 506 casos | **515 casos, 0 falhas** | — |
+| mutações | 247 | **267** | — |
+
+### 8.1. O déficit é EXATAMENTE a recusa que este spec não previu
+
+`169 + 9 = 178`. `40 + 7 = 47`.
+
+Os nove camadas e os sete documentos que faltam são **todos** "mescla de grupo
+sobre vidro". Os números do §6 estavam certos para as duas frentes tomadas
+separadamente; o que ninguém previu foi a **interação** entre elas.
+
+`[OBS]` Um grupo que mescla e carrega vidro não é desenhado. O vidro refrata o
+seu fundo: num alvo próprio esse fundo está vazio, e na tela a mescla misturaria
+o fundo duas vezes. Qual das duas o alvo faz **não foi lido** — a pergunta nem
+existe até um grupo ganhar buffer próprio, e nenhuma medição dela existe.
+
+`[ART]` Custa 8 documentos, entre eles as seis variantes do
+`insidegui/AssetCatalogTinkerer` e o `RuntimeViewer`. **O custo é o argumento:**
+a alternativa compra alcance com um quadro que ninguém mediu.
+
+### 8.2. Dois defeitos que o teste achou e a leitura não
+
+**O primeiro é do renderizador.** Uma forma com `fill="none"` era descartada
+**antes** de o traço ser considerado — e `fill="none"` com traço é a maneira
+normal de desenhar uma linha. Todo desenho só-de-traço saía em branco, com
+relatório limpo. O teste ponta a ponta é um `cross.svg` cuja única tinta é o
+traço, e ele veio vazio.
+
+**O segundo é meu.** A sonda do teste estava no lugar errado: o viewBox de 512
+cai num canvas de 1024 pontos, então a arte ocupa metade do alvo e os braços da
+cruz vão de 24 a 40 px, não de 16 a 48. **Sonda errada e renderizador errado dão
+o mesmo vermelho**, e só a segunda leitura separa os dois.
+
+### 8.3. E o gate reprovou os meus testes, duas vezes
+
+`[ART]` Quatro das cinco mutações do compositor **sobreviveram** na primeira
+rodada: os testes contavam camadas desenhadas e nunca olhavam a imagem. Um grupo
+cujo resultado é jogado fora ainda reporta `drawn == 1`.
+
+Na segunda rodada sobreviveram duas, por razões diferentes:
+
+- a do **grupo**, porque eu afirmava `pr > nr + 0,05` e a versão com o
+  acumulador premultiplicado duas vezes também passa desse limiar — **1,25
+  contra o 1,5 correto, com 1,0 de base**. Um limiar de "maior" não é um
+  oráculo.
+- a da **camada**, porque o fixture punha a mescla no grupo, e `blendOver`
+  desvia para `over` quando o modo é `Normal` — o código mutado nem rodava.
+
+E uma quinta era **mutante equivalente**: eu tinha escrito que pular origem com
+alpha zero quebraria `plus-darker`. Está errado, e a análise de caso mostra — a
+cauda vira `d`, todo termo `B` carrega fator `as`, e a folga do par plus é
+`saturate(ab) − ab = 0`. Pular e misturar escrevem o mesmo número nos nove
+modos. Classificada por análise e não por chute, trocada por uma observável, e a
+ausência ficou registrada na lista do gate com o motivo.
+
+### 8.4. A ressalva da régua cresceu de novo
+
+`[ART]` **Das 169 camadas desenháveis, 65 desenham sem o material que o
+documento pede** — eram 51. Subiu porque mais camadas de vidro ficaram
+alcançáveis, não porque algo regrediu.
+
+### 8.5. As correções que este trabalho carrega
+
+1. **O doc 03 §10.2 estava errado por um índice.** Publicava
+   `min(join[iid], join[iid+2])`; é `join[iid+1]` e `join[iid+2]`. Com o índice
+   publicado, **o primeiro segmento de todo subpath seria descartado**, porque o
+   ponto `iid` é o fantasma que carrega o `-3`. O erro só apareceu quando o
+   layout que a CPU emite foi lido e não fechou com o que a linha afirmava.
+2. **A inferência do §11.1 caiu.** Os bits 6–8 do traço **não** são o mesmo
+   campo que escolhe polilinha × cúbicas no path: os bits 6–15 da palavra 0 são
+   payload **por família de shader**, e os bits 0–5 dizem qual leitura vale. O
+   §10 não paga o §7.
+3. **O §11.1 creditava as máscaras a `shader_blend`.** Não há `shader_blend`
+   entre os consumidores — são os quatro módulos do traço mais os dois *uber*,
+   que só as têm porque **inlinam** o traço.
+4. **O §24.3 já tinha sido corrigido** pelo trabalho do `automatic`, e o §26.5
+   ganhou nome para os 17 blocos que registrava sem casamento.

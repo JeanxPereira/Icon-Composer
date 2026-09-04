@@ -3173,7 +3173,7 @@ apareça em vez de ser silenciosamente boa.
 
 ## 31. O fluxo de pontos do traço — a regra da CPU, e o `miterlimit` não é da GPU
 
-*2026-09-03. O §10 parou por causa dos bits do `RenderState`; o §30-bis os
+*2026-09-03. O §10 parou por causa dos bits do `RenderState`; o §33 os
 nomeou. Sobrava o outro lado: **quem alimenta o buffer**. Transcrever a
 geometria da GPU e enchê-la com um buffer chutado seria pior do que não
 transcrever, porque produziria imagem plausível.*
@@ -3290,3 +3290,240 @@ uniforme.
 | como uma junção `round` é pintada | `[OBS]` `join == 1` não emite primitiva de junção. Não afeta o corpus (`miter` nos 35), mas é buraco para cobrir os três joins |
 | o braço de partículas | `[OBS]` `kind == 1`, e um terceiro braço em `0xA9670` |
 | **a junção de costura desenhada duas vezes** | `[OBS]` num subpath fechado, `idx 1` e `idx k+1` são o mesmo ponto com o mesmo join e os mesmos vizinhos, e **os dois caem no intervalo da passada de junções**. Inofensivo sob cobertura por união; não sob mescla aditiva. Lido, e **não se sabe se é intencional** |
+
+---
+
+## 32. A mescla, do formato ao caso do shader — e são DOIS saltos
+
+*2026-09-04. O §26 leu os 56 blocos e casou 39 por fórmula, deixando dois nomes
+com mais de um candidato. Esta seção fecha isso pelo outro lado: quem ESCREVE o
+campo.*
+
+### 32.1. A ponte fala CoreGraphics, não RenderBox
+
+`[BIN]` Uma tabela direta `formato → caso do RenderBox` **não existe** em nenhuma
+das sete slices. Busca literal exaustiva pela sequência composta
+`[2,27,25,30,44,28,12,29,43,26,31,32,33,14,36,37,38,39]`, larguras 1/2/4/8 LE,
+sobre os arquivos inteiros: zero ocorrências. Método puramente literal, sem
+decodificador no caminho — o negativo é real e não uma varredura truncada.
+
+`[BIN]` `IconRendering 0x94AC0` (cópia idêntica em `0x978F4`) guarda **18 ×
+uint32**, lida por `ldr w2, [x8, x23, lsl #2]` em `0x25578` e entregue direto ao
+`setBlendMode:`:
+
+```
+0, 4, 1, 7, 26, 5, 2, 6, 27, 3, 8, 9, 10, 11, 12, 13, 14, 15
+```
+
+**São as constantes públicas do `CGBlendMode`** — `normal` 0, `multiply` 1,
+`screen` 2, `overlay` 3, `darken` 4, `lighten` 5, `colorDodge` 6, `colorBurn` 7,
+`softLight` 8, `hardLight` 9, `difference` 10, `exclusion` 11, `hue` 12,
+`saturation` 13, `color` 14, `luminosity` 15, `plusDarker` 26, `plusLighter` 27.
+
+> **Dezoito posições concordando com um cabeçalho publicado pela Apple** é uma
+> checagem de fora deste binário, contra uma numeração que ninguém aqui
+> escolheu. É evidência de tipo diferente da de casar fórmula com bloco de
+> shader, e é por isso que os dois nomes ambíguos deixaram de ser ambíguos.
+
+### 32.2. O segundo salto, e ele também se confere sozinho
+
+`[BIN]` `RenderBox 0x15ED18` (`cg_table`, 28 × uint32), indexada por
+`rb_blend_mode` em `0x8B4D4`. E `RB::RenderPass::set_blend_state` em `0x11A3D4`
+faz `bfi w9, w8, #0x10, #0xe ; str w9, [x19,#4]` — **catorze bits a partir do bit
+16 da palavra 1**, que é literalmente o `(palavra1 >> 16) & 16383` do §15.
+
+`[BIN]` `RB::blend_name` em `0x110E2C`, sobre a tabela de 56 ponteiros em
+`0x18E718`, **dá nome aos 56 casos**:
+
+```
+ 0 copy            14 exclusion       28 lighten        42 pin_light
+ 1 clear           15 maximum         29 color_dodge    43 plus_lighter
+ 2 source_over     16 minimum         30 color_burn     44 plus_darker
+ 3 source_in       17 subtract_s      31 soft_light     45 darken_source
+ 4 source_out      18 subtract_d      32 hard_light     46 lighten_source
+ 5 source_atop     19 clip_copy       33 difference     47 minimum_inverse
+ 6 dest_over       20 clip_intersect  34 subtract       48 plus_lighter_ignore_alpha
+ 7 dest_in         21 clip_copy_inv   35 divide         49 plus_darker_ignore_alpha
+ 8 dest_out        22 clip_int_inv    36 hue            50 subtract_s_ignore_alpha
+ 9 dest_atop       23 accum_copy      37 saturation     51 sdf_maximum
+10 exclusive_or    24 pass_through    38 color          52 sdf_minimum
+11 additive        25 multiply        39 luminosity     53 sdf_minimum_inverse
+12 screen          26 overlay         40 linear_burn    54 custom_normal
+13 linear_dodge    27 darken          41 linear_light   55 custom_complex
+```
+
+`[ART]` **As 28 entradas da `cg_table` concordam com a ordem do CoreGraphics,
+nome por nome** — CG 16 `clear` cai no caso 1 `clear`, CG 17 `copy` no caso 0
+`copy`, CG 25 `xor` no caso 10 `exclusive_or`. Duas tabelas achadas
+independentemente, validadas por uma terceira fonte que não é binária.
+
+**Isto aposenta os 17 blocos que o §26.5 registrava sem casamento**: eles têm
+rótulo agora, mesmo onde a fórmula não foi transcrita. E confirma a inferência do
+§26.4 — os casos 45 e 46, que usam Rec.709, são `darken_source` e
+`lighten_source`, e de fato não são mescla de cor.
+
+### 32.3. A tabela de 18, fechada
+
+| formato | nome | CG | **caso** | nome do caso |
+|---|---|---|---|---|
+| 0 | normal | 0 | **2** | `source_over` |
+| 1 | darken | 4 | **27** | `darken` |
+| 2 | multiply | 1 | **25** | `multiply` |
+| 3 | colorBurn | 7 | **30** | `color_burn` |
+| 4 | **plusDarker** | 26 | **44** | `plus_darker` |
+| 5 | lighten | 5 | **28** | `lighten` |
+| 6 | screen | 2 | **12** | `screen` |
+| 7 | colorDodge | 6 | **29** | `color_dodge` |
+| 8 | **plusLighter** | 27 | **43** | `plus_lighter` |
+| 9 | overlay | 3 | **26** | `overlay` |
+| 10 | softLight | 8 | **31** | `soft_light` |
+| 11 | hardLight | 9 | **32** | `hard_light` |
+| 12 | difference | 10 | **33** | `difference` |
+| 13 | exclusion | 11 | **14** | `exclusion` |
+| 14 | hue | 12 | **36** | `hue` |
+| 15 | saturation | 13 | **37** | `saturation` |
+| 16 | color | 14 | **38** | `color` |
+| 17 | luminosity | 15 | **39** | `luminosity` |
+
+`[BIN]` `plusLighter` = **43** e `plusDarker` = **44**, com três testemunhos: a
+`cg_table`, o `blend_name`, e o próprio shader — o bloco compartilhado de 43/44
+testa `icmp eq i32 %9, 44` e o ramo verdadeiro subtrai o excesso de alpha.
+
+`[BIN]` `darken` = **27** e `lighten` = **28**: 15 e 16 são `maximum` e `minimum`
+e **não têm equivalente CoreGraphics** — `cg_blend_mode`, o inverso em
+`0x161AE8`, mapeia os dois para `CG 0`.
+
+### 32.4. Qual argumento é a origem, e por que isso quase passou errado
+
+`[BIN]` A assinatura é `blend(ShaderState, half4, half4)` com o estado passado
+como **quatro palavras separadas**, então os dois operandos de cor são `%4` e
+`%5`, e a declaração os nomeia `src` e depois `dst`.
+
+**Essa ordem é fácil de inverter e difícil de pegar**, porque `screen`,
+`multiply`, `darken` e `lighten` são **todos simétricos nos dois operandos** —
+leem idêntico sob qualquer atribuição. O par assimétrico decide: `[BIN]` o caso
+26 ramifica em `dst.rgb > 0.5*dst.a` e o 32 em `src.rgb > 0.5*src.a`, e o
+`blend_name` chama 26 de `overlay` e 32 de `hard_light`. Overlay ramificando no
+fundo e hard-light na origem é a definição do W3C; sob a atribuição invertida os
+nomes trocariam.
+
+### 32.5. A cauda de composição, e o modo que a pula
+
+`[BIN]` Todo modo separável termina nas mesmas três linhas (em `pdf_mode` e
+inline nos casos 25–32):
+
+```
+out.rgb = src*(1 - dst.a) + dst*(1 - src.a) + B
+out.a   = src.a + dst.a - src.a*dst.a
+```
+
+com `B` já escalado por `src.a * dst.a`. `[BIN]` E `extended_color` faz o
+`pdf_mode` **limitar** o rgb a `[0, out.a]` — o limite roda quando o bit está
+**ligado**, que é o inverso do intuitivo.
+
+`[BIN]` **O `screen` não usa essa cauda.** O caso 12 está na banda barata 11–18
+do §26.1 e calcula `src + dst*(1 - src)` nos quatro canais, sem cauda nenhuma.
+
+`[BIN]` E o `soft_light` **não é a fórmula do W3C**: o caso 31 é o ramo baixo
+aplicado incondicionalmente, `B = 2·d·s − (2s − as)·d²/max(ab, 0.005)`. Não há
+`sqrt` nem cúbica em lugar nenhum do módulo, que é o que a definição completa
+exigiria. `[BIN]` O piso `0.005` é a constante `0xH1D1F`, o `half` mais próximo
+desse decimal.
+
+---
+
+## 33. Os bits que o traço lê — `LineCap`, `LineJoin`, e a inferência que caiu
+
+*2026-09-04. O §10.3 parou em dois campos do `RenderState` sem semântica. Eles
+têm nome.*
+
+### 33.1. O nome está no inicializador estático
+
+`[BIN]` `default_mod69.ll` (`stroke_joins_vertex`), no `air.static_init`:
+
+```llvm
+%2 = extractelement <4 x i32> %1, i64 0
+%3 = and i32 %2, 1536 ; %4 = icmp ne i32 %3, 512
+%5 = and i32 %2, 448  ; %6 = icmp eq i32 %5, 128
+%7 = or i1 %4, %6
+!24 = !{..., !"RB::Shader::Constant::per_vertex_joins"}
+```
+
+**`per_vertex_joins = (w0 & 1536) != 512 || (w0 & 448) == 128`**, e a palavra é a
+**0** sem ambiguidade: o `extractelement ... i64 0` está na mesma função, e os
+seis módulos do traço carregam só o global `.0`.
+
+### 33.2. Bits 6–8 são `RB::LineCap`, sete casos
+
+`[BIN]` `RenderBox 0x18F920`, via `XML::Value::LineCap::to_string`: `0 round`,
+`1 square`, **`2 butt`**, `3 outwards-triangle`, `4 inwards-triangle`,
+`5 forwards-triangle`, `6 backwards-triangle`.
+
+`[BIN]` `cg_line_cap` em `0x15EEF8` = `[1, 2, 0, 1, 1, 1, 1]`: os três primeiros
+vão para `CGLineCap {1, 2, 0}`, exatamente `butt=0, round=1, square=2` do
+CoreGraphics, e os quatro triângulos — que o CG não tem — caem em `round`.
+
+`[BIN]` O `stroke_lines_fragment` lê o campo **inteiro**, com um `switch` de 7
+casos, e cada caso é uma função de distância na região além da ponta:
+
+| caso | distância |
+|---|---|
+| `round` | `sqrt(ov² + d²)` |
+| `square` | `max(ov, d)` |
+| **`butt`** | `max(r + ov − s, d)` |
+| `outwards-triangle` | `d + ov` |
+| `inwards-triangle` | `max(r + ov − d, d)` |
+| `forwards-triangle` | `max((u>0 ? d : r−d) + ov, d)` |
+| `backwards-triangle` | `max((u>0 ? r−d : d) + ov, d)` |
+
+**O braço `== 128` é `cap == butt`**, porque `2 << 6 = 128`.
+
+`[BIN]` E o `butt` tem **duas metades**: o estágio de vértice já **encurtou o
+segmento em um `recip_scale`** naquela ponta (com guarda `len > s`), e o
+`r + ov − s` do fragment devolve o pixel. Transcrever só uma delas termina o
+traço um pixel e meio comprido.
+
+### 33.3. Bits 9–10 são `RB::LineJoin`, três casos
+
+`[BIN]` `0x18F958`: `0 miter`, `1 round`, `2 bevel` — e `rb_line_join`
+(`0x8B6B0`) é a identidade, mesma numeração do `CGLineJoin`. O braço `== 512` é
+`join == round`.
+
+### 33.4. A CPU monta os mesmos bits
+
+`[BIN]` `RB::(anônimo)::draw_stroke`, `0xA9324`–`0xA9380`:
+
+```
+ldrb w8, [x25,#4]      ; StrokeInfo.cap
+and  w8, w8, #7        ; 3 bits
+ldrb w9, [x25,#5]      ; StrokeInfo.join
+bfi  w8, w9, #3, #2    ; 2 bits logo acima
+lsl  w27, w8, #6       ; o payload entra no bit 6
+orr  w8, w27, #0xe     ; FunctionType = 14
+```
+
+### 33.5. E a inferência do §11.1 está REFUTADA
+
+O §11.1 inferia que 6–8 fosse *o mesmo campo* que o estágio de path usa para
+escolher entre polilinha e cúbicas, e que decodá-lo pagaria duas vezes.
+
+`[BIN]` O `shader_path` testa o **mesmo bit 6 da mesma palavra 0**, mas
+`(estado & 64) != 0` faz ele ler o buffer como `<2 x float>` (polilinha) e `== 0`
+como `Path::CubicSegment`. Se fosse o mesmo campo, "polilinha" seria
+`cap ∈ {square, outwards-triangle, forwards-triangle}`. É absurdo.
+
+`[BIN]` O que explica a coincidência: **os bits 6–15 da palavra 0 são um payload
+de 10 bits POR FAMÍLIA de shader**, não um mapa global. Os onze sítios
+`bfi ..., #6, #0xa` do `RenderBox` inserem ali um `PrimitiveCoverageState` ou um
+`AccumulatorCoverageState` — tipos nomeados e distintos —, o `draw_stroke`
+escreve o seu próprio layout, e o `custom_effect` lê um terceiro. **Os bits 0–5
+são o `RB::FunctionType`, e é ele que diz qual leitura vale.**
+
+> **O §10 não paga o §7.** São duas medições separadas, e a do §7 continua de pé
+> por conta própria. A inferência estava marcada `[INF]` e caiu quando medida,
+> que é para isso que o selo existe.
+
+`[BIN]` **E uma correção de instrumento**: o §11.1 credita essas máscaras a
+`shader_blend` e ao `mod100`. **Não há `shader_blend` entre os consumidores** —
+são os quatro módulos do traço mais `uber_vertex` e `uber_fragment`, e os dois
+uber só as têm porque **inlinam** o traço.

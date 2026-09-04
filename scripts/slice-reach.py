@@ -19,7 +19,7 @@ delivered them alone.
 
   stroke   `StrokeRender` flattens, emits the point stream the target's CPU
            emits (doc 03 §31), and evaluates the fragment's own coverage
-           (§10, §30-bis). Only a stroke painted with a GRADIENT still blocks,
+           (§10, §33). Only a stroke painted with a GRADIENT still blocks,
            and no corpus document has one.
   blend    the ten modes the format can spell are transcribed and the
            compositor mixes per layer; a blended GROUP gets a target of its
@@ -174,7 +174,7 @@ DRAWN_FILLS = {"none", "automatic", "solid", "automatic-gradient", "linear-gradi
 SVG_BLOCKERS = {
     # O TRACO CHAPADO SAIU DAQUI EM 2026-09-04. `StrokeRender` o desenha:
     # ponto a ponto pelo fluxo que a CPU do alvo emite (doc 03 §31), cobertura
-    # pelo fragment (§10, §30-bis), e a largura escalada pelo mapa. O que
+    # pelo fragment (§10, §33), e a largura escalada pelo mapa. O que
     # continua bloqueando e so o traco pintado com GRADIENTE, que nenhum
     # documento do corpus usa -- os 35 sao chapados, 31 hex e 4 `white`.
     "traço com url(#)": re.compile(r'stroke\s*[=:]\s*["\']?\s*url\(', re.I),
@@ -329,7 +329,7 @@ def blockers_of(node, assets: Path, svg_cache: dict,
             if k not in DRAWN_FILLS:
                 bad.add("fill de camada: %s" % k)
     # A MESCLA SAIU DAQUI EM 2026-09-04, com uma excecao medida. Os dez modos
-    # que o formato sabe soletrar estao todos transcritos (doc 03 §30-ter), o
+    # que o formato sabe soletrar estao todos transcritos (doc 03 §32), o
     # compositor mescla por camada, e um grupo mesclado ganha alvo proprio.
     #
     # A excecao e o grupo que mescla E carrega vidro: o vidro refrata o fundo, e
