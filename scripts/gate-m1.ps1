@@ -83,6 +83,8 @@ $sources = @{
     blend    = Join-Path $root "Source/RenderBox/BlendMode.cpp"
     blendfx  = Join-Path $root "Source/RenderBox/BlendFormula.cpp"
     strokegeo= Join-Path $root "Source/RenderBox/StrokeGeometry.cpp"
+    strokeren= Join-Path $root "Source/RenderBox/StrokeRender.cpp"
+    svgrender= Join-Path $root "Source/RenderBox/SvgRenderer.cpp"
     fieldgl  = Join-Path $root "Source/RenderBox/shaders/DistanceField.glsl"
     mip      = Join-Path $root "Source/RenderBox/MipPyramid.cpp"
     mipcomp  = Join-Path $root "Source/RenderBox/shaders/mip_reduce.comp"
@@ -1210,7 +1212,37 @@ $mutations = @(
     # blend a quer premultiplicada.
     @{ file = "icon"; name = "the layer art enters the blend without being premultiplied"
        from = '        for (int k = 0; k < 3; ++k) s.rgba[k] = src[i + k] * a;'
-       to   = '        for (int k = 0; k < 3; ++k) s.rgba[k] = src[i + k];' }
+       to   = '        for (int k = 0; k < 3; ++k) s.rgba[k] = src[i + k];' },
+
+    # ---- o traco em pixels -------------------------------------------------
+    #
+    # A PRIMEIRA E A QUE O TESTE PONTA A PONTA ACHOU, e nao a leitura: uma forma
+    # com `fill="none"` e traco era descartada ANTES do traco, e desenhar linha
+    # com fill none e a maneira normal de desenhar linha. Todo desenho
+    # so-de-traco saia em branco, com relatorio limpo.
+    @{ file = "svgrender"; name = "a shape whose only paint is its stroke is dropped again"
+       from = '            options.override.kind == FillOverride::Kind::None && !strokePaints) {'
+       to   = '            options.override.kind == FillOverride::Kind::None) {' },
+    @{ file = "svgrender"; name = "the stroke ignores its own opacity"
+       from = '                        const float a = cov[t] * sa;'
+       to   = '                        const float a = cov[t];' },
+    # A largura mora em espaco de USUARIO e a cobertura em pixels. Sem a escala
+    # do mapa o traco tem a largura certa so quando a escala e 1 -- que e o que
+    # um teste usa por default e um documento real nunca.
+    @{ file = "strokeren"; name = "the stroke width is not scaled into pixels"
+       from = '    params.width = shape.strokeWidth * placement.scale;'
+       to   = '    params.width = shape.strokeWidth;' },
+    @{ file = "strokeren"; name = "a Z stops closing the subpath"
+       from = '                if (open && !out.empty()) out.back().closed = true;'
+       to   = '                if (open && !out.empty()) out.back().closed = false;' },
+    @{ file = "strokeren"; name = "the cubic flattener emits the start point twice"
+       from = '                for (int i = 1; i <= n; ++i) {'
+       to   = '                for (int i = 0; i <= n; ++i) {' },
+    # Somar em vez de tomar o maximo desenha uma costura clara em cada junta --
+    # parece realce e nao e traco de ninguem.
+    @{ file = "strokeren"; name = "overlapping segments accumulate into a bright seam"
+       from = '                    dst = std::max(dst, static_cast<float>(c));'
+       to   = '                    dst = dst + static_cast<float>(c);' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"
