@@ -633,8 +633,8 @@ $mutations = @(
        from = 'if (*s != "normal") {'
        to   = 'if (false) {' },
     @{ file = "icon"; name = "the layer opacity never reaches the composite"
-       from = 'over(acc, drew->rgba, static_cast<float>(opacity));'
-       to   = 'over(acc, drew->rgba, 1.0f);' },
+       from = '                blendOver(target, drew->rgba, static_cast<float>(opacity), layerBlend);'
+       to   = '                blendOver(target, drew->rgba, 1.0f, layerBlend);' },
     @{ file = "icon"; name = "the over operator does not hold back the destination"
        from = 'for (int k = 0; k < 3; ++k) acc[i + k] = src[i + k] * a + acc[i + k] * inv;'
        to   = 'for (int k = 0; k < 3; ++k) acc[i + k] = src[i + k] * a + acc[i + k];' },
@@ -1057,16 +1057,16 @@ $mutations = @(
     # carries the key -- `normal` included -- also makes the first test pass,
     # and turns a value that means "do nothing" into a gap.
     @{ file = "icon"; name = "the group's blend mode is never read"
-       from = 'if (*s != "normal") groupBlend = s;'
-       to   = 'if (false) groupBlend = s;' },
+       from = '                    groupBlend = s;'
+       to   = '                    groupBlend = nullptr;' },
     @{ file = "icon"; name = "a group blending as normal is refused along with the rest"
-       from = 'if (*s != "normal") groupBlend = s;'
-       to   = 'groupBlend = s;' },
+       from = '                if (*s != "normal") {'
+       to   = '                if (true) {' },
     # And the reason has to NAME the mode. A gap reported without saying which
     # blend provoked it is a count, not a report.
     @{ file = "icon"; name = "the group blend gap does not name the mode"
-       from = 'skip("mescla de grupo ''" + *groupBlend + "'' -- o grupo inteiro "'
-       to   = 'skip("mescla de grupo -- o grupo inteiro "' },
+       from = '                         : ("mescla de grupo ''" + *groupBlend + "'' -- grafia ou modo"'
+       to   = '                         : (std::string("mescla de grupo -- grafia ou modo"' },
 
     # ---- as duas tabelas da mescla ---------------------------------------
     #
