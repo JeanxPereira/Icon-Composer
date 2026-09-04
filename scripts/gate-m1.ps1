@@ -1192,12 +1192,19 @@ $mutations = @(
     @{ file = "icon"; name = "the group result is never mixed back in"
        from = '        if (blendTheGroup) blendPremulOver(acc, groupAcc, *groupMode);'
        to   = '        (void)0;' },
-    # A RECUSA sobre vidro e a decisao mais cara deste trabalho -- ela custa 8
-    # documentos. Se ela cair sem ninguem notar, o renderizador passa a desenhar
-    # refracao sobre fundo vazio e a reportar sucesso.
-    @{ file = "icon"; name = "a blended group over glass is drawn anyway"
-       from = '        const bool blendTheGroup = groupBlend && groupMode && !groupHasGlass;'
+    # A RECUSA sobre vidro QUE REFRATA e a que sobrou depois de 2026-09-04, e ela
+    # tem DOIS lados que podem cair sozinhos. Se o guarda inteiro cai, o
+    # renderizador desenha refracao sobre um buffer vazio e reporta sucesso --
+    # foi exatamente o que a primeira tentativa de lifta-lo fez, e o teste de
+    # pixel pegou. Se em vez disso ele volta a recusar todo grupo que apenas
+    # CONTEM vidro, nao ha pixel errado: perdem-se 9 camadas e 7 documentos em
+    # silencio, que e o defeito que so a segunda mutacao acha.
+    @{ file = "icon"; name = "a blended group whose glass refracts is drawn anyway"
+       from = '        const bool blendTheGroup = groupBlend && groupMode && !groupWouldRefract;'
        to   = '        const bool blendTheGroup = groupBlend && groupMode;' },
+    @{ file = "icon"; name = "the refusal widens back to any glass at all"
+       from = '        if (groupBlend && !glassRefractionIsIdentity(refraction)) {'
+       to   = '        if (groupBlend) {' },
     # O pulo de alpha zero que `over` faz e que `blendOver` NAO pode fazer:
     # plus-darker tem termo que nao some com origem transparente.
     # NAO ha mutacao aqui para o pulo de alpha zero, e a ausencia e o

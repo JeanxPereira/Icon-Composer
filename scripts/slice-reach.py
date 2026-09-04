@@ -197,7 +197,18 @@ KNOWN_BLENDS = {
 
 
 def group_blend_over_glass(groups) -> set:
-    """Grupos que mesclam E tem camada de vidro -- a combinacao nao lida."""
+    """Grupos que mesclam E cujo vidro REFRATA -- e so esses.
+
+    A regua contava aqui todo grupo que mesclasse e tivesse uma camada de vidro,
+    qualquer que fosse. Contava demais: o acoplamento que bloqueia e o do nosso
+    `glassOver`, que desloca o buffer de acumulacao NO LUGAR e portanto chega
+    vazio no alvo proprio de um grupo -- e ele so roda quando a refracao move
+    alguma coisa. Vidro com refracao identidade desenha como arte comum e nao
+    prende o grupo a nada.
+
+    `[ART]` No corpus, 5 dos 271 grupos carregam `refractivity` e 2 tem forca
+    nao-zero, entao a diferenca entre as duas contas nao e pequena.
+    """
     bad = set()
     for g in groups or []:
         modes = set()
@@ -210,9 +221,17 @@ def group_blend_over_glass(groups) -> set:
                         modes.add(e["value"])
         if not (modes - {"normal"}):
             continue
-        if any(x is True for lay in (g.get("layers") or [])
-               for k, x in lay.items() if k == "glass"):
-            bad.add("mescla de grupo sobre vidro")
+        if not any(x is True for lay in (g.get("layers") or [])
+                   for k, x in lay.items() if k == "glass"):
+            continue
+        # A refracao so e nao-identidade com `enabled` e forca diferente de zero;
+        # o `strength` sozinho nao basta, e `enabled` sozinho tambem nao.
+        for r in values_for(g, "refractivity"):
+            if not isinstance(r, dict):
+                continue
+            if r.get("enabled") is True and r.get("strength") not in (None, 0, 0.0):
+                bad.add("mescla de grupo sobre vidro que refrata")
+                break
     return bad
 
 

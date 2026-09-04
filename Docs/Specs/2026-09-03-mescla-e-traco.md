@@ -446,3 +446,41 @@ alcançáveis, não porque algo regrediu.
    que só as têm porque **inlinam** o traço.
 4. **O §24.3 já tinha sido corrigido** pelo trabalho do `automatic`, e o §26.5
    ganhou nome para os 17 blocos que registrava sem casamento.
+
+## 9. O déficit do §8.1, fechado — e não por onde eu apostei
+
+*2026-09-04, à tarde.*
+
+`[ART]` A régua, medida:
+
+| régua | §8 (03/09) | agora | o §6 prometia |
+|---|---|---|---|
+| camadas | 169 (87,1%) | **178 (91,8%)** | 178 |
+| documentos | 40 (72,7%) | **47 (85,5%)** | 47 |
+| suíte | 515 casos | **519 casos, 0 falhas** | — |
+
+O §8.1 dizia que o déficit era *exatamente* a recusa de "mescla de grupo sobre
+vidro", e estava certo. O que estava errado era o motivo.
+
+**A leitura que eu fui buscar** (doc 03 §34) respondeu o `[OBS]`: o vidro da
+Apple **não amostra o destino** — `GlassDisplacementStyle::draw` põe um
+`GenericFilter<GlassDisplacementEffect>` sobre o item que ele veste e nunca
+chega em `make_backdrop_item`. Então eu apaguei a recusa inteira.
+
+**E um teste reprovou isso, com pixel.** O nosso `glassOver` não é o da Apple:
+ele fotografa o buffer de acumulação e o desloca **no lugar**. Apontado para o
+alvo próprio de um grupo, ele chega vazio e desloca nada — o grupo desenharia
+com a refração sumida e o relatório limpo. **Desenhar em silêncio é o defeito**,
+e a recusa estava protegendo algo verdadeiro pelo motivo errado.
+
+**O que destravou os 9 e os 7** foi estreitar, não apagar: o acoplamento só
+existe quando a refração **move alguma coisa**. `[ART]` 5 dos 271 grupos do
+corpus carregam `refractivity` e **2** têm força não-zero, então recusar todo
+grupo que apenas *contém* vidro recusava os outros de graça. Nenhum dos 8
+documentos bloqueados tinha vidro que refrata — a recusa era larga demais desde
+o primeiro dia.
+
+`[OBS]` **O que continua fechado, e agora com nome.** Um grupo que mescla e cujo
+vidro refrata segue recusado. Isso não é mais uma pergunta sobre a Apple; é uma
+diferença do nosso modelo, e a saída é alinhar a fonte do vidro — fazer ele
+filtrar o item que veste, como o §34.3 mediu. Frente própria.

@@ -3537,8 +3537,9 @@ separa as 169 camadas de hoje das 178 prometidas, e a deixou como um dilema:
 > seu fundo: num alvo próprio esse fundo está vazio, e na tela a mescla
 > misturaria o fundo duas vezes. Qual das duas o alvo faz não foi lido.
 
-`[BIN]` **Nenhuma das duas.** O fundo que o vidro refrata não é lido do destino:
-ele é **desenhado dentro de uma camada, de propósito, antes de o filtro existir**.
+`[BIN]` **Nenhuma das duas.** O vidro não amostra o destino: ele é um filtro
+sobre **o item que ele veste**, e a pergunta "de onde vem o fundo" não tem esse
+fundo para vir.
 
 ### 34.1. O RenderBox tem DUAS formas de item para cada filtro
 
@@ -3593,27 +3594,55 @@ Layer*, float2, float2, const Rect&, OptionSet<CustomEffect::Flag>)`
 (`0x000F4CC0`), com os flags traduzidos por `shader_effect_flags(unsigned)`
 (`0x000407B0`) — e `shader_effect_flags(0)` é **0**.
 
-> **A leitura, em uma frase.** O vidro é um `CustomEffect` sobre uma `Layer*` que
-> o chamador **abriu, preencheu e fechou**. A fonte da refração é essa camada, e
-> não uma captura implícita do destino.
+> **A leitura, em uma frase.** O vidro é um `CustomEffect` sobre uma `Layer*`, e
+> essa `Layer*` **não é a fonte da refração** — o §34.3 mostra o que é.
 
-### 34.3. Por que isto desfaz o dilema
+### 34.3. A camada vai VAZIA, e o que refrata é outra coisa
 
-O §8.1 supunha que o alvo próprio de um grupo chegasse ao vidro **vazio**. Não
-chega: quem monta o vidro desenha dentro dele antes de anexar o filtro. Então a
-mescla do grupo compõe esse resultado **uma vez**, e o fundo não entra duas.
+`[BIN]` Entre o `beginLayer` e o `addFilterLayerWithShader:` **não há uma única
+chamada de desenho**, nos dois sítios. Tudo que acontece ali é `addStyle:data:`,
+a construção do `RBShader` e os seus argumentos. Nada é desenhado dentro da
+camada que o filtro recebe.
 
-`[INF]` Para o nosso renderizador isso quer dizer que **vidro dentro de grupo que
-mescla não é um caso especial**: o grupo vai para o seu alvo, o vidro refrata o
-que foi desenhado nesse alvo abaixo dele, e a mescla do grupo se aplica ao
-resultado. Nenhuma captura de fundo precisa existir para desbloquear os 9
-camadas e os 7 documentos.
+> **Uma correção.** A primeira redação desta seção dizia que o chamador "abriu,
+> preencheu e fechou" a camada, e que a refração vinha dela. **Está errado** — a
+> camada vai vazia, e a palavra "preencheu" era minha, não do binário. O que
+> segue foi lido depois, no caminho de desenho, e é o que decide a pergunta.
+
+`[BIN]` `State::add_custom_effect` não cria um item: ele monta um
+`DisplayList::CustomEffectStyle{Closure&, Layer*, …}` e chama
+`State::add_style(Builder&, Style*)` (`0x000ABC70`). O vidro é um **estilo**, e o
+binário nomeia a subclasse: `DisplayList::GlassDisplacementStyle`
+(vtable em `0x0018E000`).
+
+`[BIN]` E `GlassDisplacementStyle::draw(Builder&, Layer&, Item*,
+OptionSet<DrawFlag>)` (`0x000F3B38`) diz sobre o quê o efeito roda:
+
+```
+GlassDisplacementEffect::can_render_inline()          0x0008ABF8
+alpha_effect_applies_as_filter(const Item*)           0x000F2E3C
+  Heap::emplace<GenericFilter<GlassDisplacementEffect>>(…)   0x000F8A04
+  Builder::apply_filter_(Item*, LayerFilter*, …)             0x000CD1F0
+senao:
+  GlassDisplacementEffect::can_discard_color(bool*)    0x0008ABD4
+  Builder::ensure_layer(Item*, OptionSet<EnsureLayerFlag>, float)  0x000CCD5C
+```
+
+`[BIN]` Os dois ramos são a forma de **conteúdo próprio**: `GenericFilter<F>`
+aplicado ao `Item*` que está sendo desenhado, ou `ensure_layer` forçando esse
+mesmo item a ter camada para então filtrá-la. **Nenhum dos dois chama
+`make_backdrop_item`**, e o §34.1 mediu que a rota do fundo existe — ela
+simplesmente não é a que este caminho toma.
+
+> **A resposta ao §8.1.** O vidro refrata **o que ele veste**, não o que está
+> atrás. O dilema do spec pressupunha uma captura do destino que não acontece.
+
+`[INF]` Para o nosso renderizador: dar ao grupo um alvo próprio **não deixa o
+vidro sem fonte**, porque a fonte do vidro é o item dentro do grupo, e o item vai
+junto. Logo `blendTheGroup` pode valer também quando o grupo tem vidro, e é isso
+que destrava as 9 camadas e os 7 documentos.
 
 ### 34.4. O que continua NÃO lido
-
-`[OBS]` **Qual** conteúdo os dois sítios desenham dentro da camada antes de
-fechá-la. A cadeia foi seguida até `ldur x24, [x22, #-0x20]` e parada ali; se o
-que entra é a arte do grupo apenas, ou a do ícone inteiro, isto não diz.
 
 `[OBS]` **O significado dos bits de `flags:` públicos.** O
 `RBDrawingStateBeginLayer` (`0x0003B9FC`) traduz o argumento público para

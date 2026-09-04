@@ -186,14 +186,6 @@ std::string twoGroups(const std::string& frontGroupExtra,
            "        }\n      ]\n    }\n  ]\n}\n";
 }
 
-std::string groupAndLayer(const std::string& groupExtra, const std::string& layerExtra) {
-    return "{\n  \"groups\" : [\n    {\n      " + groupExtra +
-           "\"layers\" : [\n        {\n"
-           "          \"image-name\" : \"square.svg\",\n"
-           "          \"name\" : \"only\"" + layerExtra + "\n"
-           "        }\n      ]\n    }\n  ]\n}\n";
-}
-
 std::string groupWith(const std::string& groupExtra) {
     return "{\n  \"groups\" : [\n    {\n      " + groupExtra + "\"layers\" : [\n        {\n"
            "          \"image-name\" : \"square.svg\",\n"
@@ -469,30 +461,54 @@ TEST_CASE(a_blend_mode_on_the_group_draws_through_its_own_target) {
     CHECK(icon->skipped.empty());
 }
 
-// ...EXCEPT over glass, which is still refused and says why.
+// ...AND OVER GLASS TOO, which was refused until 2026-09-04 on a premise that
+// turned out to be false.
 //
-// Glass refracts its backdrop. In a group with its own target the backdrop is
-// empty; in the canvas the blend would mix it in twice. `[OBS]` Which the
-// target does was never read -- the question does not arise until a group gets
-// its own buffer. `[ART]` Eight corpus documents hit this, so the refusal
-// costs real reach, and that is the point: the alternative buys reach with a
-// picture nobody measured.
-TEST_CASE(a_blended_group_containing_glass_is_refused_with_its_reason) {
+// The refusal said: glass refracts its backdrop, so a group with its own target
+// would refract an empty one. `[BIN]` It does not (doc 03 §34.3) --
+// `GlassDisplacementStyle::draw` puts a `GenericFilter<GlassDisplacementEffect>`
+// over the ITEM it is applied to, and never reaches `make_backdrop_item`. The
+// glass consumes what it wears, so a target of its own starves nothing.
+//
+// `[ART]` Eight corpus documents put a non-normal blend and a glass layer on
+// the same group, `insidegui/AssetCatalogTinkerer` and `RuntimeViewer` among
+// them.
+//
+// The oracle here is the same EXACT arithmetic as
+// `a_blended_group_changes_the_pixels_and_not_only_the_count`, and for the same
+// reason: "brighter than normal" also passes for a group premultiplied twice.
+// What this one adds is the `glass` key on the layer, which used to stop the
+// group from being drawn at all.
+TEST_CASE(a_blended_group_containing_glass_draws_and_still_blends) {
     Device& d = gpu();
     if (!d.valid()) return;
     IconRenderOptions o;
     o.size = 64;
-    const TempBundle glassy(groupAndLayer(
+
+    const TempBundle plain(twoGroups(
+        "", ",\n          \"opacity\" : 0.5,\n          \"glass\" : true"));
+    auto pb = icf::IconBundle::open(plain.path());
+    REQUIRE(pb.has_value());
+    auto normal = renderIcon(d, *pb, o);
+    REQUIRE(normal.has_value());
+    CHECK_EQ(normal->drawn, std::size_t{2});
+
+    const TempBundle mixed(twoGroups(
         "\"blend-mode\" : \"plus-lighter\",\n      ",
-        ",\n          \"glass\" : true"));
-    auto b = icf::IconBundle::open(glassy.path());
-    REQUIRE(b.has_value());
-    auto icon = renderIcon(d, *b, o);
-    REQUIRE(icon.has_value());
-    CHECK_EQ(icon->drawn, std::size_t{0});
-    REQUIRE(icon->skipped.size() == 1);
-    CHECK(icon->skipped[0].why.find("vidro") != std::string::npos);
-    CHECK(icon->skipped[0].why.find("refracao") != std::string::npos);
+        ",\n          \"opacity\" : 0.5,\n          \"glass\" : true"));
+    auto mb = icf::IconBundle::open(mixed.path());
+    REQUIRE(mb.has_value());
+    auto plus = renderIcon(d, *mb, o);
+    REQUIRE(plus.has_value());
+
+    // It DRAWS now, and it does not draw silently: nothing may be skipped.
+    CHECK_EQ(plus->drawn, std::size_t{2});
+    CHECK(plus->skipped.empty());
+
+    const float nr = channelAt(*normal, 32, 32, 0) * alphaAt(*normal, 32, 32);
+    const float pr = channelAt(*plus, 32, 32, 0) * alphaAt(*plus, 32, 32);
+    CHECK(std::fabs(nr - 1.0f) < 0.02f);
+    CHECK(std::fabs(pr - 1.5f) < 0.02f);
 }
 
 // And `normal` on the group is not a gap: the same document with the key set

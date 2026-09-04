@@ -576,31 +576,58 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             }
         }
 
-        // A BLENDED GROUP THAT CONTAINS GLASS IS STILL REFUSED, and this is the
-        // one place where drawing would be easy and wrong.
+        // A BLENDED GROUP THAT CONTAINS GLASS USED TO BE REFUSED HERE, and the
+        // refusal's premise turned out to be false.
         //
-        // Glass refracts its BACKDROP. Composited into a target of its own, the
-        // group's backdrop is empty, so the refraction would sample nothing;
-        // composited into the canvas, the blend would mix the backdrop in
-        // twice. `[OBS]` Which of the two the target does was not read -- the
-        // question does not even arise until a group is given its own buffer,
-        // and no measurement of it exists.
+        // The reasoning was: glass refracts its BACKDROP, so a group composited
+        // into a target of its own would refract an empty one, and a group
+        // composited into the canvas would mix the backdrop in twice. Which of
+        // the two the target does was `[OBS]` -- unread -- so the group was not
+        // drawn at all.
         //
-        // `[ART]` It is not a corner: 8 corpus documents put a non-normal blend
-        // and a glass layer on the same group, `insidegui/AssetCatalogTinkerer`
-        // and `RuntimeViewer` among them. Refusing costs real reach, and
-        // guessing would buy it with a picture nobody measured.
-        bool groupHasGlass = false;
-        if (groupBlend) {
+        // `[BIN]` It was read (doc 03 §34.3), and NEITHER happens, because the
+        // glass does not sample the destination in the first place.
+        // `GlassDisplacementStyle::draw` (`0x000F3B38`) builds a
+        // `GenericFilter<GlassDisplacementEffect>` over the ITEM being drawn and
+        // calls `Builder::apply_filter_`; when that will not go inline it calls
+        // `ensure_layer` on that same item. Both are the item's own content, and
+        // neither reaches `make_backdrop_item` -- a route that exists for this
+        // effect and is not the one this path takes.
+        //
+        // BUT OUR GLASS IS NOT APPLE'S, and a test caught the difference.
+        // `glassOver` displaces the accumulation buffer IN PLACE -- it snapshots
+        // whatever has been drawn so far and refracts that. Point it at a
+        // group's fresh target and it has nothing to displace, so the group
+        // would draw with the refraction silently gone. That is the defect this
+        // file already names as the worst of the three: drawing silently.
+        //
+        // So the refusal survives, with its reason corrected: it is not that
+        // Apple's behaviour is unread, it is that OUR glass reads the
+        // destination and Apple's does not. Aligning the two -- making the
+        // glass filter the item it wears -- would dissolve the coupling, and it
+        // is a front of its own.
+        //
+        // WHAT NARROWS IT: the coupling only bites when the refraction actually
+        // MOVES something. `[ART]` Only 5 of the corpus's 271 groups carry
+        // `refractivity` at all and only 2 of those a non-zero strength, so a
+        // glass layer whose refraction is the identity draws as ordinary art
+        // and its group can blend like any other. Refusing every group that
+        // merely CONTAINS glass refused those too, for nothing.
+        //
+        // `[ART]` 8 corpus documents put a non-normal blend and a glass layer on
+        // the same group, `insidegui/AssetCatalogTinkerer` and `RuntimeViewer`
+        // among them.
+        bool groupWouldRefract = false;
+        if (groupBlend && !glassRefractionIsIdentity(refraction)) {
             for (const icf::Layer& l : group.layers()) {
                 if (boolOr(l.resolve("glass", options.context), false)) {
-                    groupHasGlass = true;
+                    groupWouldRefract = true;
                     break;
                 }
             }
         }
 
-        const bool blendTheGroup = groupBlend && groupMode && !groupHasGlass;
+        const bool blendTheGroup = groupBlend && groupMode && !groupWouldRefract;
         std::vector<float> groupAcc;
         if (blendTheGroup) groupAcc.assign(texels * 4, 0.0f);
         std::vector<float>& target = blendTheGroup ? groupAcc : acc;
@@ -630,10 +657,10 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             // is a per-layer list and a group-shaped gap would be invisible in
             // the count that the ruler and the report both read.
             if (groupBlend && !blendTheGroup) {
-                skip(groupHasGlass
-                         ? ("mescla de grupo '" + *groupBlend + "' sobre um grupo com"
-                            " vidro -- o fundo que a refracao amostra nesse caso nao"
-                            " foi lido")
+                skip(groupWouldRefract
+                         ? ("mescla de grupo '" + *groupBlend + "' sobre um grupo cujo"
+                            " vidro refrata -- o nosso glassOver desloca o buffer de"
+                            " acumulacao no lugar, e o alvo proprio do grupo chega vazio")
                          : ("mescla de grupo '" + *groupBlend + "' -- grafia ou modo"
                             " que este leitor nao desenha"));
                 continue;

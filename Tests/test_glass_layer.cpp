@@ -162,12 +162,15 @@ private:
 // the raster gap can be exercised with the same document; `refractivity` is the
 // group key verbatim, or empty for a group that carries none.
 std::string rampAndGlass(const char* art, const std::string& refractivity, bool glass,
-                         double opacity = 0.25) {
+                         double opacity = 0.25, const std::string& groupBlend = "") {
     // The lens group comes FIRST and the ramp LAST, because the array runs
     // front to back. It read the other way until 2026-09-04, when the
     // composition order was corrected -- the intent ("a ramp behind, one
     // glass layer in front") never changed, only how a document spells it.
     std::string doc = "{\n  \"groups\" : [\n    { ";
+    if (!groupBlend.empty()) {
+        doc += "\"blend-mode\" : \"" + groupBlend + "\",\n      ";
+    }
     if (!refractivity.empty()) {
         doc += "\"refractivity\" : " + refractivity + ",\n      ";
     }
@@ -470,6 +473,71 @@ TEST_CASE(a_glass_layer_with_no_refractivity_leaves_the_backdrop_bit_identical) 
 // monotone function of x, so "the backdrop moved by this many pixels" is a
 // number this test computes rather than a difference it merely notices. A join
 // with the displacement zeroed passes neither half.
+// A GROUP WHOSE GLASS REFRACTS IS STILL REFUSED WHEN IT BLENDS, and this test
+// exists because the first attempt at lifting that refusal was WRONG and this
+// is what caught it.
+//
+// `[BIN]` The reading that motivated the attempt is sound (doc 03 §34.3):
+// Apple's `GlassDisplacementStyle::draw` builds a
+// `GenericFilter<GlassDisplacementEffect>` over the ITEM it is applied to and
+// never reaches `make_backdrop_item`, so its glass does not sample the
+// destination and a target of its own would starve nothing.
+//
+// OUR glass is not that. `glassOver` snapshots the accumulation buffer and
+// displaces it IN PLACE, so its source is whatever has already been drawn into
+// the target it is handed. A blended group is drawn into `groupAcc`, which is
+// fresh -- so the displacement runs over an empty buffer and moves nothing,
+// and the group would draw with the refraction silently gone.
+//
+// That is why this asserts the refusal and its REASON rather than a picture:
+// the picture of the wrong version looks like a render, which is exactly the
+// failure mode. Lifting this guard means changing what our glass reads, not
+// deleting the line.
+TEST_CASE(a_blended_group_whose_glass_refracts_is_refused_and_says_why) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 1024;
+
+    const TempBundle lens(
+        rampAndGlass("square.svg", realRefractivity(kRealStrength), true, 0.25, "plus-lighter"));
+    auto a = icf::IconBundle::open(lens.path());
+    REQUIRE(a.has_value());
+    auto ga = renderIcon(d, *a, o);
+    REQUIRE(ga.has_value());
+
+    // The glass layer is refused; the ramp behind it still draws.
+    CHECK_EQ(ga->glassRefracted, std::size_t{0});
+    REQUIRE(ga->skipped.size() == 1);
+    CHECK(ga->skipped[0].why.find("vidro refrata") != std::string::npos);
+    CHECK(ga->skipped[0].why.find("acumulacao") != std::string::npos);
+}
+
+// ...AND A GROUP WHOSE GLASS DOES NOT REFRACT IS NOT REFUSED, which is the half
+// that buys the reach back.
+//
+// `[ART]` Only 5 of the corpus's 271 groups carry `refractivity` and only 2 of
+// those a non-zero strength. A glass layer whose refraction is the identity
+// never calls `glassOver` at all -- it draws as ordinary art -- so its group has
+// no coupling to the accumulation buffer and can blend like any other. Refusing
+// on the mere PRESENCE of the `glass` key refused all of those for nothing.
+TEST_CASE(a_blended_group_whose_glass_does_not_refract_draws) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 1024;
+
+    // No `refractivity` on the group at all: the refraction is the identity.
+    const TempBundle flat(rampAndGlass("square.svg", "", true, 0.25, "plus-lighter"));
+    auto a = icf::IconBundle::open(flat.path());
+    REQUIRE(a.has_value());
+    auto ga = renderIcon(d, *a, o);
+    REQUIRE(ga.has_value());
+    CHECK_EQ(ga->drawn, std::size_t{2});
+    CHECK(ga->skipped.empty());
+    CHECK_EQ(ga->glassRefracted, std::size_t{0});
+}
+
 TEST_CASE(the_glass_displaces_the_backdrop_inside_the_shape_and_nowhere_else) {
     Device& d = gpu();
     if (!d.valid()) return;
