@@ -34,6 +34,7 @@ add_library(RenderBox STATIC
     SystemFill.cpp
     BlendMode.cpp
     BlendFormula.cpp
+    StrokeGeometry.cpp
 )
 
 # Shaders are compiled at BUILD time, not loaded at run time. A shader that does

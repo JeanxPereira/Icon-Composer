@@ -82,6 +82,7 @@ $sources = @{
     sysfill  = Join-Path $root "Source/RenderBox/SystemFill.cpp"
     blend    = Join-Path $root "Source/RenderBox/BlendMode.cpp"
     blendfx  = Join-Path $root "Source/RenderBox/BlendFormula.cpp"
+    strokegeo= Join-Path $root "Source/RenderBox/StrokeGeometry.cpp"
     fieldgl  = Join-Path $root "Source/RenderBox/shaders/DistanceField.glsl"
     mip      = Join-Path $root "Source/RenderBox/MipPyramid.cpp"
     mipcomp  = Join-Path $root "Source/RenderBox/shaders/mip_reduce.comp"
@@ -1131,7 +1132,49 @@ $mutations = @(
     # defeito que o silencio da mescla de grupo era.
     @{ file = "blendfx"; name = "an untranscribed mode claims to be transcribed"
        from = '            return false;'
-       to   = '            return true;' }
+       to   = '            return true;' },
+
+    # ---- a geometria do traco ---------------------------------------------
+    #
+    # A PRIMEIRA E O DEFEITO QUE A NOSSA PROPRIA DOCUMENTACAO CARREGOU. O doc 03
+    # §10.2 publicava min(join[iid], join[iid+2]) ate 2026-09-04, e com esse
+    # indice o ponto lido e o fantasma que carrega o -3: o primeiro segmento de
+    # TODO subpath desaparece. A mutacao restaura o texto errado.
+    @{ file = "strokegeo"; name = "the discard rule reads the ghost instead of the segment"
+       from = '    return std::min(stream[iid + 1].join, stream[iid + 2].join) >= 0;'
+       to   = '    return std::min(stream[iid].join, stream[iid + 2].join) >= 0;' },
+    # O limite de miter compara contra o QUADRADO. Sem o quadrado a regra ainda
+    # e monotona e ainda degenera -- so degenera no angulo errado.
+    @{ file = "strokegeo"; name = "the miter limit is compared without being squared"
+       from = '    if ((1.0 + c) * miterLimit * miterLimit < 2.0) return LineJoin::Bevel;'
+       to   = '    if ((1.0 + c) * miterLimit < 2.0) return LineJoin::Bevel;' },
+    @{ file = "strokegeo"; name = "the round-corner early out moves off its constant"
+       from = 'constexpr double kRoundCorner = 0.99;'
+       to   = 'constexpr double kRoundCorner = 0.9;' },
+    # O encurtamento do vertice e a outra METADE da ponta butt: sem ele a conta
+    # do cap roda da origem errada e o traco termina um pixel e meio comprido.
+    @{ file = "strokegeo"; name = "the butt end is not shortened by the vertex stage"
+       from = '    if (params.cap == LineCap::Butt && wholeLen > s) {'
+       to   = '    if (false && params.cap == LineCap::Butt && wholeLen > s) {' },
+    @{ file = "strokegeo"; name = "the butt cap forgets the pixel the ramp needs"
+       from = '        case LineCap::Butt:   return std::max(r + ov - s, d);'
+       to   = '        case LineCap::Butt:   return std::max(r + ov, d);' },
+    # O fantasma e uma REFLEXAO do vizinho pelo extremo, nao uma copia do
+    # extremo: uma copia daria um segmento de comprimento zero na janela.
+    @{ file = "strokegeo"; name = "the ghost point is a copy of the end, not its mirror"
+       from = '    return {2.0 * end.x - neighbour.x, 2.0 * end.y - neighbour.y};'
+       to   = '    return {end.x, end.y};' },
+    # O fio de cabelo mantem a tinta DESBOTANDO. Sem a escala ele fica opaco e
+    # largo demais, que e o defeito classico de antialiasing de traco fino.
+    @{ file = "strokegeo"; name = "a hairline keeps full alpha instead of fading"
+       from = '    double alpha = params.hardCoverage ? 1.0 : (rEff == 0.0 ? 1.0 : r / rEff);'
+       to   = '    double alpha = 1.0;' },
+    @{ file = "strokegeo"; name = "the antialiased ramp is two pixels wide"
+       from = '    return alpha * smoothstep01((half - sd) / s);'
+       to   = '    return alpha * smoothstep01((half - sd) / (s * 2.0));' },
+    @{ file = "strokegeo"; name = "the lines pass runs one instance too many"
+       from = '    return pointCount < 3 ? 0 : pointCount - 3;'
+       to   = '    return pointCount < 3 ? 0 : pointCount - 2;' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"
