@@ -691,7 +691,14 @@ TEST_CASE(a_blended_group_changes_the_pixels_and_not_only_the_count) {
     // shows.
     const float nr = channelAt(*normal, 32, 32, 0) * alphaAt(*normal, 32, 32);
     const float pr = channelAt(*plus, 32, 32, 0) * alphaAt(*plus, 32, 32);
-    CHECK(pr > nr + 0.05f);
+    // EXACT, not "bigger". `square.svg` is opaque red, so the backdrop is
+    // premultiplied (1,0,0,1) and the front group is (0.5,0,0,0.5).
+    // plus-lighter adds: rgb 1.5, alpha saturate(1.5) = 1. Source-over gives
+    // 0.5 + 1*(1-0.5) = 1.0. A threshold of "greater" passes for BOTH the
+    // right answer and a group premultiplied twice (1.25), which is exactly
+    // how that mutation survived the first version of this test.
+    CHECK(std::fabs(nr - 1.0f) < 0.02f);
+    CHECK(std::fabs(pr - 1.5f) < 0.02f);
 
     // And the group really did reach the canvas: dropping it would leave the
     // backdrop alone, which is exactly `nr`.
@@ -704,3 +711,26 @@ TEST_CASE(a_blended_group_changes_the_pixels_and_not_only_the_count) {
 // for all nine modes -- so there is nothing to observe. The first draft of
 // this file asserted otherwise and the premise was wrong; the note stays so
 // the next reader does not go looking for the test that is missing.
+
+// The LAYER path, which the group test above never reaches: `blendOver`
+// short-circuits to `over` when the mode is Normal, so a fixture that puts
+// the blend on the group leaves the premultiply in the layer path unrun.
+//
+// One layer, `plus-lighter`, half opacity, over an empty canvas. Premultiplied
+// it contributes (0.5, 0, 0, 0.5) and the unpremultiplied output is 1.0;
+// straight it would contribute (1, 0, 0, 0.5) and the output would be 2.0.
+TEST_CASE(a_layer_blend_premultiplies_its_art_before_mixing) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 64;
+    const TempBundle b(oneLayer(
+        ",\n          \"blend-mode\" : \"plus-lighter\",\n          \"opacity\" : 0.5"));
+    auto bundle = icf::IconBundle::open(b.path());
+    REQUIRE(bundle.has_value());
+    auto icon = renderIcon(d, *bundle, o);
+    REQUIRE(icon.has_value());
+    CHECK_EQ(icon->drawn, std::size_t{1});
+    CHECK(std::fabs(alphaAt(*icon, 32, 32) - 0.5f) < 0.02f);
+    CHECK(std::fabs(channelAt(*icon, 32, 32, 0) - 1.0f) < 0.02f);
+}
