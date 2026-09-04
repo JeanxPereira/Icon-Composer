@@ -51,6 +51,13 @@ std::vector<fs::path> corpusBundles() {
     return out;
 }
 
+// The colour probe the blend tests need. Counting drawn layers cannot tell a
+// blend from a source-over, and four gate mutations survived on exactly that
+// gap before this existed.
+float channelAt(const RenderedIcon& img, std::uint32_t x, std::uint32_t y, int c) {
+    return img.rgba[(static_cast<std::size_t>(y) * img.width + x) * 4 + c];
+}
+
 float alphaAt(const RenderedIcon& img, std::uint32_t x, std::uint32_t y) {
     return img.rgba[(static_cast<std::size_t>(y) * img.width + x) * 4 + 3];
 }
@@ -133,6 +140,22 @@ std::string oneLayer(const std::string& extra) {
 // Both at once: `groupExtra` on the group, `layerExtra` on the layer. The glass
 // bit lives on the LAYER while the blend lives on the group, and no fixture
 // could put them in the same place.
+// TWO groups, the second carrying `secondGroupExtra`. A single group over an
+// empty canvas cannot distinguish a blend from a source-over -- most modes are
+// the identity against nothing -- so every pixel-level blend test needs a
+// backdrop that the second group actually mixes with.
+std::string twoGroups(const std::string& secondGroupExtra,
+                      const std::string& secondLayerExtra) {
+    return "{\n  \"groups\" : [\n    {\n      \"layers\" : [\n        {\n"
+           "          \"image-name\" : \"square.svg\",\n"
+           "          \"name\" : \"back\"\n"
+           "        }\n      ]\n    },\n    {\n      " + secondGroupExtra +
+           "\"layers\" : [\n        {\n"
+           "          \"image-name\" : \"square.svg\",\n"
+           "          \"name\" : \"front\"" + secondLayerExtra + "\n"
+           "        }\n      ]\n    }\n  ]\n}\n";
+}
+
 std::string groupAndLayer(const std::string& groupExtra, const std::string& layerExtra) {
     return "{\n  \"groups\" : [\n    {\n      " + groupExtra +
            "\"layers\" : [\n        {\n"
@@ -628,3 +651,56 @@ TEST_CASE(corpus_icon_render_gate) {
     CHECK(offenders.empty());
     CHECK(drawn > 0);
 }
+
+
+// THE PIXELS, not the counts. Four gate mutations survived the count-only
+// tests: premultiplying an accumulator twice, compositing the group straight
+// onto the canvas, dropping the group result entirely, and skipping a
+// transparent source. Every one of them leaves `drawn` at the same number.
+//
+// `square.svg` is opaque red. Two of them under `plus-lighter` add, and red
+// is already at 1.0, so the ALPHA is what moves: 1 + 1 saturates to 1 while
+// source-over also gives 1... which is why the second group here is drawn at
+// half opacity, where the two rules separate.
+TEST_CASE(a_blended_group_changes_the_pixels_and_not_only_the_count) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 64;
+
+    const TempBundle plain(twoGroups("", ",\n          \"opacity\" : 0.5"));
+    auto pb = icf::IconBundle::open(plain.path());
+    REQUIRE(pb.has_value());
+    auto normal = renderIcon(d, *pb, o);
+    REQUIRE(normal.has_value());
+    CHECK_EQ(normal->drawn, std::size_t{2});
+
+    const TempBundle mixed(twoGroups(
+        "\"blend-mode\" : \"plus-lighter\",\n      ",
+        ",\n          \"opacity\" : 0.5"));
+    auto mb = icf::IconBundle::open(mixed.path());
+    REQUIRE(mb.has_value());
+    auto plus = renderIcon(d, *mb, o);
+    REQUIRE(plus.has_value());
+    CHECK_EQ(plus->drawn, std::size_t{2});
+    CHECK(plus->skipped.empty());
+
+    // The counts match and the PICTURES must not: plus-lighter adds the two
+    // premultiplied reds where source-over replaces. If the group result is
+    // dropped, or mixed straight, or premultiplied twice, this is where it
+    // shows.
+    const float nr = channelAt(*normal, 32, 32, 0) * alphaAt(*normal, 32, 32);
+    const float pr = channelAt(*plus, 32, 32, 0) * alphaAt(*plus, 32, 32);
+    CHECK(pr > nr + 0.05f);
+
+    // And the group really did reach the canvas: dropping it would leave the
+    // backdrop alone, which is exactly `nr`.
+    CHECK(alphaAt(*plus, 32, 32) > 0.9f);
+}
+
+// There is deliberately NO test that a transparent source reaches the blend.
+// The renderer skips a layer whose resolved opacity is zero before it ever
+// composites, and even inside the blend a zero-alpha source is the identity
+// for all nine modes -- so there is nothing to observe. The first draft of
+// this file asserted otherwise and the premise was wrong; the note stays so
+// the next reader does not go looking for the test that is missing.

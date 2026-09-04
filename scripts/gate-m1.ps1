@@ -1198,10 +1198,19 @@ $mutations = @(
        to   = '        const bool blendTheGroup = groupBlend && groupMode;' },
     # O pulo de alpha zero que `over` faz e que `blendOver` NAO pode fazer:
     # plus-darker tem termo que nao some com origem transparente.
-    @{ file = "icon"; name = "the blend path skips a transparent source like source-over does"
-       from = '        BlendColour s;'
-       to   = '        if (a <= 0.0f) continue;
-        BlendColour s;' }
+    # NAO ha mutacao aqui para o pulo de alpha zero, e a ausencia e o
+    # registro. A primeira versao desta lista tinha uma, e ela SOBREVIVEU --
+    # corretamente: uma origem com alpha zero e a identidade nos nove modos
+    # transcritos (a cauda vira `d`, todo termo B carrega um fator `as`, e a
+    # folga do par plus e `saturate(ab) - ab = 0`). Pular e misturar escrevem
+    # o mesmo numero, entao nenhum teste pode distinguir os dois. Mutante
+    # equivalente, classificado por analise de caso e nao por chute.
+    #
+    # No lugar dela, uma que e observavel: a arte da camada chega RETA e o
+    # blend a quer premultiplicada.
+    @{ file = "icon"; name = "the layer art enters the blend without being premultiplied"
+       from = '        for (int k = 0; k < 3; ++k) s.rgba[k] = src[i + k] * a;'
+       to   = '        for (int k = 0; k < 3; ++k) s.rgba[k] = src[i + k];' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"

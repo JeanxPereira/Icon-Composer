@@ -107,11 +107,19 @@ void over(std::vector<float>& acc, const std::vector<float>& src, float alpha) {
 // that backwards would be invisible wherever alpha is 1, which is most of the
 // corpus.
 //
-// The `a <= 0` skip that `over` does is NOT repeated here. Source-over leaves
-// the destination alone for a transparent source, but `plus-darker` does not:
-// its slack term is a function of the two alphas and is zero only when they
-// sum below one. Skipping would silently turn it into source-over exactly
-// where it differs.
+// The `a <= 0` skip that `over` does is not repeated here, and it WOULD BE
+// SAFE -- which is worth saying because the first version of this comment
+// claimed the opposite.
+//
+// A source with zero alpha is the identity for all nine transcribed modes, by
+// case analysis rather than by hope: the composition tail becomes
+// `0*(1-ab) + d*(1-0) = d` and every `B` term carries a factor of `as`; screen
+// gives `0 + d*(1-0)`; and the plus pair's slack is `saturate(0+ab) - (0+ab)`,
+// which is zero for any `ab` in range. So skipping and blending write the same
+// number.
+//
+// It is left out anyway, because the loop is not hot enough to buy an
+// asymmetry with `over` that a reader would have to re-derive.
 void blendOver(std::vector<float>& acc, const std::vector<float>& src, float alpha,
                BlendMode mode) {
     if (mode == BlendMode::Normal) {
