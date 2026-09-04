@@ -163,17 +163,21 @@ private:
 // group key verbatim, or empty for a group that carries none.
 std::string rampAndGlass(const char* art, const std::string& refractivity, bool glass,
                          double opacity = 0.25) {
-    std::string doc =
-        "{\n  \"groups\" : [\n"
-        "    { \"layers\" : [ { \"image-name\" : \"ramp.png\", \"name\" : \"bg\",\n"
-        "        \"position\" : { \"scale\" : 8, \"translation-in-points\" : [0, 0] } } ] },\n"
-        "    { ";
-    if (!refractivity.empty()) doc += "\"refractivity\" : " + refractivity + ",\n      ";
+    // The lens group comes FIRST and the ramp LAST, because the array runs
+    // front to back. It read the other way until 2026-09-04, when the
+    // composition order was corrected -- the intent ("a ramp behind, one
+    // glass layer in front") never changed, only how a document spells it.
+    std::string doc = "{\n  \"groups\" : [\n    { ";
+    if (!refractivity.empty()) {
+        doc += "\"refractivity\" : " + refractivity + ",\n      ";
+    }
     doc += "\"layers\" : [ { \"image-name\" : \"";
     doc += art;
     doc += "\", \"name\" : \"lens\",\n";
     doc += std::string("        \"glass\" : ") + (glass ? "true" : "false") + ",\n";
-    doc += "        \"opacity\" : " + std::to_string(opacity) + " } ] }\n"
+    doc += "        \"opacity\" : " + std::to_string(opacity) + " } ] },\n"
+           "    { \"layers\" : [ { \"image-name\" : \"ramp.png\", \"name\" : \"bg\",\n"
+           "        \"position\" : { \"scale\" : 8, \"translation-in-points\" : [0, 0] } } ] }\n"
            "  ]\n}\n";
     return doc;
 }

@@ -169,15 +169,20 @@ std::string oneLayer(const std::string& extra) {
 // empty canvas cannot distinguish a blend from a source-over -- most modes are
 // the identity against nothing -- so every pixel-level blend test needs a
 // backdrop that the second group actually mixes with.
-std::string twoGroups(const std::string& secondGroupExtra,
-                      const std::string& secondLayerExtra) {
-    return "{\n  \"groups\" : [\n    {\n      \"layers\" : [\n        {\n"
-           "          \"image-name\" : \"square.svg\",\n"
-           "          \"name\" : \"back\"\n"
-           "        }\n      ]\n    },\n    {\n      " + secondGroupExtra +
+std::string twoGroups(const std::string& frontGroupExtra,
+                      const std::string& frontLayerExtra) {
+    // The group carrying the extras is FIRST, which is the FRONT: the array
+    // runs front to back. A single group over an empty canvas cannot
+    // distinguish a blend from a source-over -- most modes are the identity
+    // against nothing -- so the plain group behind it is what makes the
+    // blend observable.
+    return "{\n  \"groups\" : [\n    {\n      " + frontGroupExtra +
            "\"layers\" : [\n        {\n"
            "          \"image-name\" : \"square.svg\",\n"
-           "          \"name\" : \"front\"" + secondLayerExtra + "\n"
+           "          \"name\" : \"front\"" + frontLayerExtra + "\n"
+           "        }\n      ]\n    },\n    {\n      \"layers\" : [\n        {\n"
+           "          \"image-name\" : \"square.svg\",\n"
+           "          \"name\" : \"back\"\n"
            "        }\n      ]\n    }\n  ]\n}\n";
 }
 
@@ -547,10 +552,13 @@ TEST_CASE(a_second_layer_composites_over_the_first_and_keeps_its_colour) {
 
     // Red underneath, white on top at half opacity: the result is a premultiplied
     // `over`, which after un-multiplying is (1, 0.5, 0.5) at alpha 1.
+    //
+    // The white is listed FIRST because the array runs FRONT TO BACK. It was
+    // the other way until 2026-09-04; the arithmetic below did not change.
     const std::string doc =
         "{\n  \"groups\" : [\n    {\n      \"layers\" : [\n"
-        "        { \"image-name\" : \"red.svg\", \"name\" : \"under\" },\n"
-        "        { \"image-name\" : \"square.svg\", \"name\" : \"over\", \"opacity\" : 0.5 }\n"
+        "        { \"image-name\" : \"square.svg\", \"name\" : \"over\", \"opacity\" : 0.5 },\n"
+        "        { \"image-name\" : \"red.svg\", \"name\" : \"under\" }\n"
         "      ]\n    }\n  ]\n}\n";
     const TempBundle b(doc);
     auto bundle = icf::IconBundle::open(b.path());
@@ -820,4 +828,80 @@ TEST_CASE(a_translucent_stroke_reaches_the_canvas_at_its_own_alpha) {
     CHECK(std::fabs(alphaAt(*icon, 28, 32) - 0.5f) < 0.03f);
     // Still blue where it paints, so this is the stroke and not a stray fill.
     CHECK(channelAt(*icon, 32, 32, 2) > 0.9f);
+}
+
+// THE COMPOSITION ORDER, pinned at both levels.
+//
+// The array runs FRONT to BACK: `groups[0]` is the frontmost group and
+// `layers[0]` the frontmost layer of its group. This renderer walked it the
+// other way until 2026-09-04, and the symptom was not subtle -- a document
+// whose last group is a full-canvas background came out as that background
+// and nothing else, with every layer still reported as drawn.
+//
+// `[ART]` The evidence is in `IconRenderer.cpp`: 19 corpus documents put a
+// group named for the background LAST against 1 that puts it first, and the
+// `Apollo-Reborn` icon only grows its magenta eyes when BOTH levels are
+// reversed -- checked against the icon its authors ship.
+//
+// `square.svg` is WHITE and `red.svg` is RED, both covering the same square,
+// so the GREEN channel says which one is on top: 1 for white, 0 for red.
+// Both orders are rendered, so the test cannot pass by accident -- if the
+// order made no difference the two would agree.
+TEST_CASE(the_array_runs_front_to_back_at_both_levels) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 64;
+
+    const std::string gwDoc =
+        "{\n  \"groups\" : [\n"
+        "    { \"layers\" : [ { \"image-name\" : \"square.svg\", \"name\" : \"a\" } ] },\n"
+        "    { \"layers\" : [ { \"image-name\" : \"red.svg\", \"name\" : \"b\" } ] }\n"
+        "  ]\n}\n";
+    const TempBundle gWhiteB(gwDoc);
+    auto gWhiteb = icf::IconBundle::open(gWhiteB.path());
+    REQUIRE(gWhiteb.has_value());
+    auto gWhite = renderIcon(d, *gWhiteb, o);
+    REQUIRE(gWhite.has_value());
+    CHECK_EQ(gWhite->drawn, std::size_t{2});
+    const std::string grDoc =
+        "{\n  \"groups\" : [\n"
+        "    { \"layers\" : [ { \"image-name\" : \"red.svg\", \"name\" : \"a\" } ] },\n"
+        "    { \"layers\" : [ { \"image-name\" : \"square.svg\", \"name\" : \"b\" } ] }\n"
+        "  ]\n}\n";
+    const TempBundle gRedB(grDoc);
+    auto gRedb = icf::IconBundle::open(gRedB.path());
+    REQUIRE(gRedb.has_value());
+    auto gRed = renderIcon(d, *gRedb, o);
+    REQUIRE(gRed.has_value());
+    CHECK_EQ(gRed->drawn, std::size_t{2});
+    // Groups: whichever is listed FIRST wins the pixel.
+    CHECK(channelAt(*gWhite, 32, 32, 1) > 0.9f);
+    CHECK(channelAt(*gRed, 32, 32, 1) < 0.1f);
+
+    const std::string lwDoc =
+        "{\n  \"groups\" : [\n    {\n      \"layers\" : [\n"
+        "        { \"image-name\" : \"square.svg\", \"name\" : \"a\" },\n"
+        "        { \"image-name\" : \"red.svg\", \"name\" : \"b\" }\n"
+        "      ]\n    }\n  ]\n}\n";
+    const TempBundle lWhiteB(lwDoc);
+    auto lWhiteb = icf::IconBundle::open(lWhiteB.path());
+    REQUIRE(lWhiteb.has_value());
+    auto lWhite = renderIcon(d, *lWhiteb, o);
+    REQUIRE(lWhite.has_value());
+    CHECK_EQ(lWhite->drawn, std::size_t{2});
+    const std::string lrDoc =
+        "{\n  \"groups\" : [\n    {\n      \"layers\" : [\n"
+        "        { \"image-name\" : \"red.svg\", \"name\" : \"a\" },\n"
+        "        { \"image-name\" : \"square.svg\", \"name\" : \"b\" }\n"
+        "      ]\n    }\n  ]\n}\n";
+    const TempBundle lRedB(lrDoc);
+    auto lRedb = icf::IconBundle::open(lRedB.path());
+    REQUIRE(lRedb.has_value());
+    auto lRed = renderIcon(d, *lRedb, o);
+    REQUIRE(lRed.has_value());
+    CHECK_EQ(lRed->drawn, std::size_t{2});
+    // Layers inside one group: the same rule, one level down.
+    CHECK(channelAt(*lWhite, 32, 32, 1) > 0.9f);
+    CHECK(channelAt(*lRed, 32, 32, 1) < 0.1f);
 }

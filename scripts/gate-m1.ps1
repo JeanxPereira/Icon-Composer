@@ -1242,7 +1242,20 @@ $mutations = @(
     # parece realce e nao e traco de ninguem.
     @{ file = "strokeren"; name = "overlapping segments accumulate into a bright seam"
        from = '                    dst = std::max(dst, static_cast<float>(c));'
-       to   = '                    dst = dst + static_cast<float>(c);' }
+       to   = '                    dst = dst + static_cast<float>(c);' },
+
+    # ---- a ordem de composicao --------------------------------------------
+    #
+    # O array corre da FRENTE para o fundo. Percorre-lo para a frente desenha o
+    # fundo por ULTIMO e cobre o icone inteiro -- e o defeito que estava no
+    # codigo ate 2026-09-04, achado olhando uma imagem e nao rodando um teste.
+    # A regua nao o via: ela conta bloqueadores, nao se o quadro esta certo.
+    @{ file = "icon"; name = "the groups are composited front to back"
+       from = '        const std::size_t gi = groups.size() - 1 - gr;'
+       to   = '        const std::size_t gi = gr;' },
+    @{ file = "icon"; name = "the layers inside a group keep the array order"
+       from = '        std::reverse(backToFront.begin(), backToFront.end());'
+       to   = '        (void)0;' }
 )
 
 Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"

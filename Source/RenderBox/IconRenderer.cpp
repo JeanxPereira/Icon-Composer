@@ -506,7 +506,29 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
         }
     }
 
-    for (std::size_t gi = 0; gi < groups.size(); ++gi) {
+    // THE ARRAY RUNS FRONT TO BACK, so compositing walks it BACKWARDS.
+    //
+    // `[ART]` Measured two ways and then proved against a published icon.
+    // Across the corpus, a group whose name or whose layer's name says
+    // "background" sits LAST in the array in 19 documents and first in 1. And
+    // `insidegui/AssetCatalogTinkerer` names its four groups `Layer4, Layer3,
+    // Layer2, Layer1` in array order -- descending, which is how an editor
+    // lists a stack top-first.
+    //
+    // `[ART]` THE PROOF is a render. Composited in array order, that icon came
+    // out as a flat blue gradient: `background` is the last group, drawn last,
+    // over everything. Walked backwards it draws the actual logo. And
+    // `Apollo-Reborn` -- checked against the icon its authors ship -- only puts
+    // the magenta eyes on the visor when BOTH levels are reversed; in array
+    // order `Apollo Helmet Space` is painted after `Eyes` and buries them.
+    //
+    // `[OBS]` What the TARGET does was not read: no `reversed` symbol survives
+    // in `IconComposerKit`, and the converter at `0x10B7EC` was not followed
+    // far enough to see the iteration direction. This is the corpus and a
+    // reference picture agreeing, not a transcription -- which is why it is
+    // `[ART]` and not `[BIN]`.
+    for (std::size_t gr = 0; gr < groups.size(); ++gr) {
+        const std::size_t gi = groups.size() - 1 - gr;
         const icf::Group& group = groups[gi];
         const LayerPlacement gp = placementOf(group.resolve("position", options.context));
 
@@ -583,7 +605,15 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
         if (blendTheGroup) groupAcc.assign(texels * 4, 0.0f);
         std::vector<float>& target = blendTheGroup ? groupAcc : acc;
 
-        for (const icf::Layer& layer : group.layers()) {
+        // ...and so does the layer array inside a group, for the same reason
+        // and by the same proof. The corpus signal here is weak on its own --
+        // three documents name a layer "background", two of them first -- so
+        // what carries it is the Apollo render: `Eyes` sits at index 1 and
+        // `Apollo Helmet Space` at index 3, and only the reversed order puts
+        // the eyes on top, where the shipped icon has them.
+        std::vector<icf::Layer> backToFront = group.layers();
+        std::reverse(backToFront.begin(), backToFront.end());
+        for (const icf::Layer& layer : backToFront) {
             ++out.total;
             const std::string name(layer.name());
 
