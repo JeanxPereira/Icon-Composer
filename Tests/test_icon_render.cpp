@@ -88,6 +88,15 @@ public:
               "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\">"
               "<path d=\"M128 256 L384 256 M256 128 L256 384\" fill=\"none\""
               " stroke=\"#0000ff\" stroke-width=\"32\"/></svg>");
+        // The same cross with a HALF-TRANSPARENT stroke. `[ART]` The corpus
+        // carries `stroke-opacity: 0.2` in twelve places, so this is the real
+        // shape and not a contrived one -- and without it, a renderer that
+        // ignores the stroke opacity looks correct.
+        write(dir_ / "Assets" / "faint.svg",
+              "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\">"
+              "<path d=\"M128 256 L384 256\" fill=\"none\""
+              " stroke=\"#0000ff\" stroke-width=\"32\""
+              " stroke-opacity=\"0.5\"/></svg>");
         // A second square in a colour, so two layers can be told apart when
         // they overlap.
         write(dir_ / "Assets" / "red.svg",
@@ -789,4 +798,26 @@ TEST_CASE(a_shape_whose_only_ink_is_its_stroke_draws) {
     // A corner the cross does not reach stays empty, or the assertions
     // above would pass on a renderer that flooded the canvas.
     CHECK(alphaAt(*icon, 4, 4) < 0.01f);
+}
+
+// The stroke carries its OWN opacity, and `stroke-opacity` is folded into the
+// paint alpha by the reader. A gate mutation that dropped it survived the
+// test above, because that cross paints at alpha 1 -- where multiplying by
+// the alpha and not multiplying give the same pixel.
+TEST_CASE(a_translucent_stroke_reaches_the_canvas_at_its_own_alpha) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 64;
+    const TempBundle b(oneLayerOf("faint.svg"));
+    auto bundle = icf::IconBundle::open(b.path());
+    REQUIRE(bundle.has_value());
+    auto icon = renderIcon(d, *bundle, o);
+    REQUIRE(icon.has_value());
+    CHECK_EQ(icon->drawn, std::size_t{1});
+    // Half, not one. The arm runs 24..40 px at y = 32.
+    CHECK(std::fabs(alphaAt(*icon, 32, 32) - 0.5f) < 0.03f);
+    CHECK(std::fabs(alphaAt(*icon, 28, 32) - 0.5f) < 0.03f);
+    // Still blue where it paints, so this is the stroke and not a stray fill.
+    CHECK(channelAt(*icon, 32, 32, 2) > 0.9f);
 }
