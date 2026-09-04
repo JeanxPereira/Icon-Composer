@@ -27,6 +27,12 @@ It reads only the subset the corpus uses: `path` with `M m L l H h V v C c Z z`,
 or from a `.class` in a `<style>` block. Anything else it REFUSES by name --
 guessing would make the oracle agree with us for the wrong reason.
 
+`fill` AND `stroke` INHERIT, and this reads them down the tree. Twelve
+`insidegui` squircles reported 15152 differing pixels each -- ninety per cent of
+the image -- because `fill="none"` sat on the outer `<g>` and the stroke on the
+inner one. They are outlines, and this file was filling them solid. Same root as
+the two below, for the third time: what it does not read, it must refuse.
+
 AND IT REFUSES EVERY DRAWABLE IT CANNOT READ, rather than skipping it. That is
 the same lesson twice: eight `CodeEdit` labels first reported ~5000 differing
 pixels each, and all of them were a `<rect rx="102">` that our renderer draws
@@ -335,17 +341,22 @@ def main():
     # A real stack, because `<g>` nests and each level multiplies its own
     # transform onto the one it inherits. The first version refused a nested
     # document outright, which was 55 of the corpus's 149 files.
-    stack = [(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)]
+    def attr(tag, name):
+        m = re.search(name + r'\s*=\s*"([^"]*)"', tag)
+        return m.group(1).strip() if m else None
+
+    # (matrix, fill, stroke) -- the last two INHERIT, which is the whole point.
+    stack = [((1.0, 0.0, 0.0, 1.0, 0.0, 0.0), None, None)]
     for tag in re.findall(r'<[^>]*>', text):
         if re.match(r'<g\b', tag):
-            tm = re.search(r'transform\s*=\s*"([^"]*)"', tag)
-            m = stack[-1]
-            t = parse_transform(tm.group(1) if tm else '')
+            m, pf, ps = stack[-1]
+            t = parse_transform(attr(tag, 'transform') or '')
             a, b, c, d, e2, f2 = m
             A, B, C, D, E, F = t
-            stack.append((a * A + c * B, b * A + d * B,
-                          a * C + c * D, b * C + d * D,
-                          a * E + c * F + e2, b * E + d * F + f2))
+            comp = (a * A + c * B, b * A + d * B,
+                    a * C + c * D, b * C + d * D,
+                    a * E + c * F + e2, b * E + d * F + f2)
+            stack.append((comp, attr(tag, 'fill') or pf, attr(tag, 'stroke') or ps))
             if tag.rstrip().endswith('/>'):
                 stack.pop()
             continue
@@ -355,7 +366,18 @@ def main():
             continue
         if not re.match(r'<path\b', tag):
             continue
-        gm = stack[-1]
+        gm, inhFill, inhStroke = stack[-1]
+
+        eff_fill = attr(tag, 'fill') or inhFill
+        eff_stroke = attr(tag, 'stroke') or inhStroke
+        if eff_stroke and eff_stroke != 'none':
+            raise SystemExit('REFUSED: this path is STROKED, and this oracle only fills.'
+                             ' The difference would be our stroke, not a defect.')
+        if eff_fill == 'none':
+            # Nothing to fill, and nothing to compare. Not a refusal: the
+            # correct answer for this path is an empty contribution, and ours
+            # agrees by drawing no fill either.
+            continue
         dm = re.search(r'\sd\s*=\s*"([^"]*)"', tag)
         if not dm:
             continue
