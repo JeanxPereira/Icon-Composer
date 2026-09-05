@@ -241,7 +241,11 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
             // here: it is premultiplied by the coverage alone, not by the
             // paint's alpha, and it is the right value for the target's
             // attachment rather than for an accumulator.
-            const float srcA = c.coverage[0];
+            // `opacity` composites the shape against the backdrop at this
+            // alpha. It is a SEPARATE multiplier from the paint's own alpha and
+            // from `fill-opacity`, and all three apply -- SVG 1.1 §14.5 stacks
+            // them rather than choosing one.
+            const float srcA = c.coverage[0] * static_cast<float>(shape.opacity);
             const float inv = 1.0f - srcA;
             float* dst = &acc[t * 4];
             for (int k = 0; k < 3; ++k) dst[k] = colour[k] * srcA + dst[k] * inv;
@@ -294,7 +298,7 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
                     const float sa = static_cast<float>(shape.stroke.color.a);
                     if (shape.stroke.color.displayP3) out.unconvertedP3.push_back(i);
                     for (std::size_t t = 0; t < texels; ++t) {
-                        const float a = cov[t] * sa;
+                        const float a = cov[t] * sa * static_cast<float>(shape.opacity);
                         if (a <= 0.0f) continue;
                         const float inv2 = 1.0f - a;
                         float* d2 = &acc[t * 4];

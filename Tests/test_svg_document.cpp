@@ -2,6 +2,8 @@
 #include "Source/CoreSVG/Document.h"
 #include "Source/CoreSVG/Paint.h"
 
+#include <cmath>
+
 using namespace icf::svg;
 
 namespace {
@@ -171,10 +173,18 @@ TEST_CASE(document_reports_an_element_it_does_not_draw) {
     CHECK(un.count("svg") == 0);
 }
 
-// Paint IS read now -- `fill`, `stroke`, `fill-rule`, the opacities, the widths
-// and `style`. What is still not read is named, and the list is short and
-// deliberate: a class nothing matches is named with the class, and `opacity` is
-// group compositing rather than paint.
+// Paint IS read now -- `fill`, `stroke`, `fill-rule`, the opacities, the widths,
+// `opacity` and `style`. What is still not read is named, and the list is short
+// and deliberate.
+//
+// `opacity` LEFT THIS LIST on 2026-09-05. It used to be named here with the
+// reason "group compositing rather than paint", which was true of the reader
+// and is no longer: the value is read, folded down the tree and composited. A
+// property that IS applied and still reports itself as ignored is worse than
+// noise -- it teaches whoever reads the report to distrust the ones that are
+// real. `[ART]` It survived the change once: the four new tests measured the
+// pixel and the folded value and passed either way, and only running the corpus
+// documents showed SAP, LaunchNext and PDF-Archiver still naming it.
 TEST_CASE(document_reports_the_paint_it_still_does_not_read) {
     auto d = SvgDocument::parse(
         R"(<svg viewBox="0 0 10 10"><path d="M1 1" fill="#ff0000" stroke="black"
@@ -183,8 +193,11 @@ TEST_CASE(document_reports_the_paint_it_still_does_not_read) {
     CHECK(d->unsupported().count("paint:fill") == 0);     // read
     CHECK(d->unsupported().count("paint:stroke") == 0);   // read
     CHECK(d->unsupported().count("class:a") == 1);        // no rule matches it
-    CHECK(d->unsupported().count("paint:opacity") == 1);  // group compositing
+    CHECK(d->unsupported().count("paint:opacity") == 0);  // read, and applied
     CHECK(d->unsupported().count("paint:mix-blend-mode") == 1);
+    // Read means REACHED THE SHAPE, not merely swallowed.
+    REQUIRE(d->shapes.size() == 1);
+    CHECK(std::fabs(d->shapes[0].opacity - 0.5) < 1e-9);
 }
 
 // A colour this reader cannot read is named WITH ITS VALUE. `currentColor`

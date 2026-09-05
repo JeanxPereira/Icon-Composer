@@ -75,6 +75,17 @@ struct Shape {
     Paint stroke;
     FillRule fillRule = FillRule::NonZero;
     double strokeWidth = 1.0;
+
+    // `opacity`, folded down from every ancestor group and from the element
+    // itself. It is NOT `fill-opacity`: SVG composites the shape's whole
+    // rendering -- fill and stroke together -- against the backdrop with this
+    // alpha, and `fill-opacity` multiplies only the fill's paint.
+    //
+    // `[ART]` The two agree on every corpus shape that carries it: all 24
+    // elements with `opacity < 1` have NO stroke, so there is nothing for the
+    // two rules to disagree about. A shape that had both is named rather than
+    // approximated (`paint:opacity-com-fill-e-stroke`).
+    double opacity = 1.0;
 };
 
 class SvgDocument {

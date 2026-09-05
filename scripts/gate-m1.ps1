@@ -249,6 +249,28 @@ $mutations = @(
        from = 'o << (absent ? "  MISSING  " : "  ok       ")'
        to   = 'o << (false ? "  MISSING  " : "  ok       ")' },
     # ---- the SVG reader ----
+    # ---- `opacity`, que e um TERCEIRO multiplicador -----------------------
+    #
+    # `[ART]` 24 elementos do corpus carregam `opacity < 1`, e tres dos cinco
+    # documentos ja estavam DENTRO da fatia desenhavel -- SAP, PingPlace e
+    # LaunchNext desenhavam a 100% onde o autor pediu 0,1, 0,2 e 0,5. Perder isto
+    # de novo nao derruba camada nenhuma: so devolve a figura errada com o
+    # relatorio limpo.
+    @{ file = "svgrender"; name = "the shape opacity never reaches the pixel"
+       from = '            const float srcA = c.coverage[0] * static_cast<float>(shape.opacity);'
+       to   = '            const float srcA = c.coverage[0];' },
+    # `opacity` MULTIPLICA, e e a unica propriedade aqui que nao herda-e-
+    # substitui: 0,5 dentro de 0,5 e 0,25. Um leitor que a tratasse como `fill`
+    # devolveria 0,5, que e plausivel e errado.
+    @{ file = "svgdoc"; name = "nested opacity replaces instead of multiplying"
+       from = '                in.opacityChain *= std::clamp(n[0], 0.0, 1.0);'
+       to   = '                in.opacityChain = std::clamp(n[0], 0.0, 1.0);' },
+    # E esta NAO MUDA PIXEL NENHUM: ela so apaga o aviso de que dobrar a
+    # opacidade de um grupo em varias formas pode divergir de compor o grupo uma
+    # vez. Uma aproximacao que para de se declarar vira transcricao.
+    @{ file = "svgdoc"; name = "the group-opacity approximation stops declaring itself"
+       from = '            if (inherited.opacityChain < 1.0 && shapes.size() - before > 1) {'
+       to   = '            if (false) {' },
     @{ file = "svgpath"; name = "a smooth cubic always reflects, even after a line"
        from = '? Point{2 * current.x - lastControl.x, 2 * current.y - lastControl.y}'
        to   = '? Point{lastControl.x, lastControl.y}' },

@@ -108,6 +108,12 @@ struct Inherited {
     double fillOpacity = 1.0;
     double strokeOpacity = 1.0;
     double strokeWidth = 1.0;
+
+    // `opacity` DOES NOT INHERIT -- it MULTIPLIES. Every other field here is
+    // replaced by a descendant that names it; this one accumulates, because a
+    // group at 0.5 inside a group at 0.5 composites at 0.25. That is why it
+    // lives in this struct and is still not "inherited" in SVG's sense.
+    double opacityChain = 1.0;
 };
 
 // The alpha the paint ends up with. `fill-opacity` is a separate multiplier
@@ -135,8 +141,12 @@ void appendCorner(Path& p, Point from, Point to, Point corner, double kx, double
 // implemented; `class` stays because the stylesheet that would give it meaning
 // is not read, and `opacity` stays because group compositing is a different
 // idea from paint.
+// Presentation attributes this reader sees and does NOT act on. `opacity` left
+// this list on 2026-09-05 when it started being read -- and leaving it here
+// would have been its own defect: a property that IS applied and still reports
+// itself as ignored teaches whoever reads the report to distrust it.
 constexpr std::string_view kPaintAttributes[] = {
-    "opacity", "clip-path", "mask", "filter", "clip-rule",
+    "clip-path", "mask", "filter", "clip-rule",
     "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "mix-blend-mode",
 };
 
@@ -224,6 +234,18 @@ struct Builder {
         scalar("fill-opacity", in.fillOpacity);
         scalar("stroke-opacity", in.strokeOpacity);
         scalar("stroke-width", in.strokeWidth);
+        // `opacity` multiplies rather than replaces, so it cannot go through
+        // `scalar`. Out-of-range values are CLAMPED, which is what SVG 1.1 §14
+        // says for this property -- not refused, because a refusal here would
+        // drop a shape over a number the specification tells us how to read.
+        if (auto v = property(e, "opacity", style, fromClass)) {
+            auto n = numbers(*v);
+            if (n.size() == 1) {
+                in.opacityChain *= std::clamp(n[0], 0.0, 1.0);
+            } else {
+                unsupported.insert("paint:opacity=" + *v);
+            }
+        }
         return in;
     }
 
@@ -383,7 +405,21 @@ struct Builder {
             drew = true;
         } else if (e.name == "svg" || e.name == "g" || e.name == "a") {
             notePaint(e);  // paint inherits, so a group's is a group's shapes'
+            // A GROUP'S `opacity` IS NOT ITS SHAPES' OPACITY, and the two only
+            // agree when the group holds ONE shape. SVG composites the group's
+            // whole rendering once, at that alpha; folding it into each shape
+            // composites each one separately, and where two of them overlap the
+            // two results differ.
+            //
+            // `[ART]` In the corpus this is not academic and not universal:
+            // SAP's six `<g opacity>` hold exactly one shape each -- identity,
+            // not approximation -- while Delta's hold 44, 2, 2, 2, 2 and 2. So
+            // the fold happens, and a group that can actually differ is NAMED.
+            const std::size_t before = shapes.size();
             for (const auto& c : e.children) walk(c, here, inherited);
+            if (inherited.opacityChain < 1.0 && shapes.size() - before > 1) {
+                unsupported.insert("opacity de grupo sobre mais de uma forma");
+            }
             return;
         } else if (e.name == "defs") {
             // Definitions are referenced, not drawn -- walking in to paint them
@@ -424,6 +460,17 @@ struct Builder {
         shape.stroke = withOpacity(inherited.stroke, inherited.strokeOpacity);
         shape.fillRule = inherited.fillRule;
         shape.strokeWidth = inherited.strokeWidth;
+        shape.opacity = inherited.opacityChain;
+        // A shape composited at less than 1 that has BOTH a fill and a stroke
+        // is the other place where folding differs from compositing once: the
+        // stroke overlaps the fill along the edge, and two separate composites
+        // darken that edge where one would not. `[ART]` No corpus shape does
+        // this -- all 24 with `opacity < 1` are unstroked -- so it is named
+        // rather than built.
+        if (shape.opacity < 1.0 && shape.stroke.kind != PaintKind::None &&
+            shape.strokeWidth > 0.0) {
+            unsupported.insert("paint:opacity-com-fill-e-stroke");
+        }
         shapes.push_back(std::move(shape));
     }
 };

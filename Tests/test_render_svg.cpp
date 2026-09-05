@@ -575,3 +575,122 @@ TEST_CASE(the_png_clamps_instead_of_wrapping) {
     CHECK_EQ(png[data + 3], 128);    // 0.5 rounds to 128
     CHECK_EQ(png[data + 4], 255);
 }
+
+// `opacity` REACHES THE PIXELS, and it is a third multiplier -- not a rename of
+// `fill-opacity`.
+//
+// `[ART]` 24 corpus elements carry `opacity < 1` across 5 documents, and three
+// of those documents were already INSIDE the drawable slice: SAP, PingPlace and
+// LaunchNext drew at full strength where their authors asked for 0.1, 0.2 and
+// 0.5. Nothing reported it, because "drawable" was never "right".
+//
+// The numbers here are exact and stacked on purpose. A square painted with an
+// `#ffffff` fill at `fill-opacity="0.5"` inside `opacity="0.5"` must land on
+// 0.25, and the three ways to get this wrong all miss it: ignoring `opacity`
+// gives 0.5, treating it AS `fill-opacity` gives 0.5, and applying it twice
+// gives 0.125.
+TEST_CASE(opacity_multiplies_fill_opacity_rather_than_replacing_it) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    constexpr std::uint32_t kSize = 32;
+    RenderOptions o;
+    o.width = kSize;
+    o.height = kSize;
+    o.subdivisions = 1;
+
+    auto alphaOf = [&](const std::string& attrs) -> float {
+        const std::string svg = svgWith(
+            "0 0 32 32", "<path d=\"M8 8 L24 8 L24 24 L8 24 Z\" fill=\"#ffffff\" " + attrs + "/>");
+        auto doc = icf::svg::SvgDocument::parse(svg);
+        if (!doc) return -1.0f;   // no valid alpha is negative, so this fails below
+        auto img = renderSvg(d, *doc, o);
+        if (!img) return -1.0f;
+        return alphaAt(*img, 16, 16);
+    };
+
+    CHECK(std::fabs(alphaOf("") - 1.0f) < 0.001f);
+    CHECK(std::fabs(alphaOf("opacity=\"0.5\"") - 0.5f) < 0.001f);
+    CHECK(std::fabs(alphaOf("fill-opacity=\"0.5\"") - 0.5f) < 0.001f);
+    CHECK(std::fabs(alphaOf("opacity=\"0.5\" fill-opacity=\"0.5\"") - 0.25f) < 0.001f);
+}
+
+// A GROUP'S `opacity` FOLDS INTO ITS SHAPES, and nested groups MULTIPLY.
+//
+// `opacity` is the one property here that does not inherit-and-replace: a group
+// at 0.5 inside a group at 0.5 composites at 0.25, and a reader that treated it
+// like `fill` would report 0.5. `[ART]` The corpus nests them exactly this way
+// in SAP's `l4.svg`.
+TEST_CASE(nested_group_opacity_multiplies_down_the_tree) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    constexpr std::uint32_t kSize = 32;
+    RenderOptions o;
+    o.width = kSize;
+    o.height = kSize;
+    o.subdivisions = 1;
+
+    const std::string svg = svgWith(
+        "0 0 32 32",
+        "<g opacity=\"0.5\"><g opacity=\"0.5\">"
+        "<path d=\"M8 8 L24 8 L24 24 L8 24 Z\" fill=\"#ffffff\"/>"
+        "</g></g>");
+    auto doc = icf::svg::SvgDocument::parse(svg);
+    REQUIRE(doc.has_value());
+    REQUIRE(doc->shapes.size() == 1);
+    CHECK(std::fabs(doc->shapes[0].opacity - 0.25) < 1e-9);
+
+    auto img = renderSvg(d, *doc, o);
+    REQUIRE(img.has_value());
+    CHECK(std::fabs(alphaAt(*img, 16, 16) - 0.25f) < 0.001f);
+
+    // ONE shape under the group, so folding IS compositing -- nothing to name.
+    CHECK(doc->unsupported().count("opacity de grupo sobre mais de uma forma") == 0);
+}
+
+// AND WHERE FOLDING CAN DIFFER, IT IS NAMED INSTEAD OF ASSUMED.
+//
+// Two shapes under one `opacity` group is the case where compositing the group
+// once and compositing each shape separately give different pixels wherever the
+// two overlap. `[ART]` Delta does this with 44 shapes at 0.2 and five pairs at
+// 0.8; SAP never does. The reader folds either way -- dropping the shapes would
+// be worse -- and says so, which is the difference between an approximation and
+// a silent one.
+TEST_CASE(a_group_opacity_over_two_shapes_is_named) {
+    const std::string svg = svgWith(
+        "0 0 32 32",
+        "<g opacity=\"0.5\">"
+        "<path d=\"M0 0 L16 0 L16 16 L0 16 Z\" fill=\"#ffffff\"/>"
+        "<path d=\"M8 8 L24 8 L24 24 L8 24 Z\" fill=\"#ffffff\"/>"
+        "</g>");
+    auto doc = icf::svg::SvgDocument::parse(svg);
+    REQUIRE(doc.has_value());
+    REQUIRE(doc->shapes.size() == 2);
+    CHECK(std::fabs(doc->shapes[0].opacity - 0.5) < 1e-9);
+    CHECK(std::fabs(doc->shapes[1].opacity - 0.5) < 1e-9);
+    CHECK(doc->unsupported().count("opacity de grupo sobre mais de uma forma") == 1);
+}
+
+// A value SVG tells us how to read is read, not refused.
+//
+// SVG 1.1 §14 clamps `opacity` to [0,1]. Refusing an out-of-range number would
+// drop a shape over something the specification answers, and reading `2` as 2
+// would brighten a composite that cannot exceed 1. A value that is not a number
+// at all is a different thing and IS named.
+TEST_CASE(opacity_out_of_range_clamps_and_a_non_number_is_named) {
+    auto op = [](const char* v) -> double {
+        auto doc = icf::svg::SvgDocument::parse(svgWith(
+            "0 0 32 32",
+            std::string("<path d=\"M0 0 L8 0 L8 8 Z\" fill=\"#fff\" opacity=\"") + v + "\"/>"));
+        if (!doc || doc->shapes.size() != 1) return -1.0;
+        return doc->shapes[0].opacity;
+    };
+    CHECK(std::fabs(op("2") - 1.0) < 1e-9);
+    CHECK(std::fabs(op("-1") - 0.0) < 1e-9);
+    CHECK(std::fabs(op("0.25") - 0.25) < 1e-9);
+
+    auto doc = icf::svg::SvgDocument::parse(svgWith(
+        "0 0 32 32", "<path d=\"M0 0 L8 0 L8 8 Z\" fill=\"#fff\" opacity=\"inherit\"/>"));
+    REQUIRE(doc.has_value());
+    CHECK(doc->unsupported().count("paint:opacity=inherit") == 1);
+    CHECK(std::fabs(doc->shapes[0].opacity - 1.0) < 1e-9);
+}
