@@ -171,6 +171,18 @@ DRAWN_FILLS = {"none", "automatic", "solid", "automatic-gradient", "linear-gradi
                "system-light", "system-dark"}
 
 # What the CoreSVG reader turns into filled paths today, and what it does not.
+# DOIS BLOQUEIOS NAO TEM CONSERTO EM CODIGO, e o teto real desta regua e 53 e
+# nao 55. Medido em 2026-09-05:
+#
+#   chromium__chromium__AppIcon  pede `2 - Layer.svg` (travessao)  -> nao existe
+#   mysk-research__loupe__Loupe  pede `loupe-icon-light 3.png`     -> nao existe
+#
+# Os dois nomes vem de ESPECIALIZACOES, e o Assets/ de cada bundle traz outros
+# arquivos (`blue.svg`, `loupe-icon-light.png`): o autor renomeou a arte antes de
+# publicar o repositorio. Nenhum leitor pode desenhar um arquivo que nao veio, e
+# por isso "referencia pendurada" e categoria propria aqui em vez de virar mais
+# uma lacuna que alguem vai tentar fechar.
+
 SVG_BLOCKERS = {
     # O TRACO CHAPADO SAIU DAQUI EM 2026-09-04. `StrokeRender` o desenha:
     # ponto a ponto pelo fluxo que a CPU do alvo emite (doc 03 §31), cobertura
