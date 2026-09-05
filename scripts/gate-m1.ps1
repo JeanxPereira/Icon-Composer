@@ -1066,7 +1066,7 @@ $mutations = @(
     # blend provoked it is a count, not a report.
     @{ file = "icon"; name = "the group blend gap does not name the mode"
        from = '                         : ("mescla de grupo ''" + *groupBlend + "'' -- grafia ou modo"'
-       to   = '                         : (std::string("mescla de grupo -- grafia ou modo"' },
+       to   = '                         : ("mescla de grupo -- grafia ou modo"' },
 
     # ---- as duas tabelas da mescla ---------------------------------------
     #

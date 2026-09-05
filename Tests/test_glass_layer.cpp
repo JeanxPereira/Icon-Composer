@@ -513,6 +513,37 @@ TEST_CASE(a_blended_group_whose_glass_refracts_is_refused_and_says_why) {
     CHECK(ga->skipped[0].why.find("acumulacao") != std::string::npos);
 }
 
+// A `normal` BLEND ON THE GROUP MUST NOT REACH THE REFUSAL AT ALL, and this
+// test exists because the mutation sweep of 2026-09-04 found the hole.
+//
+// `normal` is spelled out on 5 corpus groups and means "do nothing", so the
+// reader drops it before `groupBlend` is ever set. Forcing it through instead --
+// `if (*s != "normal")` mutated to `if (true)` -- changes NO picture, because
+// compositing a group through its own buffer with source-over is associative
+// and lands on the same pixels. The whole suite stayed green, which is exactly
+// what a survivor looks like.
+//
+// What the mutation DOES change is the refusal: a `normal` group carrying a
+// refracting glass layer would take `groupBlend != nullptr`, meet
+// `groupWouldRefract`, and be skipped. So this is the observation that kills it,
+// and it is not a picture -- it is the fact that nothing was skipped.
+TEST_CASE(a_normal_blend_on_the_group_does_not_refuse_its_refracting_glass) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 1024;
+
+    const TempBundle lens(
+        rampAndGlass("square.svg", realRefractivity(kRealStrength), true, 0.25, "normal"));
+    auto a = icf::IconBundle::open(lens.path());
+    REQUIRE(a.has_value());
+    auto ga = renderIcon(d, *a, o);
+    REQUIRE(ga.has_value());
+    CHECK_EQ(ga->drawn, std::size_t{2});
+    CHECK(ga->skipped.empty());
+    CHECK_EQ(ga->glassRefracted, std::size_t{1});
+}
+
 // ...AND A GROUP WHOSE GLASS DOES NOT REFRACT IS NOT REFUSED, which is the half
 // that buys the reach back.
 //

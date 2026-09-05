@@ -438,6 +438,30 @@ TEST_CASE(a_blend_spelling_the_reader_does_not_know_is_named) {
     CHECK(icon->skipped[0].why.find("color-burn") != std::string::npos);
 }
 
+// AND THE GROUP'S GAP HAS TO NAME ITS MODE TOO, which the test above does NOT
+// cover and the mutation sweep of 2026-09-04 proved it does not.
+//
+// That test drives `color-burn` on a LAYER, so it exercises the layer path's
+// message and leaves the group path's message unasserted. Dropping
+// `*groupBlend` from the group's reason kept the whole suite green: the gap was
+// still reported, still counted, and no longer said WHICH mode caused it -- a
+// report that names nothing is how a gap becomes unfixable.
+TEST_CASE(a_group_blend_gap_names_the_mode) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 64;
+    const TempBundle odd(groupWith("\"blend-mode\" : \"color-burn\",\n      "));
+    auto b = icf::IconBundle::open(odd.path());
+    REQUIRE(b.has_value());
+    auto icon = renderIcon(d, *b, o);
+    REQUIRE(icon.has_value());
+    CHECK_EQ(icon->drawn, std::size_t{0});
+    REQUIRE(icon->skipped.size() == 1);
+    CHECK(icon->skipped[0].why.find("mescla de grupo") != std::string::npos);
+    CHECK(icon->skipped[0].why.find("color-burn") != std::string::npos);
+}
+
 // A blend on the GROUP is the case the corpus actually uses -- `plus-lighter`
 // sits on a group 17 times against 5 on a layer. Until 2026-09-03 the renderer
 // read the key only off the layer and composited such a group as `normal` with
