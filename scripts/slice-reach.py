@@ -25,13 +25,17 @@ delivered them alone.
            compositor mixes per layer; a blended GROUP gets a target of its
            own.
 
-ONE COMBINATION IS STILL REFUSED, AND IT COSTS EXACTLY THE DIFFERENCE
-BETWEEN THE PROMISE AND THE NUMBER. A group that blends AND carries glass is
-not drawn: glass refracts its backdrop, and in a target of its own that
-backdrop is empty, while in the canvas the blend would mix it in twice. Which
-the target does was never read. The spec promised 178 layers and 47 documents;
-the ruler says 169 and 40, and 169+9 = 178, 40+7 = 47 -- the shortfall IS that
-refusal, to the layer.
+THAT REFUSAL WAS READ ON 2026-09-04 AND NARROWED ON 2026-09-05. It used to
+cover every group that blends AND carries glass, and it cost exactly the
+difference between the spec's promise (178 layers, 47 documents) and the
+number here (169 and 40). Apple's glass does not sample the destination at all
+-- `GlassDisplacementStyle::draw` filters the ITEM it is applied to (doc 03
+§34.3) -- but OUR `glassOver` displaces the accumulation buffer in place, so a
+group's fresh target really does starve it. What closed the gap was narrowing
+rather than lifting: the coupling only bites when the refraction MOVES
+something, and no blocked document had a refracting glass. The refusal that
+survives is that one, and it is a difference in our model rather than an
+unread question.
 
 WHAT COUNTS AS "IN THE SLICE"
 -----------------------------
