@@ -146,25 +146,67 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
    que o conteúdo deles atravessa intacto. O do *modelo*: **nenhuma chave** dos
    145 documentos pode ser desconhecida, e **nenhuma das 1.740 especializações**
    pode ser inalcançável pelo resolver.
-3. **Uma varredura de mutação obrigatória.** Duzentas e sessenta e sete mutações
+3. **Uma varredura de mutação obrigatória.** Duzentas e setenta e três mutações
    entram uma a uma, e cada uma TEM que avermelhar a suíte — aplicada em árvore
    limpa e restaurada de um backup conferido por SHA-256, nunca por comando de
    git. Desde 2026-09-03 a varredura roda num **worktree dedicado**
    (`scripts/gate-worktree.ps1`), para parar de tomar a árvore de trabalho como
    refém por duas horas.
 
-**gate-m1 passou em 2026-09-03** — 145 documentos, 135 byte-exatos, 145 de 145
+**gate-m1 passou em 2026-09-05** — 145 documentos, 135 byte-exatos, 145 de 145
 totalmente compreendidos, 1.740 de 1.740 especializações alcançáveis, 61.537
-valores decodados sem uma falha, 55 bundles sem arquivo morto, 1.100 árvores
-renderizadas sem cair em JSON cru, 149 SVGs lidos em geometria com 128 deles
-totalmente compreendidos, 58 dos 60 PNGs decodados, e **231 de 231 mutações
-pegas**.
+valores decodados sem uma falha, 1.100 árvores renderizadas sem cair em JSON
+cru, 149 SVGs lidos em geometria, e **273 de 273 mutações pegas**.
 
 A primeira passagem foi em **2026-09-01, com 119 mutações**. A lista cresceu
-119 → 160 → 209 → 231, e cada crescimento é uma frente nova ganhando guardas —
-o raster, o gradiente, o vidro, o `fill`. As execuções anteriores estão
-registradas abaixo, com as suas datas, porque um número de mutação só quer dizer
-alguma coisa junto do código que ele mordia.
+119 → 160 → 209 → 231 → 273, e cada crescimento é uma frente nova ganhando
+guardas — o raster, o gradiente, o vidro, o `fill`, a mescla, o traço. As
+execuções anteriores estão registradas abaixo, com as suas datas, porque um
+número de mutação só quer dizer alguma coisa junto do código que ele mordia.
+
+### 2026-09-05: `gate-m1 passed`, 273 de 273 — e a execução anterior REPROVOU
+
+```
+sweep:  273 of 273 mutations caught
+
+VERDICT: gate-m1 passed
+```
+
+`a9e8713`, 21:08 → 00:49, execução única.
+
+**A execução de antes reprovou, e é ela que dá sentido a esta.** Em 04/09 a
+varredura rodou 272 de 272 e imprimiu `VERDICT: FAILED` com **dois
+sobreviventes**, os dois no compositor de grupo:
+
+- *"a group blending as normal is refused along with the rest"* — trocar
+  `*s != "normal"` por `true` deixou a suíte **inteira verde**, porque empurrar
+  um grupo `normal` pelo alvo próprio não muda pixel nenhum: source-over através
+  de um buffer é associativo. Não é mutante equivalente — o que o mata é a regra
+  nova: sob a mutação, um grupo `normal` com vidro **que refrata** passaria a ser
+  recusado. A observação que mata é **nada ter sido pulado**, não uma figura.
+- *"the group blend gap does not name the mode"* — primeiro **não compilou** (o
+  `to` abria um `std::string(` a mais, e o gate conta isso como não-pego, que é o
+  certo). Corrigida a sintaxe, ela **compilou e sobreviveu**: nenhum teste exigia
+  que a razão de recusa do GRUPO nomeasse o modo. O teste de `color-burn` que
+  parecia cobrir isso dirige uma **camada**.
+
+Três testes novos fecharam os dois, cada um provado pelos dois lados — verde em
+árvore limpa, vermelho com o defeito plantado.
+
+**As mutações da frente do dia.** O vidro dentro de grupo que mescla deixou de
+ser recusado em bloco: a recusa agora é só para o vidro que **refrata**, e a
+régua foi de 169 para **178 de 194 camadas** e de 40 para **47 de 55
+documentos** (doc 03 §34, spec de 03/09 §9). Duas mutações guardam os dois lados
+disso — uma para o guarda cair, outra para ele voltar a ser largo. A segunda
+importa porque **não produz pixel errado**: perde 9 camadas em silêncio.
+
+`[ART]` **E o custo de rodar isto aqui continua alto.** Sete execuções foram
+mortas no meio nesta máquina, uma delas aos 4 minutos e outra depois de 2h53 —
+sem evento de exaustão, sem crash, sem carga que explique. Cada morte deixa a
+mutação da vez plantada em disco, e é por isso que a varredura mora num worktree
+descartável: o estrago é sempre num checkout que ninguém edita, e o
+`gate-worktree.ps1` começa com `checkout --detach --force`, então relançar
+limpa sozinho. A causa das mortes segue `[OBS]`.
 
 ### 2026-09-03: `gate-m1 passed`, 231 de 231, e desta vez num worktree
 
