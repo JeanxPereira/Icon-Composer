@@ -1192,6 +1192,13 @@ $mutations = @(
     @{ file = "icon"; name = "the group result is never mixed back in"
        from = '        if (blendTheGroup) blendPremulOver(acc, groupAcc, *groupMode);'
        to   = '        (void)0;' },
+    # A lacuna que o leitor de SVG viu e nao desenhou tem que CHEGAR ao relatorio
+    # do icone. Se ela se perder de novo, nao ha pixel errado nem camada faltando
+    # -- ha um `N of N layer(s) drawn` limpo por cima de uma figura sem o filtro,
+    # que foi exatamente o estado de 5 dos 8 documentos fora da fatia ate 05/09.
+    @{ file = "icon"; name = "the svg gaps never reach the icon report"
+       from = '                for (const std::string& u : svg->unsupported()) {'
+       to   = '                for (const std::string& u : std::set<std::string>{}) {' },
     # A RECUSA sobre vidro QUE REFRATA e a que sobrou depois de 2026-09-04, e ela
     # tem DOIS lados que podem cair sozinhos. Se o guarda inteiro cai, o
     # renderizador desenha refracao sobre um buffer vazio e reporta sucesso --

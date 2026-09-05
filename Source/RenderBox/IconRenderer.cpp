@@ -757,6 +757,28 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                     skip("SVG que este leitor nao abre: " + *imageName);
                     continue;
                 }
+                // WHAT THE SVG READER SAW AND DID NOT DRAW, said out loud.
+                //
+                // `SvgDocument::unsupported()` already names every element and
+                // value the reader walked past -- `filter`, `mask`, `pattern`,
+                // `use`, a class no stylesheet matched. `icrender` prints them
+                // for a LOOSE svg and this path threw them away, so a bundle
+                // whose art carries a drop shadow reported "4 of 4 layers
+                // drawn" and said nothing about the shadow being gone.
+                //
+                // `[ART]` It is not hypothetical: 5 of the 8 corpus documents
+                // outside the drawable slice reported N of N with a filter, a
+                // mask or a pattern silently ignored -- PDF-Archiver, PiStats,
+                // CommE2E, quick-push and Delta. The ruler saw it because it
+                // reads the SVG itself; the renderer's own report did not.
+                //
+                // These are gaps, not skips: the shape IS drawn, and dropping
+                // it would trade a wrong picture for a missing one. They go to
+                // `shapeGaps` for the same reason the per-shape reasons do.
+                for (const std::string& u : svg->unsupported()) {
+                    out.shapeGaps.push_back(name + " / " + *imageName +
+                                            ": elemento nao desenhado: " + u);
+                }
             }
 
             // The paint is built AFTER the art, because a gradient needs the

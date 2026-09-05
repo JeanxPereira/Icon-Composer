@@ -97,6 +97,18 @@ public:
               "<path d=\"M128 256 L384 256\" fill=\"none\""
               " stroke=\"#0000ff\" stroke-width=\"32\""
               " stroke-opacity=\"0.5\"/></svg>");
+        // THE SAME SQUARE, CARRYING A FILTER IT WILL NOT GET. `[ART]` This is
+        // the shape of `PDF-Archiver`'s four assets, verbatim down to the
+        // `feDropShadow` arguments -- one primitive, referenced by `filter=`.
+        // The reader draws the square and walks past the filter; the point of
+        // the fixture is that it has to SAY so.
+        write(dir_ / "Assets" / "shadowed.svg",
+              "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\">"
+              "<defs><filter id=\"s\">"
+              "<feDropShadow dy=\"10\" stdDeviation=\"10\" flood-opacity=\"0.3\"/>"
+              "</filter></defs>"
+              "<path d=\"M0 0 L512 0 L512 512 L0 512 Z\" fill=\"#ffffff\""
+              " filter=\"url(#s)\"/></svg>");
         // A second square in a colour, so two layers can be told apart when
         // they overlap.
         write(dir_ / "Assets" / "red.svg",
@@ -436,6 +448,50 @@ TEST_CASE(a_blend_spelling_the_reader_does_not_know_is_named) {
     CHECK_EQ(icon->drawn, std::size_t{0});
     REQUIRE(icon->skipped.size() == 1);
     CHECK(icon->skipped[0].why.find("color-burn") != std::string::npos);
+}
+
+// WHAT THE SVG READER WALKED PAST HAS TO REACH THE ICON'S REPORT.
+//
+// `SvgDocument::unsupported()` has always named the elements the reader does
+// not draw, and `icrender` has always printed them for a LOOSE `.svg`. The
+// BUNDLE path threw the set away, so an icon whose art carries a drop shadow,
+// a mask or a clip path rendered without it and reported `N of N layer(s)
+// drawn` -- a clean report over a wrong picture.
+//
+// `[ART]` Five of the eight corpus documents outside the drawable slice did
+// exactly that: PDF-Archiver and PiStats (filter), CommE2E (mask), quick-push
+// (clipPath) and Delta (pattern). The ruler caught them only because it reads
+// the SVG itself, which is the definition of a gap the renderer cannot see.
+//
+// The layer still DRAWS -- dropping it would trade a wrong picture for a
+// missing one -- so this is a gap and not a skip, and the two are asserted
+// apart.
+TEST_CASE(an_svg_feature_the_reader_ignores_reaches_the_icons_report) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 64;
+    const TempBundle b(oneLayerOf("shadowed.svg"));
+    auto bundle = icf::IconBundle::open(b.path());
+    REQUIRE(bundle.has_value());
+    auto icon = renderIcon(d, *bundle, o);
+    REQUIRE(icon.has_value());
+
+    // Drawn, and not skipped.
+    CHECK_EQ(icon->drawn, std::size_t{1});
+    CHECK(icon->skipped.empty());
+
+    // And the filter is NAMED. Both halves matter: `defs:filter` is the
+    // definition the reader walked past, `paint:filter` is the reference on
+    // the shape -- a reader that reported only one of them would leave either
+    // an unused definition or an unanswered reference looking innocent.
+    std::string all;
+    for (const auto& g : icon->shapeGaps) all += g + "\n";
+    CHECK(all.find("defs:filter") != std::string::npos);
+    CHECK(all.find("paint:filter") != std::string::npos);
+    // It says WHICH layer and WHICH asset, because a gap with no address is a
+    // gap nobody can go and fix.
+    CHECK(all.find("only / shadowed.svg") != std::string::npos);
 }
 
 // AND THE GROUP'S GAP HAS TO NAME ITS MODE TOO, which the test above does NOT
