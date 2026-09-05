@@ -249,6 +249,30 @@ $mutations = @(
        from = 'o << (absent ? "  MISSING  " : "  ok       ")'
        to   = 'o << (false ? "  MISSING  " : "  ok       ")' },
     # ---- the SVG reader ----
+    # ---- o `clip-path` ----------------------------------------------------
+    #
+    # `[ART]` O corpus tem UM: o `<rect>` dentro de `<clipPath>` do quick-push,
+    # e ele era o unico bloqueio daquele documento. As quatro mutacoes cobrem os
+    # quatro jeitos de perde-lo, e duas delas nao produzem pixel errado em forma
+    # clipada nenhuma -- so desfazem o corte onde ele foi pedido.
+    @{ file = "svgrender"; name = "the clip mask is never multiplied in"
+       from = '            const float srcA = c.coverage[0] * static_cast<float>(shape.opacity) * clipAt(t);'
+       to   = '            const float srcA = c.coverage[0] * static_cast<float>(shape.opacity);' },
+    # Um clip que nao resolve voltando a desenhar a forma INTEIRA: figura
+    # plausivel, relatorio limpo, e o autor pediu uma fatia.
+    @{ file = "svgrender"; name = "a dangling clip draws the whole shape instead"
+       from = '        if (!missingClip.empty()) {'
+       to   = '        if (false) {' },
+    # Dois clips INTERSECTAM. Deixar o de dentro substituir o de fora deixa a
+    # faixa inteira em vez do quadrante.
+    @{ file = "svgdoc"; name = "the inner clip replaces the outer instead of intersecting"
+       from = '                in.clips.push_back(t.substr(5, t.size() - 6));'
+       to   = '                in.clips = {t.substr(5, t.size() - 6)};' },
+    # `objectBoundingBox` re-escala a regiao pela caixa de cada referenciador.
+    # Le-lo como user space e um clip silenciosamente errado.
+    @{ file = "svgdoc"; name = "objectBoundingBox units are read as user space"
+       from = '            if (*u != "userSpaceOnUse") {'
+       to   = '            if (false) {' },
     # ---- `opacity`, que e um TERCEIRO multiplicador -----------------------
     #
     # `[ART]` 24 elementos do corpus carregam `opacity < 1`, e tres dos cinco

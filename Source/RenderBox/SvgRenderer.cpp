@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
+#include <string>
 
 #include "Source/RenderBox/PathBuffer.h"
 #include "Source/RenderBox/PathCompositeOracle.h"
@@ -125,6 +127,45 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
 
     const PathGlobals globals = placement;
 
+    // THE CLIP MASKS, BUILT ONCE EACH AND ON DEMAND.
+    //
+    // A clip is a per-pixel INTERSECTION, so the mask is the same for every
+    // shape that references it and is worth caching: the corpus's one clip is
+    // used once, but a file that clipped forty shapes to one rect would
+    // otherwise pay forty coverage passes for one answer.
+    //
+    // The region is the UNION of the `<clipPath>`'s children. `max` is the
+    // union taken on the coverage itself -- exact where they do not overlap,
+    // and never brighter than 1 where they do. `[ART]` The corpus has a single
+    // child, so the multi-child case is built and not exercised.
+    std::map<std::string, std::vector<float>> clipMasks;
+    bool clipFailed = false;
+    std::string clipError;
+    auto maskFor = [&](const std::string& id) -> const std::vector<float>* {
+        auto it = clipMasks.find(id);
+        if (it != clipMasks.end()) return &it->second;
+        auto def = doc.clipPaths.find(id);
+        if (def == doc.clipPaths.end()) return nullptr;
+        std::vector<float> mask(texels, 0.0f);
+        for (const icf::svg::Path& path : def->second) {
+            if (path.segments.empty()) continue;
+            auto buffer = buildPathBuffer(path, BuildOptions{options.subdivisions});
+            if (!buffer) { clipFailed = true; clipError = buffer.error(); return nullptr; }
+            auto drew = pass->draw(device, *image, *buffer, globals);
+            if (!drew) { clipFailed = true; clipError = drew.error(); return nullptr; }
+            auto cov = readBack(device, *image);
+            if (!cov) { clipFailed = true; clipError = cov.error(); return nullptr; }
+            if (cov->size() != texels) { clipFailed = true; clipError = "clip coverage size"; return nullptr; }
+            // A clip's children use their own fill rule; non-zero is SVG's
+            // initial value and no corpus clip names another.
+            const std::uint32_t st = stateFor(icf::svg::FillRule::NonZero);
+            for (std::size_t t = 0; t < texels; ++t) {
+                mask[t] = std::fmax(mask[t], accumulatorShape(st, (*cov)[t].y, ShapeCurve{}));
+            }
+        }
+        return &clipMasks.emplace(id, std::move(mask)).first->second;
+    };
+
     for (std::size_t i = 0; i < doc.shapes.size(); ++i) {
         const icf::svg::Shape& shape = doc.shapes[i];
 
@@ -164,6 +205,36 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
         // and a guard nothing can reach is dead weight that makes the sweep
         // report a defect nobody can fix.
         if (shape.path.segments.empty()) continue;
+
+        // THE CLIPS IN FORCE ON THIS SHAPE, intersected into one factor.
+        //
+        // Order matters here only for cost: the masks are built before the
+        // shape's own coverage is drawn, because both use the same target and
+        // the shape's coverage is read back immediately after its draw.
+        //
+        // A `clip-path` that names no definition is a GAP and not a silent pass
+        // at full coverage. Drawing unclipped would put the whole shape on the
+        // canvas where the author asked for a sliver of it -- a plausible
+        // picture, and the wrong one.
+        std::vector<const std::vector<float>*> masks;
+        std::string missingClip;
+        for (const std::string& id : shape.clipPaths) {
+            const std::vector<float>* m = maskFor(id);
+            if (clipFailed) return std::unexpected(clipError);
+            if (!m) { missingClip = id; break; }
+            masks.push_back(m);
+        }
+        if (!missingClip.empty()) {
+            out.skipped.push_back({i, shape.element,
+                                   "clip-path url(#" + missingClip +
+                                       ") nao resolve para nenhum clipPath do documento"});
+            continue;
+        }
+        auto clipAt = [&masks](std::size_t t) {
+            float f = 1.0f;
+            for (const std::vector<float>* m : masks) f *= (*m)[t];
+            return f;
+        };
 
         auto buffer = buildPathBuffer(shape.path, BuildOptions{options.subdivisions});
         if (!buffer) {
@@ -245,7 +316,7 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
             // alpha. It is a SEPARATE multiplier from the paint's own alpha and
             // from `fill-opacity`, and all three apply -- SVG 1.1 §14.5 stacks
             // them rather than choosing one.
-            const float srcA = c.coverage[0] * static_cast<float>(shape.opacity);
+            const float srcA = c.coverage[0] * static_cast<float>(shape.opacity) * clipAt(t);
             const float inv = 1.0f - srcA;
             float* dst = &acc[t * 4];
             for (int k = 0; k < 3; ++k) dst[k] = colour[k] * srcA + dst[k] * inv;
@@ -298,7 +369,7 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
                     const float sa = static_cast<float>(shape.stroke.color.a);
                     if (shape.stroke.color.displayP3) out.unconvertedP3.push_back(i);
                     for (std::size_t t = 0; t < texels; ++t) {
-                        const float a = cov[t] * sa * static_cast<float>(shape.opacity);
+                        const float a = cov[t] * sa * static_cast<float>(shape.opacity) * clipAt(t);
                         if (a <= 0.0f) continue;
                         const float inv2 = 1.0f - a;
                         float* d2 = &acc[t * 4];

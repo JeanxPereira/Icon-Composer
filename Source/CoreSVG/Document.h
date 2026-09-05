@@ -86,6 +86,12 @@ struct Shape {
     // two rules to disagree about. A shape that had both is named rather than
     // approximated (`paint:opacity-com-fill-e-stroke`).
     double opacity = 1.0;
+
+    // The `clipPath` ids this shape is inside, outermost first. Clipping is a
+    // per-pixel INTERSECTION, so applying a group's clip to each of its shapes
+    // gives exactly what clipping the composed group gives -- unlike `opacity`
+    // above, there is no approximation to declare here.
+    std::vector<std::string> clipPaths;
 };
 
 class SvgDocument {
@@ -97,6 +103,11 @@ public:
     // By id, so a `url(#g)` paint can be answered. 161 gradients answer 165
     // references in the corpus.
     std::map<std::string, Gradient> gradients;
+
+    // By id, the geometry each `<clipPath>` encloses, already in the document's
+    // user space. The clip region is the UNION of these, which for one path --
+    // the only shape the corpus uses -- is just the path.
+    std::map<std::string, std::vector<Path>> clipPaths;
 
     // Element names seen and not drawn. Empty means every element in the file is
     // either drawn or deliberately ignored (`title`, `desc`, `metadata`).

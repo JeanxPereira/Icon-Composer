@@ -98,9 +98,9 @@ std::optional<std::string> property(const Element& e, std::string_view name,
     return property(e, name, style, none);
 }
 
-// What a shape inherits from its ancestry. `opacity` is NOT here: it applies to
-// a whole group as a composited unit, which is a different idea from paint and
-// is still reported as unsupported.
+// What a shape inherits from its ancestry -- plus the two things that do not
+// inherit in SVG's sense and are carried here anyway, each for its own reason:
+// `opacityChain` multiplies, and `clips` accumulate.
 struct Inherited {
     Paint fill = [] { Paint p; p.kind = PaintKind::Color; p.color = {0, 0, 0, 1, false}; return p; }();
     Paint stroke = [] { Paint p; p.kind = PaintKind::None; return p; }();
@@ -114,6 +114,12 @@ struct Inherited {
     // group at 0.5 inside a group at 0.5 composites at 0.25. That is why it
     // lives in this struct and is still not "inherited" in SVG's sense.
     double opacityChain = 1.0;
+
+    // The `clipPath` ids in force, outermost first. This one DOES inherit in
+    // the ordinary sense -- a group's clip applies to everything under it --
+    // and it accumulates rather than replaces, because two nested clips
+    // intersect.
+    std::vector<std::string> clips;
 };
 
 // The alpha the paint ends up with. `fill-opacity` is a separate multiplier
@@ -132,21 +138,19 @@ void appendCorner(Path& p, Point from, Point to, Point corner, double kx, double
     (void)corner;
 }
 
-// The attributes that decide how a shape LOOKS. None is read by this layer, and
-// each is named the moment it appears -- doc 04 §4's rule, applied to paint
-// rather than to elements. Without this the report would call a file understood
-// while dropping every colour in it.
-// What is STILL not read. `fill`, `stroke`, `fill-rule`, `fill-opacity`,
-// `stroke-opacity`, `stroke-width` and `style` left this list when they were
-// implemented; `class` stays because the stylesheet that would give it meaning
-// is not read, and `opacity` stays because group compositing is a different
-// idea from paint.
-// Presentation attributes this reader sees and does NOT act on. `opacity` left
-// this list on 2026-09-05 when it started being read -- and leaving it here
-// would have been its own defect: a property that IS applied and still reports
-// itself as ignored teaches whoever reads the report to distrust it.
+// Presentation attributes this reader SEES AND DOES NOT ACT ON, named the moment
+// they appear -- doc 04 §4's rule, applied to paint rather than to elements.
+// Without it the report would call a file understood while dropping every colour
+// in it.
+//
+// Leaving an implemented property here is its own defect: one that IS applied
+// and still reports itself as ignored teaches whoever reads the report to
+// distrust it. `fill`, `stroke`, `fill-rule`, the opacities, `stroke-width` and
+// `style` left as they were built; `opacity` left on 2026-09-05 and `clip-path`
+// on the same day. `class` stays, because the stylesheet that would give it
+// meaning is still not read.
 constexpr std::string_view kPaintAttributes[] = {
-    "clip-path", "mask", "filter", "clip-rule",
+    "mask", "filter", "clip-rule",
     "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "mix-blend-mode",
 };
 
@@ -164,6 +168,7 @@ struct Builder {
     std::vector<Shape> shapes;
     std::set<std::string> unsupported;
     std::map<std::string, Gradient> gradients;
+    std::map<std::string, std::vector<Path>> clipPaths;
 
     // One element's paint, resolved against what the ancestry set.
     // The stylesheets, collected before anything is drawn.
@@ -238,6 +243,17 @@ struct Builder {
         // `scalar`. Out-of-range values are CLAMPED, which is what SVG 1.1 §14
         // says for this property -- not refused, because a refusal here would
         // drop a shape over a number the specification tells us how to read.
+        if (auto v = property(e, "clip-path", style, fromClass)) {
+            // Only `url(#id)` is a reference this reader can follow. The CSS
+            // basic shapes (`inset()`, `circle()`, ...) are a different
+            // language and are named rather than half-read.
+            const std::string& t = *v;
+            if (t.size() > 6 && t.compare(0, 5, "url(#") == 0 && t.back() == ')') {
+                in.clips.push_back(t.substr(5, t.size() - 6));
+            } else if (t != "none") {
+                unsupported.insert("paint:clip-path=" + t);
+            }
+        }
         if (auto v = property(e, "opacity", style, fromClass)) {
             auto n = numbers(*v);
             if (n.size() == 1) {
@@ -247,6 +263,41 @@ struct Builder {
             }
         }
         return in;
+    }
+
+    // A `<clipPath>`, by id. Its children are geometry and nothing else: their
+    // paint is ignored by SVG, which is why this collects paths rather than
+    // shapes.
+    //
+    // `[ART]` The corpus has exactly one -- quick-push's `<rect>` -- so what is
+    // exercised is the single-child case. The union of several is still built,
+    // because refusing a second child would be a limit this reader has no reason
+    // to have.
+    void collectClipPath(const Element& e, const Transform& parent) {
+        const std::string* id = e.attribute("id");
+        if (!id) return;
+        // `objectBoundingBox` re-scales the clip to each USER's bounding box, so
+        // one definition means different geometry per referrer. That is a real
+        // difference and it is named rather than silently read as user space.
+        if (const std::string* u = e.attribute("clipPathUnits")) {
+            if (*u != "userSpaceOnUse") {
+                unsupported.insert("clipPathUnits:" + *u);
+                return;
+            }
+        }
+        std::vector<Path>& into = clipPaths[*id];
+        const std::size_t before = shapes.size();
+        // THE CHILDREN, not the element. Walking `e` itself lands back on the
+        // `clipPath` branch that called this, which recurses until the stack is
+        // gone -- the first build of this crashed the whole suite with no
+        // output, exit 253.
+        for (const auto& c : e.children) walk(c, parent, Inherited{});
+        // `walk` appends to `shapes`; a clip's children are not drawn, so they
+        // are moved out of that list and into the clip.
+        for (std::size_t i = before; i < shapes.size(); ++i) {
+            into.push_back(std::move(shapes[i].path));
+        }
+        shapes.resize(before);
     }
 
     // A gradient definition, by id. Stops in document order.
@@ -421,6 +472,11 @@ struct Builder {
                 unsupported.insert("opacity de grupo sobre mais de uma forma");
             }
             return;
+        } else if (e.name == "clipPath") {
+            // Outside `<defs>` as well: `<clipPath>` is a definition wherever it
+            // sits, and SVG does not draw it either way.
+            collectClipPath(e, here);
+            return;
         } else if (e.name == "defs") {
             // Definitions are referenced, not drawn -- walking in to paint them
             // would put gradient stops on the canvas. But what is DEFINED in
@@ -429,6 +485,8 @@ struct Builder {
             for (const auto& c : e.children) {
                 if (c.name == "linearGradient" || c.name == "radialGradient") {
                     collectGradient(c);
+                } else if (c.name == "clipPath") {
+                    collectClipPath(c, here);
                 } else if (c.name != "style") {  // collected in its own pass
                     unsupported.insert("defs:" + c.name);
                 }
@@ -461,6 +519,7 @@ struct Builder {
         shape.fillRule = inherited.fillRule;
         shape.strokeWidth = inherited.strokeWidth;
         shape.opacity = inherited.opacityChain;
+        shape.clipPaths = inherited.clips;
         // A shape composited at less than 1 that has BOTH a fill and a stroke
         // is the other place where folding differs from compositing once: the
         // stroke overlaps the fill along the edge, and two separate composites
@@ -576,6 +635,7 @@ std::optional<SvgDocument> SvgDocument::parse(std::string_view svg) {
     b.walk(xml->root, Transform{}, Inherited{});
     doc.shapes = std::move(b.shapes);
     doc.gradients = std::move(b.gradients);
+    doc.clipPaths = std::move(b.clipPaths);
     doc.unsupported_ = std::move(b.unsupported);
     return doc;
 }

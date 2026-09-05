@@ -180,7 +180,25 @@ SVG_BLOCKERS = {
     "traço com url(#)": re.compile(r'stroke\s*[=:]\s*["\']?\s*url\(', re.I),
     "filtro": re.compile(r"<\s*filter[\s>]|filter\s*[=:]", re.I),
     "máscara": re.compile(r"<\s*mask[\s>]|mask\s*[=:]", re.I),
-    "clip-path": re.compile(r"clip-path\s*[=:]", re.I),
+    # O `clip-path` SAIU DAQUI EM 2026-09-05, e so o que continua recusado
+    # bloqueia. `url(#id)` com `clipPathUnits` no padrao e desenhado: a regiao
+    # vira mascara de cobertura e a interseccao e por pixel, entao aplicar o clip
+    # de um grupo em cada forma da exatamente o mesmo que clipar o grupo composto
+    # -- ao contrario do `opacity`, aqui nao ha aproximacao.
+    #
+    # O que sobra: `objectBoundingBox`, que re-escala a regiao pela caixa de cada
+    # referenciador (uma definicao, geometrias diferentes), e as formas basicas
+    # de CSS (`inset()`, `circle()`, ...), que sao outra linguagem.
+    "clip-path em bounding box": re.compile(
+        r'clipPathUnits\s*=\s*["\']?\s*objectBoundingBox', re.I),
+    # A ASPA E TRATADA EXPLICITAMENTE, e a primeira versao desta linha nao
+    # tratava: com `["\']?` opcional o motor RETROCEDE, deixa de consumir a
+    # aspa, e o lookahead passa a olhar `"` em vez de `url(#`. Ela acusava
+    # entao exatamente o unico clip que este leitor desenha.
+    "clip-path que nao e url(#)": re.compile(
+        r'clip-path\s*[=:]\s*(?:"(?!url\(#|none")'
+        r"|'(?!url\(#|none')"
+        r'|(?!["\']|url\(#|none\b)\S)', re.I),
     "pattern": re.compile(r"<\s*pattern[\s>]", re.I),
     "use": re.compile(r"<\s*use[\s>]", re.I),
     "raster embutido": re.compile(r"<\s*image[\s>]", re.I),

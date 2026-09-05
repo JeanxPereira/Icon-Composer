@@ -694,3 +694,118 @@ TEST_CASE(opacity_out_of_range_clamps_and_a_non_number_is_named) {
     CHECK(doc->unsupported().count("paint:opacity=inherit") == 1);
     CHECK(std::fabs(doc->shapes[0].opacity - 1.0) < 1e-9);
 }
+
+// A CLIP ACTUALLY CLIPS, and the two halves are asserted apart.
+//
+// The shape is the full 32x32 canvas; the clip is its left half. Inside the
+// clip the pixel has to be the shape's, outside it has to be UNTOUCHED -- and
+// the second half is the one that fails when a clip is parsed, cached, reported
+// as read, and then never multiplied in. `[ART]` quick-push's `bolt.brakesignal
+// 1.svg` is this shape exactly: one `<clipPath>` holding one `<rect>`.
+TEST_CASE(a_clip_path_cuts_the_shape_and_leaves_the_rest_empty) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    constexpr std::uint32_t kSize = 32;
+    RenderOptions o;
+    o.width = kSize;
+    o.height = kSize;
+    o.subdivisions = 1;
+
+    const std::string svg = svgWith(
+        "0 0 32 32",
+        "<defs><clipPath id=\"c\"><rect width=\"16\" height=\"32\"/></clipPath></defs>"
+        "<path d=\"M0 0 L32 0 L32 32 L0 32 Z\" fill=\"#ffffff\" clip-path=\"url(#c)\"/>");
+    auto doc = icf::svg::SvgDocument::parse(svg);
+    REQUIRE(doc.has_value());
+    REQUIRE(doc->shapes.size() == 1);
+    REQUIRE(doc->shapes[0].clipPaths.size() == 1);
+    CHECK(doc->clipPaths.count("c") == 1);
+    // The clip's own child is NOT a shape to draw.
+    CHECK(doc->unsupported().count("clipPath") == 0);
+    CHECK(doc->unsupported().count("defs:clipPath") == 0);
+    CHECK(doc->unsupported().count("paint:clip-path") == 0);
+
+    auto img = renderSvg(d, *doc, o);
+    REQUIRE(img.has_value());
+    CHECK(img->skipped.empty());
+    CHECK(std::fabs(alphaAt(*img, 4, 16) - 1.0f) < 0.001f);    // inside the clip
+    CHECK(std::fabs(alphaAt(*img, 27, 16) - 0.0f) < 0.001f);   // outside it
+}
+
+// TWO CLIPS INTERSECT rather than the innermost winning.
+//
+// A group clipped to the left half holding a shape clipped to the top half
+// leaves one quadrant. A reader that let the inner clip replace the outer would
+// leave the whole top band, which is a plausible picture and the wrong one.
+TEST_CASE(nested_clip_paths_intersect) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    constexpr std::uint32_t kSize = 32;
+    RenderOptions o;
+    o.width = kSize;
+    o.height = kSize;
+    o.subdivisions = 1;
+
+    const std::string svg = svgWith(
+        "0 0 32 32",
+        "<defs>"
+        "<clipPath id=\"l\"><rect width=\"16\" height=\"32\"/></clipPath>"
+        "<clipPath id=\"t\"><rect width=\"32\" height=\"16\"/></clipPath>"
+        "</defs>"
+        "<g clip-path=\"url(#l)\">"
+        "<path d=\"M0 0 L32 0 L32 32 L0 32 Z\" fill=\"#ffffff\" clip-path=\"url(#t)\"/>"
+        "</g>");
+    auto doc = icf::svg::SvgDocument::parse(svg);
+    REQUIRE(doc.has_value());
+    REQUIRE(doc->shapes.size() == 1);
+    CHECK_EQ(doc->shapes[0].clipPaths.size(), std::size_t{2});
+
+    auto img = renderSvg(d, *doc, o);
+    REQUIRE(img.has_value());
+    CHECK(std::fabs(alphaAt(*img, 4, 4) - 1.0f) < 0.001f);     // left AND top
+    CHECK(std::fabs(alphaAt(*img, 4, 27) - 0.0f) < 0.001f);    // left, not top
+    CHECK(std::fabs(alphaAt(*img, 27, 4) - 0.0f) < 0.001f);    // top, not left
+    CHECK(std::fabs(alphaAt(*img, 27, 27) - 0.0f) < 0.001f);   // neither
+}
+
+// A CLIP THAT NAMES NOTHING IS A GAP, not a shape drawn whole.
+//
+// Drawing unclipped would put the entire shape on the canvas where the author
+// asked for a piece of it: a plausible picture with a clean report, which is
+// this project's worst failure mode. So the shape is skipped and the id is in
+// the reason.
+TEST_CASE(a_clip_path_that_resolves_to_nothing_is_named) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    RenderOptions o;
+    o.width = 32;
+    o.height = 32;
+    o.subdivisions = 1;
+
+    auto doc = icf::svg::SvgDocument::parse(svgWith(
+        "0 0 32 32",
+        "<path d=\"M0 0 L32 0 L32 32 L0 32 Z\" fill=\"#ffffff\" clip-path=\"url(#gone)\"/>"));
+    REQUIRE(doc.has_value());
+    auto img = renderSvg(d, *doc, o);
+    REQUIRE(img.has_value());
+    CHECK_EQ(img->drawn, std::size_t{0});
+    REQUIRE(img->skipped.size() == 1);
+    CHECK(img->skipped[0].why.find("gone") != std::string::npos);
+    CHECK(std::fabs(alphaAt(*img, 16, 16) - 0.0f) < 0.001f);
+}
+
+// `objectBoundingBox` IS A DIFFERENT GEOMETRY, and it is refused by name.
+//
+// It re-scales the clip to each referrer's bounding box, so one definition
+// means different geometry per user. Reading it as user space would be a
+// silently wrong clip on a file that says exactly what it wants.
+TEST_CASE(a_clip_path_in_bounding_box_units_is_named_not_guessed) {
+    auto doc = icf::svg::SvgDocument::parse(svgWith(
+        "0 0 32 32",
+        "<defs><clipPath id=\"c\" clipPathUnits=\"objectBoundingBox\">"
+        "<rect width=\"0.5\" height=\"1\"/></clipPath></defs>"
+        "<path d=\"M0 0 L32 0 L32 32 Z\" fill=\"#fff\" clip-path=\"url(#c)\"/>"));
+    REQUIRE(doc.has_value());
+    CHECK(doc->unsupported().count("clipPathUnits:objectBoundingBox") == 1);
+    CHECK(doc->clipPaths.count("c") == 0);
+}
