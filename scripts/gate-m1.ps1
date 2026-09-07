@@ -249,6 +249,32 @@ $mutations = @(
        from = 'o << (absent ? "  MISSING  " : "  ok       ")'
        to   = 'o << (false ? "  MISSING  " : "  ok       ")' },
     # ---- the SVG reader ----
+    # ---- o relatorio nao pode gritar lobo ---------------------------------
+    #
+    # As duas regras abaixo ESTREITARAM acusacoes, e um estreitamento erra de
+    # dois jeitos. Cada uma tem por isso um PAR de mutacoes em direcoes opostas:
+    # alargar de volta, e apagar de vez. Nenhuma das quatro muda um pixel --
+    # todas mudam o que o relatorio afirma, e um relatorio em que ninguem confia
+    # e o mesmo que nenhum.
+    #
+    # `[ART]` O PDF-Archiver tinha OITO linhas falsas: quatro `defs:filter` que
+    # nada referencia e quatro `class:stN` num arquivo sem folha de estilo
+    # nenhuma. A regua carregava o mesmo defeito e bloqueava o documento inteiro.
+    @{ file = "svgdoc"; name = "a dead definition is reported as a gap again"
+       from = '        if (doc.unsupported_.count(def) && !doc.unsupported_.count(ref)) {'
+       to   = '        if (false) {' },
+    @{ file = "svgdoc"; name = "a referenced definition vanishes from the report"
+       from = '            doc.unsupported_.erase(def);'
+       to   = '            (void)0;' },
+    # `[ART]` O corpus NAO tem o caso que a segunda destas guarda -- uma folha de
+    # estilo que existe e nao carrega a classe. Todas as classes sem regra do
+    # corpus estao no unico arquivo sem `<style>`. So o teste segura esse lado.
+    @{ file = "svgdoc"; name = "a class is accused with no stylesheet to match it"
+       from = '                if (sawStylesheet) unsupported.insert("class:" + name);'
+       to   = '                unsupported.insert("class:" + name);' },
+    @{ file = "svgdoc"; name = "a class is never accused again"
+       from = '                if (sawStylesheet) unsupported.insert("class:" + name);'
+       to   = '                if (false) unsupported.insert("class:" + name);' },
     # ---- o `clip-path` ----------------------------------------------------
     #
     # `[ART]` O corpus tem UM: o `<rect>` dentro de `<clipPath>` do quick-push,

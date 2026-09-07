@@ -169,6 +169,7 @@ struct Builder {
     std::set<std::string> unsupported;
     std::map<std::string, Gradient> gradients;
     std::map<std::string, std::vector<Path>> clipPaths;
+    bool sawStylesheet = false;
 
     // One element's paint, resolved against what the ancestry set.
     // The stylesheets, collected before anything is drawn.
@@ -179,6 +180,7 @@ struct Builder {
     // it, and 18 corpus files put theirs inside `defs`.
     void collectStyles(const Element& e) {
         if (e.name == "style") {
+            sawStylesheet = true;
             for (const auto& [cls, decls] : parseStylesheet(e.text)) {
                 for (const auto& d : decls) sheet[cls][d.first] = d.second;
             }
@@ -201,10 +203,19 @@ struct Builder {
             const std::string name = value->substr(start, i - start);
             auto it = sheet.find(name);
             if (it == sheet.end()) {
-                // Not an error: the element keeps what it inherited. But a class
-                // nothing matches usually means a stylesheet that was not read,
-                // and that is worth seeing.
-                unsupported.insert("class:" + name);
+                // Not an error: the element keeps what it inherited. A class no
+                // RULE matches usually means a stylesheet that was not read, and
+                // that is worth seeing.
+                //
+                // BUT ONLY IF THERE WAS A STYLESHEET AT ALL. With no `<style>`
+                // anywhere in the file there is no rule that could have matched,
+                // and the class is the exporter's decoration -- naming it accuses
+                // the file of a gap it does not have. `[ART]` The corpus splits
+                // cleanly on this: every file that carries classes AND a
+                // stylesheet is Apollo's or OneKey's, where a missing rule is
+                // real; the only file with classes and NO stylesheet at all is
+                // PDF-Archiver, where all four were false alarms.
+                if (sawStylesheet) unsupported.insert("class:" + name);
                 continue;
             }
             for (const auto& d : it->second) out[d.first] = d.second;
@@ -637,6 +648,24 @@ std::optional<SvgDocument> SvgDocument::parse(std::string_view svg) {
     doc.gradients = std::move(b.gradients);
     doc.clipPaths = std::move(b.clipPaths);
     doc.unsupported_ = std::move(b.unsupported);
+
+    // A DEFINITION NOTHING REFERENCES IS NOT A GAP. `defs:filter` says the
+    // reader walked past a `<filter>`; `paint:filter` says a shape asked for
+    // one. Only the second can change a picture, and reporting the first on its
+    // own accuses a file of losing something it never used.
+    //
+    // `[ART]` PDF-Archiver has EIGHT `<filter>` definitions and ZERO references
+    // -- the Pixodesk exporter emitted them and never wired them up -- so all
+    // eight lines were false alarms. The ruler carried the same defect and
+    // blocked the whole document over them; fixing both moved it from 179/48 to
+    // 183/49 with no change to a single pixel.
+    for (const char* kind : {"filter", "mask", "pattern"}) {
+        const std::string def = std::string("defs:") + kind;
+        const std::string ref = std::string("paint:") + kind;
+        if (doc.unsupported_.count(def) && !doc.unsupported_.count(ref)) {
+            doc.unsupported_.erase(def);
+        }
+    }
     return doc;
 }
 

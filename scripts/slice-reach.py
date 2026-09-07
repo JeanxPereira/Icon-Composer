@@ -194,7 +194,20 @@ SVG_BLOCKERS = {
     # continua bloqueando e so o traco pintado com GRADIENTE, que nenhum
     # documento do corpus usa -- os 35 sao chapados, 31 hex e 4 `white`.
     "traço com url(#)": re.compile(r'stroke\s*[=:]\s*["\']?\s*url\(', re.I),
-    "filtro": re.compile(r"<\s*filter[\s>]|filter\s*[=:]", re.I),
+    # UMA DEFINICAO QUE NINGUEM REFERENCIA NAO BLOQUEIA NADA, e esta linha
+    # contava as duas coisas. `[ART]` O PDF-Archiver tem OITO `<filter>` e ZERO
+    # referencias -- o exportador (Pixodesk SVG) emitiu e nunca usou --, entao a
+    # regua bloqueava um documento inteiro por um elemento que nao muda pixel
+    # nenhum, e ignora-lo ja era o comportamento certo do renderizador.
+    #
+    # `none` tambem nao bloqueia: e a instrucao de NAO filtrar.
+    #
+    # A aspa e tratada em tres alternativas pelo mesmo motivo do `clip-path`
+    # acima -- com `["\']?` opcional o motor retrocede e o lookahead olha a aspa.
+    "filtro": re.compile(
+        r'filter\s*[=:]\s*(?:"(?!none")'
+        r"|'(?!none')"
+        r'|(?!["\']|none\b)\S)', re.I),
     "máscara": re.compile(r"<\s*mask[\s>]|mask\s*[=:]", re.I),
     # O `clip-path` SAIU DAQUI EM 2026-09-05, e so o que continua recusado
     # bloqueia. `url(#id)` com `clipPathUnits` no padrao e desenhado: a regiao

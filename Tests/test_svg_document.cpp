@@ -192,7 +192,9 @@ TEST_CASE(document_reports_the_paint_it_still_does_not_read) {
     REQUIRE(d.has_value());
     CHECK(d->unsupported().count("paint:fill") == 0);     // read
     CHECK(d->unsupported().count("paint:stroke") == 0);   // read
-    CHECK(d->unsupported().count("class:a") == 1);        // no rule matches it
+    // No `<style>` in this document, so there is no rule that COULD have
+    // matched and the class is decoration -- see the test below.
+    CHECK(d->unsupported().count("class:a") == 0);
     CHECK(d->unsupported().count("paint:opacity") == 0);  // read, and applied
     CHECK(d->unsupported().count("paint:mix-blend-mode") == 1);
     // Read means REACHED THE SHAPE, not merely swallowed.
@@ -213,16 +215,53 @@ TEST_CASE(document_names_the_paint_value_it_could_not_read) {
     CHECK(d->shapes[0].fill.kind == PaintKind::Color);
 }
 
-// Gradients are collected now. A filter is not -- and `defs` still names what it
-// holds that nobody reads.
-TEST_CASE(document_reports_what_is_defined_but_not_understood) {
-    auto d = SvgDocument::parse(R"(<svg viewBox="0 0 10 10"><defs>
+// A CLASS IS ONLY ACCUSED WHEN THERE WAS A STYLESHEET TO MATCH IT.
+//
+// The distinction is measured, not invented: across the corpus the only classes
+// that match no rule are PDF-Archiver's four, and that file has no `<style>` at
+// all -- they are the exporter's decoration and every one of the four lines was
+// a false alarm. Every file that carries BOTH classes and a stylesheet (Apollo's
+// four, OneKey's) resolves all of them.
+//
+// So the corpus cannot exercise the case that MUST stay reported: a stylesheet
+// that exists and does not carry the class. This test is the only thing holding
+// it, which is why both halves are here.
+TEST_CASE(a_class_is_named_only_when_a_stylesheet_could_have_matched_it) {
+    auto bare = SvgDocument::parse(
+        R"(<svg viewBox="0 0 10 10"><path d="M1 1" class="zz"/></svg>)");
+    REQUIRE(bare.has_value());
+    CHECK(bare->unsupported().count("class:zz") == 0);
+
+    auto sheeted = SvgDocument::parse(
+        R"(<svg viewBox="0 0 10 10"><style>.other { fill: red }</style>
+           <path d="M1 1" class="zz"/></svg>)");
+    REQUIRE(sheeted.has_value());
+    CHECK(sheeted->unsupported().count("class:zz") == 1);
+}
+
+// A DEFINITION NOTHING REFERENCES IS NOT A GAP, and one that IS referenced is.
+//
+// `[ART]` PDF-Archiver carries eight `<filter>` elements and references none of
+// them: the Pixodesk exporter emitted them and never wired them up. Naming those
+// accused the file of losing something it never used -- and the ruler had the
+// same defect, blocking the whole document over it.
+TEST_CASE(a_definition_is_named_only_when_something_references_it) {
+    auto unused = SvgDocument::parse(R"(<svg viewBox="0 0 10 10"><defs>
         <linearGradient id="g"><stop offset="0"/></linearGradient>
         <filter id="f"><feBlend/></filter></defs><path d="M1 1"/></svg>)");
-    REQUIRE(d.has_value());
-    CHECK(d->unsupported().count("defs:linearGradient") == 0);  // collected
-    CHECK(d->unsupported().count("defs:filter") == 1);
-    CHECK(d->gradients.count("g") == 1);
+    REQUIRE(unused.has_value());
+    CHECK(unused->unsupported().count("defs:linearGradient") == 0);  // collected
+    CHECK(unused->unsupported().count("defs:filter") == 0);          // never used
+    CHECK(unused->gradients.count("g") == 1);
+
+    // A custom delimiter, because `url(#f)"` carries the `)"` that would close
+    // a bare `R"(`.
+    auto used = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10"><defs>
+        <filter id="f"><feBlend/></filter></defs>
+        <path d="M1 1" filter="url(#f)"/></svg>)SVG");
+    REQUIRE(used.has_value());
+    CHECK(used->unsupported().count("defs:filter") == 1);
+    CHECK(used->unsupported().count("paint:filter") == 1);
 }
 
 TEST_CASE(document_does_not_report_what_it_deliberately_ignores) {
