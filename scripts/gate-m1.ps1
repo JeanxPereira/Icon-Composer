@@ -334,8 +334,8 @@ $mutations = @(
     # de novo nao derruba camada nenhuma: so devolve a figura errada com o
     # relatorio limpo.
     @{ file = "svgrender"; name = "the shape opacity never reaches the pixel"
-       from = '            const float srcA = c.coverage[0] * static_cast<float>(shape.opacity);'
-       to   = '            const float srcA = c.coverage[0];' },
+       from = '            const float srcA = c.coverage[0] * static_cast<float>(shape.opacity) * clipAt(t);'
+       to   = '            const float srcA = c.coverage[0] * clipAt(t);' },
     # `opacity` MULTIPLICA, e e a unica propriedade aqui que nao herda-e-
     # substitui: 0,5 dentro de 0,5 e 0,25. Um leitor que a tratasse como `fill`
     # devolveria 0,5, que e plausivel e errado.
@@ -1337,8 +1337,15 @@ $mutations = @(
        from = '            options.override.kind == FillOverride::Kind::None && !strokePaints) {'
        to   = '            options.override.kind == FillOverride::Kind::None) {' },
     @{ file = "svgrender"; name = "the stroke ignores its own opacity"
-       from = '                        const float a = cov[t] * sa;'
-       to   = '                        const float a = cov[t];' },
+       from = '                        const float a = cov[t] * sa * static_cast<float>(shape.opacity) * clipAt(t);'
+       to   = '                        const float a = cov[t] * static_cast<float>(shape.opacity) * clipAt(t);' },
+    # E O TRACO TAMBEM E RECORTADO. Esta mutacao nasceu junto com a correcao das
+    # duas ancoras acima: ao acrescentar `clipAt` nos dois compositores em
+    # 2026-09-05 eu cobri so o do PREENCHIMENTO, e os testes de clip usam formas
+    # preenchidas -- apagar o recorte do traco teria sobrevivido.
+    @{ file = "svgrender"; name = "the stroke escapes the clip and the mask"
+       from = '                        const float a = cov[t] * sa * static_cast<float>(shape.opacity) * clipAt(t);'
+       to   = '                        const float a = cov[t] * sa * static_cast<float>(shape.opacity);' },
     # A largura mora em espaco de USUARIO e a cobertura em pixels. Sem a escala
     # do mapa o traco tem a largura certa so quando a escala e 1 -- que e o que
     # um teste usa por default e um documento real nunca.

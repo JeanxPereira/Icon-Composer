@@ -974,3 +974,34 @@ TEST_CASE(a_mask_region_fences_the_mask_and_hides_what_is_outside) {
     CHECK(std::fabs(alphaAt(*img, 4, 16) - 1.0f) < 0.001f);    // inside the region
     CHECK(std::fabs(alphaAt(*img, 27, 16) - 0.0f) < 0.001f);   // outside it
 }
+
+// THE STROKE IS CLIPPED AND MASKED TOO, and this test exists because the gate's
+// stale-anchor pre-flight made me look at the line.
+//
+// `clipAt` was added to BOTH composites on 2026-09-05, and every clip and mask
+// test written that day drives a FILLED shape. Deleting the factor from the
+// stroke's composite would therefore have changed no test at all -- an
+// unguarded half of a feature that already looked finished.
+TEST_CASE(a_clip_cuts_the_stroke_and_not_only_the_fill) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    RenderOptions o;
+    o.width = 32;
+    o.height = 32;
+    o.subdivisions = 1;
+
+    // A horizontal line across the middle, fat enough to sample, with NO fill:
+    // the only ink it can make is the stroke.
+    const std::string svg = svgWith(
+        "0 0 32 32",
+        "<defs><clipPath id=\"c\"><rect width=\"16\" height=\"32\"/></clipPath></defs>"
+        "<path d=\"M0 16 L32 16\" fill=\"none\" stroke=\"#ffffff\" stroke-width=\"8\""
+        " clip-path=\"url(#c)\"/>");
+    auto doc = icf::svg::SvgDocument::parse(svg);
+    REQUIRE(doc.has_value());
+    auto img = renderSvg(d, *doc, o);
+    REQUIRE(img.has_value());
+    CHECK(img->skipped.empty());
+    CHECK(std::fabs(alphaAt(*img, 4, 16) - 1.0f) < 0.01f);    // stroke, inside
+    CHECK(std::fabs(alphaAt(*img, 27, 16) - 0.0f) < 0.01f);   // stroke, clipped
+}
