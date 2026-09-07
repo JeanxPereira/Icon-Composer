@@ -146,23 +146,71 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
    que o conteúdo deles atravessa intacto. O do *modelo*: **nenhuma chave** dos
    145 documentos pode ser desconhecida, e **nenhuma das 1.740 especializações**
    pode ser inalcançável pelo resolver.
-3. **Uma varredura de mutação obrigatória.** Duzentas e setenta e três mutações
+3. **Uma varredura de mutação obrigatória.** Duzentas e noventa e duas mutações
    entram uma a uma, e cada uma TEM que avermelhar a suíte — aplicada em árvore
    limpa e restaurada de um backup conferido por SHA-256, nunca por comando de
    git. Desde 2026-09-03 a varredura roda num **worktree dedicado**
    (`scripts/gate-worktree.ps1`), para parar de tomar a árvore de trabalho como
    refém por duas horas.
 
-**gate-m1 passou em 2026-09-05** — 145 documentos, 135 byte-exatos, 145 de 145
+**gate-m1 passou em 2026-09-07** — 145 documentos, 135 byte-exatos, 145 de 145
 totalmente compreendidos, 1.740 de 1.740 especializações alcançáveis, 61.537
 valores decodados sem uma falha, 1.100 árvores renderizadas sem cair em JSON
-cru, 149 SVGs lidos em geometria, e **273 de 273 mutações pegas**.
+cru, 149 SVGs lidos em geometria, e **292 de 292 mutações pegas**.
 
 A primeira passagem foi em **2026-09-01, com 119 mutações**. A lista cresceu
-119 → 160 → 209 → 231 → 273, e cada crescimento é uma frente nova ganhando
+119 → 160 → 209 → 231 → 273 → 292, e cada crescimento é uma frente nova ganhando
 guardas — o raster, o gradiente, o vidro, o `fill`, a mescla, o traço. As
 execuções anteriores estão registradas abaixo, com as suas datas, porque um
 número de mutação só quer dizer alguma coisa junto do código que ele mordia.
+
+### 2026-09-07: `gate-m1 passed`, 292 de 292 — e o PRÉ-VOO poupou quatro horas
+
+```
+sweep:  292 of 292 mutations caught
+
+VERDICT: gate-m1 passed
+```
+
+`2c41364`, 16:49 → 20:54, execução única.
+
+**A tentativa anterior morreu em 24 segundos, e isso é o instrumento certo
+funcionando.** O pré-voo de âncoras recusou a varredura antes de construir
+qualquer coisa:
+
+```
+FAILED: 2 stale anchor(s) -- the code moved and the sweep did not
+  the shape opacity never reaches the pixel
+  the stroke ignores its own opacity
+```
+
+As duas eram minhas: ao acrescentar `* clipAt(t)` nos dois compositores em 05/09
+mudei as linhas que elas ancoravam. Sem o pré-voo, a varredura teria rodado as
+quatro horas para reportar duas mutações "que não compilaram" no fim — que é
+como o sobrevivente de 04/09 se disfarçou.
+
+**E olhar para essas linhas expôs uma metade sem guarda.** O recorte entrou nos
+DOIS compositores e só o do preenchimento tinha teste: toda prova de clip e de
+máscara dirige forma preenchida, então apagar o `clipAt` do traço não mexeria em
+asserção nenhuma. Uma feature que parecia pronta com metade descoberta, achada
+por um erro de âncora e não por uma revisão.
+
+**As frentes das 19 mutações novas.** Todas de SVG, e a régua foi de 178/47 para
+**184 de 194 camadas (94,8%)** e **50 de 55 documentos (90,9%)**:
+
+| frente | o que entrou |
+|---|---|
+| `opacity` | terceiro multiplicador, dobrado pela árvore; 3 documentos já *dentro* da fatia desenhavam a 100% onde o autor pediu 0,1–0,5 |
+| `clip-path` | interseção por pixel, máscara em cache por id |
+| `<mask>` | luminância × alfa, filhos renderizados pela própria `renderSvgPlaced` |
+| relatório | definição sem referência e classe sem folha deixaram de ser acusadas |
+
+`[ART]` **Duas frentes não custaram um pixel.** O `PDF-Archiver` estava
+bloqueado por oito `<filter>` que **nada referencia** — o exportador Pixodesk os
+emitiu e nunca ligou —, e o `quick-push` pelo único `clip-path` que o código já
+desenhava, porque a regex da régua retrocedia na aspa opcional. Os dois eram
+defeitos do INSTRUMENTO, contra o trabalho feito, e só apareceram ao rodar os
+ícones de verdade depois da suíte ficar verde.
 
 ### 2026-09-05: `gate-m1 passed`, 273 de 273 — e a execução anterior REPROVOU
 
