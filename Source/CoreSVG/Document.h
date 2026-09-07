@@ -92,6 +92,11 @@ struct Shape {
     // gives exactly what clipping the composed group gives -- unlike `opacity`
     // above, there is no approximation to declare here.
     std::vector<std::string> clipPaths;
+
+    // The `mask` ids this shape is inside, outermost first. A mask is a
+    // LUMINANCE mask: unlike a clip it carries paint, so its children are kept
+    // as shapes rather than as bare paths.
+    std::vector<std::string> masks;
 };
 
 class SvgDocument {
@@ -108,6 +113,17 @@ public:
     // user space. The clip region is the UNION of these, which for one path --
     // the only shape the corpus uses -- is just the path.
     std::map<std::string, std::vector<Path>> clipPaths;
+
+    // By id, the shapes each `<mask>` encloses -- WITH their paint, because the
+    // mask's value at a pixel is the luminance of what it draws times its alpha.
+    // The region (`x`/`y`/`width`/`height` under `maskUnits`) rides along, since
+    // content outside it does not mask.
+    struct Mask {
+        std::vector<Shape> shapes;
+        double x = 0, y = 0, width = 0, height = 0;
+        bool hasRegion = false;
+    };
+    std::map<std::string, Mask> masks;
 
     // Element names seen and not drawn. Empty means every element in the file is
     // either drawn or deliberately ignored (`title`, `desc`, `metadata`).

@@ -208,7 +208,21 @@ SVG_BLOCKERS = {
         r'filter\s*[=:]\s*(?:"(?!none")'
         r"|'(?!none')"
         r'|(?!["\']|none\b)\S)', re.I),
-    "máscara": re.compile(r"<\s*mask[\s>]|mask\s*[=:]", re.I),
+    # A `<mask>` DESENHA desde 2026-09-05: os filhos sao renderizados como um
+    # documento proprio e reduzidos a `luminancia * alfa`, que e o que uma
+    # mascara vale. O que continua bloqueando e so o que fica recusado por nome:
+    # `maskUnits` fora de `userSpaceOnUse` (o padrao da spec e
+    # `objectBoundingBox`, geometria diferente por referenciador), e um valor de
+    # `mask` que nao seja `url(#id)`.
+    #
+    # `maskUnits`/`maskContentUnits`/`mask-type` NAO casam aqui: o `\s*[=:]` logo
+    # depois de `mask` exclui as tres, e cada uma esta nos casos testados.
+    "máscara em bounding box": re.compile(
+        r'maskUnits\s*=\s*["\']?\s*(?!userSpaceOnUse)\w', re.I),
+    "máscara que nao e url(#)": re.compile(
+        r'mask\s*[=:]\s*(?:"(?!url\(#|none")'
+        r"|'(?!url\(#|none')"
+        r'|(?!["\']|url\(#|none\b)\S)', re.I),
     # O `clip-path` SAIU DAQUI EM 2026-09-05, e so o que continua recusado
     # bloqueia. `url(#id)` com `clipPathUnits` no padrao e desenhado: a regiao
     # vira mascara de cobertura e a interseccao e por pixel, entao aplicar o clip

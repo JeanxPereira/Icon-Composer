@@ -809,3 +809,168 @@ TEST_CASE(a_clip_path_in_bounding_box_units_is_named_not_guessed) {
     CHECK(doc->unsupported().count("clipPathUnits:objectBoundingBox") == 1);
     CHECK(doc->clipPaths.count("c") == 0);
 }
+
+// A MASK MASKS, and it masks by LUMINANCE rather than by geometry.
+//
+// This is the whole difference from a clip, and the fixture is built so that a
+// reader that treated a mask as a clip would pass the first half and fail the
+// second: white and black cover the SAME area, and only their luminance tells
+// them apart. `[ART]` CommE2E's `cut` is exactly this -- a white rect with a
+// black circle and a black rounded rect punched out of it.
+TEST_CASE(a_mask_hides_by_luminance_and_not_by_area) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    constexpr std::uint32_t kSize = 32;
+    RenderOptions o;
+    o.width = kSize;
+    o.height = kSize;
+    o.subdivisions = 1;
+
+    const std::string svg = svgWith(
+        "0 0 32 32",
+        "<defs><mask id=\"m\" maskUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\""
+        " width=\"32\" height=\"32\">"
+        "<rect width=\"32\" height=\"32\" fill=\"white\"/>"
+        "<rect x=\"16\" width=\"16\" height=\"32\" fill=\"black\"/>"
+        "</mask></defs>"
+        "<path d=\"M0 0 L32 0 L32 32 L0 32 Z\" fill=\"#ffffff\" mask=\"url(#m)\"/>");
+    auto doc = icf::svg::SvgDocument::parse(svg);
+    REQUIRE(doc.has_value());
+    REQUIRE(doc->shapes.size() == 1);
+    REQUIRE(doc->shapes[0].masks.size() == 1);
+    CHECK(doc->masks.count("m") == 1);
+    // The mask's own children are not shapes to draw.
+    CHECK(doc->unsupported().count("mask") == 0);
+    CHECK(doc->unsupported().count("defs:mask") == 0);
+    CHECK(doc->unsupported().count("paint:mask") == 0);
+
+    auto img = renderSvg(d, *doc, o);
+    REQUIRE(img.has_value());
+    CHECK(img->skipped.empty());
+    // Under the WHITE half the shape survives; under the BLACK half it is gone.
+    // A clip would keep both, because both halves are covered.
+    CHECK(std::fabs(alphaAt(*img, 4, 16) - 1.0f) < 0.001f);
+    CHECK(std::fabs(alphaAt(*img, 27, 16) - 0.0f) < 0.001f);
+}
+
+// AND IT IS A SCALE, not a switch. Mid-grey masks to mid-alpha.
+//
+// A reader that thresholded the luminance would pass the test above and fail
+// this one, and thresholding is the natural mistake to make when the only masks
+// you have ever seen are black and white -- which is every mask in this corpus.
+TEST_CASE(a_grey_mask_scales_the_alpha_rather_than_switching_it) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    RenderOptions o;
+    o.width = 32;
+    o.height = 32;
+    o.subdivisions = 1;
+
+    const std::string svg = svgWith(
+        "0 0 32 32",
+        "<defs><mask id=\"m\" maskUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\""
+        " width=\"32\" height=\"32\">"
+        "<rect width=\"32\" height=\"32\" fill=\"#808080\"/></mask></defs>"
+        "<path d=\"M0 0 L32 0 L32 32 L0 32 Z\" fill=\"#ffffff\" mask=\"url(#m)\"/>");
+    auto doc = icf::svg::SvgDocument::parse(svg);
+    REQUIRE(doc.has_value());
+    auto img = renderSvg(d, *doc, o);
+    REQUIRE(img.has_value());
+    // 0x80 is 128/255 = 0.502, and the luminance coefficients sum to 1, so a
+    // neutral grey masks to its own value whichever colour space is used.
+    CHECK(std::fabs(alphaAt(*img, 16, 16) - 0.502f) < 0.01f);
+}
+
+// A MASK'S OWN ALPHA COUNTS TOO. White at half alpha masks to a half.
+//
+// The value is luminance TIMES alpha, and a reader that took only the luminance
+// would report a fully opaque mask for art that is barely there.
+TEST_CASE(a_masks_alpha_multiplies_its_luminance) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    RenderOptions o;
+    o.width = 32;
+    o.height = 32;
+    o.subdivisions = 1;
+
+    const std::string svg = svgWith(
+        "0 0 32 32",
+        "<defs><mask id=\"m\" maskUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\""
+        " width=\"32\" height=\"32\">"
+        "<rect width=\"32\" height=\"32\" fill=\"white\" fill-opacity=\"0.5\"/>"
+        "</mask></defs>"
+        "<path d=\"M0 0 L32 0 L32 32 L0 32 Z\" fill=\"#ffffff\" mask=\"url(#m)\"/>");
+    auto doc = icf::svg::SvgDocument::parse(svg);
+    REQUIRE(doc.has_value());
+    auto img = renderSvg(d, *doc, o);
+    REQUIRE(img.has_value());
+    CHECK(std::fabs(alphaAt(*img, 16, 16) - 0.5f) < 0.01f);
+}
+
+// A mask that names nothing is a GAP, for the reason the clip's is.
+TEST_CASE(a_mask_that_resolves_to_nothing_is_named) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    RenderOptions o;
+    o.width = 32;
+    o.height = 32;
+    o.subdivisions = 1;
+
+    auto doc = icf::svg::SvgDocument::parse(svgWith(
+        "0 0 32 32",
+        "<path d=\"M0 0 L32 0 L32 32 L0 32 Z\" fill=\"#ffffff\" mask=\"url(#gone)\"/>"));
+    REQUIRE(doc.has_value());
+    auto img = renderSvg(d, *doc, o);
+    REQUIRE(img.has_value());
+    CHECK_EQ(img->drawn, std::size_t{0});
+    REQUIRE(img->skipped.size() == 1);
+    CHECK(img->skipped[0].why.find("gone") != std::string::npos);
+}
+
+// `maskUnits` DEFAULTS TO `objectBoundingBox`, which is a different geometry --
+// so a mask that does not say `userSpaceOnUse` is refused by name rather than
+// read as if it had.
+TEST_CASE(a_mask_in_bounding_box_units_is_named_not_guessed) {
+    auto doc = icf::svg::SvgDocument::parse(svgWith(
+        "0 0 32 32",
+        "<defs><mask id=\"m\"><rect width=\"1\" height=\"1\" fill=\"white\"/></mask></defs>"
+        "<path d=\"M0 0 L32 0 L32 32 Z\" fill=\"#fff\" mask=\"url(#m)\"/>"));
+    REQUIRE(doc.has_value());
+    CHECK(doc->unsupported().count("maskUnits:objectBoundingBox") == 1);
+    CHECK(doc->masks.count("m") == 0);
+}
+
+// THE MASK'S REGION FENCES ITS ART, and this test exists because the code that
+// does it had none.
+//
+// `x`/`y`/`width`/`height` on a `<mask>` say where the mask applies at all;
+// content outside is not mask, it is nothing. `[ART]` Both corpus masks draw
+// their region exactly, so the corpus cannot tell a renderer that honours the
+// fence from one that ignores it -- and a mask whose art is bigger than its
+// region would then mask with paint the author fenced off.
+//
+// Outside the region the mask value is ZERO, which HIDES the shape. That is the
+// direction worth stating: an implementation that treated "outside the region"
+// as "unmasked" would show the shape there instead.
+TEST_CASE(a_mask_region_fences_the_mask_and_hides_what_is_outside) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    RenderOptions o;
+    o.width = 32;
+    o.height = 32;
+    o.subdivisions = 1;
+
+    // White over the WHOLE canvas, but the region is only the left half.
+    const std::string svg = svgWith(
+        "0 0 32 32",
+        "<defs><mask id=\"m\" maskUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\""
+        " width=\"16\" height=\"32\">"
+        "<rect width=\"32\" height=\"32\" fill=\"white\"/></mask></defs>"
+        "<path d=\"M0 0 L32 0 L32 32 L0 32 Z\" fill=\"#ffffff\" mask=\"url(#m)\"/>");
+    auto doc = icf::svg::SvgDocument::parse(svg);
+    REQUIRE(doc.has_value());
+    auto img = renderSvg(d, *doc, o);
+    REQUIRE(img.has_value());
+    CHECK(std::fabs(alphaAt(*img, 4, 16) - 1.0f) < 0.001f);    // inside the region
+    CHECK(std::fabs(alphaAt(*img, 27, 16) - 0.0f) < 0.001f);   // outside it
+}

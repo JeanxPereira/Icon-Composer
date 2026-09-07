@@ -141,7 +141,7 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
     std::map<std::string, std::vector<float>> clipMasks;
     bool clipFailed = false;
     std::string clipError;
-    auto maskFor = [&](const std::string& id) -> const std::vector<float>* {
+    auto clipFor = [&](const std::string& id) -> const std::vector<float>* {
         auto it = clipMasks.find(id);
         if (it != clipMasks.end()) return &it->second;
         auto def = doc.clipPaths.find(id);
@@ -164,6 +164,72 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
             }
         }
         return &clipMasks.emplace(id, std::move(mask)).first->second;
+    };
+
+    // THE LUMINANCE MASKS, built once each and on demand.
+    //
+    // A mask is not a clip. A clip is geometry, so its coverage is the answer; a
+    // mask carries PAINT, and its value at a pixel is the LUMINANCE of what it
+    // draws times its alpha -- a black rect and a white one are the same clip
+    // and opposite masks.
+    //
+    // So the mask's children are rendered as a document of their own, through
+    // this very function, at the same placement. That reuse is the point: a mask
+    // filled with a gradient, or carrying its own clip or opacity, works because
+    // nothing here is a second implementation of the first.
+    //
+    // `[OBS]` THE COLOUR SPACE IS NOT SETTLED. SVG 1.1 says the luminance is
+    // taken in linearRGB and browsers take it in sRGB, and the two disagree on
+    // every colour that is not black or white. `[ART]` All three corpus masks
+    // are pure white and pure black, whose luminance is 1 and 0 in either -- so
+    // the corpus cannot decide it, and this uses the sRGB coefficients without
+    // claiming they are the target's.
+    std::map<std::string, std::vector<float>> maskValues;
+    auto luminanceFor = [&](const std::string& id) -> const std::vector<float>* {
+        auto it = maskValues.find(id);
+        if (it != maskValues.end()) return &it->second;
+        auto def = doc.masks.find(id);
+        if (def == doc.masks.end()) return nullptr;
+
+        icf::svg::SvgDocument sub;
+        sub.viewBox = doc.viewBox;
+        sub.gradients = doc.gradients;
+        sub.clipPaths = doc.clipPaths;
+        sub.shapes = def->second.shapes;
+        RenderOptions subOptions;
+        subOptions.width = options.width;
+        subOptions.height = options.height;
+        subOptions.subdivisions = options.subdivisions;
+        auto drawn = renderSvgPlaced(device, sub, placement, subOptions);
+        if (!drawn) { clipFailed = true; clipError = drawn.error(); return nullptr; }
+
+        std::vector<float> value(texels, 0.0f);
+        for (std::size_t t = 0; t < texels; ++t) {
+            const float* px = &drawn->rgba[t * 4];
+            // The coefficients SVG names for `luminanceToAlpha`.
+            const float lum = 0.2125f * px[0] + 0.7154f * px[1] + 0.0721f * px[2];
+            value[t] = lum * px[3];
+        }
+        // Content outside the mask's REGION does not mask. `[ART]` Both corpus
+        // regions cover their own content exactly, so this cuts nothing there --
+        // it is here because a mask whose region is smaller than its art would
+        // otherwise mask with paint the author fenced off.
+        if (def->second.hasRegion) {
+            const double sx = placement.m0[0], sy = placement.m1[1];
+            const double ox = placement.m2[0], oy = placement.m2[1];
+            const double x0 = def->second.x * sx + ox, y0 = def->second.y * sy + oy;
+            const double x1 = (def->second.x + def->second.width) * sx + ox;
+            const double y1 = (def->second.y + def->second.height) * sy + oy;
+            for (std::uint32_t py = 0; py < options.height; ++py) {
+                for (std::uint32_t px2 = 0; px2 < options.width; ++px2) {
+                    const double cx = px2 + 0.5, cy = py + 0.5;
+                    if (cx < x0 || cx > x1 || cy < y0 || cy > y1) {
+                        value[static_cast<std::size_t>(py) * options.width + px2] = 0.0f;
+                    }
+                }
+            }
+        }
+        return &maskValues.emplace(id, std::move(value)).first->second;
     };
 
     for (std::size_t i = 0; i < doc.shapes.size(); ++i) {
@@ -219,7 +285,7 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
         std::vector<const std::vector<float>*> masks;
         std::string missingClip;
         for (const std::string& id : shape.clipPaths) {
-            const std::vector<float>* m = maskFor(id);
+            const std::vector<float>* m = clipFor(id);
             if (clipFailed) return std::unexpected(clipError);
             if (!m) { missingClip = id; break; }
             masks.push_back(m);
@@ -230,9 +296,27 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
                                        ") nao resolve para nenhum clipPath do documento"});
             continue;
         }
-        auto clipAt = [&masks](std::size_t t) {
+        // The masks in force, resolved the same way and for the same reason: a
+        // reference that names nothing is a GAP. Drawing unmasked would put the
+        // whole shape where the author asked for a piece of it.
+        std::vector<const std::vector<float>*> lum;
+        std::string missingMask;
+        for (const std::string& id : shape.masks) {
+            const std::vector<float>* m = luminanceFor(id);
+            if (clipFailed) return std::unexpected(clipError);
+            if (!m) { missingMask = id; break; }
+            lum.push_back(m);
+        }
+        if (!missingMask.empty()) {
+            out.skipped.push_back({i, shape.element,
+                                   "mask url(#" + missingMask +
+                                       ") nao resolve para nenhuma mask do documento"});
+            continue;
+        }
+        auto clipAt = [&masks, &lum](std::size_t t) {
             float f = 1.0f;
             for (const std::vector<float>* m : masks) f *= (*m)[t];
+            for (const std::vector<float>* m : lum) f *= (*m)[t];
             return f;
         };
 

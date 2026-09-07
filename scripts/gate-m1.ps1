@@ -275,6 +275,33 @@ $mutations = @(
     @{ file = "svgdoc"; name = "a class is never accused again"
        from = '                if (sawStylesheet) unsupported.insert("class:" + name);'
        to   = '                if (false) unsupported.insert("class:" + name);' },
+    # ---- a `<mask>`, que e de LUMINANCIA ----------------------------------
+    #
+    # A diferenca inteira para um clip esta nas duas primeiras: o valor e
+    # `luminancia * alfa`, e cada fator tem a sua mutacao. Um clip nao teria
+    # nenhuma das duas -- geometria nao tem cor.
+    @{ file = "svgrender"; name = "the mask reads its alpha and not its luminance"
+       from = '            value[t] = lum * px[3];'
+       to   = '            value[t] = px[3];' },
+    @{ file = "svgrender"; name = "the mask reads its luminance and not its alpha"
+       from = '            value[t] = lum * px[3];'
+       to   = '            value[t] = lum;' },
+    @{ file = "svgrender"; name = "the mask value never reaches the composite"
+       from = '            for (const std::vector<float>* m : lum) f *= (*m)[t];'
+       to   = '            (void)0;' },
+    @{ file = "svgrender"; name = "a dangling mask draws the whole shape instead"
+       from = '        if (!missingMask.empty()) {'
+       to   = '        if (false) {' },
+    # `[ART]` As duas mascaras do corpus desenham exatamente dentro da propria
+    # regiao, entao o corpus NAO distingue quem honra a cerca de quem a ignora.
+    # So o teste segura este, e a direcao importa: fora da regiao o valor e zero,
+    # o que ESCONDE -- o erro natural seria mostrar.
+    @{ file = "svgrender"; name = "the mask region fences nothing"
+       from = '        if (def->second.hasRegion) {'
+       to   = '        if (false) {' },
+    @{ file = "svgdoc"; name = "maskUnits in bounding box is read as user space"
+       from = '        if (!u || *u != "userSpaceOnUse") {'
+       to   = '        if (false) {' },
     # ---- o `clip-path` ----------------------------------------------------
     #
     # `[ART]` O corpus tem UM: o `<rect>` dentro de `<clipPath>` do quick-push,

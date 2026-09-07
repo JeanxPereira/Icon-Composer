@@ -120,6 +120,10 @@ struct Inherited {
     // and it accumulates rather than replaces, because two nested clips
     // intersect.
     std::vector<std::string> clips;
+
+    // Same shape as `clips`, and same reason: a group's mask applies to
+    // everything under it, and two nested masks multiply.
+    std::vector<std::string> masks;
 };
 
 // The alpha the paint ends up with. `fill-opacity` is a separate multiplier
@@ -150,7 +154,7 @@ void appendCorner(Path& p, Point from, Point to, Point corner, double kx, double
 // on the same day. `class` stays, because the stylesheet that would give it
 // meaning is still not read.
 constexpr std::string_view kPaintAttributes[] = {
-    "mask", "filter", "clip-rule",
+    "filter", "clip-rule",
     "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "mix-blend-mode",
 };
 
@@ -169,6 +173,7 @@ struct Builder {
     std::set<std::string> unsupported;
     std::map<std::string, Gradient> gradients;
     std::map<std::string, std::vector<Path>> clipPaths;
+    std::map<std::string, SvgDocument::Mask> masks;
     bool sawStylesheet = false;
 
     // One element's paint, resolved against what the ancestry set.
@@ -254,6 +259,14 @@ struct Builder {
         // `scalar`. Out-of-range values are CLAMPED, which is what SVG 1.1 §14
         // says for this property -- not refused, because a refusal here would
         // drop a shape over a number the specification tells us how to read.
+        if (auto v = property(e, "mask", style, fromClass)) {
+            const std::string& t = *v;
+            if (t.size() > 6 && t.compare(0, 5, "url(#") == 0 && t.back() == ')') {
+                in.masks.push_back(t.substr(5, t.size() - 6));
+            } else if (t != "none") {
+                unsupported.insert("paint:mask=" + t);
+            }
+        }
         if (auto v = property(e, "clip-path", style, fromClass)) {
             // Only `url(#id)` is a reference this reader can follow. The CSS
             // basic shapes (`inset()`, `circle()`, ...) are a different
@@ -309,6 +322,52 @@ struct Builder {
             into.push_back(std::move(shapes[i].path));
         }
         shapes.resize(before);
+    }
+
+    // A `<mask>`, by id. Its children keep their PAINT, because a mask's value
+    // is the luminance of what it draws -- a black rect and a white one are not
+    // the same mask, while for a clip they would be the same region.
+    void collectMask(const Element& e, const Transform& parent) {
+        const std::string* id = e.attribute("id");
+        if (!id) return;
+        // `maskUnits` DEFAULTS TO `objectBoundingBox`, which re-scales the
+        // region per referrer. `[ART]` All three corpus masks say
+        // `userSpaceOnUse` outright, so refusing the other reading costs
+        // nothing and keeps a guess out of the picture.
+        const std::string* u = e.attribute("maskUnits");
+        if (!u || *u != "userSpaceOnUse") {
+            unsupported.insert(std::string("maskUnits:") + (u ? *u : "objectBoundingBox"));
+            return;
+        }
+        if (const std::string* c = e.attribute("maskContentUnits")) {
+            if (*c != "userSpaceOnUse") {
+                unsupported.insert("maskContentUnits:" + *c);
+                return;
+            }
+        }
+        SvgDocument::Mask m;
+        auto num = [&](const char* n, double& slot) {
+            if (const std::string* v = e.attribute(n)) {
+                auto k = numbers(*v);
+                if (k.size() == 1) { slot = k[0]; return true; }
+            }
+            return false;
+        };
+        const bool hx = num("x", m.x), hy = num("y", m.y);
+        const bool hw = num("width", m.width), hh = num("height", m.height);
+        m.hasRegion = hx && hy && hw && hh;
+        const std::size_t before = shapes.size();
+        // The CHILDREN, for the reason `collectClipPath` records: walking the
+        // element itself lands back on the branch that called this.
+        for (const auto& c : e.children) walk(c, parent, Inherited{});
+        for (std::size_t i = before; i < shapes.size(); ++i) {
+            // A mask inside a mask would recurse at render time; the corpus has
+            // none, and naming it costs one line.
+            if (!shapes[i].masks.empty()) unsupported.insert("mask dentro de mask");
+            m.shapes.push_back(std::move(shapes[i]));
+        }
+        shapes.resize(before);
+        masks[*id] = std::move(m);
     }
 
     // A gradient definition, by id. Stops in document order.
@@ -483,6 +542,9 @@ struct Builder {
                 unsupported.insert("opacity de grupo sobre mais de uma forma");
             }
             return;
+        } else if (e.name == "mask") {
+            collectMask(e, here);
+            return;
         } else if (e.name == "clipPath") {
             // Outside `<defs>` as well: `<clipPath>` is a definition wherever it
             // sits, and SVG does not draw it either way.
@@ -498,6 +560,8 @@ struct Builder {
                     collectGradient(c);
                 } else if (c.name == "clipPath") {
                     collectClipPath(c, here);
+                } else if (c.name == "mask") {
+                    collectMask(c, here);
                 } else if (c.name != "style") {  // collected in its own pass
                     unsupported.insert("defs:" + c.name);
                 }
@@ -531,6 +595,7 @@ struct Builder {
         shape.strokeWidth = inherited.strokeWidth;
         shape.opacity = inherited.opacityChain;
         shape.clipPaths = inherited.clips;
+        shape.masks = inherited.masks;
         // A shape composited at less than 1 that has BOTH a fill and a stroke
         // is the other place where folding differs from compositing once: the
         // stroke overlaps the fill along the edge, and two separate composites
@@ -647,6 +712,7 @@ std::optional<SvgDocument> SvgDocument::parse(std::string_view svg) {
     doc.shapes = std::move(b.shapes);
     doc.gradients = std::move(b.gradients);
     doc.clipPaths = std::move(b.clipPaths);
+    doc.masks = std::move(b.masks);
     doc.unsupported_ = std::move(b.unsupported);
 
     // A DEFINITION NOTHING REFERENCES IS NOT A GAP. `defs:filter` says the
