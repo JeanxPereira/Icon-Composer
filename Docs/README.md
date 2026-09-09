@@ -21,6 +21,7 @@ preenchida com uma resposta plausível.
 | [04 — O SVG](04-o-svg.md) | o que os assets contêm, o que o CoreSVG da Apple lê, e três filtros que ela NÃO lê |
 | [03 — O motor de render](03-o-motor-de-render.md) | o mapa do `IconRendering` sobre o `RenderBox`: os dois metallib, as peças do vidro, e o vocabulário que bate com o do AquaKit |
 | [_confrontar/](_confrontar/README.md) | material do projeto anterior, **sem selo** — lista de perguntas, nunca fonte |
+| [Specs/pattern](Specs/2026-09-09-pattern-e-raster-embutido.md) | o `<pattern>`, o `<use>` e o raster embutido — três linhas da régua que são **um** construto, e a última frente do corpus fora o vidro sobre raster |
 | [Specs/arquitetura](Specs/2026-08-31-arquitetura-design.md) | as camadas deste repositório, copiadas das do alvo, e onde Onyx e AquaKit entram |
 
 ## A versão de um parágrafo
