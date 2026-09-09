@@ -104,6 +104,14 @@ struct RenderedImage {
     std::vector<SkippedShape> skipped;
     // Drawn, but with components that were never converted out of display-p3.
     std::vector<std::size_t> unconvertedP3;
+
+    // Said in words when a FILTER drew something whose provenance is short of a
+    // measurement. The blur is the one that speaks today: its routing into
+    // `CIGaussianBlur`'s `inputRadius` is measured and the kernel CoreImage
+    // builds from that is not, so the width of the blur is drawn without being
+    // claimed. A gap that changes pixels and stays quiet becomes folklore the
+    // moment the picture looks plausible.
+    std::vector<std::string> filterNotes;
 };
 
 // The transform from the document's user space to pixels: a uniform fit of the

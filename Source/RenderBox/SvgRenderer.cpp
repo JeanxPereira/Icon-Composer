@@ -11,6 +11,7 @@
 #include "Source/RenderBox/PathBuffer.h"
 #include "Source/RenderBox/PathCompositeOracle.h"
 #include "Source/RenderBox/GradientOracle.h"
+#include "Source/RenderBox/SvgFilter.h"
 #include "Source/RenderBox/PathResolveOracle.h"
 
 namespace rb {
@@ -234,6 +235,91 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
 
     for (std::size_t i = 0; i < doc.shapes.size(); ++i) {
         const icf::svg::Shape& shape = doc.shapes[i];
+
+        // ---- A FILTERED GROUP, WHICH IS NOT A SHAPE ------------------------
+        //
+        // A blur of the sum is not the sum of the blurs, so unlike a clip or a
+        // mask this cannot be folded into the shapes one at a time. The run of
+        // shapes carrying one `filterInstance` is composed into a target of its
+        // own -- through THIS function, the way a mask's children are -- and the
+        // chain runs over that.
+        //
+        // The run is contiguous because the shapes come out of the reader in
+        // paint order and a group's children are adjacent. `filterInstance`
+        // rather than `filterId` is what bounds it: two sibling groups naming
+        // one filter are two targets, not one.
+        if (shape.filterInstance != 0) {
+            std::size_t end = i;
+            while (end < doc.shapes.size() &&
+                   doc.shapes[end].filterInstance == shape.filterInstance) {
+                ++end;
+            }
+            auto def = doc.filters.find(shape.filterId);
+            if (def == doc.filters.end()) {
+                // The reader names a dangling reference and never marks the
+                // shape, so this cannot be reached from a parsed document. It is
+                // here because `renderSvgPlaced` is public and takes a document
+                // anyone can build.
+                for (std::size_t k = i; k < end; ++k) {
+                    out.skipped.push_back({k, doc.shapes[k].element,
+                                           "filter url(#" + shape.filterId +
+                                               ") nao resolve para nenhum filter do documento"});
+                }
+                i = end - 1;
+                continue;
+            }
+
+            icf::svg::SvgDocument sub;
+            sub.viewBox = doc.viewBox;
+            sub.gradients = doc.gradients;
+            sub.clipPaths = doc.clipPaths;
+            sub.masks = doc.masks;
+            for (std::size_t k = i; k < end; ++k) {
+                icf::svg::Shape copy = doc.shapes[k];
+                // WITHOUT the mark, or this recurses forever.
+                copy.filterId.clear();
+                copy.filterInstance = 0;
+                sub.shapes.push_back(std::move(copy));
+            }
+            RenderOptions subOptions;
+            subOptions.width = options.width;
+            subOptions.height = options.height;
+            subOptions.subdivisions = options.subdivisions;
+            subOptions.override = options.override;
+            auto drawn = renderSvgPlaced(device, sub, placement, subOptions);
+            if (!drawn) return std::unexpected(drawn.error());
+
+            const FilteredGroup filtered =
+                applySvgFilter(def->second, drawn->rgba, options.width, options.height, globals);
+            if (!filtered.ok) {
+                for (std::size_t k = i; k < end; ++k) {
+                    out.skipped.push_back({k, doc.shapes[k].element, filtered.why});
+                }
+                i = end - 1;
+                continue;
+            }
+            for (const auto& n : filtered.notes) out.filterNotes.push_back(n);
+            // What the sub-render could not do is the outer render's report too,
+            // with its indices carried back so a gap keeps its address.
+            for (const auto& sk : drawn->skipped) {
+                out.skipped.push_back({i + sk.index, sk.element, sk.why});
+            }
+            for (std::size_t idx : drawn->unconvertedP3) out.unconvertedP3.push_back(i + idx);
+
+            // Straight in, premultiplied over the accumulator.
+            for (std::size_t t = 0; t < texels; ++t) {
+                const float sa = filtered.rgba[t * 4 + 3];
+                if (sa <= 0.0f) continue;
+                const float inv = 1.0f - sa;
+                float* dst = &acc[t * 4];
+                for (int k = 0; k < 3; ++k) dst[k] = filtered.rgba[t * 4 + k] * sa + dst[k] * inv;
+                dst[3] = sa + dst[3] * inv;
+            }
+            out.drawn += drawn->drawn;
+            out.strokesDrawn += drawn->strokesDrawn;
+            i = end - 1;
+            continue;
+        }
 
         // `none` is not an error and not a gap: the shape is deliberately
         // unpainted, and reporting it as skipped would bury the real gaps in

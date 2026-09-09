@@ -18,6 +18,7 @@ add_executable(ic_tests
     test_rb_coverage.cpp
     test_rb_render.cpp
     test_render_svg.cpp
+    test_svg_filter.cpp
     test_png.cpp
     test_icon_render.cpp
     test_rb_gradient.cpp

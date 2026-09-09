@@ -85,6 +85,7 @@ $sources = @{
     strokegeo= Join-Path $root "Source/RenderBox/StrokeGeometry.cpp"
     strokeren= Join-Path $root "Source/RenderBox/StrokeRender.cpp"
     svgrender= Join-Path $root "Source/RenderBox/SvgRenderer.cpp"
+    svgfilter= Join-Path $root "Source/RenderBox/SvgFilter.cpp"
     fieldgl  = Join-Path $root "Source/RenderBox/shaders/DistanceField.glsl"
     mip      = Join-Path $root "Source/RenderBox/MipPyramid.cpp"
     mipcomp  = Join-Path $root "Source/RenderBox/shaders/mip_reduce.comp"
@@ -310,6 +311,67 @@ $mutations = @(
     @{ file = "svgdoc"; name = "two filtered groups share one target"
        from = '                    in.filterInstance = ++filterInstances;'
        to   = '                    in.filterInstance = 1;' },
+    # ---- O FILTRO DESENHADO: feFlood, feBlend e feGaussianBlur ------------
+    #
+    # Tres das seis do alvo estao transcritas, e sao as tres da unica cadeia
+    # inteiramente suportada do corpus (Delta `00_stripes.svg`).
+    #
+    # A PRIMEIRA E A QUE SEPARA UM FILTRO DE UM CLIP. Um clip intersecta por
+    # pixel e uma mascara multiplica por pixel, entao dobrar qualquer um deles em
+    # cada forma do grupo da o mesmo que aplicar ao grupo composto. UM BORRAO NAO:
+    # o borrao da soma nao e a soma dos borroes. Reduzir a corrida a uma forma
+    # borra cada retangulo por si, e a figura CONTINUA parecendo borrada -- e a
+    # costura entre dois retangulos encostados aparece. E o defeito que um
+    # renderizador mais plausivelmente entregaria.
+    @{ file = "svgrender"; name = "the filter is folded into each shape instead of the group"
+       from = '            while (end < doc.shapes.size() &&'
+       to   = '            while (end < i + 1 &&' },
+    # O KERNEL PRECISA SOMAR UM. Sem normalizar, a figura ainda parece borrada e
+    # o quadro inteiro clareia ou escurece -- exatamente o que o olho nao pega e
+    # a conservacao de tinta pega.
+    @{ file = "svgfilter"; name = "the gaussian kernel is never normalised"
+       from = '    for (double& k : kernel) k /= sum;'
+       to   = '    for (double& k : kernel) (void)k;' },
+    # E BORRAR COR DIRETA EM VEZ DE PREMULTIPLICADA. O canal alfa sai igual, o
+    # que faz esta passar por toda assercao de alfa; o que muda e a COR na borda,
+    # que puxa o preto invisivel dos pixels transparentes.
+    @{ file = "svgfilter"; name = "the blur averages straight colour and pulls in invisible black"
+       from = '        pre[t * 4 + 0] = src[t * 4 + 0] * a;'
+       to   = '        pre[t * 4 + 0] = src[t * 4 + 0];' },
+    # `[BIN]` O teto de 100 e do alvo (0x23D20, `fminnm` contra
+    # 0x4059000000000000). O corpus nunca chega perto dele.
+    @{ file = "svgfilter"; name = "std deviation stops being clamped at the target ceiling"
+       from = '                sx = std::min(sx, kStdDeviationCeiling);'
+       to   = '                sx = sx;' },
+    # `[BIN]` `inputImage` (0x2520C) devolve NULL para um nome que nenhuma
+    # primitiva produziu, e o null colapsa a cadeia ate nada ser desenhado.
+    # Devolver o resultado anterior no lugar e a leitura otimista: a figura sai
+    # plausivel e o alvo nunca a faz.
+    @{ file = "svgfilter"; name = "a result nobody produced resolves to the previous one"
+       from = '        if (it == named.end()) return Slot{};  // null, exactly as the target'
+       to   = '        if (it == named.end()) return previous;' },
+    # E o outro lado da mesma funcao: `in` ausente toma o resultado ANTERIOR, nao
+    # o `SourceGraphic`. A cadeia do Delta depende disso -- o `feGaussianBlur`
+    # dela nao nomeia entrada nenhuma.
+    @{ file = "svgfilter"; name = "an absent in restarts from the source graphic"
+       from = '        if (name.empty()) return previous;'
+       to   = '        if (name.empty()) return named["SourceGraphic"];' },
+    # Uma primitiva que o ALVO desenha e nos nao e uma lacuna NOSSA, e tem que
+    # recusar. Deixa-la passar reto desenha a cadeia sem ela e nao reclama.
+    @{ file = "svgfilter"; name = "an untranscribed primitive passes through instead of refusing"
+       from = '            out.why = "primitiva " + p.name + " nao transcrita";'
+       to   = '            previous = inputFor(p, "in"); continue;' },
+    # A regiao do filtro corta o que cai fora dela. Sem o corte, a cauda do
+    # borrao pinta alem da caixa que o autor cercou.
+    @{ file = "svgfilter"; name = "the filter region stops cutting the blur tail"
+       from = '    if (filter.hasRegion && filter.userSpace) {'
+       to   = '    if (false) {' },
+    # `[OBS]` E o aviso de que o kernel nunca foi medido. Esta nao muda um pixel:
+    # ela so cala a nota. Uma aproximacao que para de se declarar vira
+    # transcricao -- a mesma regra que a opacidade de grupo ja carrega.
+    @{ file = "svgfilter"; name = "the blur stops declaring that its kernel was never measured"
+       from = '    if (ranBlur) {'
+       to   = '    if (false) {' },
     # `[ART]` O corpus NAO tem o caso que a segunda destas guarda -- uma folha de
     # estilo que existe e nao carrega a classe. Todas as classes sem regra do
     # corpus estao no unico arquivo sem `<style>`. So o teste segura esse lado.

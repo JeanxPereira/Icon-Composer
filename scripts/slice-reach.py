@@ -299,8 +299,14 @@ def filter_blockers(text: str) -> set:
         if prims is None:
             bad.add("filtro sem definicao")
             continue
+        # `feFlood`, `feBlend` e `feGaussianBlur` estao transcritos desde
+        # 2026-09-09 (`Source/RenderBox/SvgFilter.cpp`). As outras tres das seis
+        # -- `feOffset`, `feComposite`, `feConvolveMatrix` -- o alvo desenha e
+        # nos nao, entao uma cadeia que use qualquer uma DELAS ainda bloqueia.
+        TRANSCRITAS = ("feFlood", "feBlend", "feGaussianBlur")
         if all(p in TARGET_FILTER_PRIMITIVES for p in prims):
-            bad.add("filtro")
+            if not all(p in TRANSCRITAS for p in prims):
+                bad.add("filtro")
     return bad
 
 
