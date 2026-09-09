@@ -616,8 +616,8 @@ $mutations = @(
     # e um ponto diferente do `insert` la no fim, que a mutacao
     # "a referenced definition vanishes from the report" ja morde.
     @{ file = "svgdoc"; name = "what defs defines is never reported"
-       from = '                    definitions.push_back(std::move(d));'
-       to   = '                    (void)d;' },
+       from = '        definitions.push_back(std::move(d));'
+       to   = '        (void)d;' },
     @{ file = "svgdoc"; name = "paint silently dropped instead of named"
        from = 'if (a.first == p) unsupported.insert("paint:" + a.first);'
        to   = 'if (false) unsupported.insert("paint:" + a.first);' },
