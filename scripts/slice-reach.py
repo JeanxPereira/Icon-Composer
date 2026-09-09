@@ -241,9 +241,19 @@ SVG_BLOCKERS = {
         r'clip-path\s*[=:]\s*(?:"(?!url\(#|none")'
         r"|'(?!url\(#|none')"
         r'|(?!["\']|url\(#|none\b)\S)', re.I),
-    "pattern": re.compile(r"<\s*pattern[\s>]", re.I),
-    "use": re.compile(r"<\s*use[\s>]", re.I),
-    "raster embutido": re.compile(r"<\s*image[\s>]", re.I),
+    # O PATTERN, O `<use>` E O RASTER EMBUTIDO SAIRAM DAQUI EM 2026-09-09, e os
+    # tres juntos porque sao UM construto: o idioma com que o Figma exporta
+    # "esta forma e preenchida por uma imagem" -- `fill="url(#p)"`, o pattern
+    # com um `<use>`, e o `<use>` apontando para uma `<image>` com um
+    # `data:image/png;base64`. Contar como tres era contar um problema tres
+    # vezes.
+    #
+    # `[BIN]` E o alvo desenha os tres: `SVGPattern::draw` (0x12184),
+    # `drawCells` (0x11D50), `ConvertUseElementCoordinates` (0x22AC), chegando a
+    # `CGPatternCreate`. Aqui a string nao enganou, ao contrario do filtro.
+    #
+    # O que continua bloqueando esta em `pattern_blockers`, porque depende de
+    # QUAL pattern a referencia resolve -- uma regex nao responde por isso.
 }
 
 
@@ -269,6 +279,81 @@ FILTER_DEF = re.compile(r"<filter\b([^>]*)>(.*?)</filter>", re.S | re.I)
 FILTER_REF = re.compile(r"""filter\s*[=:]\s*["']?\s*url\(\s*#([^)\s"']+)""", re.I)
 FILTER_PRIM = re.compile(r"<\s*(fe[A-Za-z]+)", re.I)
 ELEMENT_ID = re.compile(r"""\bid\s*=\s*["']([^"']+)""", re.I)
+
+
+PATTERN_DEF = re.compile(r"<pattern\b([^>]*)>(.*?)</pattern>", re.S | re.I)
+PATTERN_REF = re.compile(r"""(?:fill|stroke)\s*[=:]\s*["']?\s*url\(\s*#([^)\s"']+)""", re.I)
+USE_IN = re.compile(r"<\s*use\b([^>]*)", re.I)
+HREF = re.compile(r"""(?:xlink:)?href\s*=\s*["']#([^"']+)""", re.I)
+IMAGE_DEF = re.compile(r"<image\b([^>]*)", re.I)
+DATA_PNG = re.compile(r"""(?:xlink:)?href\s*=\s*["']data:image/png;base64,""", re.I)
+BARE_USE = re.compile(r"<\s*use\b", re.I)
+
+
+def pattern_blockers(text: str) -> set:
+    """O que as referencias de `<pattern>` deste SVG bloqueiam.
+
+    O IDIOMA DO FIGMA DESENHA DESDE 2026-09-09: um `<pattern>` em unidades de
+    caixa cujo conteudo e UM `<use>` apontando para uma `<image>` com um
+    `data:image/png;base64`. O que sobra bloqueando e o que o leitor recusa por
+    nome, e cada recusa e NOSSA -- o alvo desenha todas elas.
+
+      patternTransform / patternUnits=userSpaceOnUse   geometria que o corpus
+                                                       nao exercita e que este
+                                                       leitor nao inventa
+      conteudo que nao e um unico `<use>`
+      `<image>` que nao e um `data:image/png;base64`
+      referencia que nao resolve para pattern nem gradiente
+
+    E um `<use>` FORA de um pattern continua bloqueando: o `<use>` que este
+    leitor le e so o que mora dentro de um, e um solto na tela desenha algo que
+    ninguem coloca.
+    """
+    defs = {}
+    for m in PATTERN_DEF.finditer(text):
+        ident = ELEMENT_ID.search(m.group(1))
+        if not ident:
+            continue
+        defs[ident.group(1)] = (m.group(1), m.group(2))
+
+    images = {}
+    for m in IMAGE_DEF.finditer(text):
+        ident = ELEMENT_ID.search(m.group(1))
+        if ident:
+            images[ident.group(1)] = bool(DATA_PNG.search(m.group(1)))
+
+    bad = set()
+    used_in_patterns = 0
+    for ref in PATTERN_REF.findall(text):
+        head_body = defs.get(ref)
+        if head_body is None:
+            continue  # gradiente, ou uma referencia que outra regra ja julga
+        head, body = head_body
+        if re.search(r"patternTransform\s*=", head, re.I):
+            bad.add("pattern")
+            continue
+        if re.search(r"""patternUnits\s*=\s*["']?\s*userSpaceOnUse""", head, re.I):
+            bad.add("pattern")
+            continue
+        uses = USE_IN.findall(body)
+        if len(uses) != 1:
+            bad.add("pattern")
+            continue
+        used_in_patterns += 1
+        href = HREF.search(uses[0])
+        if not href:
+            bad.add("pattern")
+            continue
+        readable = images.get(href.group(1))
+        if readable is None:
+            bad.add("pattern")
+        elif not readable:
+            bad.add("raster embutido")
+
+    # Um `<use>` que nao esta dentro de um pattern nao e lido por ninguem aqui.
+    if len(BARE_USE.findall(text)) > used_in_patterns:
+        bad.add("use")
+    return bad
 
 
 def filter_blockers(text: str) -> set:
@@ -498,6 +583,7 @@ def blockers_of(node, assets: Path, svg_cache: dict,
             text = f.read_text(encoding="utf-8", errors="replace")
             svg_cache[f] = [n for n, rx in SVG_BLOCKERS.items() if rx.search(text)]
             svg_cache[f] += sorted(filter_blockers(text))
+            svg_cache[f] += sorted(pattern_blockers(text))
         bad.update(svg_cache[f])
     return bad, dangling
 

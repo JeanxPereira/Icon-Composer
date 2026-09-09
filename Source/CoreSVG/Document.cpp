@@ -142,6 +142,54 @@ Paint withOpacity(Paint p, double opacity) {
     return p;
 }
 
+// BASE64, because a `data:` URI is how the corpus's raster art actually arrives.
+//
+// `[ART]` Delta's three files carry a 1024x1024 RGBA PNG apiece as 2.376.512
+// characters of base64 inside an `xlink:href`. Decoding it is arithmetic and
+// belongs here; decoding the PNG that comes out is a dependency and belongs to
+// the renderer (architecture spec, rule 1).
+//
+// STRICT ON PURPOSE. A stray character is a corrupt payload, and a decoder that
+// skipped it would hand the PNG reader a shifted stream and blame it for the
+// mess. Whitespace IS skipped -- XML is free to wrap a long attribute -- and
+// nothing else is.
+bool decodeBase64(std::string_view text, std::vector<std::uint8_t>& out) {
+    auto sextet = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;
+    };
+    std::uint32_t acc = 0;
+    int bits = 0;
+    std::size_t padding = 0;
+    for (char c : text) {
+        if (isSpace(c)) continue;
+        if (c == '=') {
+            ++padding;
+            continue;
+        }
+        // Padding is the END. A character after it means the stream is not what
+        // it claims to be.
+        if (padding) return false;
+        const int v = sextet(c);
+        if (v < 0) return false;
+        acc = (acc << 6) | static_cast<std::uint32_t>(v);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<std::uint8_t>((acc >> bits) & 0xFF));
+        }
+    }
+    if (padding > 2) return false;
+    // Whatever is left in `acc` is fewer than eight bits and has to be zero:
+    // base64 pads with zero bits, so anything else is a truncated stream rather
+    // than a short one.
+    return (acc & ((1u << bits) - 1)) == 0;
+}
+
 // A quarter of a rounded corner, as a cubic. Same constant as the ellipse.
 void appendCorner(Path& p, Point from, Point to, Point corner, double kx, double ky) {
     p.segments.push_back({SegmentKind::Cubic,
@@ -184,6 +232,8 @@ struct Builder {
     std::map<std::string, std::vector<Path>> clipPaths;
     std::map<std::string, SvgDocument::Mask> masks;
     std::map<std::string, SvgDocument::Filter> filters;
+    std::map<std::string, SvgDocument::Pattern> patterns;
+    std::map<std::string, SvgDocument::EmbeddedImage> images;
 
     // THE DEFINITION GRAPH, for deciding what is actually a gap.
     //
@@ -290,6 +340,129 @@ struct Builder {
             return;
         }
         for (const auto& c : e.children) collectFilters(c);
+    }
+
+    // Every `<pattern>` and every `<image>` with a `data:` URI, before the walk
+    // and for the same reason the filters are: Figma writes `<defs>` at the
+    // BOTTOM, after everything that references it.
+    //
+    // WHAT IS REFUSED BY NAME, because the corpus does not exercise it and
+    // guessing would be inventing geometry:
+    //
+    //   patternUnits="userSpaceOnUse"   none of the 11 use it, and it is a
+    //                                   different mapping, not a different default
+    //   patternTransform                none of the 11 carry one
+    //   content that is not exactly one `<use>` naming an `<image>`
+    //   an `href` that is not `#id`, or a `data:` URI this cannot read
+    void collectPatterns(const Element& e) {
+        if (e.name == "pattern") {
+            const std::string* id = e.attribute("id");
+            if (!id) return;  // unreferenceable, so it changes nothing
+            SvgDocument::Pattern p;
+            if (const std::string* u = e.attribute("patternUnits")) {
+                if (*u == "userSpaceOnUse") {
+                    unsupported.insert("patternUnits:userSpaceOnUse");
+                    return;
+                }
+                if (*u != "objectBoundingBox") {
+                    unsupported.insert("patternUnits:" + *u);
+                    return;
+                }
+            }
+            if (const std::string* c = e.attribute("patternContentUnits")) {
+                if (*c == "objectBoundingBox") p.contentUserSpace = false;
+                else if (*c == "userSpaceOnUse") p.contentUserSpace = true;
+                else {
+                    unsupported.insert("patternContentUnits:" + *c);
+                    return;
+                }
+            }
+            if (e.attribute("patternTransform")) {
+                unsupported.insert("patternTransform");
+                return;
+            }
+            auto one = [&](const char* name, double& slot, bool required) {
+                const std::string* v = e.attribute(name);
+                if (!v) return !required;
+                auto n = numbers(*v);
+                if (n.size() != 1) return false;
+                slot = n[0];
+                return true;
+            };
+            if (!one("x", p.x, false) || !one("y", p.y, false) ||
+                !one("width", p.width, true) || !one("height", p.height, true) ||
+                p.width <= 0.0 || p.height <= 0.0) {
+                unsupported.insert("pattern sem width/height legiveis");
+                return;
+            }
+            // Exactly one `<use>`, and nothing else that draws.
+            const Element* use = nullptr;
+            for (const auto& c : e.children) {
+                if (isIgnorable(c.name)) continue;
+                if (c.name == "use" && !use) { use = &c; continue; }
+                unsupported.insert("pattern com conteudo que nao e um <use>: " + c.name);
+                return;
+            }
+            if (!use) {
+                unsupported.insert("pattern sem <use>");
+                return;
+            }
+            const std::string* href = use->attribute("xlink:href");
+            if (!href) href = use->attribute("href");
+            if (!href || href->size() < 2 || (*href)[0] != '#') {
+                unsupported.insert("use sem href para um id do documento");
+                return;
+            }
+            p.imageId = href->substr(1);
+            if (const std::string* t = use->attribute("transform")) {
+                auto parsed = parseTransform(*t);
+                if (!parsed) {
+                    unsupported.insert("transform:" + *t);
+                    return;
+                }
+                p.contentTransform = *parsed;
+            }
+            patterns[*id] = std::move(p);
+            return;
+        }
+        if (e.name == "image") {
+            const std::string* id = e.attribute("id");
+            const std::string* href = e.attribute("xlink:href");
+            if (!href) href = e.attribute("href");
+            if (!id || !href) return;
+            // `data:<media type>;base64,<payload>` and nothing else. A URL that
+            // points outside the file is art this reader cannot see at all, and
+            // saying so is better than a silent blank.
+            constexpr std::string_view kPrefix = "data:";
+            if (href->compare(0, kPrefix.size(), kPrefix) != 0) {
+                unsupported.insert("image com href que nao e data:");
+                return;
+            }
+            const std::size_t comma = href->find(',');
+            const std::size_t semi = href->find(';');
+            if (comma == std::string::npos || semi == std::string::npos || semi > comma ||
+                href->compare(semi, comma - semi, ";base64") != 0) {
+                unsupported.insert("image data: que nao e base64");
+                return;
+            }
+            SvgDocument::EmbeddedImage img;
+            img.mediaType = href->substr(kPrefix.size(), semi - kPrefix.size());
+            if (!decodeBase64(std::string_view(*href).substr(comma + 1), img.bytes)) {
+                unsupported.insert("image com base64 corrompido");
+                return;
+            }
+            auto dim = [&](const char* name, double& slot) {
+                if (const std::string* v = e.attribute(name)) {
+                    auto n = numbers(*v);
+                    if (n.size() == 1) slot = n[0];
+                }
+            };
+            dim("width", img.width);
+            dim("height", img.height);
+            images[*id] = std::move(img);
+            return;
+        }
+        for (const auto& c : e.children) collectPatterns(c);
     }
 
     // What this element's `class` list contributes, later classes winning.
@@ -692,8 +865,13 @@ struct Builder {
         } else if (e.name == "mask") {
             collectMask(e, here);
             return;
-        } else if (e.name == "filter") {
-            return;  // collected before the walk, and SVG never draws it
+        } else if (e.name == "filter" || e.name == "pattern" || e.name == "image") {
+            // All three are collected before the walk. `<image>` is the odd one:
+            // SVG DOES draw it where it stands, and this reader only reads the
+            // ones a `<pattern>` names -- so a bare `<image>` on the canvas is
+            // still a gap, and says so.
+            if (e.name == "image" && !e.attribute("id")) unsupported.insert("image");
+            return;
         } else if (e.name == "clipPath") {
             // Outside `<defs>` as well: `<clipPath>` is a definition wherever it
             // sits, and SVG does not draw it either way.
@@ -711,6 +889,24 @@ struct Builder {
                     collectClipPath(c, here);
                 } else if (c.name == "mask") {
                     collectMask(c, here);
+                } else if (c.name == "pattern" || c.name == "image") {
+                    // Collected before the walk -- but only the ones that were
+                    // ACCEPTED are in the maps. A `<pattern>` refused for naming
+                    // `patternTransform`, or an `<image>` whose `href` points
+                    // outside the file, is art that really is lost, so it stays a
+                    // definition like any other and the reachability walk decides
+                    // whether anything drawn can reach it.
+                    const std::string* cid = c.attribute("id");
+                    const bool collected =
+                        cid && (c.name == "pattern" ? patterns.count(*cid) > 0
+                                                    : images.count(*cid) > 0);
+                    if (!collected) {
+                        Definition d;
+                        d.kind = c.name;
+                        if (cid) d.id = *cid;
+                        collectRefs(c, d.refs);
+                        definitions.push_back(std::move(d));
+                    }
                 } else if (c.name != "style" && c.name != "filter") {
                     // `style` and `filter` are collected in passes of their own,
                     // before the walk.
@@ -909,12 +1105,15 @@ std::optional<SvgDocument> SvgDocument::parse(std::string_view svg) {
     Builder b;
     b.collectStyles(xml->root);
     b.collectFilters(xml->root);
+    b.collectPatterns(xml->root);
     b.walk(xml->root, Transform{}, Inherited{});
     doc.shapes = std::move(b.shapes);
     doc.gradients = std::move(b.gradients);
     doc.clipPaths = std::move(b.clipPaths);
     doc.masks = std::move(b.masks);
     doc.filters = std::move(b.filters);
+    doc.patterns = std::move(b.patterns);
+    doc.images = std::move(b.images);
     doc.unsupported_ = std::move(b.unsupported);
 
     // A DEFINITION NOTHING DRAWN CAN REACH IS NOT A GAP.

@@ -10,6 +10,7 @@
 #include "Source/CoreSVG/Path.h"
 #include "Source/CoreSVG/Xml.h"
 
+#include <cstdint>
 #include <optional>
 #include <map>
 #include <set>
@@ -196,6 +197,57 @@ public:
     // The primitives the target constructs, in the table's own order. Exposed so
     // a test can hold the transcription against the binary.
     static const std::vector<std::string>& targetFilterPrimitives();
+
+    // ---- patterns, and the raster the corpus hides inside them ------------
+    //
+    // `[ART]` Three files -- all Delta's -- carry 11 `<pattern>` definitions and
+    // 11 references, and every one is the same shape: a shape fills with
+    // `url(#p)`, the pattern holds ONE `<use>`, and the `<use>` names an
+    // `<image>` whose `href` is a `data:image/png;base64` payload. That is how
+    // Figma exports "this shape is filled with a picture", and it is why `use`,
+    // `pattern` and embedded raster were three lines of the ruler and one
+    // construct.
+    //
+    // `[BIN]` And the target really draws it, which is NOT what the same question
+    // about `<filter>` returned: `SVGPattern` is a class with `draw` (0x12184),
+    // `drawCells` (0x11D50) and `attributeIsUserSpace` (0x11FA8), reaching
+    // `CGPatternCreate` and `CGContextSetFillPattern`. Nothing here contradicts
+    // the specification and nothing asks for a refusal.
+    struct Pattern {
+        // The tile, in the units `unitsUserSpace` names.
+        double x = 0, y = 0, width = 0, height = 0;
+        // `patternUnits`: SVG's default is `objectBoundingBox`.
+        bool unitsUserSpace = false;
+        // `patternContentUnits`: SVG's default is `userSpaceOnUse`. The two
+        // defaults differ, which is why they are separate fields rather than one
+        // flag -- reading them as a pair is the mistake this spells out.
+        bool contentUserSpace = true;
+        // The `<use>`'s own transform, applied to the image before the units.
+        Transform contentTransform;
+        // What the `<use>` names.
+        std::string imageId;
+    };
+    std::map<std::string, Pattern> patterns;
+
+    // An `<image>` whose `href` is a `data:` URI, carried as the bytes the URI
+    // encoded and NOT decoded further.
+    //
+    // The format stays undecoded HERE on purpose: `CoreSVG` links the standard
+    // library and nothing else (architecture spec, rule 1), and the PNG reader
+    // lives in `IconComposerFoundation`. Base64 is arithmetic; PNG is a
+    // dependency. So the reader does the arithmetic and the renderer does the
+    // rest.
+    struct EmbeddedImage {
+        // The element's own `width`/`height` attributes, which are what the
+        // pattern's geometry is written against -- NOT necessarily what the
+        // encoded file turns out to hold. A disagreement between the two is the
+        // renderer's to notice.
+        double width = 0, height = 0;
+        std::vector<std::uint8_t> bytes;
+        // The media type from the `data:` URI, e.g. `image/png`.
+        std::string mediaType;
+    };
+    std::map<std::string, EmbeddedImage> images;
 
     // Element names seen and not drawn. Empty means every element in the file is
     // either drawn or deliberately ignored (`title`, `desc`, `metadata`).

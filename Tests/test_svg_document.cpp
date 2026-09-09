@@ -164,11 +164,11 @@ TEST_CASE(document_does_not_paint_what_is_inside_defs) {
 
 TEST_CASE(document_reports_an_element_it_does_not_draw) {
     auto d = SvgDocument::parse(R"(<svg viewBox="0 0 10 10">
-        <path d="M1 1"/><text>hi</text><pattern id="p"/></svg>)");
+        <path d="M1 1"/><text>hi</text><symbol id="s"/></svg>)");
     REQUIRE(d.has_value());
     const auto un = d->unsupported();
     CHECK(un.count("text") == 1);
-    CHECK(un.count("pattern") == 1);
+    CHECK(un.count("symbol") == 1);
     CHECK(un.count("path") == 0);
     CHECK(un.count("svg") == 0);
 
@@ -552,10 +552,16 @@ TEST_CASE(a_definition_reached_through_another_definition_is_still_a_gap) {
     auto doc = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
       <rect x="0" y="0" width="4" height="4" fill="url(#p)"/>
       <defs>
-        <pattern id="p" width="1" height="1"><use xlink:href="#img"/></pattern>
-        <image id="img" width="8" height="8" xlink:href="data:image/png;base64,AA=="/>
+        <pattern id="p" patternTransform="rotate(10)" width="1" height="1">
+          <use xlink:href="#img"/></pattern>
+        <image id="img" width="8" height="8" xlink:href="https://example/x.png"/>
       </defs></svg>)SVG");
     REQUIRE(doc.has_value());
+    // BOTH ARE REFUSED, which is what keeps them definitions at all now that the
+    // ordinary ones are READ: the pattern names `patternTransform`, which no
+    // corpus pattern does and this reader will not invent, and the image points
+    // OUTSIDE the file. Art that really is lost, two links from the shape that
+    // asked for it.
     CHECK_EQ(doc->unsupported().count("defs:pattern"), std::size_t(1));
     CHECK_EQ(doc->unsupported().count("defs:image"), std::size_t(1));
 }
@@ -615,8 +621,9 @@ TEST_CASE(a_stroke_reference_seeds_the_reachability_walk_too) {
     // a shape painted only on its outline reaches its definition just as much.
     auto doc = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
       <path d="M1 1 L8 8" fill="none" stroke="url(#p)" stroke-width="2"/>
-      <defs><pattern id="p" width="1" height="1"><use xlink:href="#img"/></pattern>
-        <image id="img" width="8" height="8" xlink:href="data:image/png;base64,AA=="/>
+      <defs>        <pattern id="p" patternTransform="rotate(10)" width="1" height="1">
+          <use xlink:href="#img"/></pattern>
+        <image id="img" width="8" height="8" xlink:href="https://example/x.png"/>
       </defs></svg>)SVG");
     REQUIRE(doc.has_value());
     CHECK_EQ(doc->unsupported().count("defs:pattern"), std::size_t(1));

@@ -74,6 +74,11 @@ $sources = @{
     svgpath  = Join-Path $root "Source/CoreSVG/Path.cpp"
     svgxml   = Join-Path $root "Source/CoreSVG/Xml.cpp"
     svgdoc   = Join-Path $root "Source/CoreSVG/Document.cpp"
+    # O HEADER TAMBEM E MUTAVEL, e nao era ate 2026-09-09. Um DEFAULT de campo
+    # mora la -- `patternContentUnits` cai em `userSpaceOnUse` e `patternUnits`
+    # em `objectBoundingBox`, e ler os dois como um so e um defeito que nenhuma
+    # linha do .cpp expressa.
+    svgdoch  = Join-Path $root "Source/CoreSVG/Document.h"
     svgpaint = Join-Path $root "Source/CoreSVG/Paint.cpp"
     rbdevice = Join-Path $root "Source/RenderBox/Device.cpp"
     rbbuffer = Join-Path $root "Source/RenderBox/Buffer.cpp"
@@ -108,6 +113,7 @@ $sources = @{
     strokeren= Join-Path $root "Source/RenderBox/StrokeRender.cpp"
     svgrender= Join-Path $root "Source/RenderBox/SvgRenderer.cpp"
     svgfilter= Join-Path $root "Source/RenderBox/SvgFilter.cpp"
+    svgpat   = Join-Path $root "Source/RenderBox/SvgPattern.cpp"
     fieldgl  = Join-Path $root "Source/RenderBox/shaders/DistanceField.glsl"
     mip      = Join-Path $root "Source/RenderBox/MipPyramid.cpp"
     mipcomp  = Join-Path $root "Source/RenderBox/shaders/mip_reduce.comp"
@@ -380,6 +386,68 @@ $mutations = @(
     @{ file = "svgdoc"; name = "two filtered groups share one target"
        from = '                    in.filterInstance = ++filterInstances;'
        to   = '                    in.filterInstance = 1;' },
+    # ---- O PATTERN, O `<use>` E O RASTER EMBUTIDO: UM CONSTRUTO -----------
+    #
+    # `[BIN]` O alvo desenha os tres -- `SVGPattern::draw` (0x12184),
+    # `drawCells` (0x11D50), `attributeIsUserSpace` (0x11FA8),
+    # `ConvertUseElementCoordinates` (0x22AC), chegando a `CGPatternCreate`.
+    # Aqui a string do binario nao enganou, ao contrario do filtro: nenhuma
+    # recusa e do alvo, todas sao nossas.
+    #
+    # `[ART]` 11 patterns em 3 arquivos, todos do Delta, todos com
+    # `patternContentUnits="objectBoundingBox"`, um `<use>` com `scale`, e uma
+    # `<image>` de 1024x1024 em `data:image/png;base64`.
+    #
+    # OS DOIS DEFAULTS DE UNIDADE SAO DIFERENTES, e ler os dois como um so e o
+    # erro que esta linha guarda: `patternUnits` cai em `objectBoundingBox` e
+    # `patternContentUnits` cai em `userSpaceOnUse`. Nenhum dos 11 nomeia o
+    # primeiro, entao so o default responde por ele.
+    @{ file = "svgdoch"; name = "the two pattern unit defaults are read as one"
+       from = '        bool contentUserSpace = true;'
+       to   = '        bool contentUserSpace = false;' },
+    # `userSpaceOnUse` no `patternUnits` e OUTRA geometria, nao outro default.
+    # Aceita-lo como se fosse o mesmo desenha uma figura plausivel no lugar
+    # errado.
+    @{ file = "svgdoc"; name = "patternUnits=userSpaceOnUse is swallowed instead of refused"
+       from = '                    unsupported.insert("patternUnits:userSpaceOnUse");'
+       to   = '                    (void)0;' },
+    # O BASE64 E ESTRITO DE PROPOSITO. Pular um caractere estranho entrega ao
+    # leitor de PNG um fluxo deslocado em seis bits e faz ELE reportar a sujeira
+    # -- o erro aparece longe de onde nasceu.
+    @{ file = "svgdoc"; name = "base64 skips a stray character instead of refusing"
+       from = '        if (v < 0) return false;'
+       to   = '        if (v < 0) continue;' },
+    # E o conteudo do pattern e UM `<use>` e nada mais. Aceitar o resto desenha
+    # so o primeiro filho e cala sobre os outros.
+    @{ file = "svgdoc"; name = "a pattern with content beyond one use is accepted"
+       from = '                unsupported.insert("pattern com conteudo que nao e um <use>: " + c.name);'
+       to   = '                continue;' },
+    # ---- e a geometria, do lado do renderizador ---------------------------
+    #
+    # A PRIMEIRA E A QUE "DESENHOU" NAO PROVA. O transform do `<use>` leva
+    # coordenadas da IMAGEM para as do CONTEUDO, entao amostrar tem que roda-lo
+    # ao contrario. Aplica-lo para frente ainda produz uma figura -- na escala
+    # errada -- e a contagem de formas desenhadas nao muda uma unidade.
+    @{ file = "svgpat"; name = "the use transform is applied forwards instead of undone"
+       from = '    compose(tinv, s1, tmp);'
+       to   = '    compose(s1, s1, tmp);' },
+    # As unidades de conteudo em caixa dividem pela caixa. Sem isso a imagem
+    # entra no tamanho errado, e de novo sem mudar contagem nenhuma.
+    @{ file = "svgpat"; name = "object bounding box content units stop dividing by the box"
+       from = '        s1[0] = 1.0 / bw;'
+       to   = '        s1[0] = 1.0;' },
+    # O ladrilho REPETE. `[ART]` O corpus nunca chega neste caso -- todos os 11
+    # ladrilhos sao maiores que a forma --, entao esta mutacao so morre pelo
+    # teste que existe justamente por isso.
+    @{ file = "svgpat"; name = "the tile stops repeating"
+       from = '    double lx = std::fmod(ux - p.tileX, p.tileW);'
+       to   = '    double lx = ux - p.tileX;' },
+    # E a amostragem pesa PREMULTIPLICADO, pela mesma razao que a gaussiana e o
+    # amostrador de raster ja pagaram: media de cor direta arrasta a cor dos
+    # texels transparentes para dentro dos opacos.
+    @{ file = "svgpat"; name = "the pattern sampler weights straight colour"
+       from = '            for (int c = 0; c < 3; ++c) acc[c] += static_cast<float>(wgt) * img.rgba[s + c] * sa;'
+       to   = '            for (int c = 0; c < 3; ++c) acc[c] += static_cast<float>(wgt) * img.rgba[s + c];' },
     # ---- O FILTRO DESENHADO: feFlood, feBlend e feGaussianBlur ------------
     #
     # Tres das seis do alvo estao transcritas, e sao as tres da unica cadeia

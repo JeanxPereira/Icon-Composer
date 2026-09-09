@@ -12,6 +12,7 @@
 #include "Source/RenderBox/PathCompositeOracle.h"
 #include "Source/RenderBox/GradientOracle.h"
 #include "Source/RenderBox/SvgFilter.h"
+#include "Source/RenderBox/SvgPattern.h"
 #include "Source/RenderBox/PathResolveOracle.h"
 
 namespace rb {
@@ -185,6 +186,33 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
     // are pure white and pure black, whose luminance is 1 and 0 in either -- so
     // the corpus cannot decide it, and this uses the sRGB coefficients without
     // claiming they are the target's.
+    // THE DECODED RASTERS, one per `<image>` id and decoded ON DEMAND.
+    //
+    // `[ART]` Each of Delta's three files carries a 1024x1024 RGBA PNG as 2,4 MB
+    // of base64, and each is named by five patterns. Decoding per SHAPE would
+    // inflate five times over for one picture, so the id is the key -- the same
+    // reason the clip masks are cached above.
+    std::map<std::string, icf::DecodedPng> decodedImages;
+    auto imageFor = [&](const std::string& id) -> const icf::DecodedPng* {
+        auto have = decodedImages.find(id);
+        if (have != decodedImages.end()) {
+            return have->second.error.empty() ? &have->second : nullptr;
+        }
+        auto def = doc.images.find(id);
+        if (def == doc.images.end()) return nullptr;
+        icf::DecodedPng got;
+        if (def->second.mediaType != "image/png") {
+            // The reader keeps whatever the `data:` URI declared; only PNG has a
+            // decoder here, and naming the type is better than handing arbitrary
+            // bytes to a PNG parser and reporting its complaint instead of ours.
+            got.error = "media type " + def->second.mediaType + " nao e lido";
+        } else {
+            got = icf::decodePng(def->second.bytes.data(), def->second.bytes.size());
+        }
+        auto& slot = decodedImages.emplace(id, std::move(got)).first->second;
+        return slot.error.empty() ? &slot : nullptr;
+    };
+
     std::map<std::string, std::vector<float>> maskValues;
     auto luminanceFor = [&](const std::string& id) -> const std::vector<float>* {
         auto it = maskValues.find(id);
@@ -336,6 +364,7 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
             continue;
         }
         ResolvedGradient ramp;
+        ResolvedPattern pattern;
         const bool overridden = options.override.kind != FillOverride::Kind::None;
         if (overridden) {
             // The layer's fill replaces the art's own, so a reference that
@@ -343,10 +372,28 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
         } else if (shape.fill.kind == icf::svg::PaintKind::Reference) {
             double bx0, by0, bx1, by1;
             pathBounds(shape.path, bx0, by0, bx1, by1);
-            ramp = resolveGradient(doc, shape.fill.reference, bx0, by0, bx1, by1);
-            if (!ramp.ok) {
-                out.skipped.push_back({i, shape.element, ramp.why});
-                continue;
+            // A PAINT REFERENCE IS NOT ALWAYS A GRADIENT, and until 2026-09-09
+            // the refusal said it was: a shape filled with `url(#pattern0)` came
+            // back "nao resolve para nenhum gradiente do documento", sending
+            // whoever read the report to look for a `<linearGradient>` that never
+            // existed. `[ART]` Ten shapes across two of Delta's files.
+            //
+            // The document is asked which kind the id NAMES, and each answers for
+            // itself.
+            if (doc.patterns.count(shape.fill.reference)) {
+                auto def = doc.patterns.find(shape.fill.reference);
+                pattern = resolvePattern(doc, shape.fill.reference, bx0, by0, bx1, by1,
+                                         imageFor(def->second.imageId));
+                if (!pattern.ok) {
+                    out.skipped.push_back({i, shape.element, pattern.why});
+                    continue;
+                }
+            } else {
+                ramp = resolveGradient(doc, shape.fill.reference, bx0, by0, bx1, by1);
+                if (!ramp.ok) {
+                    out.skipped.push_back({i, shape.element, ramp.why});
+                    continue;
+                }
             }
         }
         // There is NO branch here for a fill value the reader cannot read, and
@@ -453,6 +500,16 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
                 const double gx = options.override.m[0] * px + options.override.m[1] * py +
                                   options.override.m[2];
                 rampAtPositions(options.override.stops, static_cast<float>(gx), colour);
+            } else if (pattern.ok) {
+                // The pixel CENTRE, back through the placement into user space,
+                // and from there into the tile. A point the tile does not cover
+                // is NOT painted -- and it cannot be painted with the shape's
+                // own fill either, which is black by SVG's initial value.
+                const double px = static_cast<double>(t % options.width) + 0.5;
+                const double py = static_cast<double>(t / options.width) + 0.5;
+                const double ux = (px - globals.m2[0]) * sx;
+                const double uy = (py - globals.m2[1]) * sy;
+                if (!samplePattern(pattern, ux, uy, colour)) continue;
             } else if (ramp.ok) {
                 // The pixel CENTRE, back through the placement into user space,
                 // and from there into the gradient's own space.

@@ -19,6 +19,7 @@ add_library(RenderBox STATIC
     CoveragePass.cpp
     SvgRenderer.cpp
     SvgFilter.cpp
+    SvgPattern.cpp
     IconRenderer.cpp
     GradientOracle.cpp
     AutomaticGradient.cpp
