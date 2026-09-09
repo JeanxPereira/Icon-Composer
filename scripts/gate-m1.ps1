@@ -494,9 +494,15 @@ $mutations = @(
     @{ file = "svgdoc"; name = "transform list composed in the wrong order"
        from = 'result = t.then(result);'
        to   = 'result = result.then(t);' },
+    # RE-ANCORADA EM 2026-09-09, mantendo o defeito: a linha que ela mordia
+    # (`unsupported.insert("defs:" + c.name)`) deixou de existir quando a
+    # caminhada do `<defs>` passou a REGISTRAR em vez de acusar. O registro e o
+    # elo novo -- sem ele nada chega a alcancabilidade e nada e reportado --, e
+    # e um ponto diferente do `insert` la no fim, que a mutacao
+    # "a referenced definition vanishes from the report" ja morde.
     @{ file = "svgdoc"; name = "what defs defines is never reported"
-       from = 'unsupported.insert("defs:" + c.name);'
-       to   = 'void(0);' },
+       from = '                    definitions.push_back(std::move(d));'
+       to   = '                    (void)d;' },
     @{ file = "svgdoc"; name = "paint silently dropped instead of named"
        from = 'if (a.first == p) unsupported.insert("paint:" + a.first);'
        to   = 'if (false) unsupported.insert("paint:" + a.first);' },
