@@ -97,6 +97,21 @@ struct Shape {
     // LUMINANCE mask: unlike a clip it carries paint, so its children are kept
     // as shapes rather than as bare paths.
     std::vector<std::string> masks;
+
+    // The `<filter>` this shape's group carries, and WHICH group carried it.
+    //
+    // A filter is not a per-shape property, and that is what separates it from
+    // the two above. A clip intersects per pixel and a mask multiplies per
+    // pixel, so applying either to each shape of a group gives exactly what
+    // applying it to the composed group gives. A filter does not: a blur of the
+    // sum is not the sum of the blurs. So the group has to be composed FIRST,
+    // in a target of its own, and the chain applied to that.
+    //
+    // `filterInstance` is what makes that possible after the tree is flattened:
+    // every shape under one filtered `<g>` gets the same number, and a second
+    // `<g>` naming the SAME id gets a different one. Zero means unfiltered.
+    std::string filterId;
+    std::size_t filterInstance = 0;
 };
 
 class SvgDocument {
@@ -124,6 +139,63 @@ public:
         bool hasRegion = false;
     };
     std::map<std::string, Mask> masks;
+
+    // ---- filters ---------------------------------------------------------
+    //
+    // `[BIN]` THE TARGET CONSTRUCTS SIX PRIMITIVES AND DROPS THE REST AT BUILD
+    // TIME. `SVGFilter::filterPrimitive` (CoreSVG.arm64 0x2A230) scans a
+    // six-entry table at `__const:0x327F0` -- `{0x67, 0x5f, 0x5b, 0x72, 0x65,
+    // 0x78}`, the atoms of `feGaussianBlur`, `feOffset`, `feFlood`,
+    // `feComposite`, `feBlend` and `feConvolveMatrix`. A name outside it is
+    // logged (`"Filter primitive: <%s> is currently not supported."`) and the
+    // function returns null: the primitive is NEVER CONSTRUCTED and never
+    // enters the chain. `SVGFilterPrimitive::selectPrimitive` (0x23B48)
+    // dispatches those same six and returns null for anything else.
+    //
+    // `[BIN]` AND THE HOLE IT LEAVES COLLAPSES THE WHOLE CHAIN.
+    // `inputImage` (0x2520C) returns null for an `in`/`in2` naming a result
+    // that was never produced; `drawFeBlend` (0x24BFC) and `drawFeComposite`
+    // (0x240C8) both start their return value at zero and bail on a null input;
+    // `SVGFilter::draw` (0x29A34) sends a null final result to 0x29E58, which
+    // is cleanup and nothing else; and its one caller, `PopSVGNodeAttributes`
+    // (0xA85C), ignores the return and has no fallback.
+    //
+    // So an element whose chain names an unimplemented primitive draws NOTHING
+    // in the target -- not "draws unfiltered". `dropped` is how this reader says
+    // that happened, and it is a REPRODUCTION of the target rather than a gap in
+    // this reader, which is why it is not reported through `unsupported()`.
+    struct FilterPrimitive {
+        std::string name;
+        std::map<std::string, std::string> attributes;
+
+        // Filter attributes are read late, by the renderer, so they ride along
+        // as text rather than as fields.
+        std::string attribute(const std::string& key) const {
+            auto it = attributes.find(key);
+            return it == attributes.end() ? std::string() : it->second;
+        }
+    };
+
+    struct Filter {
+        // In document order, and ONLY the six the target builds.
+        std::vector<FilterPrimitive> primitives;
+        // The names the target refuses to construct, in the order met. Non-empty
+        // means every element referencing this filter draws nothing.
+        std::vector<std::string> dropped;
+        // `x`/`y`/`width`/`height`. SVG's default for `filterUnits` is
+        // `objectBoundingBox`; `userSpace` records which one was actually named,
+        // because the two are different geometry.
+        double x = 0, y = 0, width = 0, height = 0;
+        bool hasRegion = false;
+        bool userSpace = false;
+
+        bool collapses() const { return !dropped.empty(); }
+    };
+    std::map<std::string, Filter> filters;
+
+    // The primitives the target constructs, in the table's own order. Exposed so
+    // a test can hold the transcription against the binary.
+    static const std::vector<std::string>& targetFilterPrimitives();
 
     // Element names seen and not drawn. Empty means every element in the file is
     // either drawn or deliberately ignored (`title`, `desc`, `metadata`).

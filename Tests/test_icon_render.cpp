@@ -109,6 +109,17 @@ public:
               "</filter></defs>"
               "<path d=\"M0 0 L512 0 L512 512 L0 512 Z\" fill=\"#ffffff\""
               " filter=\"url(#s)\"/></svg>");
+        // A gap that is STILL a gap. `shadowed.svg` stopped being one on
+        // 2026-09-09: the target drops `feDropShadow` at construction and the
+        // element draws NOTHING, so reproducing that is not a gap -- and the
+        // report plumbing this fixture used to guard would have been left
+        // uncovered by the change. `<pattern>` is read by nothing here, which
+        // is what a gap actually means.
+        write(dir_ / "Assets" / "patterned.svg",
+              "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\">"
+              "<defs><pattern id=\"p\" width=\"8\" height=\"8\">"
+              "<rect width=\"4\" height=\"4\" fill=\"#000\"/></pattern></defs>"
+              "<path d=\"M0 0 L512 0 L512 512 L0 512 Z\" fill=\"url(#p)\"/></svg>");
         // A second square in a colour, so two layers can be told apart when
         // they overlap.
         write(dir_ / "Assets" / "red.svg",
@@ -471,7 +482,7 @@ TEST_CASE(an_svg_feature_the_reader_ignores_reaches_the_icons_report) {
     if (!d.valid()) return;
     IconRenderOptions o;
     o.size = 64;
-    const TempBundle b(oneLayerOf("shadowed.svg"));
+    const TempBundle b(oneLayerOf("patterned.svg"));
     auto bundle = icf::IconBundle::open(b.path());
     REQUIRE(bundle.has_value());
     auto icon = renderIcon(d, *bundle, o);
@@ -481,17 +492,53 @@ TEST_CASE(an_svg_feature_the_reader_ignores_reaches_the_icons_report) {
     CHECK_EQ(icon->drawn, std::size_t{1});
     CHECK(icon->skipped.empty());
 
-    // And the filter is NAMED. Both halves matter: `defs:filter` is the
-    // definition the reader walked past, `paint:filter` is the reference on
-    // the shape -- a reader that reported only one of them would leave either
-    // an unused definition or an unanswered reference looking innocent.
+    // And the gap is NAMED, with an address on it: a gap nobody can go and fix
+    // is not a report.
     std::string all;
     for (const auto& g : icon->shapeGaps) all += g + "\n";
-    CHECK(all.find("defs:filter") != std::string::npos);
-    CHECK(all.find("paint:filter") != std::string::npos);
-    // It says WHICH layer and WHICH asset, because a gap with no address is a
-    // gap nobody can go and fix.
-    CHECK(all.find("only / shadowed.svg") != std::string::npos);
+    CHECK(all.find("pattern") != std::string::npos);
+    CHECK(all.find("only / patterned.svg") != std::string::npos);
+}
+
+// AND A FILTER THE TARGET DROPS IS NOT A GAP -- IT IS THE PICTURE.
+//
+// `shadowed.svg` names `feDropShadow`, which `SVGFilter::filterPrimitive`
+// (CoreSVG.arm64 0x2A230) refuses to construct. The hole nulls its way through
+// `SVGFilter::draw` to a cleanup path that draws nothing, and its one caller has
+// no fallback. So the target draws NO SQUARE AT ALL for this asset.
+//
+// This test exists because the honest failure here is the opposite of the usual
+// one: the tempting behaviour is to draw the square unfiltered and report the
+// filter as missing, which would be a picture the target never makes AND a
+// complaint about art that was never lost.
+TEST_CASE(a_filter_the_target_never_builds_draws_nothing_and_is_not_a_gap) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 64;
+    const TempBundle b(oneLayerOf("shadowed.svg"));
+    auto bundle = icf::IconBundle::open(b.path());
+    REQUIRE(bundle.has_value());
+    auto icon = renderIcon(d, *bundle, o);
+    REQUIRE(icon.has_value());
+
+    // THE LAYER IS STILL "DRAWN", and that word is about the layer and not
+    // about ink: `RenderedIcon::drawn` counts layers the compositor processed,
+    // and this one was processed -- its art simply has no shape left in it. Nor
+    // is it SKIPPED, which would mean the renderer could not do it.
+    CHECK_EQ(icon->drawn, std::size_t{1});
+    CHECK(icon->skipped.empty());
+
+    std::string all;
+    for (const auto& g : icon->shapeGaps) all += g + "\n";
+    CHECK(all.find("filter") == std::string::npos);
+
+    // AND THE CANVAS IS ACTUALLY EMPTY WHERE THE SQUARE WAS. Counting shapes
+    // is not the same as looking: the square covers the whole viewBox, so if it
+    // had been drawn unfiltered every pixel here would be opaque white.
+    const std::size_t centre = (static_cast<std::size_t>(o.size / 2) * o.size + o.size / 2) * 4;
+    REQUIRE(icon->rgba.size() > centre + 3);
+    CHECK(icon->rgba[centre + 3] < 0.5f);
 }
 
 // AND THE GROUP'S GAP HAS TO NAME ITS MODE TOO, which the test above does NOT

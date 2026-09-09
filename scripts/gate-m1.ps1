@@ -266,6 +266,50 @@ $mutations = @(
     @{ file = "svgdoc"; name = "a referenced definition vanishes from the report"
        from = '            doc.unsupported_.erase(def);'
        to   = '            (void)0;' },
+    # ---- O FILTRO, E A REGRA E DO ALVO ------------------------------------
+    #
+    # `[BIN]` `SVGFilter::filterPrimitive` (CoreSVG.arm64 0x2A230) le uma tabela
+    # de SEIS em `__const:0x327F0` e nao constroi nada fora dela. O buraco vira
+    # null, o null atravessa a cadeia (`inputImage` 0x2520C, `drawFeBlend`
+    # 0x24BFC, `drawFeComposite` 0x240C8) e `SVGFilter::draw` (0x29A34) manda o
+    # resultado nulo para um caminho que so limpa. `PopSVGNodeAttributes`
+    # (0xA85C) ignora o retorno e nao tem plano B: o elemento DESENHA NADA.
+    #
+    # `[ART]` 17 das 18 cadeias do corpus caem nessa regra, todas por
+    # `feColorMatrix`. A 18a -- o borrao do `00_stripes.svg` do Delta -- esta
+    # inteira dentro das seis.
+    #
+    # A PRIMEIRA DESTAS E A QUE IMPORTA, e o defeito que ela guarda e o
+    # ATRAENTE: desenhar a forma sem o filtro e reclamar do filtro que faltou.
+    # Isso e uma figura que o alvo nunca faz E uma acusacao sobre arte que nunca
+    # se perdeu -- os dois erros na mesma linha.
+    @{ file = "svgdoc"; name = "a chain the target collapses draws unfiltered instead"
+       from = '            if (f != filters.end() && f->second.collapses()) return;'
+       to   = '            if (false) return;' },
+    # E o outro lado da mesma linha: derrubar TODO grupo que carrega filtro,
+    # inclusive o que o alvo desenha. Uma recusa larga demais passa despercebida
+    # porque o numero da regua ainda sobe.
+    @{ file = "svgdoc"; name = "every filtered group is dropped, not only the collapsed one"
+       from = '            if (f != filters.end() && f->second.collapses()) return;'
+       to   = '            if (f != filters.end()) return;' },
+    # A tabela e a PROVA. Uma primitiva a mais nela e uma cadeia que passa a ser
+    # construida onde o alvo nao constroi -- e o grupo volta a desenhar.
+    @{ file = "svgdoc"; name = "the six-entry table gains a primitive the target never builds"
+       from = '                if (!built) {'
+       to   = '                if (!built && c.name != "feColorMatrix") {' },
+    # E derrubar a primitiva SEM registrar que ela caiu: a cadeia fica curta, o
+    # `collapses()` responde falso, e o grupo desenha uma cadeia que o alvo nunca
+    # montou. Nao muda o relatorio -- muda a figura, em silencio.
+    @{ file = "svgdoc"; name = "a dropped primitive leaves no trace of having been dropped"
+       from = '                    f.dropped.push_back(c.name);'
+       to   = '                    (void)0;' },
+    # UM FILTRO NAO E POR FORMA, e este numero e o que separa as duas coisas
+    # depois da arvore ser achatada. Fixo em 1, dois grupos irmaos que nomeiam o
+    # mesmo id passam a compartilhar um alvo -- e o borrao da soma nao e a soma
+    # dos borroes.
+    @{ file = "svgdoc"; name = "two filtered groups share one target"
+       from = '                    in.filterInstance = ++filterInstances;'
+       to   = '                    in.filterInstance = 1;' },
     # `[ART]` O corpus NAO tem o caso que a segunda destas guarda -- uma folha de
     # estilo que existe e nao carrega a classe. Todas as classes sem regra do
     # corpus estao no unico arquivo sem `<style>`. So o teste segura esse lado.

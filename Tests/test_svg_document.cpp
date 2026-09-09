@@ -164,13 +164,23 @@ TEST_CASE(document_does_not_paint_what_is_inside_defs) {
 
 TEST_CASE(document_reports_an_element_it_does_not_draw) {
     auto d = SvgDocument::parse(R"(<svg viewBox="0 0 10 10">
-        <path d="M1 1"/><text>hi</text><filter id="f"><feBlend/></filter></svg>)");
+        <path d="M1 1"/><text>hi</text><pattern id="p"/></svg>)");
     REQUIRE(d.has_value());
     const auto un = d->unsupported();
     CHECK(un.count("text") == 1);
-    CHECK(un.count("filter") == 1);
+    CHECK(un.count("pattern") == 1);
     CHECK(un.count("path") == 0);
     CHECK(un.count("svg") == 0);
+
+    // `filter` LEFT THIS LIST on 2026-09-09. It is READ now -- collected in a
+    // pass of its own, wherever it sits -- so naming it here would be the
+    // defect this list exists to prevent, pointed the other way: a report that
+    // accuses the reader of a gap it no longer has.
+    auto f = SvgDocument::parse(R"(<svg viewBox="0 0 10 10">
+        <path d="M1 1"/><filter id="f"><feBlend/></filter></svg>)");
+    REQUIRE(f.has_value());
+    CHECK(f->unsupported().count("filter") == 0);
+    CHECK(f->filters.count("f") == 1);
 }
 
 // Paint IS read now -- `fill`, `stroke`, `fill-rule`, the opacities, the widths,
@@ -256,12 +266,19 @@ TEST_CASE(a_definition_is_named_only_when_something_references_it) {
 
     // A custom delimiter, because `url(#f)"` carries the `)"` that would close
     // a bare `R"(`.
+    //
+    // A REFERENCED FILTER IS NO LONGER EITHER HALF OF THAT PAIR. Both lines
+    // used to assert a gap; the chain here is `feBlend` alone, which the target
+    // DOES construct, so there is nothing missing to report -- the shape is
+    // kept and carries the filter it is under.
     auto used = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10"><defs>
         <filter id="f"><feBlend/></filter></defs>
         <path d="M1 1" filter="url(#f)"/></svg>)SVG");
     REQUIRE(used.has_value());
-    CHECK(used->unsupported().count("defs:filter") == 1);
-    CHECK(used->unsupported().count("paint:filter") == 1);
+    CHECK(used->unsupported().count("defs:filter") == 0);
+    CHECK(used->unsupported().count("paint:filter") == 0);
+    REQUIRE(used->shapes.size() == 1);
+    CHECK_EQ(used->shapes[0].filterId, std::string("f"));
 }
 
 TEST_CASE(document_does_not_report_what_it_deliberately_ignores) {
@@ -393,4 +410,128 @@ TEST_CASE(rect_with_rx_gets_rounded_corners) {
     // Move, then four sides and four corner arcs, then close.
     CHECK(d->shapes[0].path.segments.size() == 10);
     CHECK(d->unsupported().count("rect:rounded") == 0);
+}
+
+// ---- filters -------------------------------------------------------------
+//
+// The rule under all of these is one measurement, not a preference: the target
+// builds six primitives and drops the rest at construction time, and the hole
+// the drop leaves collapses the chain all the way to "nothing is drawn". See
+// `SvgDocument::Filter` for the addresses.
+
+TEST_CASE(the_six_primitives_the_target_builds_are_the_ones_transcribed) {
+    const auto& six = SvgDocument::targetFilterPrimitives();
+    CHECK_EQ(six.size(), std::size_t(6));
+    // The table's own order, `__const:0x327F0` = {0x67,0x5f,0x5b,0x72,0x65,0x78}.
+    CHECK_EQ(six[0], std::string("feGaussianBlur"));
+    CHECK_EQ(six[1], std::string("feOffset"));
+    CHECK_EQ(six[2], std::string("feFlood"));
+    CHECK_EQ(six[3], std::string("feComposite"));
+    CHECK_EQ(six[4], std::string("feBlend"));
+    // NEVER LISTED BY THIS DOCUMENTATION UNTIL 2026-09-09, and it is in the
+    // table and has a `drawFeConvolveMatrix` at 0x24F74.
+    CHECK_EQ(six[5], std::string("feConvolveMatrix"));
+    // And the three the old reading listed that the table does NOT hold.
+    for (const char* absent : {"feImage", "feMerge", "feTile"}) {
+        bool found = false;
+        for (const auto& n : six) found = found || n == absent;
+        CHECK(!found);
+    }
+}
+
+TEST_CASE(a_chain_with_a_primitive_the_target_drops_makes_the_group_draw_nothing) {
+    // Figma's inner shadow, which is 17 of the corpus's 18 chains.
+    auto doc = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
+      <g filter="url(#f)"><rect x="0" y="0" width="4" height="4" fill="#f00"/></g>
+      <rect x="5" y="5" width="4" height="4" fill="#0f0"/>
+      <defs><filter id="f">
+        <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+        <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0" result="hardAlpha"/>
+        <feComposite in2="hardAlpha" operator="arithmetic"/>
+      </filter></defs></svg>)SVG");
+    REQUIRE(doc.has_value());
+    // The filtered group is gone; the unfiltered sibling is untouched.
+    CHECK_EQ(doc->shapes.size(), std::size_t(1));
+    if (!doc->shapes.empty()) CHECK_EQ(firstPoint(doc->shapes[0]), std::string("500,500"));
+
+    auto f = doc->filters.find("f");
+    REQUIRE(f != doc->filters.end());
+    CHECK(f->second.collapses());
+    CHECK_EQ(f->second.dropped.size(), std::size_t(1));
+    if (!f->second.dropped.empty()) CHECK_EQ(f->second.dropped[0], std::string("feColorMatrix"));
+    // The two the target DOES build survive into the chain.
+    CHECK_EQ(f->second.primitives.size(), std::size_t(2));
+
+    // AND IT IS NOT A GAP. Reporting this would accuse the file of losing
+    // something the target draws -- the target does not draw it either.
+    CHECK_EQ(doc->unsupported().count("paint:filter"), std::size_t(0));
+}
+
+TEST_CASE(a_chain_of_only_target_primitives_is_kept_and_the_group_survives) {
+    // Delta's `00_stripes.svg`, the corpus's one fully-supported chain.
+    auto doc = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
+      <g filter="url(#b)"><rect x="1" y="1" width="2" height="8" fill="#ccc"/></g>
+      <defs><filter id="b" x="0" y="0" width="10" height="10" filterUnits="userSpaceOnUse">
+        <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+        <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+        <feGaussianBlur stdDeviation="2" result="blurred"/>
+      </filter></defs></svg>)SVG");
+    REQUIRE(doc.has_value());
+    REQUIRE(doc->shapes.size() == 1);
+    CHECK_EQ(doc->shapes[0].filterId, std::string("b"));
+    CHECK(doc->shapes[0].filterInstance != 0);
+
+    auto f = doc->filters.find("b");
+    REQUIRE(f != doc->filters.end());
+    CHECK(!f->second.collapses());
+    REQUIRE(f->second.primitives.size() == 3);
+    CHECK_EQ(f->second.primitives[2].name, std::string("feGaussianBlur"));
+    CHECK_EQ(f->second.primitives[2].attribute("stdDeviation"), std::string("2"));
+    CHECK_EQ(f->second.primitives[1].attribute("in2"), std::string("BackgroundImageFix"));
+    CHECK(f->second.hasRegion);
+    CHECK(f->second.userSpace);
+    CHECK_EQ(f->second.width, 10.0);
+}
+
+TEST_CASE(two_groups_naming_one_filter_are_two_instances) {
+    auto doc = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
+      <g filter="url(#b)"><rect x="0" y="0" width="2" height="2" fill="#f00"/></g>
+      <g filter="url(#b)"><rect x="5" y="5" width="2" height="2" fill="#0f0"/></g>
+      <defs><filter id="b"><feGaussianBlur stdDeviation="1"/></filter></defs></svg>)SVG");
+    REQUIRE(doc.has_value());
+    REQUIRE(doc->shapes.size() == 2);
+    CHECK_EQ(doc->shapes[0].filterId, std::string("b"));
+    CHECK_EQ(doc->shapes[1].filterId, std::string("b"));
+    // SAME id, DIFFERENT target: a blur of one group is not a blur of both.
+    CHECK(doc->shapes[0].filterInstance != doc->shapes[1].filterInstance);
+}
+
+TEST_CASE(a_filter_reference_that_does_not_resolve_is_named_not_collapsed) {
+    // Not the same thing as a dropped primitive: nothing was measured about a
+    // dangling filter reference, so it is a question rather than a reproduction.
+    auto doc = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
+      <g filter="url(#missing)"><rect x="0" y="0" width="4" height="4" fill="#f00"/></g>
+      </svg>)SVG");
+    REQUIRE(doc.has_value());
+    CHECK_EQ(doc->unsupported().count("paint:filter=url(#missing)"), std::size_t(1));
+}
+
+TEST_CASE(a_filter_definition_nothing_references_still_drops_nothing) {
+    // The PDF-Archiver case, and the guard on it stays a guard.
+    auto doc = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
+      <rect x="0" y="0" width="4" height="4" fill="#f00"/>
+      <defs><filter id="unused"><feColorMatrix values="0"/></filter></defs></svg>)SVG");
+    REQUIRE(doc.has_value());
+    CHECK_EQ(doc->shapes.size(), std::size_t(1));
+    CHECK_EQ(doc->unsupported().count("defs:filter"), std::size_t(0));
+    CHECK_EQ(doc->unsupported().count("paint:filter"), std::size_t(0));
+}
+
+TEST_CASE(filter_none_is_not_a_filter_at_all) {
+    auto doc = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
+      <g filter="none"><rect x="0" y="0" width="4" height="4" fill="#f00"/></g></svg>)SVG");
+    REQUIRE(doc.has_value());
+    CHECK_EQ(doc->shapes.size(), std::size_t(1));
+    CHECK_EQ(doc->shapes[0].filterInstance, std::size_t(0));
+    CHECK_EQ(doc->unsupported().count("paint:filter"), std::size_t(0));
 }

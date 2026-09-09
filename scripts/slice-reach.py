@@ -194,20 +194,19 @@ SVG_BLOCKERS = {
     # continua bloqueando e so o traco pintado com GRADIENTE, que nenhum
     # documento do corpus usa -- os 35 sao chapados, 31 hex e 4 `white`.
     "traço com url(#)": re.compile(r'stroke\s*[=:]\s*["\']?\s*url\(', re.I),
-    # UMA DEFINICAO QUE NINGUEM REFERENCIA NAO BLOQUEIA NADA, e esta linha
-    # contava as duas coisas. `[ART]` O PDF-Archiver tem OITO `<filter>` e ZERO
-    # referencias -- o exportador (Pixodesk SVG) emitiu e nunca usou --, entao a
-    # regua bloqueava um documento inteiro por um elemento que nao muda pixel
-    # nenhum, e ignora-lo ja era o comportamento certo do renderizador.
+    # O FILTRO SAIU DAQUI EM 2026-09-09, e passou a `filter_blockers` -- uma
+    # regex nao consegue mais responder por ele, porque a resposta depende de
+    # QUAL cadeia a referencia resolve.
     #
-    # `none` tambem nao bloqueia: e a instrucao de NAO filtrar.
+    # `[BIN]` O alvo constroi SEIS primitivas (`SVGFilter::filterPrimitive`,
+    # CoreSVG.arm64 0x2A230, tabela de seis em `__const:0x327F0`) e derruba o
+    # resto na CONSTRUCAO. O buraco vira null, o null atravessa a cadeia, e
+    # `SVGFilter::draw` (0x29A34) manda o resultado nulo para um caminho que so
+    # limpa -- o elemento DESENHA NADA, e o unico chamador nao tem plano B.
     #
-    # A aspa e tratada em tres alternativas pelo mesmo motivo do `clip-path`
-    # acima -- com `["\']?` opcional o motor retrocede e o lookahead olha a aspa.
-    "filtro": re.compile(
-        r'filter\s*[=:]\s*(?:"(?!none")'
-        r"|'(?!none')"
-        r'|(?!["\']|none\b)\S)', re.I),
+    # Reproduzir isso nao e lacuna nossa, e o alvo. Entao uma cadeia com
+    # primitiva derrubada NAO bloqueia. O que bloqueia e o contrario: uma
+    # cadeia inteiramente dentro das seis, que o alvo desenha e nos ainda nao.
     # A `<mask>` DESENHA desde 2026-09-05: os filhos sao renderizados como um
     # documento proprio e reduzidos a `luminancia * alfa`, que e o que uma
     # mascara vale. O que continua bloqueando e so o que fica recusado por nome:
@@ -255,6 +254,54 @@ KNOWN_BLENDS = {
     "normal", "plus-lighter", "plus-darker", "overlay", "multiply",
     "soft-light", "hard-light", "darken", "lighten", "screen",
 }
+
+
+# `[BIN]` As seis primitivas que o alvo constroi, na ordem da tabela
+# `__const:0x327F0` de CoreSVG.arm64: {0x67, 0x5f, 0x5b, 0x72, 0x65, 0x78}.
+# A ordem e mantida porque ela e a prova -- ordenar tornaria a transcricao
+# infalsificavel contra os bytes de onde veio.
+TARGET_FILTER_PRIMITIVES = (
+    "feGaussianBlur", "feOffset", "feFlood", "feComposite", "feBlend",
+    "feConvolveMatrix",
+)
+
+FILTER_DEF = re.compile(r"<filter\b([^>]*)>(.*?)</filter>", re.S | re.I)
+FILTER_REF = re.compile(r"""filter\s*[=:]\s*["']?\s*url\(\s*#([^)\s"']+)""", re.I)
+FILTER_PRIM = re.compile(r"<\s*(fe[A-Za-z]+)", re.I)
+ELEMENT_ID = re.compile(r"""\bid\s*=\s*["']([^"']+)""", re.I)
+
+
+def filter_blockers(text: str) -> set:
+    """O que as referencias de `<filter>` deste SVG bloqueiam.
+
+    TRES RESPOSTAS, E SO A DO MEIO E UM BLOQUEIO:
+
+      cadeia com primitiva fora das seis   o alvo derruba a primitiva na
+                                           construcao e o elemento acaba
+                                           desenhando NADA. Nos fazemos o mesmo
+                                           desde 2026-09-09, entao e uma
+                                           REPRODUCAO -- nao bloqueia.
+      cadeia inteiramente dentro das seis  o alvo desenha de verdade, e ai sim
+                                           falta pixel nosso. BLOQUEIA.
+      referencia que nao resolve           ninguem mediu o que o alvo faz com
+                                           ela, e o corpus nao tem nenhuma.
+                                           Nomeada, nao adivinhada.
+    """
+    defs = {}
+    for m in FILTER_DEF.finditer(text):
+        ident = ELEMENT_ID.search(m.group(1))
+        if not ident:
+            continue
+        defs[ident.group(1)] = [x.group(1) for x in FILTER_PRIM.finditer(m.group(2))]
+    bad = set()
+    for ref in FILTER_REF.findall(text):
+        prims = defs.get(ref)
+        if prims is None:
+            bad.add("filtro sem definicao")
+            continue
+        if all(p in TARGET_FILTER_PRIMITIVES for p in prims):
+            bad.add("filtro")
+    return bad
 
 
 def group_blend_over_glass(groups) -> set:
@@ -444,6 +491,7 @@ def blockers_of(node, assets: Path, svg_cache: dict,
         if f not in svg_cache:
             text = f.read_text(encoding="utf-8", errors="replace")
             svg_cache[f] = [n for n, rx in SVG_BLOCKERS.items() if rx.search(text)]
+            svg_cache[f] += sorted(filter_blockers(text))
         bad.update(svg_cache[f])
     return bad, dangling
 

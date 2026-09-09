@@ -124,6 +124,15 @@ struct Inherited {
     // Same shape as `clips`, and same reason: a group's mask applies to
     // everything under it, and two nested masks multiply.
     std::vector<std::string> masks;
+
+    // The innermost `<filter>` in force, and the instance of the element that
+    // named it. Unlike `clips` and `masks` this REPLACES rather than
+    // accumulates: SVG applies a filter to the element's own rendering, so a
+    // filtered group inside a filtered group is the inner one's result being
+    // filtered again -- which the corpus never does, and which is named rather
+    // than silently flattened (`filtro dentro de filtro`).
+    std::string filterId;
+    std::size_t filterInstance = 0;
 };
 
 // The alpha the paint ends up with. `fill-opacity` is a separate multiplier
@@ -154,7 +163,7 @@ void appendCorner(Path& p, Point from, Point to, Point corner, double kx, double
 // on the same day. `class` stays, because the stylesheet that would give it
 // meaning is still not read.
 constexpr std::string_view kPaintAttributes[] = {
-    "filter", "clip-rule",
+    "clip-rule",
     "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "mix-blend-mode",
 };
 
@@ -174,6 +183,9 @@ struct Builder {
     std::map<std::string, Gradient> gradients;
     std::map<std::string, std::vector<Path>> clipPaths;
     std::map<std::string, SvgDocument::Mask> masks;
+    std::map<std::string, SvgDocument::Filter> filters;
+    // Zero means "no filter", so the first group to name one is 1.
+    std::size_t filterInstances = 0;
     bool sawStylesheet = false;
 
     // One element's paint, resolved against what the ancestry set.
@@ -192,6 +204,54 @@ struct Builder {
             return;
         }
         for (const auto& c : e.children) collectStyles(c);
+    }
+
+    // Every `<filter>` in the document, wherever it sits, before anything is
+    // walked. A pass of its own for the same reason `collectStyles` is one:
+    // Figma writes `<defs>` at the BOTTOM of the file, after every group that
+    // references it, and a group cannot be dropped for a chain that has not been
+    // read yet.
+    void collectFilters(const Element& e) {
+        if (e.name == "filter") {
+            const std::string* id = e.attribute("id");
+            if (!id) return;  // unreferenceable, so it changes nothing
+            SvgDocument::Filter f;
+            if (const std::string* u = e.attribute("filterUnits")) f.userSpace = (*u == "userSpaceOnUse");
+            const std::string* xs = e.attribute("x");
+            const std::string* ys = e.attribute("y");
+            const std::string* ws = e.attribute("width");
+            const std::string* hs = e.attribute("height");
+            if (xs && ys && ws && hs) {
+                auto one = [](const std::string& v, double& slot) {
+                    auto n = numbers(v);
+                    if (n.size() != 1) return false;
+                    slot = n[0];
+                    return true;
+                };
+                f.hasRegion = one(*xs, f.x) && one(*ys, f.y) && one(*ws, f.width) &&
+                              one(*hs, f.height);
+            }
+            for (const auto& c : e.children) {
+                // THE TARGET'S TABLE, AND NOTHING ELSE, DECIDES THIS. A name
+                // outside it is never constructed there (0x2A230), so keeping it
+                // here would build a chain the target does not have.
+                bool built = false;
+                for (const auto& name : SvgDocument::targetFilterPrimitives()) {
+                    if (c.name == name) { built = true; break; }
+                }
+                if (!built) {
+                    f.dropped.push_back(c.name);
+                    continue;
+                }
+                SvgDocument::FilterPrimitive p;
+                p.name = c.name;
+                for (const auto& a : c.attributes) p.attributes[a.first] = a.second;
+                f.primitives.push_back(std::move(p));
+            }
+            filters[*id] = std::move(f);
+            return;
+        }
+        for (const auto& c : e.children) collectFilters(c);
     }
 
     // What this element's `class` list contributes, later classes winning.
@@ -284,6 +344,33 @@ struct Builder {
                 in.opacityChain *= std::clamp(n[0], 0.0, 1.0);
             } else {
                 unsupported.insert("paint:opacity=" + *v);
+            }
+        }
+        if (auto v = property(e, "filter", style, fromClass)) {
+            const std::string& t = *v;
+            if (t == "none") {
+                // The instruction NOT to filter, and the one value here that
+                // means the element is ordinary.
+            } else if (t.size() > 6 && t.compare(0, 5, "url(#") == 0 && t.back() == ')') {
+                const std::string id = t.substr(5, t.size() - 6);
+                auto f = filters.find(id);
+                if (f == filters.end()) {
+                    // A DANGLING FILTER REFERENCE IS A QUESTION, NOT A
+                    // REPRODUCTION. What the target does with one was not
+                    // measured -- `SVGAttribute::resolveAsFilter` was not read
+                    // -- and no corpus file has one, so it is named instead of
+                    // guessed in either direction.
+                    unsupported.insert("paint:filter=" + t);
+                } else if (!in.filterId.empty()) {
+                    // A filter applied to the result of a filter. The corpus has
+                    // none, and flattening the two would be a guess.
+                    unsupported.insert("filtro dentro de filtro");
+                } else {
+                    in.filterId = id;
+                    in.filterInstance = ++filterInstances;
+                }
+            } else {
+                unsupported.insert("paint:filter=" + t);
             }
         }
         return in;
@@ -434,6 +521,19 @@ struct Builder {
                                ? parseStyle(*e.attribute("style"))
                                : std::map<std::string, std::string>{};
         inherited = resolve(e, style, classDeclarations(e), inherited);
+
+        // THE ELEMENT DRAWS NOTHING, AND THAT IS THE TARGET BEING REPRODUCED.
+        // A chain holding a primitive the target never constructs leaves a hole
+        // that nulls its way to `SVGFilter::draw`'s cleanup path -- see
+        // `SvgDocument::Filter` for the six addresses. Returning here is the
+        // whole of it: no shape, no descent, and NOTHING REPORTED, because a
+        // report would accuse the file of losing art the target does not draw
+        // either.
+        if (!inherited.filterId.empty()) {
+            auto f = filters.find(inherited.filterId);
+            if (f != filters.end() && f->second.collapses()) return;
+        }
+
         Transform here = parent;
         if (const std::string* t = e.attribute("transform")) {
             auto local = parseTransform(*t);
@@ -545,6 +645,8 @@ struct Builder {
         } else if (e.name == "mask") {
             collectMask(e, here);
             return;
+        } else if (e.name == "filter") {
+            return;  // collected before the walk, and SVG never draws it
         } else if (e.name == "clipPath") {
             // Outside `<defs>` as well: `<clipPath>` is a definition wherever it
             // sits, and SVG does not draw it either way.
@@ -562,7 +664,9 @@ struct Builder {
                     collectClipPath(c, here);
                 } else if (c.name == "mask") {
                     collectMask(c, here);
-                } else if (c.name != "style") {  // collected in its own pass
+                } else if (c.name != "style" && c.name != "filter") {
+                    // `style` and `filter` are both collected in passes of their
+                    // own, before the walk.
                     unsupported.insert("defs:" + c.name);
                 }
             }
@@ -596,6 +700,8 @@ struct Builder {
         shape.opacity = inherited.opacityChain;
         shape.clipPaths = inherited.clips;
         shape.masks = inherited.masks;
+        shape.filterId = inherited.filterId;
+        shape.filterInstance = inherited.filterInstance;
         // A shape composited at less than 1 that has BOTH a fill and a stroke
         // is the other place where folding differs from compositing once: the
         // stroke overlaps the fill along the edge, and two separate composites
@@ -611,6 +717,24 @@ struct Builder {
 };
 
 }  // namespace
+
+// `[BIN]` The six-entry table at `CoreSVG.arm64 __const:0x327F0`, in ITS OWN
+// ORDER: {0x67, 0x5f, 0x5b, 0x72, 0x65, 0x78}. `SVGFilter::filterPrimitive`
+// (0x2A230) scans it linearly and constructs nothing whose atom is absent.
+//
+// THE ORDER IS KEPT BECAUSE IT IS EVIDENCE. Sorting it would make the
+// transcription unfalsifiable against the bytes it came from.
+const std::vector<std::string>& SvgDocument::targetFilterPrimitives() {
+    static const std::vector<std::string> six = {
+        "feGaussianBlur",    // 0x67
+        "feOffset",          // 0x5f
+        "feFlood",           // 0x5b
+        "feComposite",       // 0x72
+        "feBlend",           // 0x65
+        "feConvolveMatrix",  // 0x78
+    };
+    return six;
+}
 
 std::optional<Transform> parseTransform(std::string_view text) {
     Transform result;
@@ -708,11 +832,13 @@ std::optional<SvgDocument> SvgDocument::parse(std::string_view svg) {
     }
     Builder b;
     b.collectStyles(xml->root);
+    b.collectFilters(xml->root);
     b.walk(xml->root, Transform{}, Inherited{});
     doc.shapes = std::move(b.shapes);
     doc.gradients = std::move(b.gradients);
     doc.clipPaths = std::move(b.clipPaths);
     doc.masks = std::move(b.masks);
+    doc.filters = std::move(b.filters);
     doc.unsupported_ = std::move(b.unsupported);
 
     // A DEFINITION NOTHING REFERENCES IS NOT A GAP. `defs:filter` says the
@@ -725,7 +851,7 @@ std::optional<SvgDocument> SvgDocument::parse(std::string_view svg) {
     // eight lines were false alarms. The ruler carried the same defect and
     // blocked the whole document over them; fixing both moved it from 179/48 to
     // 183/49 with no change to a single pixel.
-    for (const char* kind : {"filter", "mask", "pattern"}) {
+    for (const char* kind : {"mask", "pattern"}) {
         const std::string def = std::string("defs:") + kind;
         const std::string ref = std::string("paint:") + kind;
         if (doc.unsupported_.count(def) && !doc.unsupported_.count(ref)) {
