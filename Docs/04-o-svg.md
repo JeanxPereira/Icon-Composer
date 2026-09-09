@@ -76,22 +76,96 @@ Cúbicas e retas dominam. Arcos aparecem **duas vezes em 149 arquivos**.
 > em notação científica. O que isso diz de verdade é que **o parser de número
 > precisa aceitar `1e-5`**.
 
-## 3. O achado: três filtros que a Apple não lê
+## 3. O achado: a Apple constrói **seis** primitivas, e derruba o resto
 
-`[BIN]` **`feColorMatrix`, `feMorphology` e `feDropShadow` aparecem ZERO vezes**
-no `CoreSVG`, no `IconComposerKit` e no `IconComposerFoundation`. Nenhum dos três
-está na lista do §1.
+> **Esta seção foi reescrita em 2026-09-09.** A versão anterior lia o suporte a
+> filtro por **strings** e concluiu, com selo `[INF]`, que o CoreSVG suportava
+> oito primitivas e que os três ausentes eram "descartados em silêncio". A
+> tabela do binário diz outra coisa, em duas direções — e o que acontece com a
+> cadeia não é um descarte silencioso. O que segue é `[BIN]`, com endereços.
 
-`[ART]` E os três estão nos arquivos reais: 42, 14 e 8 ocorrências.
+`[BIN]` `SVGFilter::filterPrimitive(SVGAtom::Name)` — **CoreSVG.arm64 0x2A230** —
+varre uma tabela de **seis `uint32`** em `__const:0x327F0`:
 
-`[INF]` Logo o Icon Composer **descarta esses filtros em silêncio**, e os ícones
-que aquelas pessoas commitaram desenham sem eles. Um leitor nosso que os
-implementasse ficaria *mais* certo que o alvo e produziria pixel diferente — o
-que, para um projeto cujo objetivo é reproduzir o alvo, é o erro errado de
-cometer.
+```
+{0x67, 0x5f, 0x5b, 0x72, 0x65, 0x78}
+```
 
-O que fica: o suporte a filtro do CoreSVG é `feBlend`, `feComposite`, `feFlood`,
-`feGaussianBlur`, `feImage`, `feMerge`, `feOffset` e `feTile`.
+Um nome que não casa cai em `SVGAtom::ToString`, `SVGUtilities::log("Filter
+primitive: <%s> is currently not supported.")`, e a função retorna **nullptr**:
+a primitiva **nunca é construída** e nunca entra na cadeia.
+
+`[BIN]` `SVGFilterPrimitive::selectPrimitive()` — **0x23B48** — despacha os
+**mesmos seis** átomos, com `x19` nascendo em 0, e devolve nullptr para
+qualquer outro. As duas listas batem exatamente.
+
+| átomo | primitiva | `draw*` |
+|---|---|---|
+| `0x67` | `feGaussianBlur` | `0x23D20` |
+| `0x5f` | `feOffset` | `0x23E94` |
+| `0x5b` | `feFlood` | `0x23F7C` |
+| `0x72` | `feComposite` | `0x240C8` |
+| `0x65` | `feBlend` | `0x24BFC` |
+| `0x78` | `feConvolveMatrix` | `0x24F74` |
+
+**As duas correções à leitura antiga:**
+
+- `feImage`, `feMerge` e `feTile` **não desenham**. As strings existem no
+  binário — são átomos, e por isso a leitura por strings as pegou — mas
+  nenhuma está na tabela nem tem uma função `draw*`.
+- `feConvolveMatrix` **desenha**, e nunca tinha sido listada.
+
+`feColorMatrix`, `feMorphology` e `feDropShadow` seguem fora, como a leitura
+antiga dizia — mas pela tabela, e não pela ausência da string.
+
+### 3.1. E o buraco colapsa a cadeia inteira
+
+O erro da conclusão antiga não foi a lista: foi supor que uma primitiva
+derrubada é só uma etapa a menos. `[BIN]` Ela não é.
+
+| onde | endereço | o que faz |
+|---|---|---|
+| `inputImage<T>` | `0x2520C` | atributo ausente → resultado anterior; nome presente e **fora do mapa → nullptr** |
+| `drawFeBlend` | `0x24BFC` | `x22` nasce 0; `cbz x19` / `cbz x20` → **null entra, null sai** |
+| `drawFeComposite` | `0x240C8` | mesma forma (`x25 = 0`, guardas em `0x2412C`/`0x24130`) |
+| `SVGFilter::draw` | `0x29A34` | resultado final nulo → `0x29E58`, que é **só cleanup** |
+| `PopSVGNodeAttributes` | `0xA85C` | ignora o retorno; **não existe plano B** |
+
+**Logo: um elemento cuja cadeia nomeia uma primitiva que o alvo não constrói
+DESENHA NADA.** Não "desenha sem o filtro".
+
+Isso inverte o conselho da versão antiga desta seção. Ela dizia que
+implementar `feColorMatrix` nos deixaria *mais certos que o alvo*, o que
+continua verdade; mas o que ela não viu é que **desenhar a forma sem o filtro
+também** produz pixel que o alvo nunca faz. As duas leituras plausíveis estavam
+erradas, e a medida é uma terceira coisa.
+
+`[ART]` No corpus: **17 das 18 cadeias** caem nessa regra, todas por
+`feColorMatrix` (14 também por `feMorphology`). São o `PiStats` e três dos
+assets do `Delta`, todos exports do Figma — inner shadow e drop shadow. A 18ª,
+o borrão do `00_stripes.svg` do Delta, está inteira dentro das seis.
+
+### 3.2. O que o nosso lado faz com isso
+
+`SvgDocument` reproduz a regra: um `<filter>` com primitiva derrubada marca
+`Filter::collapses()`, e o elemento que o referencia não vira forma nenhuma — e
+**não é reportado em `unsupported()`**, porque reproduzir o alvo não é uma
+lacuna nossa.
+
+`SvgFilter.cpp` transcreve **três** das seis — `feFlood`, `feBlend` (modo
+`normal`) e `feGaussianBlur` — que são a cadeia limpa inteira. `feOffset`,
+`feComposite` e `feConvolveMatrix` recusam por nome: o alvo as desenha, então
+uma cadeia que use qualquer uma **é** lacuna nossa e tem que dizer.
+
+`[OBS]` **A largura do borrão não é afirmada igual à do alvo.** `[BIN]`
+`drawFeGaussianBlur` clampa `stdDeviation` em **100** (`fminnm` contra
+`0x4059000000000000`), recusa anisotropia por log
+(`"Different radii for gaussian blur not supported"`, `0x23D88`) seguindo com o
+componente X, e entrega o número ao **`inputRadius` do `CIGaussianBlur`**
+(`0x23DF4`). `inputRadius` não é o sigma da SVG, e o kernel que o CoreImage
+constrói a partir dele mora num framework que este projeto não leu. O
+encanamento medido está transcrito; o kernel é a gaussiana da própria SVG 1.1,
+e todo render que roda um borrão o declara.
 
 ## 4. O escopo desta rodada
 
@@ -100,11 +174,12 @@ ordem de peso no corpus, é **geometria e pintura**:
 
 | entra | fica de fora, e é REPORTADO |
 |---|---|
-| `svg` com `viewBox`, `g`, `defs` | `filter` e suas primitivas |
-| `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon` | `pattern`, `mask`, `clipPath` |
-| `transform` | `use`, `symbol`, `switch` |
+| `svg` com `viewBox`, `g`, `defs` | `feOffset`, `feComposite`, `feConvolveMatrix` |
+| `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon` | `pattern` |
+| `transform`, `mask`, `clipPath`, `opacity` | `use`, `symbol`, `switch` |
 | `fill`, `stroke` e as suas propriedades | `text`, `image` |
 | `linearGradient`, `radialGradient`, `stop` | |
+| `filter` com `feFlood`, `feBlend`, `feGaussianBlur` | |
 | `style=` por elemento | `<style>` com CSS de seletor |
 
 **Reportado, nunca descartado em silêncio.** É a mesma regra do

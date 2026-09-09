@@ -50,8 +50,40 @@ std::vector<float> whiteRect(std::uint32_t x0, std::uint32_t y0, std::uint32_t x
     return px;
 }
 
+// An opaque GREEN rectangle on a field that is fully transparent and whose
+// colour bytes are RED.
+//
+// THE INVISIBLE RED IS THE WHOLE POINT. A canvas of white-on-zero cannot test
+// premultiplication at all: its transparent pixels already carry RGB 0, so
+// multiplying them by their zero alpha changes nothing and a renderer that
+// skipped the multiply would look identical. The bleed only shows when the
+// invisible pixels carry a colour that differs from the visible ones -- which is
+// the same fixture, and the same reason, as the raster sampler's.
+std::vector<float> greenOnInvisibleRed(std::uint32_t x0, std::uint32_t y0, std::uint32_t x1,
+                                       std::uint32_t y1) {
+    std::vector<float> px(static_cast<std::size_t>(kSide) * kSide * 4, 0.0f);
+    for (std::size_t t = 0; t < static_cast<std::size_t>(kSide) * kSide; ++t) {
+        px[t * 4 + 0] = 1.0f;  // red, and invisible
+        px[t * 4 + 3] = 0.0f;
+    }
+    for (std::uint32_t y = y0; y < y1; ++y) {
+        for (std::uint32_t x = x0; x < x1; ++x) {
+            float* p = &px[(static_cast<std::size_t>(y) * kSide + x) * 4];
+            p[0] = 0.0f;
+            p[1] = 1.0f;
+            p[2] = 0.0f;
+            p[3] = 1.0f;
+        }
+    }
+    return px;
+}
+
 float alphaAt(const std::vector<float>& rgba, std::uint32_t x, std::uint32_t y) {
     return rgba[(static_cast<std::size_t>(y) * kSide + x) * 4 + 3];
+}
+
+float channelAt(const std::vector<float>& rgba, std::uint32_t x, std::uint32_t y, int c) {
+    return rgba[(static_cast<std::size_t>(y) * kSide + x) * 4 + c];
 }
 
 double totalAlpha(const std::vector<float>& rgba) {
@@ -93,34 +125,43 @@ TEST_CASE(a_blur_softens_the_edge_and_conserves_the_ink) {
     CHECK(std::abs(after - before) / before < 0.01);
 }
 
-TEST_CASE(the_blur_averages_premultiplied_and_does_not_pull_in_invisible_black) {
-    // THE DEFECT THIS CATCHES IS INVISIBLE IN THE ALPHA CHANNEL. Every
-    // transparent pixel of the canvas carries RGB 0 -- black with zero alpha --
-    // and averaging STRAIGHT colour drags that black into the edge of anything
-    // it borders, greying it. Averaging premultiplied does not, because a pixel
-    // with no alpha contributes no colour.
+TEST_CASE(the_blur_averages_premultiplied_and_does_not_pull_in_invisible_colour) {
+    // THE DEFECT THIS CATCHES IS INVISIBLE IN THE ALPHA CHANNEL, and the first
+    // version of this test could not see it either.
     //
-    // It is the same defect the raster sampler had to fix, and the same reason
-    // it only ever shows where an edge meets transparency.
+    // That version blurred WHITE on a field of zeros. Its transparent pixels
+    // already carried RGB 0, so premultiplying them by their zero alpha changed
+    // nothing -- a renderer that skipped the multiply produced identical output
+    // and the test stayed green. The mutation sweep of 2026-09-09 said so, and
+    // it was right: `pre[r] = src[r] * a` mutated to `pre[r] = src[r]` SURVIVED.
+    //
+    // What makes the bleed visible is invisible colour that DIFFERS from the
+    // visible colour. Green on a transparent RED field: premultiplied, the red
+    // contributes nothing and the edge stays pure green; averaged straight, the
+    // red walks into every edge pixel and the eye reads a dirty rim.
     const auto filter = chainOf(
         R"SVG(<svg viewBox="0 0 64 64"><defs>
           <filter id="b"><feGaussianBlur stdDeviation="3"/></filter></defs></svg>)SVG");
-    const std::vector<float> src = whiteRect(16, 16, 48, 48);
+    const std::vector<float> src = greenOnInvisibleRed(16, 16, 48, 48);
     const auto got = applySvgFilter(filter, src, kSide, kSide, identityPlacement());
     REQUIRE(got.ok);
 
-    // Right on the old boundary the alpha is about half -- and the COLOUR is
-    // still white. Straight averaging would report about 0.5 here.
-    const std::size_t edge = (static_cast<std::size_t>(32) * kSide + 16) * 4;
-    CHECK(std::abs(got.rgba[edge + 3] - 0.5f) < 0.08f);
-    CHECK(got.rgba[edge + 0] > 0.99f);
-    CHECK(got.rgba[edge + 1] > 0.99f);
-    CHECK(got.rgba[edge + 2] > 0.99f);
+    // Right on the old boundary the alpha is about half -- and NO RED has
+    // arrived. Straight averaging would put roughly 1.0 in this channel.
+    CHECK(std::abs(alphaAt(got.rgba, 16, 32) - 0.5f) < 0.08f);
+    CHECK(channelAt(got.rgba, 16, 32, 0) < 0.01f);
+    CHECK(channelAt(got.rgba, 16, 32, 1) > 0.99f);
 
-    // And well outside, where only the tail reaches, the colour has to hold up
-    // too: this is where straight averaging goes darkest.
-    const std::size_t tail = (static_cast<std::size_t>(32) * kSide + 13) * 4;
-    if (got.rgba[tail + 3] > 0.001f) CHECK(got.rgba[tail + 0] > 0.99f);
+    // And out in the tail, where the field dominates the kernel, straight
+    // averaging goes reddest of all.
+    if (alphaAt(got.rgba, 13, 32) > 0.001f) {
+        CHECK(channelAt(got.rgba, 13, 32, 0) < 0.01f);
+        CHECK(channelAt(got.rgba, 13, 32, 1) > 0.99f);
+    }
+
+    // The interior is untouched by any of this.
+    CHECK(channelAt(got.rgba, 32, 32, 0) < 0.01f);
+    CHECK(channelAt(got.rgba, 32, 32, 1) > 0.99f);
 }
 
 TEST_CASE(a_blur_of_zero_is_the_identity) {
