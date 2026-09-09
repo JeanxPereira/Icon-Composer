@@ -594,13 +594,18 @@ TEST_CASE(a_definition_nothing_references_at_all_is_not_a_gap) {
     CHECK_EQ(doc->unsupported().count("defs:image"), std::size_t(0));
 }
 
-TEST_CASE(an_element_the_reader_ignores_is_not_a_gap_for_sitting_in_defs) {
-    // `isIgnorable` applied everywhere EXCEPT inside `<defs>`, so an element the
-    // reader deliberately passes over became a gap purely by where it sat.
-    // `[ART]` One corpus file, and Inkscape's `inkscape:path-effect`.
+TEST_CASE(an_unreferenced_definition_of_any_kind_is_not_a_gap) {
+    // `[ART]` Jellify's file carries 27 `<inkscape:path-effect>` definitions,
+    // every one with an id and NOT ONE referenced, and it used to report the
+    // kind as a gap. The reachability walk clears it with no special case --
+    // which is the point: an `isIgnorable` test was written here and taken out
+    // the same day, because the sweep proved no input could distinguish it.
     auto doc = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
       <path d="M1 1" fill="#f00"/>
-      <defs><inkscape:path-effect id="pe" effect="spiro"/></defs></svg>)SVG");
+      <defs>
+        <inkscape:path-effect id="pe1" effect="spiro"/>
+        <inkscape:path-effect id="pe2" effect="spiro"/>
+      </defs></svg>)SVG");
     REQUIRE(doc.has_value());
     CHECK_EQ(doc->unsupported().count("defs:inkscape:path-effect"), std::size_t(0));
 }

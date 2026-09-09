@@ -284,11 +284,6 @@ $mutations = @(
     @{ file = "svgdoc"; name = "a stroke reference stops seeding the walk"
        from = '            reachedIds.insert(inherited.stroke.reference);'
        to   = '            (void)0;' },
-    # E `isIgnorable` dentro do `<defs>`: sem ele um elemento que o leitor ignora
-    # em todo lugar vira lacuna so por onde esta sentado.
-    @{ file = "svgdoc"; name = "an ignorable element inside defs is accused again"
-       from = '                } else if (c.name != "style" && c.name != "filter" && !isIgnorable(c.name)) {'
-       to   = '                } else if (c.name != "style" && c.name != "filter") {' },
     # ---- O FILTRO, E A REGRA E DO ALVO ------------------------------------
     #
     # `[BIN]` `SVGFilter::filterPrimitive` (CoreSVG.arm64 0x2A230) le uma tabela

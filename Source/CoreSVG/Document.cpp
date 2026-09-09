@@ -711,14 +711,20 @@ struct Builder {
                     collectClipPath(c, here);
                 } else if (c.name == "mask") {
                     collectMask(c, here);
-                } else if (c.name != "style" && c.name != "filter" && !isIgnorable(c.name)) {
+                } else if (c.name != "style" && c.name != "filter") {
                     // `style` and `filter` are collected in passes of their own,
                     // before the walk.
                     //
-                    // AND `isIgnorable` APPLIES INSIDE `<defs>` TOO, which it did
-                    // not until 2026-09-09. An element the reader ignores
-                    // everywhere else became a gap purely for sitting in here --
-                    // `[ART]` one file, Inkscape's `inkscape:path-effect`.
+                    // AND THERE IS NO `isIgnorable` TEST HERE, though one was
+                    // written on 2026-09-09 and taken out the same day. It was
+                    // meant for `inkscape:path-effect`, which used to be named a
+                    // gap purely for sitting in `<defs>` -- but the walk below
+                    // already answers that: `[ART]` all 27 of Jellify's
+                    // definitions carry an id and NOTHING references one, so
+                    // reachability prunes them without help. The mutation sweep
+                    // said so by surviving, and a guard no input can distinguish
+                    // is dead weight that makes the sweep report a defect nobody
+                    // can fix.
                     //
                     // RECORDED, NOT ACCUSED: whether this is a gap depends on
                     // whether anything drawn can reach it, and that is not known
