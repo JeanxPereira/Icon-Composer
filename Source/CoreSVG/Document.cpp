@@ -184,6 +184,44 @@ struct Builder {
     std::map<std::string, std::vector<Path>> clipPaths;
     std::map<std::string, SvgDocument::Mask> masks;
     std::map<std::string, SvgDocument::Filter> filters;
+
+    // THE DEFINITION GRAPH, for deciding what is actually a gap.
+    //
+    // A `<defs>` child this reader does not draw is only a LOSS if something
+    // drawn can reach it. Until 2026-09-09 that question was answered by pairing
+    // names -- `defs:filter` was dropped unless a `paint:filter` had also been
+    // seen -- which works one level deep and no further. `[ART]` It failed on
+    // Delta's `texture.svg`: its `<image>` is reached through a `<pattern>`,
+    // and the only shape naming that pattern sits under a filter the target
+    // collapses, so nothing is drawn and nothing is lost. The name pairing had
+    // no way to see two links away.
+    struct Definition {
+        std::string kind;              // the element name, for the report
+        std::string id;                // may be empty: then nothing can name it
+        std::set<std::string> refs;    // the ids ITS subtree reaches
+    };
+    std::vector<Definition> definitions;
+    // Ids reached from something DRAWN -- a shape's paint, its clips, its masks,
+    // its filter -- and the seeds of the walk below.
+    std::set<std::string> reachedIds;
+
+    // Every `url(#id)` and `href="#id"` an element's subtree names.
+    static void collectRefs(const Element& e, std::set<std::string>& into) {
+        for (const auto& a : e.attributes) {
+            const std::string& v = a.second;
+            std::size_t at = 0;
+            while ((at = v.find("url(#", at)) != std::string::npos) {
+                const std::size_t close = v.find(')', at);
+                if (close == std::string::npos) break;
+                into.insert(v.substr(at + 5, close - at - 5));
+                at = close + 1;
+            }
+            if ((a.first == "href" || a.first == "xlink:href") && v.size() > 1 && v[0] == '#') {
+                into.insert(v.substr(1));
+            }
+        }
+        for (const auto& c : e.children) collectRefs(c, into);
+    }
     // Zero means "no filter", so the first group to name one is 1.
     std::size_t filterInstances = 0;
     bool sawStylesheet = false;
@@ -385,6 +423,7 @@ struct Builder {
     // because refusing a second child would be a limit this reader has no reason
     // to have.
     void collectClipPath(const Element& e, const Transform& parent) {
+        collectLiveRefs(e);
         const std::string* id = e.attribute("id");
         if (!id) return;
         // `objectBoundingBox` re-scales the clip to each USER's bounding box, so
@@ -415,6 +454,7 @@ struct Builder {
     // is the luminance of what it draws -- a black rect and a white one are not
     // the same mask, while for a clip they would be the same region.
     void collectMask(const Element& e, const Transform& parent) {
+        collectLiveRefs(e);
         const std::string* id = e.attribute("id");
         if (!id) return;
         // `maskUnits` DEFAULTS TO `objectBoundingBox`, which re-scales the
@@ -506,6 +546,13 @@ struct Builder {
         }
         gradients[*id] = std::move(g);
     }
+
+    // A definition this reader DOES draw -- a gradient, a clip path, a mask --
+    // is live wherever it is used, and so is everything its own content names.
+    // Folding those in here is deliberately CONSERVATIVE: it can keep a gap
+    // named that closer reading would clear, and the opposite mistake -- hiding
+    // art that really is lost -- is the one that matters.
+    void collectLiveRefs(const Element& e) { collectRefs(e, reachedIds); }
 
     // What a shape's paint attributes would have said, had anything read them.
     void notePaint(const Element& e) {
@@ -664,10 +711,23 @@ struct Builder {
                     collectClipPath(c, here);
                 } else if (c.name == "mask") {
                     collectMask(c, here);
-                } else if (c.name != "style" && c.name != "filter") {
-                    // `style` and `filter` are both collected in passes of their
-                    // own, before the walk.
-                    unsupported.insert("defs:" + c.name);
+                } else if (c.name != "style" && c.name != "filter" && !isIgnorable(c.name)) {
+                    // `style` and `filter` are collected in passes of their own,
+                    // before the walk.
+                    //
+                    // AND `isIgnorable` APPLIES INSIDE `<defs>` TOO, which it did
+                    // not until 2026-09-09. An element the reader ignores
+                    // everywhere else became a gap purely for sitting in here --
+                    // `[ART]` one file, Inkscape's `inkscape:path-effect`.
+                    //
+                    // RECORDED, NOT ACCUSED: whether this is a gap depends on
+                    // whether anything drawn can reach it, and that is not known
+                    // until the walk is over.
+                    Definition d;
+                    d.kind = c.name;
+                    if (const std::string* id = c.attribute("id")) d.id = *id;
+                    collectRefs(c, d.refs);
+                    definitions.push_back(std::move(d));
                 }
             }
             return;
@@ -702,6 +762,16 @@ struct Builder {
         shape.masks = inherited.masks;
         shape.filterId = inherited.filterId;
         shape.filterInstance = inherited.filterInstance;
+        // THE SEEDS. Everything this shape can reach is reached, and a shape
+        // that was never emitted -- because its group's filter collapses --
+        // seeds nothing, which is the whole point.
+        if (inherited.fill.kind == PaintKind::Reference) reachedIds.insert(inherited.fill.reference);
+        if (inherited.stroke.kind == PaintKind::Reference) {
+            reachedIds.insert(inherited.stroke.reference);
+        }
+        for (const auto& c : inherited.clips) reachedIds.insert(c);
+        for (const auto& m : inherited.masks) reachedIds.insert(m);
+        if (!inherited.filterId.empty()) reachedIds.insert(inherited.filterId);
         // A shape composited at less than 1 that has BOTH a fill and a stroke
         // is the other place where folding differs from compositing once: the
         // stroke overlaps the fill along the edge, and two separate composites
@@ -841,21 +911,46 @@ std::optional<SvgDocument> SvgDocument::parse(std::string_view svg) {
     doc.filters = std::move(b.filters);
     doc.unsupported_ = std::move(b.unsupported);
 
-    // A DEFINITION NOTHING REFERENCES IS NOT A GAP. `defs:filter` says the
-    // reader walked past a `<filter>`; `paint:filter` says a shape asked for
-    // one. Only the second can change a picture, and reporting the first on its
-    // own accuses a file of losing something it never used.
+    // A DEFINITION NOTHING DRAWN CAN REACH IS NOT A GAP.
     //
     // `[ART]` PDF-Archiver has EIGHT `<filter>` definitions and ZERO references
     // -- the Pixodesk exporter emitted them and never wired them up -- so all
     // eight lines were false alarms. The ruler carried the same defect and
     // blocked the whole document over them; fixing both moved it from 179/48 to
     // 183/49 with no change to a single pixel.
-    for (const char* kind : {"mask", "pattern"}) {
-        const std::string def = std::string("defs:") + kind;
-        const std::string ref = std::string("paint:") + kind;
-        if (doc.unsupported_.count(def) && !doc.unsupported_.count(ref)) {
-            doc.unsupported_.erase(def);
+    //
+    // THAT FIX PAIRED NAMES, AND A PAIR ONLY SEES ONE LINK. It dropped
+    // `defs:filter` unless a `paint:filter` had also been seen, which cannot
+    // answer for a definition reached through ANOTHER definition. `[ART]` Delta's
+    // `texture.svg` is that case: its `<image>` is named by a `<use>` inside a
+    // `<pattern>`, and the only shape naming that pattern sits under a filter the
+    // target collapses. Nothing is drawn, nothing is lost, and the report said
+    // otherwise.
+    //
+    // So the reachability is walked instead of guessed. The seeds are what
+    // EMITTED SHAPES name; the edges are what each definition's own subtree
+    // names; and a definition the walk never arrives at is not reported.
+    {
+        std::set<std::string> reached = b.reachedIds;
+        // An id nothing can name is unreachable by construction; so is one the
+        // walk never arrives at. One predicate, used by both passes below, so
+        // that what expands the walk and what gets reported cannot drift apart.
+        auto arrived = [&reached](const auto& d) {
+            return !d.id.empty() && reached.count(d.id) != 0;
+        };
+        bool grew = true;
+        while (grew) {
+            grew = false;
+            for (const auto& d : b.definitions) {
+                if (!arrived(d)) continue;
+                for (const auto& r : d.refs) {
+                    if (reached.insert(r).second) grew = true;
+                }
+            }
+        }
+        for (const auto& d : b.definitions) {
+            if (!arrived(d)) continue;
+            doc.unsupported_.insert("defs:" + d.kind);
         }
     }
     return doc;

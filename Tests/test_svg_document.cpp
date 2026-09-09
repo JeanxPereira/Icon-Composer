@@ -535,3 +535,85 @@ TEST_CASE(filter_none_is_not_a_filter_at_all) {
     CHECK_EQ(doc->shapes[0].filterInstance, std::size_t(0));
     CHECK_EQ(doc->unsupported().count("paint:filter"), std::size_t(0));
 }
+
+// ---- what counts as a gap: reachability, not name pairing ----------------
+//
+// A `<defs>` child this reader does not draw is a LOSS only if something drawn
+// can reach it. Until 2026-09-09 that was answered by pairing `defs:K` against
+// `paint:K`, which sees exactly one link -- and got it wrong in BOTH directions.
+
+TEST_CASE(a_definition_reached_through_another_definition_is_still_a_gap) {
+    // Figma's embedded raster: a shape fills with a `<pattern>`, the pattern
+    // holds a `<use>`, and the `<use>` names an `<image>`. THE NAME PAIRING HID
+    // BOTH -- `fill="url(#p)"` is an ordinary paint reference and never writes a
+    // `paint:pattern` line, so `defs:pattern` was dropped as unused while the
+    // picture really was losing it. `[ART]` Two corpus files, Delta's
+    // `delta-text.svg` and `04_symbols.svg`.
+    auto doc = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
+      <rect x="0" y="0" width="4" height="4" fill="url(#p)"/>
+      <defs>
+        <pattern id="p" width="1" height="1"><use xlink:href="#img"/></pattern>
+        <image id="img" width="8" height="8" xlink:href="data:image/png;base64,AA=="/>
+      </defs></svg>)SVG");
+    REQUIRE(doc.has_value());
+    CHECK_EQ(doc->unsupported().count("defs:pattern"), std::size_t(1));
+    CHECK_EQ(doc->unsupported().count("defs:image"), std::size_t(1));
+}
+
+TEST_CASE(a_definition_whose_only_consumer_is_a_collapsed_filter_is_not_a_gap) {
+    // Delta's `texture.svg`, in miniature. The rect is the only thing that names
+    // the pattern, and its group carries a chain the target collapses -- so the
+    // rect is never emitted, the pattern is never reached, and the image behind
+    // it is never reached either. Nothing is drawn and nothing is lost.
+    auto doc = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
+      <g filter="url(#f)">
+        <rect x="0" y="0" width="4" height="4" fill="url(#p)"/>
+      </g>
+      <defs>
+        <filter id="f"><feColorMatrix values="0"/></filter>
+        <pattern id="p" width="1" height="1"><use xlink:href="#img"/></pattern>
+        <image id="img" width="8" height="8" xlink:href="data:image/png;base64,AA=="/>
+      </defs></svg>)SVG");
+    REQUIRE(doc.has_value());
+    CHECK_EQ(doc->shapes.size(), std::size_t(0));
+    CHECK_EQ(doc->unsupported().count("defs:pattern"), std::size_t(0));
+    CHECK_EQ(doc->unsupported().count("defs:image"), std::size_t(0));
+}
+
+TEST_CASE(a_definition_nothing_references_at_all_is_not_a_gap) {
+    // The PDF-Archiver case, kept as a guard through the rewrite.
+    auto doc = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
+      <rect x="0" y="0" width="4" height="4" fill="#f00"/>
+      <defs>
+        <pattern id="p" width="1" height="1"><use xlink:href="#img"/></pattern>
+        <image id="img" width="8" height="8" xlink:href="data:image/png;base64,AA=="/>
+      </defs></svg>)SVG");
+    REQUIRE(doc.has_value());
+    CHECK_EQ(doc->shapes.size(), std::size_t(1));
+    CHECK_EQ(doc->unsupported().count("defs:pattern"), std::size_t(0));
+    CHECK_EQ(doc->unsupported().count("defs:image"), std::size_t(0));
+}
+
+TEST_CASE(an_element_the_reader_ignores_is_not_a_gap_for_sitting_in_defs) {
+    // `isIgnorable` applied everywhere EXCEPT inside `<defs>`, so an element the
+    // reader deliberately passes over became a gap purely by where it sat.
+    // `[ART]` One corpus file, and Inkscape's `inkscape:path-effect`.
+    auto doc = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
+      <path d="M1 1" fill="#f00"/>
+      <defs><inkscape:path-effect id="pe" effect="spiro"/></defs></svg>)SVG");
+    REQUIRE(doc.has_value());
+    CHECK_EQ(doc->unsupported().count("defs:inkscape:path-effect"), std::size_t(0));
+}
+
+TEST_CASE(a_stroke_reference_seeds_the_reachability_walk_too) {
+    // The fill is the obvious seed and the stroke is the one a rewrite forgets:
+    // a shape painted only on its outline reaches its definition just as much.
+    auto doc = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
+      <path d="M1 1 L8 8" fill="none" stroke="url(#p)" stroke-width="2"/>
+      <defs><pattern id="p" width="1" height="1"><use xlink:href="#img"/></pattern>
+        <image id="img" width="8" height="8" xlink:href="data:image/png;base64,AA=="/>
+      </defs></svg>)SVG");
+    REQUIRE(doc.has_value());
+    CHECK_EQ(doc->unsupported().count("defs:pattern"), std::size_t(1));
+    CHECK_EQ(doc->unsupported().count("defs:image"), std::size_t(1));
+}

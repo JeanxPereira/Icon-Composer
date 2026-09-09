@@ -261,12 +261,34 @@ $mutations = @(
     # `[ART]` O PDF-Archiver tinha OITO linhas falsas: quatro `defs:filter` que
     # nada referencia e quatro `class:stN` num arquivo sem folha de estilo
     # nenhuma. A regua carregava o mesmo defeito e bloqueava o documento inteiro.
+    #
+    # AS DUAS PRIMEIRAS FORAM RE-ANCORADAS EM 2026-09-09, mantendo o DEFEITO de
+    # cada uma: o pareamento por nome virou uma caminhada de alcancabilidade, e
+    # as linhas que elas mordiam deixaram de existir.
     @{ file = "svgdoc"; name = "a dead definition is reported as a gap again"
-       from = '        if (doc.unsupported_.count(def) && !doc.unsupported_.count(ref)) {'
-       to   = '        if (false) {' },
+       from = '            return !d.id.empty() && reached.count(d.id) != 0;'
+       to   = '            return true;' },
     @{ file = "svgdoc"; name = "a referenced definition vanishes from the report"
-       from = '            doc.unsupported_.erase(def);'
+       from = '            doc.unsupported_.insert("defs:" + d.kind);'
        to   = '            (void)0;' },
+    # E O QUE O PAREAMENTO POR NOME NAO CONSEGUIA VER: um segundo elo. Sem o
+    # fecho transitivo, uma `<image>` alcancada atraves de um `<pattern>` some do
+    # relatorio -- que e exatamente o que a versao antiga fazia, e o motivo de
+    # ela ter sido trocada.
+    @{ file = "svgdoc"; name = "the reachability walk stops after one link"
+       from = '                for (const auto& r : d.refs) {'
+       to   = '                for (const auto& r : std::set<std::string>{}) {' },
+    # O traco semeia tanto quanto o preenchimento. Uma forma pintada so no
+    # contorno alcanca a sua definicao do mesmo jeito, e e o lado que uma
+    # reescrita esquece.
+    @{ file = "svgdoc"; name = "a stroke reference stops seeding the walk"
+       from = '            reachedIds.insert(inherited.stroke.reference);'
+       to   = '            (void)0;' },
+    # E `isIgnorable` dentro do `<defs>`: sem ele um elemento que o leitor ignora
+    # em todo lugar vira lacuna so por onde esta sentado.
+    @{ file = "svgdoc"; name = "an ignorable element inside defs is accused again"
+       from = '                } else if (c.name != "style" && c.name != "filter" && !isIgnorable(c.name)) {'
+       to   = '                } else if (c.name != "style" && c.name != "filter") {' },
     # ---- O FILTRO, E A REGRA E DO ALVO ------------------------------------
     #
     # `[BIN]` `SVGFilter::filterPrimitive` (CoreSVG.arm64 0x2A230) le uma tabela
