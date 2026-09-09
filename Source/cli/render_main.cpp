@@ -114,6 +114,16 @@ int main(int argc, char** argv) {
                          s.why.c_str());
         }
         for (const auto& g : icon->shapeGaps) std::fprintf(stderr, "  %s\n", g.c_str());
+        // WHAT WAS DRAWN WITHOUT BEING CLAIMED, and until 2026-09-09 this line
+        // did not exist -- `RenderedIcon::notes` was filled and thrown away.
+        //
+        // The field is for the thing this project is most afraid of: a picture
+        // that looks right and is short of a measurement. The glass ruler
+        // (`GlassLayer.h`, GAP ONE) and the blur's kernel both announce
+        // themselves through it, and a reader of `icrender` saw "5 of 5
+        // layer(s) drawn" and nothing else. A gap nobody prints becomes
+        // folklore the moment the picture looks plausible.
+        for (const auto& n : icon->notes) std::fprintf(stderr, "  [OBS] %s\n", n.c_str());
         return icon->skipped.empty() && icon->shapeGaps.empty() ? 0 : 1;
     }
 
