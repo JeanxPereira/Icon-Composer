@@ -77,7 +77,9 @@ if ($LASTEXITCODE -ne 0) { Write-Host "FAILED: could not sync the worktree"; exi
 $at = (& git -C $Worktree rev-parse --short HEAD).Trim()
 Write-Host "worktree at $at`n"
 
-& cmake --build (Join-Path $Worktree "build/mingw") 2>&1 | Select-Object -Last 1
+# Same cap as the sweep's own rebuild, and for the same reason: this is the
+# WIDE build, the one that compiles all 64 targets at once.
+& cmake --build (Join-Path $Worktree "build/mingw") -- -j 4 2>&1 | Select-Object -Last 1
 if ($LASTEXITCODE -ne 0) { Write-Host "FAILED: the worktree does not build"; exit 1 }
 
 $corpus = Join-Path $main "References/corpus"

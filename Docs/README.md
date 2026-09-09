@@ -110,8 +110,8 @@ powershell -File scripts\gate-m1.ps1 -From 1 -To 40  # uma fatia, veredito PARCI
 powershell -File scripts\gate-worktree.ps1           # o gate, num worktree isolado
 ```
 
-**Prefira a terceira linha.** A varredura muta os fontes um a um durante uma hora
-e quarenta, e nesse intervalo a árvore não é segura para tocar — uma edição feita
+**Prefira a terceira linha.** A varredura muta os fontes um a um durante umas
+quatro horas, e nesse intervalo a árvore não é segura para tocar — uma edição feita
 ao lado ou é confundida com mutação, ou é restaurada por cima. O runner dá à
 varredura um checkout e um build próprios (`git worktree add --detach
 D:/CodingProjects/Icon-Composer-gate main`, uma vez), e aponta o corpus — que é

@@ -24,10 +24,17 @@
 #      gate into a lie.
 [CmdletBinding()]
 param(
-    # The sweep can be run in SLICES. It grew past an hour, and on this machine
-    # a run that long does not reliably survive to the end -- three were cut off
-    # mid-sweep, and twice that left a mutated file on disk for the recovery to
-    # find. Slicing lets each invocation finish.
+    # The sweep can be run in SLICES. It grew past an hour, and runs kept being
+    # cut off mid-sweep -- three of them, twice leaving a mutated file on disk
+    # for the recovery to find. Slicing lets each invocation finish.
+    #
+    # THE LENGTH WAS NOT THE CAUSE, AND THIS COMMENT USED TO SAY IT WAS. On
+    # 2026-09-09 a run died at mutation 142 of 308 and the operating system said
+    # why: memory. Ninja was building at one job per core plus two, and the wide
+    # units here cost the better part of a gigabyte each. `$BuildJobs` caps that
+    # now (see `Invoke-Build`), which is the actual repair; slicing remains
+    # useful for checking a handful of anchors without paying for the whole
+    # sweep.
     #
     # A SLICE IS NOT A PASS, and the script will not let one be mistaken for
     # one: with either bound given, the verdict says PARTIAL and names the range,
@@ -156,8 +163,25 @@ function Restore-Sources {
     }
 }
 
+# THE SWEEP HAS TO SURVIVE TO THE END, AND UNBOUNDED NINJA IS WHY IT DID NOT.
+#
+# Ninja defaults to one job per core plus two -- eighteen `g++` on this machine
+# -- and the heavy translation units here take the better part of a gigabyte
+# each. On 2026-09-09 the operating system killed a run at mutation 142 of 308
+# for want of memory, with 16 GB installed and an unrelated application holding
+# 3.7 of them. The docstring already recorded three runs cut off mid-sweep and
+# blamed the length of the run; the cause was the width of the build.
+#
+# CAPPING COSTS ALMOST NOTHING HERE. A mutation touches ONE file, so the rebuild
+# between mutations compiles one to three units and links -- there is no
+# parallelism to lose. Only the pristine build at the front is wide, and it runs
+# once.
+#
+# `-j` goes after `--` because that is ninja's flag, not CMake's.
+$BuildJobs = 4
+
 function Invoke-Build {
-    $out = & cmake --build $BuildDir 2>&1
+    $out = & cmake --build $BuildDir -- -j $BuildJobs 2>&1
     return ($LASTEXITCODE -eq 0)
 }
 
