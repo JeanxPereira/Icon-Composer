@@ -41,6 +41,8 @@ USAGE
 param(
     [int]$From = 0,
     [int]$To = 0,
+    # Forwarded to `gate-m1.ps1`; see its own `-Files` for what it means.
+    [string]$Files = "",
     [string]$Worktree = "D:/CodingProjects/Icon-Composer-gate",
     # The commit the sweep should test. The default is main's tip, because a
     # sweep against a stale checkout reports on code nobody has.
@@ -86,6 +88,7 @@ $corpus = Join-Path $main "References/corpus"
 $gateArgs = @("-File", (Join-Path $Worktree "scripts/gate-m1.ps1"), "-CorpusDir", $corpus)
 if ($From -gt 0) { $gateArgs += @("-From", $From) }
 if ($To   -gt 0) { $gateArgs += @("-To",   $To) }
+if ($Files -ne "") { $gateArgs += @("-Files", $Files) }
 
 & powershell @gateArgs
 exit $LASTEXITCODE

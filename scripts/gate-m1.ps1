@@ -41,6 +41,21 @@ param(
     # never "gate-m1 passed". Only a run over every mutation can print that.
     [int]$From = 0,
     [int]$To = 0,
+    # `-Files svgdoc,svgfilter` runs only the mutations that touch those sources.
+    #
+    # WHY THIS EXISTS. The full sweep is the acceptance test of a MILESTONE, and
+    # the git log shows it being stamped at milestones -- not once per commit.
+    # Running all 308 after every change costs hours and re-proves that mutating
+    # `Png.cpp` is still caught, which no edit to `Document.cpp` can have changed.
+    #
+    # What a change CAN break is a mutation in a file it touched, so that is what
+    # this runs. Like `-From/-To` it prints PARTIAL and never `gate-m1 passed`:
+    # a subset is a check, and only the whole thing is the stamp.
+    #
+    # The one case a subset cannot see: an edit that REMOVES coverage a mutation
+    # in some other file was relying on. Deleting or weakening a test is the
+    # signal to run the whole sweep rather than a subset.
+    [string]$Files = "",
     [string]$BuildDir = "build/mingw",
     [string]$CorpusDir = $(if ($env:IC_CORPUS_DIR) { $env:IC_CORPUS_DIR } else { "References/corpus" })
 )
@@ -185,9 +200,22 @@ function Invoke-Build {
     return ($LASTEXITCODE -eq 0)
 }
 
+# `-StopEarly` is for the MUTATED runs and nothing else.
+#
+# A mutation is caught the instant one assertion fails; the cases after it say
+# nothing this script uses. Measured on 2026-09-09: the suite is 52 seconds and a
+# one-file rebuild is 11, so four fifths of a five-and-a-half-hour sweep went to
+# re-proving verdicts already reached.
+#
+# THE PRISTINE RUN AND THE FINAL RUN DO NOT GET IT. There the list of what failed
+# is the whole point, and a suite that stopped at the first would hide the rest.
 function Invoke-Suite {
+    param([switch]$StopEarly)
     $env:IC_CORPUS_DIR = (Resolve-Path $CorpusDir).Path
+    if ($StopEarly) { $env:IC_STOP_ON_FIRST_FAILURE = "1" }
+    else { Remove-Item Env:\IC_STOP_ON_FIRST_FAILURE -ErrorAction SilentlyContinue }
     $out = & (Join-Path $BuildDir "Tests/ic_tests.exe") 2>&1
+    Remove-Item Env:\IC_STOP_ON_FIRST_FAILURE -ErrorAction SilentlyContinue
     return @{ ok = ($LASTEXITCODE -eq 0); text = ($out -join "`n") }
 }
 
@@ -1562,7 +1590,28 @@ Write-Host "gate-m1: $($mutations.Count) mutations, corpus at $CorpusDir`n"
 # was never going to touch it.
 $sweepAll = $mutations
 $sliced = $false
+if ($Files -ne "") {
+    $sliced = $true
+    $keys = $Files.Split(",") | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+    foreach ($k in $keys) {
+        if (-not $sources.ContainsKey($k)) {
+            Write-Host "FAILED: -Files names '$k', which is not a source key"
+            Write-Host "        known: $(($sources.Keys | Sort-Object) -join ', ')"
+            exit 1
+        }
+    }
+    $mutations = $mutations | Where-Object { $keys -contains $_.file }
+    if ($mutations.Count -eq 0) {
+        Write-Host "FAILED: no mutation touches $($keys -join ', ')"
+        exit 1
+    }
+    Write-Host "FILES $($keys -join ', ') -- $($mutations.Count) of $($sweepAll.Count) mutations, NOT a full gate run`n"
+}
 if ($From -gt 0 -or $To -gt 0) {
+    if ($Files -ne "") {
+        Write-Host "FAILED: -Files and -From/-To select two different things; pick one"
+        exit 1
+    }
     $sliced = $true
     $lo = if ($From -gt 0) { $From } else { 1 }
     $hi = if ($To -gt 0) { $To } else { $mutations.Count }
@@ -1678,7 +1727,7 @@ try {
             Write-Host ("  {0,-56} DOES NOT COMPILE" -f $m.name)
             $survivors += "$($m.name) [did not compile]"
         } else {
-            $r = Invoke-Suite
+            $r = Invoke-Suite -StopEarly
             if ($r.ok) {
                 Write-Host ("  {0,-56} SURVIVED" -f $m.name)
                 $survivors += "$($m.name) [suite stayed green]"
@@ -1692,7 +1741,9 @@ try {
                     Write-Host ("  {0,-56} CRASHED (no assertion fired)" -f $m.name)
                     $crashed += $m.name
                 } else {
-                    Write-Host ("  {0,-56} caught ({1} assertion(s))" -f $m.name, $n)
+                    # The run stopped at the first case that failed, so this
+                    # is what THAT case fired -- not a tally over the suite.
+                    Write-Host ("  {0,-56} caught ({1} assertion(s) in the first case)" -f $m.name, $n)
                     $caught++
                 }
             }
