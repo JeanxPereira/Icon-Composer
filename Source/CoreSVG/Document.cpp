@@ -255,6 +255,18 @@ struct Builder {
     // its filter -- and the seeds of the walk below.
     std::set<std::string> reachedIds;
 
+    // One `<defs>` child, remembered so the reachability walk can decide later
+    // whether anything drawn arrives at it. ONE call site's worth of code in one
+    // place, which is also what keeps the sweep's anchor unique -- two copies of
+    // this body was a stale anchor the moment the second appeared.
+    void recordDefinition(const Element& e) {
+        Definition d;
+        d.kind = e.name;
+        if (const std::string* id = e.attribute("id")) d.id = *id;
+        collectRefs(e, d.refs);
+        definitions.push_back(std::move(d));
+    }
+
     // Every `url(#id)` and `href="#id"` an element's subtree names.
     static void collectRefs(const Element& e, std::set<std::string>& into) {
         for (const auto& a : e.attributes) {
@@ -900,13 +912,7 @@ struct Builder {
                     const bool collected =
                         cid && (c.name == "pattern" ? patterns.count(*cid) > 0
                                                     : images.count(*cid) > 0);
-                    if (!collected) {
-                        Definition d;
-                        d.kind = c.name;
-                        if (cid) d.id = *cid;
-                        collectRefs(c, d.refs);
-                        definitions.push_back(std::move(d));
-                    }
+                    if (!collected) recordDefinition(c);
                 } else if (c.name != "style" && c.name != "filter") {
                     // `style` and `filter` are collected in passes of their own,
                     // before the walk.
@@ -925,11 +931,7 @@ struct Builder {
                     // RECORDED, NOT ACCUSED: whether this is a gap depends on
                     // whether anything drawn can reach it, and that is not known
                     // until the walk is over.
-                    Definition d;
-                    d.kind = c.name;
-                    if (const std::string* id = c.attribute("id")) d.id = *id;
-                    collectRefs(c, d.refs);
-                    definitions.push_back(std::move(d));
+                    recordDefinition(c);
                 }
             }
             return;
