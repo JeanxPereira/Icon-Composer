@@ -287,3 +287,96 @@ TEST_CASE(a_pattern_reference_is_not_reported_as_a_missing_gradient) {
     CHECK(got->skipped[0].why.find("gradiente") == std::string::npos);
     CHECK(got->skipped[0].why.find("nosuchimage") != std::string::npos);
 }
+
+// ---- the two the mutation sweep caught me on -----------------------------
+
+TEST_CASE(the_content_units_default_is_user_space_and_not_the_other_one) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+
+    // EVERY TEST ABOVE NAMES `patternContentUnits`, so none of them ever
+    // exercised its DEFAULT -- and the sweep said so by surviving a mutation
+    // that flipped it. The corpus names it too, in all 11, so the corpus cannot
+    // decide this either.
+    //
+    // SVG's two defaults differ, and that is the whole point: `patternUnits`
+    // falls to `objectBoundingBox` while `patternContentUnits` falls to
+    // `userSpaceOnUse`. Reading them as one pair is the mistake.
+    //
+    // Here the box is 64 wide and the tile is one box. With the default, a
+    // content coordinate IS a user offset, so `scale(8)` carries the 8px image
+    // across all 64 units and the quadrants land in the corners. Read as
+    // `objectBoundingBox` instead, the offset would first divide by 64 and the
+    // whole canvas would sample texel zero -- flat red.
+    const std::string svg =
+        "<svg viewBox=\"0 0 64 64\">"
+        "<rect x=\"0\" y=\"0\" width=\"64\" height=\"64\" fill=\"url(#p)\"/>"
+        "<defs><pattern id=\"p\" width=\"1\" height=\"1\">"
+        "<use xlink:href=\"#img\" transform=\"scale(8)\"/></pattern>"
+        "<image id=\"img\" width=\"8\" height=\"8\" xlink:href=\"" +
+        quadrantPngDataUri(8) + "\"/></defs></svg>";
+    auto doc = icf::svg::SvgDocument::parse(svg);
+    REQUIRE(doc.has_value());
+    REQUIRE(doc->patterns.size() == 1);
+    CHECK(doc->patterns.begin()->second.contentUserSpace);
+
+    RenderOptions o;
+    o.width = 64;
+    o.height = 64;
+    auto got = renderSvg(d, *doc, o);
+    REQUIRE(got.has_value());
+    CHECK(std::abs(at(*got, 16, 16)[0] - 1.0f) < 0.02f);   // red
+    CHECK(std::abs(at(*got, 48, 16)[1] - 1.0f) < 0.02f);   // green
+    CHECK(std::abs(at(*got, 16, 48)[2] - 1.0f) < 0.02f);   // blue
+    // The one that separates the two readings: under the wrong one this is red.
+    CHECK(std::abs(at(*got, 48, 16)[0]) < 0.02f);
+}
+
+TEST_CASE(the_sampler_weights_premultiplied_and_does_not_pull_in_invisible_colour) {
+    // THE SECOND THING THE SWEEP CAUGHT, and it is the same defect the blur's
+    // test had this morning: a fixture that is opaque everywhere cannot tell
+    // premultiplied weighting from straight, because multiplying by an alpha of
+    // one changes nothing. Every quadrant above is opaque, so the mutation that
+    // dropped the multiply SURVIVED.
+    //
+    // What makes it visible is invisible colour that DIFFERS from the visible
+    // colour. This drives the sampler directly rather than through a render:
+    // two texels, one opaque GREEN and one transparent RED, sampled exactly
+    // between them.
+    icf::DecodedPng img;
+    img.width = 2;
+    img.height = 1;
+    img.rgba = {
+        0.0f, 1.0f, 0.0f, 1.0f,   // opaque green
+        1.0f, 0.0f, 0.0f, 0.0f,   // red, and invisible
+    };
+
+    ResolvedPattern p;
+    p.ok = true;
+    p.image = &img;
+    p.tileX = 0;
+    p.tileY = 0;
+    p.tileW = 2;
+    p.tileH = 1;
+    // User space IS image pixel space here, so the arithmetic under test is the
+    // weighting and nothing else.
+    p.m[0] = 1; p.m[1] = 0; p.m[2] = 0;
+    p.m[3] = 0; p.m[4] = 1; p.m[5] = 0;
+
+    float out[4] = {0, 0, 0, 0};
+    // Dead centre between the two texels: half of each.
+    REQUIRE(samplePattern(p, 1.0, 0.5, out));
+
+    // Half the alpha, and the colour is STILL PURE GREEN. Straight weighting
+    // would report about (0.5, 0.5, 0) -- a dirty olive that no texel holds.
+    CHECK(std::abs(out[3] - 0.5f) < 0.02f);
+    CHECK(out[0] < 0.02f);
+    CHECK(out[1] > 0.98f);
+
+    // And the opaque texel's own centre is untouched by any of this.
+    float solid[4] = {0, 0, 0, 0};
+    REQUIRE(samplePattern(p, 0.5, 0.5, solid));
+    CHECK(std::abs(solid[3] - 1.0f) < 0.02f);
+    CHECK(solid[0] < 0.02f);
+    CHECK(solid[1] > 0.98f);
+}
