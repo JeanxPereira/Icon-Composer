@@ -5,6 +5,7 @@ add_executable(ic_tests
     test_corpus.cpp
     test_document.cpp
     test_values.cpp
+    test_values_tojson.cpp
     test_svg_path.cpp
     test_svg_corpus.cpp
     test_svg_xml.cpp
