@@ -42,4 +42,14 @@ void setProperty(json::Value& owner, std::string_view prop, Context scope,
 // something more general. This is what the inspector marks as "inherited".
 bool hasOwnEntry(const json::Value& owner, std::string_view prop, Context scope);
 
+// ---- structure -------------------------------------------------------------
+// A new node carries the minimum a fresh node carries in the corpus: `name`, plus
+// `image-name` on a layer, plus an empty `layers` on a group. Everything else is
+// the renderer's default until the inspector writes it.
+std::size_t addGroup(json::Value& root, std::string name);
+std::size_t addLayer(json::Value& group, std::string name, std::string imageName);
+bool removeNode(json::Value& root, NodePath path);     // false for the root or out of range
+bool moveNode(json::Value& root, NodePath path, int delta);   // -1 up, +1 down; false at an edge
+bool setName(json::Value& root, NodePath path, std::string name);
+
 }  // namespace icf

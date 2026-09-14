@@ -1,6 +1,7 @@
 #include "Source/IconComposerFoundation/Edit.h"
 
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace icf {
@@ -179,6 +180,74 @@ bool hasOwnEntry(const json::Value& owner, std::string_view prop, Context scope)
         return false;
     }
     return isBase(scope) && owner.find(prop) != nullptr;
+}
+
+namespace {
+// The array a path's node lives in, and its index there. Null for the root.
+json::Value* siblingsOf(json::Value& root, NodePath path, std::size_t& index) {
+    if (!path.group) return nullptr;
+    if (!path.layer) {
+        json::Value* groups = root.find("groups");
+        if (!groups || groups->kind() != json::Value::Kind::Array) return nullptr;
+        index = *path.group;
+        return index < groups->elements().size() ? groups : nullptr;
+    }
+    json::Value* group = nodeAt(root, NodePath{path.group, std::nullopt});
+    if (!group) return nullptr;
+    json::Value* layers = group->find("layers");
+    if (!layers || layers->kind() != json::Value::Kind::Array) return nullptr;
+    index = *path.layer;
+    return index < layers->elements().size() ? layers : nullptr;
+}
+}  // namespace
+
+std::size_t addGroup(json::Value& root, std::string name) {
+    json::Value* groups = root.find("groups");
+    if (!groups || groups->kind() != json::Value::Kind::Array) {
+        root.set("groups", json::Value::array({}));
+        groups = root.find("groups");
+    }
+    groups->elements().push_back(json::Value::object(
+        {{"name", json::Value::string(std::move(name))}, {"layers", json::Value::array({})}}));
+    return groups->elements().size() - 1;
+}
+
+std::size_t addLayer(json::Value& group, std::string name, std::string imageName) {
+    json::Value* layers = group.find("layers");
+    if (!layers || layers->kind() != json::Value::Kind::Array) {
+        group.set("layers", json::Value::array({}));
+        layers = group.find("layers");
+    }
+    layers->elements().push_back(json::Value::object({{"name", json::Value::string(std::move(name))},
+                                                      {"image-name", json::Value::string(std::move(imageName))}}));
+    return layers->elements().size() - 1;
+}
+
+bool removeNode(json::Value& root, NodePath path) {
+    std::size_t index = 0;
+    json::Value* siblings = siblingsOf(root, path, index);
+    if (!siblings) return false;
+    siblings->elements().erase(siblings->elements().begin() + static_cast<std::ptrdiff_t>(index));
+    return true;
+}
+
+bool moveNode(json::Value& root, NodePath path, int delta) {
+    std::size_t index = 0;
+    json::Value* siblings = siblingsOf(root, path, index);
+    if (!siblings || delta == 0) return false;
+    auto& v = siblings->elements();
+    if (delta < 0 && index == 0) return false;
+    if (delta > 0 && index + 1 >= v.size()) return false;
+    const std::size_t other = delta < 0 ? index - 1 : index + 1;
+    std::swap(v[index], v[other]);
+    return true;
+}
+
+bool setName(json::Value& root, NodePath path, std::string name) {
+    json::Value* node = nodeAt(root, path);
+    if (!node || node->kind() != json::Value::Kind::Object) return false;
+    node->set("name", json::Value::string(std::move(name)));
+    return true;
 }
 
 }  // namespace icf

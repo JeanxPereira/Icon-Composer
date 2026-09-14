@@ -215,3 +215,38 @@ TEST_CASE(edit_every_corpus_node_survives_a_write_under_every_scope) {
     CHECK(nodes >= 700);
     CHECK(writes >= 60000);
 }
+
+TEST_CASE(edit_add_group_and_layer_create_the_minimal_node) {
+    json::Value root = obj(R"({"groups" : [ ]})");
+    CHECK_EQ(addGroup(root, "Back"), std::size_t(0));
+    CHECK_EQ(addGroup(root, "Front"), std::size_t(1));
+    json::Value* front = nodeAt(root, NodePath{1, std::nullopt});
+    REQUIRE(front != nullptr);
+    CHECK_EQ(addLayer(*front, "mark", "mark.svg"), std::size_t(0));
+    CHECK_EQ(json::write(*nodeAt(root, NodePath{1, 0})),
+             std::string("{\n  \"image-name\" : \"mark.svg\",\n  \"name\" : \"mark\"\n}"));
+    CHECK_EQ(json::write(*nodeAt(root, NodePath{0, std::nullopt})),
+             std::string("{\n  \"layers\" : [\n\n  ],\n  \"name\" : \"Back\"\n}"));
+}
+
+TEST_CASE(edit_remove_and_move_act_on_siblings_only) {
+    json::Value root = obj(R"({"groups" : [ { "name" : "g", "layers" : [ { "name" : "a" }, { "name" : "b" }, { "name" : "c" } ] } ]})");
+    CHECK(!removeNode(root, NodePath{}));
+    CHECK(!moveNode(root, NodePath{0, 0}, -1));   // already first
+    CHECK(moveNode(root, NodePath{0, 0}, +1));
+    CHECK(nodeAt(root, NodePath{0, 0})->find("name")->rawString() == "b");
+    CHECK(nodeAt(root, NodePath{0, 1})->find("name")->rawString() == "a");
+    CHECK(!moveNode(root, NodePath{0, 2}, +1));   // already last
+    CHECK(removeNode(root, NodePath{0, 1}));
+    CHECK_EQ(nodeAt(root, NodePath{0, std::nullopt})->find("layers")->elements().size(), std::size_t(2));
+    CHECK(!removeNode(root, NodePath{0, 5}));
+    CHECK(removeNode(root, NodePath{0, std::nullopt}));
+    CHECK_EQ(root.find("groups")->elements().size(), std::size_t(0));
+}
+
+TEST_CASE(edit_set_name_writes_the_name_key) {
+    json::Value root = obj(R"({"groups" : [ { "name" : "g" } ]})");
+    CHECK(setName(root, NodePath{0, std::nullopt}, "renamed"));
+    CHECK(nodeAt(root, NodePath{0, std::nullopt})->find("name")->rawString() == "renamed");
+    CHECK(!setName(root, NodePath{3, std::nullopt}, "x"));
+}
