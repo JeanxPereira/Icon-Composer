@@ -399,7 +399,8 @@ TEST_CASE(values_to_json_round_trips_every_corpus_value) {
 }
 ```
 
-Acrescentar `test_values_tojson.cpp` em `Tests/CMakeLists.txt` depois de `test_values.cpp`.
+Acrescentar `test_values_tojson.cpp` em `Tests/CMakeLists.txt` depois de `test_values.cpp`,
+e o stem `"test_values_tojson"` ao array `kSlow` de `Tests/main.cpp` (varre o corpus).
 
 - [ ] **Step 2: rodar e ver falhar**
 
@@ -767,7 +768,9 @@ TEST_CASE(edit_every_corpus_node_survives_a_write_under_every_scope) {
 }
 ```
 
-Acrescentar `test_document_edit.cpp` em `Tests/CMakeLists.txt` depois de `test_document.cpp`.
+Acrescentar `test_document_edit.cpp` em `Tests/CMakeLists.txt` depois de `test_document.cpp`,
+e o stem `"test_document_edit"` ao array `kSlow` de `Tests/main.cpp` — ele varre o corpus,
+e aquele array é o que mantém o sweep de mutação barato.
 
 - [ ] **Step 2: rodar e ver falhar**
 
@@ -1326,7 +1329,8 @@ TEST_CASE(bundle_save_keeps_every_byte_exact_corpus_document_byte_exact) {
 }
 ```
 
-Acrescentar `test_bundle_save.cpp` em `Tests/CMakeLists.txt` depois de `test_bundle.cpp`.
+Acrescentar `test_bundle_save.cpp` em `Tests/CMakeLists.txt` depois de `test_bundle.cpp`,
+e o stem `"test_bundle_save"` ao array `kSlow` de `Tests/main.cpp` (varre o corpus).
 
 - [ ] **Step 2: rodar e ver falhar**
 
@@ -1469,9 +1473,9 @@ Na lista `$mutations`, depois do bloco `# ---- the JSON layer ----` existente:
     @{ file = "edit"; name = "hasOwnEntry answers for the resolved value, not the scope's own"
        from = 'return isBase(scope) && owner.find(prop) != nullptr;'
        to   = 'return owner.find(prop) != nullptr;' },
-    @{ file = "edit"; name = "moveNode never refuses at the top edge"
-       from = 'if (delta < 0 && index == 0) return false;'
-       to   = '' },
+    @{ file = "edit"; name = "moveNode swaps a node with itself"
+       from = 'std::swap(v[index], v[other]);'
+       to   = 'std::swap(v[index], v[index]);' },
     @{ file = "values"; name = "a colour component written with four decimals"
        from = 'std::snprintf(buf, sizeof buf, "%.5f", c.components[i]);'
        to   = 'std::snprintf(buf, sizeof buf, "%.4f", c.components[i]);' },
@@ -1580,7 +1584,8 @@ set(IC_ONYX_SOURCE_DIR "D:/CodingProjects/OnyxSDK"
     CACHE PATH "Local OnyxSDK checkout; empty to fetch the pinned SHA from GitHub")
 ```
 
-Depois de `add_subdirectory(Source/cli)`:
+Depois de `add_subdirectory(Source/cli)` e **antes** do `if(IC_BUILD_TESTS)` — `Tests`
+linka `IconComposer::Kit`, que tem de existir quando aquele bloco roda:
 
 ```cmake
 if(IC_BUILD_UI)
@@ -1657,6 +1662,9 @@ add_library(IconComposer::Kit ALIAS IconComposerKit)
 
 namespace ick {
 
+// An AGGREGATE, and it stays one: `icf::IconBundle` has no default constructor, so a
+// caller builds this with `RenderRequest r{version, bundle.clone(), context, size}`.
+// Adding a constructor here breaks every call site.
 struct RenderRequest {
     std::uint64_t version = 0;   // Session::version() this was made from
     icf::IconBundle bundle;      // a clone: the job reads it while the UI keeps editing
@@ -2083,6 +2091,11 @@ private:
     explicit Session(icf::IconBundle b) : bundle_(std::move(b)) {}
     // Snapshots `target`, runs `edit` on it, snapshots again, records. Returns
     // what `edit` returned. Nothing is recorded when the node does not exist.
+    // Snapshots the node at `target`, runs `edit`, snapshots again, and records a
+    // command when the two differ. `edit` takes the target node and returns bool;
+    // a structural edit ignores that argument and calls the `icf::` function on
+    // `root()` instead -- the parent snapshot captures the change either way, and
+    // no pointer moves (erasing inside `groups[g].layers` does not move `groups[g]`).
     template <class F>
     bool apply(icf::NodePath target, std::string key, F&& edit);   // edit: bool(json::Value&)
     void push(Command c);
@@ -2192,16 +2205,9 @@ bool Session::removeNode(icf::NodePath path) {
     coalesceKey_.clear();
     if (!path.group) return false;
     const icf::NodePath parent = path.layer ? icf::NodePath{path.group, std::nullopt} : icf::NodePath{};
-    const bool ok = apply(parent, "", [&](icf::json::Value& p) {
-        // The snapshot is the PARENT's, so the edit is spelled on the parent's own
-        // list rather than through `icf::removeNode`, which walks from the root.
-        const char* key = path.layer ? "layers" : "groups";
-        const std::size_t index = path.layer ? *path.layer : *path.group;
-        icf::json::Value* list = p.find(key);
-        if (!list || index >= list->elements().size()) return false;
-        list->elements().erase(list->elements().begin() + static_cast<std::ptrdiff_t>(index));
-        return true;
-    });
+    // The snapshot is the PARENT's; the edit is `icf::removeNode` on the root, which
+    // is the one spelling of this operation. Two spellings are two places to be wrong.
+    const bool ok = apply(parent, "", [&](icf::json::Value&) { return icf::removeNode(root(), path); });
     if (ok) dropSelectionIfGone();
     return ok;
 }
@@ -2210,17 +2216,7 @@ bool Session::moveNode(icf::NodePath path, int delta) {
     coalesceKey_.clear();
     if (!path.group) return false;
     const icf::NodePath parent = path.layer ? icf::NodePath{path.group, std::nullopt} : icf::NodePath{};
-    const bool ok = apply(parent, "", [&](icf::json::Value& p) {
-        const char* key = path.layer ? "layers" : "groups";
-        const std::size_t index = path.layer ? *path.layer : *path.group;
-        icf::json::Value* list = p.find(key);
-        if (!list || index >= list->elements().size() || delta == 0) return false;
-        auto& v = list->elements();
-        if (delta < 0 && index == 0) return false;
-        if (delta > 0 && index + 1 >= v.size()) return false;
-        std::swap(v[index], v[delta < 0 ? index - 1 : index + 1]);
-        return true;
-    });
+    const bool ok = apply(parent, "", [&](icf::json::Value&) { return icf::moveNode(root(), path, delta); });
     if (ok && selection == path) {
         if (path.layer) selection = icf::NodePath{path.group, *path.layer + (delta < 0 ? -1 : 1)};
         else selection = icf::NodePath{*path.group + (delta < 0 ? -1 : 1), std::nullopt};
@@ -2230,10 +2226,7 @@ bool Session::moveNode(icf::NodePath path, int delta) {
 
 bool Session::rename(icf::NodePath path, std::string name) {
     coalesceKey_.clear();
-    return apply(path, "", [&](icf::json::Value& node) {
-        node.set("name", icf::json::Value::string(std::move(name)));
-        return true;
-    });
+    return apply(path, "", [&](icf::json::Value&) { return icf::setName(root(), path, std::move(name)); });
 }
 
 bool Session::undo() {
@@ -2279,7 +2272,13 @@ void Session::dropSelectionIfGone() {
 }  // namespace ick
 ```
 
-Acrescentar `#include <utility>` e `#include <string>` em `Session.cpp`. Acrescentar `Session.cpp` ao `add_library` do Kit.
+Acrescentar `#include <string>` em `Session.cpp`. Acrescentar `Session.cpp` ao
+`add_library` do Kit.
+
+As três operações estruturais chamam `icf::removeNode`, `icf::moveNode` e `icf::setName`
+de dentro do `apply`, sobre `root()` e o caminho completo. O snapshot do PAI captura a
+mudança mesmo assim, e nenhum ponteiro se move: apagar dentro de `groups[g].layers` não
+move `groups[g]`, e apagar dentro de `groups` não move a raiz.
 
 - [ ] **Step 4: ver passar**
 
@@ -2656,7 +2655,9 @@ LayersStats drawLayers(Session& s);
 
 // The last render the canvas has to show, and what it did not draw.
 struct RenderView {
-    ImTextureID texture = 0;
+    // `ImTextureID_Invalid`, never a literal 0: ImGui 1.92 is mid-migration to
+    // `ImTextureRef`, and Onyx's own TexturePool already spells it this way.
+    ImTextureID texture = ImTextureID_Invalid;
     std::uint32_t width = 0, height = 0;
     bool pending = false;   // a newer render is on its way
     std::size_t drawn = 0, total = 0;
@@ -3554,7 +3555,7 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions)
         pan.y += ImGui::GetIO().MouseDelta.y;
     }
 
-    if (view.texture != 0 && view.width > 0) {
+    if (view.texture != ImTextureID_Invalid && view.width > 0) {
         const float side = static_cast<float>(view.width) * s.view.zoom;
         const ImVec2 tl(origin.x + (avail.x - side) * 0.5f + pan.x, origin.y + (avail.y - side) * 0.5f + pan.y);
         const ImVec2 br(tl.x + side, tl.y + side);
@@ -3727,7 +3728,7 @@ TEST_CASE(coordinator_requests_once_per_change_and_uploads_the_answer) {
         sched.results.push_back(sched.answer(s->version(), 512));
         c.tick(*s);
         CHECK(!c.view().pending);
-        CHECK(c.view().texture != 0);
+        CHECK(c.view().texture != ImTextureID_Invalid);
         CHECK_EQ(sink.creates, std::uint64_t(1));
         CHECK_EQ(c.view().drawn, std::size_t(1));
 
@@ -3835,17 +3836,16 @@ private:
 namespace ick {
 
 RenderCoordinator::~RenderCoordinator() {
-    if (view_.texture != 0) sink_.remove(view_.texture);
+    if (view_.texture != ImTextureID_Invalid) sink_.remove(view_.texture);
 }
 
 void RenderCoordinator::tick(Session& s) {
     const Key now{s.version(), s.view.context, s.view.size};
     if (!everRequested_ || !(now == requested_)) {
-        RenderRequest r;
-        r.version = now.version;
-        r.bundle = s.bundle().clone();
-        r.context = now.context;
-        r.size = now.size;
+        // AGGREGATE initialisation, in declaration order. `RenderRequest r;` does not
+        // compile: it holds an `icf::IconBundle`, which has no default constructor
+        // (only the private one `open` uses). `RenderRequest` must stay an aggregate.
+        RenderRequest r{now.version, s.bundle().clone(), now.context, now.size};
         scheduler_.request(std::move(r));
         requested_ = now;
         everRequested_ = true;
@@ -3861,10 +3861,11 @@ void RenderCoordinator::tick(Session& s) {
         view_.notes = result->notes;
         view_.error = result->error;
         if (result->error.empty() && !result->rgba8.empty()) {
-            if (view_.texture != 0 && view_.width == result->width && view_.height == result->height) {
+            if (view_.texture != ImTextureID_Invalid && view_.width == result->width &&
+                view_.height == result->height) {
                 sink_.update(view_.texture, result->width, result->height, result->rgba8.data());
             } else {
-                if (view_.texture != 0) sink_.remove(view_.texture);
+                if (view_.texture != ImTextureID_Invalid) sink_.remove(view_.texture);
                 view_.texture = sink_.create(result->width, result->height, result->rgba8.data());
                 view_.width = result->width;
                 view_.height = result->height;
@@ -4405,6 +4406,9 @@ namespace {
 
 // Everything the panels share, owned by run() so destruction order is stated once.
 struct State {
+    // The window handle, kept because `glfwGetCurrentContext()` is an OpenGL call
+    // and returns null in a Vulkan app -- Quit through it would silently do nothing.
+    GLFWwindow* window = nullptr;
     std::optional<ick::Session> session;
     std::unique_ptr<OnyxTextureSink> sink;
     std::unique_ptr<JobScheduler> scheduler;
@@ -4495,10 +4499,6 @@ struct CanvasPanel : Onyx::App::IPanel {
             ImGui::TextDisabled("Open a .icon bundle");
             ImGui::End();
         }
-        st.sink->advanceFrame();
-        st.act();
-        st.title();
-        if (st.quit && st.app) glfwSetWindowShouldClose(glfwGetCurrentContext(), 1);
     }
     std::string_view getName() const override { return ick::kCanvasWindow; }
     State& st;
@@ -4519,6 +4519,14 @@ struct DiagnosticsPanel : Onyx::App::IPanel {
     void Draw() override {
         if (st.session && st.coordinator) ick::drawDiagnostics(*st.session, st.coordinator->view());
         else { ImGui::Begin(ick::kDiagnosticsWindow); ImGui::End(); }
+        // End of frame work, here because this panel is registered LAST: `act()` can
+        // replace or close the session, and a swap mid-frame would leave the panels
+        // after it drawing against state that changed under them. `advanceFrame`
+        // likewise belongs after every upload this frame made.
+        st.sink->advanceFrame();
+        st.act();
+        st.title();
+        if (st.quit && st.window) glfwSetWindowShouldClose(st.window, 1);
     }
     std::string_view getName() const override { return ick::kDiagnosticsWindow; }
     State& st;
@@ -4557,6 +4565,7 @@ int run(const std::filesystem::path& initial) {
     Onyx::App::Window window;
 
     State state;
+    state.window = window.getGLFWwindow();
     state.sink = std::make_unique<OnyxTextureSink>(window.vkContext());
     state.scheduler = std::make_unique<JobScheduler>(window.workspace().Jobs(), *device);
 
@@ -4582,8 +4591,6 @@ int run(const std::filesystem::path& initial) {
 
 }  // namespace icapp
 ```
-
-Se `glfwSetWindowShouldClose(glfwGetCurrentContext(), 1)` não fechar a janela do Onyx, trocar por `glfwSetWindowShouldClose(window.getGLFWwindow(), 1)` guardando o `GLFWwindow*` em `State` no `run()`.
 
 `main.cpp`:
 
