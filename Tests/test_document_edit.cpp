@@ -107,7 +107,8 @@ namespace {
 constexpr Appearance kA[] = {Appearance::Base, Appearance::Light, Appearance::Dark, Appearance::Tinted};
 constexpr Idiom kI[] = {Idiom::Base, Idiom::Square, Idiom::IOS, Idiom::MacOS, Idiom::WatchOS};
 const char* kProps[] = {"glass", "hidden", "opacity", "blend-mode", "fill", "shadow", "position",
-                        "translucency", "specular", "image-name", "name"};
+                        "translucency", "specular", "image-name", "name",
+                        "blur-material", "lighting"};
 
 bool coexists(const json::Value& owner) {
     for (const char* p : kProps) {
@@ -154,15 +155,20 @@ TEST_CASE(edit_every_corpus_node_survives_a_write_under_every_scope) {
                         const Context ctx{a, i};
                         json::Value* owner = nodeAt(root, path);
                         REQUIRE(owner != nullptr);
-                        const json::Value* was = resolve(*owner, p, ctx);
-                        if (!was) continue;
-                        const json::Value copy = *was;
+                        if (!resolve(*owner, p, ctx)) continue;
+                        // A SENTINEL, never the value already sitting there: writing
+                        // back what already resolves cannot tell "wrote it" apart
+                        // from "left it", so a setProperty that did nothing would
+                        // pass. The sentinel makes the read-back falsifiable.
+                        const json::Value sentinel = json::Value::string("ic-sentinel");
                         const std::string before = json::write(*owner);
-                        setProperty(*owner, p, ctx, copy);
+                        setProperty(*owner, p, ctx, sentinel);
                         ++writes;
                         REQUIRE(!coexists(*owner));
                         REQUIRE(hasOwnEntry(*owner, p, ctx));
-                        REQUIRE(json::write(*resolve(*owner, p, ctx)) == json::write(copy));
+                        const json::Value* got = resolve(*owner, p, ctx);
+                        REQUIRE(got != nullptr);
+                        REQUIRE(json::write(*got) == json::write(sentinel));
                         setProperty(*owner, p, ctx, std::nullopt);
                         REQUIRE(!coexists(*owner));
                         REQUIRE(!hasOwnEntry(*owner, p, ctx));
@@ -180,4 +186,5 @@ TEST_CASE(edit_every_corpus_node_survives_a_write_under_every_scope) {
     }
     std::printf("  %zu nodes, %zu scoped writes, invariant held\n", nodes, writes);
     CHECK(nodes >= 700);
+    CHECK(writes >= 60000);
 }

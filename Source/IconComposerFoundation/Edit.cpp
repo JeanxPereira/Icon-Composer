@@ -14,20 +14,39 @@ std::string listKeyFor(std::string_view prop) {
 
 bool isBase(Context c) { return c.appearance == Appearance::Base && c.idiom == Idiom::Base; }
 
-// An entry's predicate EQUALS the scope: the keys present are exactly the
-// non-Base parts of the scope, and each one names the scope's case. `resolve`
-// asks "matches"; this asks "is the entry FOR this scope", which is stricter.
+// The scope an entry's predicate NAMES, or nullopt when it names none -- a key
+// present but not spelling a case this vocabulary knows, or a predicate family
+// (`localization`, `language-direction`) the binary declares and the corpus never
+// uses (0 of 1740).
+std::optional<Context> scopeOf(const json::Value& entry) {
+    if (entry.find("localization") || entry.find("language-direction")) return std::nullopt;
+    Context c;
+    if (const json::Value* a = entry.find("appearance")) {
+        if (a->kind() != json::Value::Kind::String) return std::nullopt;
+        auto parsed = appearanceFromString(a->rawString());
+        if (!parsed) return std::nullopt;
+        c.appearance = *parsed;
+    }
+    if (const json::Value* i = entry.find("idiom")) {
+        if (i->kind() != json::Value::Kind::String) return std::nullopt;
+        auto parsed = idiomFromString(i->rawString());
+        if (!parsed) return std::nullopt;
+        c.idiom = *parsed;
+    }
+    return c;
+}
+
+// Is this entry the one FOR `scope`? `resolve`'s `matches` asks a different
+// question -- "does this entry APPLY here" -- and both are needed.
+//
+// A key spelled with the `base` case names the same scope as the key being absent.
+// `[ART]` no corpus entry spells it (0 of 1740) and this file never writes it, but
+// `resolve` accepts it AND `specificity` scores it above the unpredicated default --
+// so treating it as a different scope would let a write at Base create a second
+// entry that `resolve` prefers over it: a value written and then invisible.
 bool predicateIs(const json::Value& entry, Context scope) {
-    if (entry.find("localization") || entry.find("language-direction")) return false;
-    const json::Value* a = entry.find("appearance");
-    const json::Value* i = entry.find("idiom");
-    if ((scope.appearance != Appearance::Base) != (a != nullptr)) return false;
-    if ((scope.idiom != Idiom::Base) != (i != nullptr)) return false;
-    if (a && (a->kind() != json::Value::Kind::String ||
-              appearanceFromString(a->rawString()) != scope.appearance)) return false;
-    if (i && (i->kind() != json::Value::Kind::String ||
-              idiomFromString(i->rawString()) != scope.idiom)) return false;
-    return true;
+    const std::optional<Context> named = scopeOf(entry);
+    return named && named->appearance == scope.appearance && named->idiom == scope.idiom;
 }
 
 json::Value entryFor(Context scope, json::Value value) {
@@ -74,6 +93,16 @@ void setProperty(json::Value& owner, std::string_view prop, Context scope,
     const std::string plainKey(prop);
     json::Value* list = owner.find(listKey);
 
+    // A `<prop>-specializations` that is not an array is not a specialization list.
+    // `resolve` and `hasOwnEntry` both refuse to walk one; this function must not
+    // write into one either, or the edit disappears into storage `json::write` does
+    // not emit for that kind. Dropping it keeps this function's whole contract --
+    // that the two forms never coexist -- which leaving it in place would break.
+    if (list && list->kind() != json::Value::Kind::Array) {
+        owner.erase(listKey);
+        list = nullptr;
+    }
+
     // §4.3 step 1: no list and the Base scope -- the plain key is the whole story.
     if (!list && isBase(scope)) {
         if (value) owner.set(plainKey, std::move(*value));
@@ -104,7 +133,14 @@ void setProperty(json::Value& owner, std::string_view prop, Context scope,
             list->elements().insert(list->elements().begin(), entryFor(scope, std::move(*value)));
         } else {
             // `[INF]` at the end: the corpus has no observable order between
-            // predicates (spec §4.3), so this is a choice, and it is named.
+            // predicates -- no predicate repeats (doc 01 §5) -- so this is a choice,
+            // and it is named. The consequence, which the corpus also cannot show
+            // because no list there carries both an appearance-only and an
+            // idiom-only entry: `resolve` breaks a specificity tie first-wins, so a
+            // value written here at `{Base, watchOS}` resolves at `{Dark, watchOS}`
+            // to a pre-existing `{appearance: dark}` instead. Appending keeps older
+            // entries winning; prepending would only pick the other side of an
+            // ambiguity that is the format's, not this function's.
             list->elements().push_back(entryFor(scope, std::move(*value)));
         }
         return;
