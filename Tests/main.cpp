@@ -48,7 +48,7 @@ namespace {
 bool isSlow(const char* file) {
     static const char* kSlow[] = {
         "test_automatic_fill", "test_glass_layer", "test_icon_render", "test_png",
-        "test_values_tojson",
+        "test_values_tojson", "test_document_edit",
     };
     for (const char* s : kSlow) {
         if (std::strstr(file, s)) return true;

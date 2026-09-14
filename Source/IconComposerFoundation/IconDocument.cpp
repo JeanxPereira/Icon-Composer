@@ -21,6 +21,27 @@ std::optional<Idiom> idiomFromString(std::string_view s) {
     return std::nullopt;
 }
 
+std::string_view appearanceToString(Appearance a) {
+    switch (a) {
+        case Appearance::Base: return "base";
+        case Appearance::Light: return "light";
+        case Appearance::Dark: return "dark";
+        case Appearance::Tinted: return "tinted";
+    }
+    return "base";
+}
+
+std::string_view idiomToString(Idiom i) {
+    switch (i) {
+        case Idiom::Base: return "base";
+        case Idiom::Square: return "square";
+        case Idiom::IOS: return "iOS";
+        case Idiom::MacOS: return "macOS";
+        case Idiom::WatchOS: return "watchOS";
+    }
+    return "base";
+}
+
 namespace {
 
 // How many predicate keys an entry constrains. The entry with the most of them

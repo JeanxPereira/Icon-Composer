@@ -19,6 +19,11 @@ enum class Idiom { Base, Square, IOS, MacOS, WatchOS };
 std::optional<Appearance> appearanceFromString(std::string_view s);
 std::optional<Idiom> idiomFromString(std::string_view s);
 
+// The disk spelling of each case. `Base` answers "base", which the format never
+// writes (doc 01 §6: 0 of 1,740 entries) -- a writer tests for Base first.
+std::string_view appearanceToString(Appearance a);
+std::string_view idiomToString(Idiom i);
+
 // What a property is resolved FOR.
 struct Context {
     Appearance appearance = Appearance::Base;

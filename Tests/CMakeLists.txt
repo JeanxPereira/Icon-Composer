@@ -4,6 +4,7 @@ add_executable(ic_tests
     test_json_mutate.cpp
     test_corpus.cpp
     test_document.cpp
+    test_document_edit.cpp
     test_values.cpp
     test_values_tojson.cpp
     test_svg_path.cpp
