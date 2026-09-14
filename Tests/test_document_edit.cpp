@@ -103,6 +103,33 @@ TEST_CASE(edit_removing_the_last_override_collapses_back_to_the_plain_key) {
     CHECK(other.find("hidden") == nullptr);
 }
 
+TEST_CASE(edit_a_specialization_list_that_is_not_an_array_is_dropped_not_written_into) {
+    // `resolve` and `hasOwnEntry` both refuse to walk a `<prop>-specializations` that
+    // is not an array. Before the guard, `setProperty` walked it anyway: the write
+    // landed in an `elements_` vector that `json::write` never emits for that kind,
+    // and the edit disappeared with nothing to say so. No corpus document carries one.
+
+    // At Base scope the malformed sibling goes and the plain key is written.
+    json::Value layer = obj(R"({"name" : "l", "glass-specializations" : { "value" : true }})");
+    setProperty(layer, "glass", kBase, json::Value::boolean(false));
+    CHECK(layer.find("glass-specializations") == nullptr);
+    REQUIRE(layer.find("glass") != nullptr);
+    CHECK(layer.find("glass")->boolean() == false);
+    CHECK(hasOwnEntry(layer, "glass", kBase));
+    REQUIRE(resolve(layer, "glass", kBase) != nullptr);
+    CHECK(resolve(layer, "glass", kBase)->boolean() == false);
+
+    // At a predicated scope it is replaced by a real list holding that one entry.
+    json::Value other = obj(R"({"hidden-specializations" : "not a list"})");
+    setProperty(other, "hidden", kDark, json::Value::boolean(true));
+    const json::Value* list = other.find("hidden-specializations");
+    REQUIRE(list != nullptr);
+    REQUIRE(list->kind() == json::Value::Kind::Array);
+    CHECK_EQ(list->elements().size(), std::size_t(1));
+    REQUIRE(resolve(other, "hidden", kDark) != nullptr);
+    CHECK(resolve(other, "hidden", kDark)->boolean() == true);
+}
+
 namespace {
 constexpr Appearance kA[] = {Appearance::Base, Appearance::Light, Appearance::Dark, Appearance::Tinted};
 constexpr Idiom kI[] = {Idiom::Base, Idiom::Square, Idiom::IOS, Idiom::MacOS, Idiom::WatchOS};
