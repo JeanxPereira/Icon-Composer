@@ -70,7 +70,13 @@ TEST_CASE(bundle_clone_is_deep) {
 
 TEST_CASE(bundle_import_asset_copies_into_assets_and_lists_it) {
     const fs::path dir = scratch("import");
-    const fs::path src = fs::temp_directory_path() / "ic-import-b.svg";
+    // The source lives outside the bundle, under the name it keeps: `importAsset`
+    // copies a file into `Assets/` by its own filename, and that filename is what a
+    // layer's `image-name` will have to spell.
+    const fs::path srcDir = fs::temp_directory_path() / "ic-import-src";
+    fs::remove_all(srcDir);
+    fs::create_directories(srcDir);
+    const fs::path src = srcDir / "b.svg";
     std::ofstream(src, std::ios::binary) << "<svg id='b'/>";
     auto b = IconBundle::open(dir);
     REQUIRE(b.has_value());
@@ -78,7 +84,7 @@ TEST_CASE(bundle_import_asset_copies_into_assets_and_lists_it) {
     CHECK(fs::exists(dir / "Assets" / "b.svg"));
     CHECK_EQ(b->assetFiles().size(), std::size_t(2));
     CHECK(b->assetFiles()[1] == "b.svg");
-    CHECK(!b->importAsset(fs::temp_directory_path() / "ic-does-not-exist.svg").empty());
+    CHECK(!b->importAsset(srcDir / "does-not-exist.svg").empty());
 }
 
 TEST_CASE(bundle_save_keeps_every_byte_exact_corpus_document_byte_exact) {
@@ -90,8 +96,16 @@ TEST_CASE(bundle_save_keeps_every_byte_exact_corpus_document_byte_exact) {
     for (const auto& e : fs::directory_iterator(dir)) {
         auto b = IconBundle::open(e.path());
         if (!b) continue;
-        const std::string original = slurp(e.path() / "icon.json");
-        if (json::write(b->json()) != original) continue;  // one of the 10 reformatted
+        // The SAME tolerance `corpus_gate` applies, and for the same reason: Apple's
+        // `JSONEncoder` writes no trailing newline, and some repositories add one.
+        // The project's 135 is 122 identical outright plus 13 that differ only there
+        // (Tests/test_corpus.cpp); the other 10 had the space before the colon
+        // stripped by a formatter of their own, which is a third-party edit.
+        std::string expected = slurp(e.path() / "icon.json");
+        while (!expected.empty() && (expected.back() == '\n' || expected.back() == '\r')) {
+            expected.pop_back();
+        }
+        if (json::write(b->json()) != expected) continue;  // one of the 10 reformatted
         ++docs;
         json::Value* g0 = nodeAt(b->json(), NodePath{0, std::nullopt});
         REQUIRE(g0 != nullptr);
@@ -101,7 +115,7 @@ TEST_CASE(bundle_save_keeps_every_byte_exact_corpus_document_byte_exact) {
         const fs::path out = fs::temp_directory_path() / ("ic-exact-" + e.path().filename().string());
         fs::remove_all(out);
         REQUIRE(b->saveAs(out).empty());
-        if (slurp(out / "icon.json") == original) ++exact;
+        if (slurp(out / "icon.json") == expected) ++exact;
         fs::remove_all(out);
     }
     std::printf("  %zu byte-exact documents saved, %zu still byte-exact\n", docs, exact);
