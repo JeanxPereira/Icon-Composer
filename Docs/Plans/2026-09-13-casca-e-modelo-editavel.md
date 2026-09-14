@@ -1464,6 +1464,9 @@ Na lista `$mutations`, depois do bloco `# ---- the JSON layer ----` existente:
     @{ file = "edit"; name = "a new unpredicated entry lands at the end, not index 0"
        from = 'list->elements().insert(list->elements().begin(), entryFor(scope, std::move(*value)));'
        to   = 'list->elements().push_back(entryFor(scope, std::move(*value)));' },
+    @{ file = "edit"; name = "a non-array specialization list is walked anyway"
+       from = 'if (list && list->kind() != json::Value::Kind::Array) {'
+       to   = 'if (false) {' },
     @{ file = "edit"; name = "predicate equality ignores the idiom"
        from = 'return named && named->appearance == scope.appearance && named->idiom == scope.idiom;'
        to   = 'return named && named->appearance == scope.appearance;' },
