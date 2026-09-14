@@ -1448,19 +1448,23 @@ No `$sources`, depois de `bundle`:
 
 - [ ] **Step 2: acrescentar as mutações**
 
-Na lista `$mutations`, depois do bloco `# ---- the JSON layer ----` existente:
+Na lista `$mutations`, depois do bloco `# ---- the JSON layer ----` existente.
+
+**Toda âncora é de UMA linha.** O C++ deste repositório é CRLF por decisão registrada no
+`.gitattributes`, e um `` `n `` do PowerShell é LF puro, que nunca casa; as 316 âncoras
+que já existiam são todas de uma linha, e essa convenção é indiferente ao fim de linha.
 
 ```powershell
     @{ file = "json"; name = "number(double) spelled with a fixed precision"
        from = 'auto r = std::to_chars(buf, buf + sizeof buf, d);'
        to   = 'auto r = std::to_chars(buf, buf + sizeof buf, d, std::chars_format::fixed, 6);' },
     @{ file = "json"; name = "set appends a duplicate instead of replacing"
-       from = 'if (m.first == key) {' + "`n" + '            m.second = std::move(v);'
-       to   = 'if (false) {' + "`n" + '            m.second = std::move(v);' },
+       from = '        if (m.first == key) {'
+       to   = '        if (false) {' },
     # ---- the editing layer ----
     @{ file = "edit"; name = "the plain key survives beside its new list"
-       from = 'entries.push_back(entryFor(Context{}, *plain));' + "`n" + '            owner.erase(plainKey);'
-       to   = 'entries.push_back(entryFor(Context{}, *plain));' },
+       from = '            owner.erase(plainKey);'
+       to   = '' },
     @{ file = "edit"; name = "a new unpredicated entry lands at the end, not index 0"
        from = 'list->elements().insert(list->elements().begin(), entryFor(scope, std::move(*value)));'
        to   = 'list->elements().push_back(entryFor(scope, std::move(*value)));' },
