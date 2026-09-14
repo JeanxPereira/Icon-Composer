@@ -1465,8 +1465,8 @@ Na lista `$mutations`, depois do bloco `# ---- the JSON layer ----` existente:
        from = 'list->elements().insert(list->elements().begin(), entryFor(scope, std::move(*value)));'
        to   = 'list->elements().push_back(entryFor(scope, std::move(*value)));' },
     @{ file = "edit"; name = "predicate equality ignores the idiom"
-       from = 'if ((scope.idiom != Idiom::Base) != (i != nullptr)) return false;'
-       to   = '' },
+       from = 'return named && named->appearance == scope.appearance && named->idiom == scope.idiom;'
+       to   = 'return named && named->appearance == scope.appearance;' },
     @{ file = "edit"; name = "a list left with only its default is not collapsed"
        from = 'if (entries.size() == 1 && predicateIs(entries[0], Context{})) {'
        to   = 'if (false) {' },
