@@ -4701,7 +4701,11 @@ No `$sources` do gate: `session = Join-Path $root "Source/IconComposerKit/Sessio
 - [ ] **Step 3: o gate inteiro, no worktree**
 
 Run: `powershell -File scripts\gate-worktree.ps1`
-Expected: termina em `gate-m1 passed: N de N`, com N = 292 + as 13 mutações novas. Qualquer mutação não apanhada volta para a task dona dela.
+Expected: termina em `VERDICT: gate-m1 passed`. O script imprime o total ele mesmo — na
+abertura da Task 6 ele dizia 328 mutações, então é esse número, mais as duas da Task 16,
+que tem de aparecer em `sweep: N of N mutations caught`. Qualquer mutação não apanhada
+volta para a task dona dela; uma que derruba o processo em vez de falhar numa asserção é
+falha do TESTE, pela regra do próprio cabeçalho do script.
 
 - [ ] **Step 4: commitar**
 
