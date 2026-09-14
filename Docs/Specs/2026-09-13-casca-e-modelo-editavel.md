@@ -109,9 +109,10 @@ struct RenderScheduler {                 // "renderiza isto"; a resposta chega d
 teste que linka Onyx não roda numa máquina sem GPU, e põe sessenta unidades de
 tradução no caminho crítico do gate.
 
-**Build.** Onyx entra por `FetchContent` com `SOURCE_DIR` apontando para o
-checkout local (`D:/CodingProjects/OnyxSDK`, SHA fixo em cache var
-`IC_ONYX_SOURCE_DIR`), `EXCLUDE_FROM_ALL`, `SYSTEM`, e `ONYX_BUILD_MEDIA`,
+**Build.** Onyx entra por `FetchContent`, do jeito do `sfsymview`: a cache var
+`IC_ONYX_SOURCE_DIR` aponta para o checkout local (`D:/CodingProjects/OnyxSDK`)
+e, quando está vazia, `GIT_TAG` com um SHA fixo — nunca um branch — busca do
+GitHub. Sempre `EXCLUDE_FROM_ALL`, `SYSTEM`, e `ONYX_BUILD_MEDIA`,
 `ONYX_BUILD_EXAMPLES`, `ONYX_BUILD_TESTS` desligados. O compilador é o MinGW
 g++ 13 do preset `mingw`, o mesmo que o `sfsymview` já usa para o Onyx. Uma
 opção `IC_BUILD_APP` (ON) deixa o gate configurar sem o Onyx quando quiser.
