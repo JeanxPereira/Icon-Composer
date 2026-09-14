@@ -14,6 +14,7 @@ add_executable(ic_tests
     test_svg_paint.cpp
     test_svg_css.cpp
     test_bundle.cpp
+    test_bundle_save.cpp
     test_cli.cpp
     test_rb_device.cpp
     test_rb_pathbuffer.cpp

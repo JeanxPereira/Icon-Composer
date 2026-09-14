@@ -30,6 +30,23 @@ public:
     const json::Value& json() const { return *tree_; }
     IconDocument document() const { return *IconDocument::open(*tree_); }
 
+    // ---- editing, since 2026-09-13 (spec 13/09 §4.2) ----
+    json::Value& json() { return *tree_; }
+    // A deep copy that shares nothing -- what a render job works on while the
+    // UI keeps editing the original.
+    IconBundle clone() const;
+    // Atomic: written to a sibling temporary and renamed over `icon.json`, so a
+    // crash mid-write leaves the old document, never half of the new one.
+    // Empty on success, otherwise the reason -- this tower reports, it does not throw.
+    std::string save() const;
+    // Creates `dir/Assets`, copies every asset, writes the document, and this
+    // bundle now IS `dir`.
+    std::string saveAs(const std::filesystem::path& dir);
+    // Copies `file` into `Assets/` under its own name and lists it.
+    // No caller yet in this round: the spec (§4.2) mandates the operation here,
+    // but the inspector UI that will invoke it lands in a later round.
+    std::string importAsset(const std::filesystem::path& file);
+
     // The files in `Assets/`, sorted.
     const std::vector<std::string>& assetFiles() const { return assets_; }
 
