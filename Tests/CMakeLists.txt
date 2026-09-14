@@ -1,6 +1,7 @@
 add_executable(ic_tests
     main.cpp
     test_json.cpp
+    test_json_mutate.cpp
     test_corpus.cpp
     test_document.cpp
     test_values.cpp
