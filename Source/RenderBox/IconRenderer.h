@@ -83,6 +83,7 @@
 #include "Source/IconComposerFoundation/IconDocument.h"
 #include "Source/RenderBox/Device.h"
 #include "Source/RenderBox/FillResolve.h"
+#include "Source/RenderBox/GlassTranslucency.h"
 #include "Source/RenderBox/SvgRenderer.h"
 #include "Source/RenderBox/SystemFill.h"
 
@@ -95,6 +96,20 @@ struct IconRenderOptions {
     std::uint32_t size = 512;
     icf::Context context;
     int subdivisions = 16;
+
+    // Which of `SizeBasedValue`'s four slots `glyphTranslucency.strength` is read
+    // from (`GlassTranslucency.h`).
+    //
+    // `[OBS]` It is an option because the origin of the byte the target switches
+    // on -- `self+0x469F`, read at `0x0000FDA0` -- was NOT located (laudo §7.2).
+    // What the byte means is read; who writes it is not, so this renderer does
+    // not invent a mapping from `size` onto it.
+    //
+    // `[BIN]` It costs nothing today: the aggregate initialiser writes 1.0 into
+    // all four slots, so every choice gives the same pixel. It is here so that
+    // the inversion `slots[3 - sizeClass]` has something to be exercised with
+    // the day a parameter file differentiates the classes.
+    IconSizeClass sizeClass = IconSizeClass::Large;
 };
 
 // A layer that was not drawn, and why. Named, never dropped in silence.
@@ -134,6 +149,14 @@ struct RenderedIcon {
     // `backgroundGap` with `backgroundPainted == false` means the document
     // named none -- which no corpus document does.
     std::string backgroundGap;
+
+    // Layers whose art was multiplied by the `simplifiedShapeAwareGradientMask`
+    // that `translucency` opens. Counted apart from `drawn` for the same reason
+    // `glassRefracted` is: a group whose `translucency` is absent, zero or
+    // switched off produces an identity mask, and "drew opaque because the
+    // document said opaque" must stay distinguishable from "drew opaque because
+    // the effect is not implemented" -- which is what this whole number is for.
+    std::size_t glassTranslucent = 0;
 
     // Layers drawn with their glass refracting the backdrop underneath them.
     // Counted apart from `drawn` because a glass layer whose refraction is the
@@ -240,6 +263,16 @@ extern const char* const kRasterFillNote;
 // `[OBS]` display-p3 components drawn without a conversion matrix, the same gap
 // `RenderedImage::unconvertedP3` reports for a shape's own paint.
 extern const char* const kBackgroundP3Note;
+
+// The two things the translucency mask is drawn WITHOUT having read, said out
+// loud every time it draws: the rect its vertical ramp is measured in, and which
+// end of that rect the ramp starts at.
+extern const char* const kTranslucencyBoundsNote;
+
+// A glass layer whose group asks for translucency but whose art is a raster: the
+// mask is shaped by a distance field and a raster has no contour to build one
+// from. The layer still draws -- opaque, as it did before -- and says so.
+extern const char* const kTranslucencyRasterNote;
 
 Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                                 IconRenderOptions options = IconRenderOptions{});

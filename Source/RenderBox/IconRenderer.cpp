@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <optional>
@@ -319,6 +320,20 @@ const char* const kBackgroundP3Note =
     "fundo com componentes display-p3 desenhado SEM conversao de espaco -- a matriz "
     "nunca foi medida do alvo, e desenha-los como sRGB os desloca em silencio";
 
+const char* const kTranslucencyBoundsNote =
+    "a mascara de translucidez corre uma rampa VERTICAL dentro de um retangulo, e o "
+    "retangulo nao foi lido: `[OBS]` 0x10140-0x101B8 chama quatro acessores de rect e o "
+    "laudo nao seguiu ate o dono deles, entao aqui vale a viewBox da arte posta no canvas "
+    "-- a mesma resposta que este renderizador ja da para o rect de um gradiente, e a "
+    "mesma pergunta em aberto; `[OBS]` e qual ponta do rect recebe upperOpacity depende da "
+    "lateralidade de y do display list do RB, que continua nao estabelecida";
+
+const char* const kTranslucencyRasterNote =
+    "vidro sobre arte raster num grupo que pede translucidez: a mascara e recortada por um "
+    "campo de distancia e um raster nao tem contorno para achatar, entao a camada desenha "
+    "OPACA -- o mesmo buraco que o vidro ja nomeia, aqui custando o efeito inteiro e nao "
+    "so a refracao";
+
 PlacementRect artPlacementRect(const icf::svg::ViewBox& box, const LayerPlacement& p,
                                std::uint32_t size) {
     // Derived from `placeOnCanvas` rather than recomputed beside it: the art's
@@ -549,6 +564,21 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
         const DenormalisedGlass glassNumbers =
             materialDoc ? denormaliseGlass(glassMaterialFrom(*materialDoc)) : DenormalisedGlass{};
         const GlassRefraction refraction = glassRefractionFor(glassNumbers, options.size);
+
+        // ---- the translucency, which is the OTHER half of the material -----
+        //
+        // `[BIN]` Until 2026-09-15 `material.translucency` reached this loop and
+        // stopped: `GlassMaterial.h` transported it and named it as a field with
+        // no known consumer. `Docs/Laudos/2026-09-15-translucencia.md` read the
+        // consumer end to end, so it now draws.
+        //
+        // The arguments are per GROUP because the material is: `f = strength x
+        // translucency` has nothing in it that varies between two layers of the
+        // same group. What varies per layer is the `bounds` rect the ramp runs
+        // in, which is filled in below, once the layer's art has a box.
+        const OpacityMaskArguments groupMaskArgs = opacityMaskArguments(
+            kGlyphTranslucency, options.sizeClass, glassNumbers.translucency);
+        const bool groupWantsMask = !opacityMaskIsIdentity(groupMaskArgs);
 
         // `blend-mode` LIVES ON THE GROUP TOO, and the group is where it is
         // actually used: over the 145 documents `plus-lighter` appears **17
@@ -817,7 +847,31 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 continue;
             }
 
-            if (isGlass && !glassRefractionIsIdentity(refraction)) {
+            // BOTH GLASS EFFECTS EAT THE SAME DISTANCE FIELD, so it is built
+            // once. The refraction displaces the backdrop through it; the
+            // translucency mask is cut by it. Two fields would be the same
+            // arithmetic twice over the most expensive function in this tower.
+            //
+            // WHY THE MASK IS GATED ON `glass` AND NOT ON THE GROUP ALONE, and
+            // it is `[INF]`. `translucency` is a field of `Icon.GlassMaterial`,
+            // and `[ART]` the document's `glass` bit is
+            // `Icon.Element.participatesInGlass` -- the format's own answer to
+            // "which elements does this material act on". `[OBS]` The laudo did
+            // not read the caller side of `0x0000FD28` far enough to say which
+            // elements the function runs for; its three callers were counted and
+            // not followed.
+            //
+            // THE ALTERNATIVE, and it is not absurd: the parameter block calls
+            // the effect `glyphTranslucency`, and a reader could take "glyph" to
+            // mean the whole foreground. `[ART]` That reading loses on the
+            // corpus, though -- all 271 groups carry a `translucency` key
+            // whether or not they contain glass, so honouring it everywhere
+            // would fade layers whose author never asked for glass at all.
+            const bool wantsRefraction = isGlass && !glassRefractionIsIdentity(refraction);
+            const bool wantsTranslucency = isGlass && groupWantsMask;
+            std::optional<OpacityMask> mask;
+
+            if (wantsRefraction || wantsTranslucency) {
                 // `[ART]` 45 of the corpus's 171 glass layers name `.png` art
                 // and one names `.heic`. A raster has no path to flatten, so
                 // there is no shape to build a field from. This is NOT the same
@@ -825,31 +879,75 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 // its sentence: the glass IS transcribed, and what is missing
                 // is a field generator that reads a raster's alpha instead of a
                 // contour.
-                if (!svg) {
-                    skip("vidro sobre arte raster: um raster nao tem contorno para achatar e "
-                         "este projeto nao tem gerador de campo a partir do alfa (" +
-                         *imageName + ")");
-                    continue;
+                //
+                // The two effects answer that gap DIFFERENTLY, and the asymmetry
+                // is deliberate. A refraction that cannot run leaves the layer
+                // showing an unrefracted backdrop through art it was supposed to
+                // bend -- so the layer is skipped and named. A mask that cannot
+                // run leaves the layer OPAQUE, which is exactly what it has been
+                // doing since the day it was written; skipping it now would trade
+                // a known-incomplete pixel for a missing one and would drop the
+                // layer out of `drawn` for a reason that predates this file.
+                const bool haveShape = svg.has_value();
+                std::string fieldGap;
+                if (!haveShape) {
+                    fieldGap =
+                        "vidro sobre arte raster: um raster nao tem contorno para achatar e "
+                        "este projeto nao tem gerador de campo a partir do alfa (" +
+                        *imageName + ")";
                 }
-                const GlassContours shape = flattenSvgToContours(
-                    *svg, placeOnCanvas(svg->viewBox, lp, options.size), options.subdivisions);
-                if (shape.mixedRules) {
-                    skip("vidro: a arte mistura non-zero e even-odd e o campo assina com uma "
-                         "regra so -- escolher uma inverteria o dentro/fora de parte da forma");
-                    continue;
+
+                std::optional<FieldImage> field;
+                if (haveShape) {
+                    const GlassContours shape =
+                        flattenSvgToContours(*svg, placeOnCanvas(svg->viewBox, lp, options.size),
+                                             options.subdivisions);
+                    if (shape.mixedRules) {
+                        fieldGap =
+                            "vidro: a arte mistura non-zero e even-odd e o campo assina com uma "
+                            "regra so -- escolher uma inverteria o dentro/fora de parte da forma";
+                    } else if (shape.contours.empty()) {
+                        fieldGap =
+                            "vidro: a arte nao fecha nenhum contorno pintado (" + *imageName + ")";
+                    } else {
+                        FieldOptions fo;
+                        fo.rule = shape.rule;
+                        field = generateField(shape.contours, options.size, options.size, fo);
+                    }
                 }
-                if (shape.contours.empty()) {
-                    skip("vidro: a arte nao fecha nenhum contorno pintado (" + *imageName + ")");
-                    continue;
+
+                if (!field) {
+                    if (wantsRefraction) {
+                        skip(fieldGap);
+                        continue;
+                    }
+                    // Translucency alone: draw opaque, and say so.
+                    note(out.notes, haveShape ? fieldGap : std::string(kTranslucencyRasterNote));
+                } else {
+                    if (wantsRefraction) {
+                        glassOver(target, options.size, options.size,
+                                  glassDisplacementMap(*field, refraction), refraction);
+                        note(out.notes, glassRulerNote(options.size));
+                        ++out.glassRefracted;
+                    }
+                    if (wantsTranslucency) {
+                        // The `bounds` of shader argument 6 -- the rect the
+                        // vertical ramp is measured in. `[OBS]` Which rect the
+                        // target reports there was not read; this is the art's
+                        // viewBox placed on the canvas, the SAME answer this
+                        // file already gives a gradient's placement rect, so the
+                        // two do not disagree about one unread thing.
+                        OpacityMaskArguments args = groupMaskArgs;
+                        const PlacementRect r =
+                            artPlacementRect(svg->viewBox, lp, options.size);
+                        args.bounds[0] = static_cast<float>(r.x);
+                        args.bounds[1] = static_cast<float>(r.y);
+                        args.bounds[2] = static_cast<float>(r.width);
+                        args.bounds[3] = static_cast<float>(r.height);
+                        mask = glassOpacityMask(*field, args);
+                        note(out.notes, kTranslucencyBoundsNote);
+                    }
                 }
-                FieldOptions fo;
-                fo.rule = shape.rule;
-                const FieldImage field =
-                    generateField(shape.contours, options.size, options.size, fo);
-                glassOver(target, options.size, options.size,
-                          glassDisplacementMap(field, refraction), refraction);
-                note(out.notes, glassRulerNote(options.size));
-                ++out.glassRefracted;
             }
 
             if (svg) {
@@ -862,6 +960,42 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 if (!drew) return std::unexpected(drew.error());
                 for (const auto& s : drew->skipped) {
                     out.shapeGaps.push_back(name + " / " + *imageName + ": " + s.why);
+                }
+                // THE TRANSLUCENCY, ON THE ART AND NOT ON THE COMPOSITE. The
+                // mask multiplies this layer's own alpha BEFORE the layer's
+                // `opacity` and blend mode are applied, because it is a property
+                // of the glyph and not of how the glyph meets what is under it.
+                // `[BIN]` The target agrees from the other side: the `alpha` of
+                // its `drawShape:fill:alpha:blendMode:` is the constant 1.0
+                // (`0x103F4`), so the translucency is already inside the pixel
+                // by the time the composite sees it.
+                if (mask) {
+                    // THE BLIND SPOT, MEASURED BEFORE THE MASK IS APPLIED.
+                    // Where the field says "outside", the shader's own
+                    // `mix(1.0, a, cov)` returns 1.0 and the pixel keeps its
+                    // opacity -- correct for a pixel that really is outside, and
+                    // a silent miss for one the art painted anyway. Counted
+                    // against the art's alpha so the sentence carries a number
+                    // instead of a worry.
+                    std::size_t painted = 0;
+                    const std::size_t missed =
+                        opacityMaskMissedPixels(drew->rgba, *mask, painted);
+                    if (missed > 0 && painted > 0) {
+                        char buf[420];
+                        std::snprintf(
+                            buf, sizeof(buf),
+                            "translucidez aplicada com buraco: %zu de %zu pixels pintados "
+                            "(%.1f%%) caem FORA do campo de distancia e ficaram opacos -- "
+                            "flattenSvgToContours funde todo subcaminho pintado num conjunto "
+                            "so, assinado por uma regra so, entao subcaminhos sobrepostos de "
+                            "orientacao contraria se cancelam sob non-zero (a ressalva de "
+                            "DistanceField.h). O mesmo buraco vale para a refracao.",
+                            missed, painted,
+                            100.0 * static_cast<double>(missed) / static_cast<double>(painted));
+                        out.shapeGaps.push_back(name + " / " + *imageName + ": " + buf);
+                    }
+                    applyOpacityMask(drew->rgba, *mask);
+                    ++out.glassTranslucent;
                 }
                 blendOver(target, drew->rgba, static_cast<float>(opacity), layerBlend);
                 ++out.drawn;
