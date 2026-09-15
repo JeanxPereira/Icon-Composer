@@ -603,8 +603,11 @@ TEST_CASE(the_glass_displaces_the_backdrop_inside_the_shape_and_nowhere_else) {
     CHECK_EQ(ga->drawn, std::size_t{2});
     CHECK_EQ(ga->glassRefracted, std::size_t{1});
     CHECK(ga->skipped.empty());
-    // At 1024 the ruler is 1, so nothing has to be declared.
-    CHECK(ga->notes.empty());
+    // At 1024 the ruler is 1, so IT has nothing to declare. What is declared is
+    // where the field came from: since 2026-09-15 the vector art takes the same
+    // rasterised door the raster art takes, and every glass layer says so.
+    for (const auto& n : ga->notes) CHECK_EQ(n, std::string(kGlassVectorFieldNote));
+    CHECK_EQ(ga->notes.size(), std::size_t{1});
 
     // OUTSIDE. The square spans pixels 256..768; a generous margin either side
     // keeps the ~1px mask ramp out of it. Bit for bit.
@@ -808,8 +811,15 @@ TEST_CASE(a_render_away_from_the_canvas_size_declares_the_ruler_it_assumed) {
     auto icon = renderIcon(d, *bundle, o);
     REQUIRE(icon.has_value());
     CHECK_EQ(icon->glassRefracted, std::size_t{1});
-    REQUIRE(icon->notes.size() == 1);
-    CHECK(icon->notes[0].find("[INF]") != std::string::npos);
+    // Two notes: the ruler it had to assume, and -- since the vector field is
+    // rasterised like the raster one -- where the field came from. Only the
+    // first carries `[INF]`, which is what this case is actually about.
+    std::size_t inferred = 0;
+    for (const auto& n : icon->notes) {
+        if (n.find("[INF]") != std::string::npos) ++inferred;
+    }
+    CHECK_EQ(inferred, std::size_t{1});
+    CHECK_EQ(icon->notes.size(), std::size_t{2});
 }
 
 // ---- the corpus ----------------------------------------------------------

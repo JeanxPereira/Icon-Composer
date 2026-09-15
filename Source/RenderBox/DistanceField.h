@@ -340,4 +340,51 @@ void edtSquared1d(std::vector<double>& f, std::vector<double>& d, std::vector<in
 FieldImage generateFieldFromAlpha(const std::vector<float>& rgba, std::uint32_t width,
                                   std::uint32_t height, FieldOptions options = FieldOptions{});
 
+// The SAME field, for art that arrives as a CONTOUR instead of as a bitmap.
+//
+// WHY A VECTOR NOW TAKES THE RASTER'S DOOR, AND WHAT IT COST TO SAY SO.
+// `generateField` above answers the question exactly: for every pixel it walks
+// every segment and keeps the true `argmin`. That is O(pixels x segments), and
+// on the art this renderer is actually handed it is the whole render -- `[ART]`
+// 10 455 ms of a 1024 px render of `Apollo-Reborn__Apollo-Reborn__AppIcon`,
+// 73 % of it, over ten layers; and on the user's own grunge icon it is 56.7 s
+// of a 57.2 s render. A million pixels times tens of thousands of segments does
+// not have a constant that saves it.
+//
+// `[BIN]` And the exactness it buys is not what the target does. The target's
+// field comes from `sdfTextureWithBufferAllocator:` (`0x000867F8`) sent to a
+// `CUINamedLayerImage` (`0x000CC928`) that BAILS if its `image` is nil
+// (`0x00028AE0`, `0x00028AEC cbz x0`); `IconRendering.SDF.SourceLayer`
+// (`0xA3104`) is `{displayList, isOpaque}`. The target rasterises and then
+// transforms. A field taken off a grid is not a worse answer than the exact
+// one -- it is the answer the target gives.
+//
+// So this rasterises the contours onto the field's own grid -- one scanline
+// sweep, the SAME half-open crossing rule and the SAME fill rule as
+// `FieldShape::distanceAt`'s inside test, so a pixel is inside here exactly
+// when it was inside there -- and hands the mask to the same two exact
+// Euclidean transforms `generateFieldFromAlpha` runs. O(pixels + segments).
+//
+// AND IT IS NOT ONLY CHEAPER. The `argmin` measured to the nearest SEGMENT
+// whether or not that segment is buried inside the union -- the crease the
+// method's own caveat above admits to, and the one thing about the old field
+// that Apple's smooth union provably does not have. A rasterised shape has no
+// buried edges to measure to, so the crease is gone. `[ART]` On
+// `Apollo-Reborn__Apollo-Reborn__AppIcon`'s own art the two fields agree to a
+// mean of 0.27-0.34 px and a worst of 0.78 px on SEVEN of eight layers; the
+// eighth is `stem.svg`, where they differ by up to 3.22 px, and every one of
+// those pixels is a crease under the antenna ellipse.
+//
+// `superSample` rasterises onto an N-times-finer grid and runs the transform
+// there, which divides both the distance quantisation and the ANGULAR
+// quantisation of the gradient by N; the field is then read at the sub-texel
+// that the pixel centre lands on. It must be ODD, because only an odd factor
+// has a sub-texel whose centre IS the pixel centre -- an even one would read
+// the field half a sub-texel off and put the whole picture out of step with
+// `CoveragePass`. Even values are rounded down to the odd below.
+FieldImage generateFieldFromContours(const std::vector<FieldContour>& contours,
+                                     std::uint32_t width, std::uint32_t height,
+                                     FieldOptions options = FieldOptions{},
+                                     std::uint32_t superSample = 1);
+
 }  // namespace rb

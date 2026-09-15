@@ -415,14 +415,195 @@ void edtSquared1d(std::vector<double>& f, std::vector<double>& d, std::vector<in
     }
 }
 
+namespace {
+
+// The whole of the field, given an inside/outside mask on a grid that may be
+// FINER than the field's own. `ss` is how many mask texels span one field
+// pixel, and it is odd, so mask texel `x * ss + ss / 2` is the one whose centre
+// IS the field pixel's centre. With `ss == 1` this is, arithmetic for
+// arithmetic, what `generateFieldFromAlpha` did before it was factored out
+// here -- including the ORDER of the four border tests, which decides ties.
+FieldImage fieldFromInsideMask(const std::vector<char>& inside, int mw, int mh, int ss,
+                               const FieldOptions& options) {
+    FieldImage img;
+    const std::size_t texels = static_cast<std::size_t>(mw) * mh;
+
+    std::vector<char> outsideSeed(texels, 0);
+    for (std::size_t t = 0; t < texels; ++t) outsideSeed[t] = inside[t] ? 0 : 1;
+
+    // Distance from every texel to the nearest OUTSIDE centre (what an inside
+    // texel needs) and to the nearest INSIDE centre (what an outside texel
+    // needs). Two transforms and not one, because a signed field wants the
+    // depth on each side measured to the other side's seeds.
+    std::vector<double> sqOut, sqIn;
+    std::vector<int> siteOut, siteIn;
+    edt2d(outsideSeed, mw, mh, sqOut, siteOut);
+    edt2d(inside, mw, mh, sqIn, siteIn);
+
+    const int W = mw / ss;
+    const int H = mh / ss;
+    img.width = static_cast<std::uint32_t>(W);
+    img.height = static_cast<std::uint32_t>(H);
+    img.rgba.assign(static_cast<std::size_t>(W) * H * 4, 0.0f);
+
+    const double aa = options.aaWidth > 0.0f ? static_cast<double>(options.aaWidth) : 1.0;
+    const double inv = 1.0 / ss;
+    const int half = ss / 2;
+
+    for (int y = 0; y < H; ++y) {
+        for (int x = 0; x < W; ++x) {
+            const int mx = x * ss + half;
+            const int my = y * ss + half;
+            const std::size_t t = static_cast<std::size_t>(my) * mw + mx;
+            double dist = 0.0;
+            double gx = 0.0;
+            double gy = 0.0;
+            double sign = 0.0;
+
+            if (inside[t]) {
+                sign = -1.0;
+                dist = std::sqrt(sqOut[t]);
+                const int s = siteOut[t];
+                if (s >= 0) {
+                    gx = static_cast<double>(s % mw) - mx;
+                    gy = static_cast<double>(s / mw) - my;
+                }
+            } else {
+                sign = 1.0;
+                dist = std::sqrt(sqIn[t]);
+                const int s = siteIn[t];
+                if (s >= 0) {
+                    // Outside, `d` grows as the shape recedes, so the gradient
+                    // points AWAY from the nearest inside centre -- the
+                    // opposite sense from the inside branch, which is why the
+                    // two are written out rather than shared.
+                    gx = static_cast<double>(mx) - (s % mw);
+                    gy = static_cast<double>(my) - (s / mw);
+                }
+            }
+
+            // Centres to contour: the boundary sits half a mask texel before
+            // the first centre of the opposite class. Then out of mask texels
+            // and into field pixels, which is the only thing `ss` changes about
+            // the arithmetic.
+            double d = (dist - 0.5) * inv;
+
+            if (inside[t]) {
+                // The four virtual outside rows one step beyond each edge, at
+                // the FIELD's resolution and not the mask's -- the empty
+                // one-texel border of the target's own SDF is one FIELD texel
+                // however finely this rasterised. When one of them is nearer
+                // than any real outside texel it wins, and the gradient turns
+                // to face it -- axis aligned, because the row is.
+                const double px = static_cast<double>(x) + 0.5;
+                const double py = static_cast<double>(y) + 0.5;
+                const double bx1 = static_cast<double>(W) - px;
+                const double by1 = static_cast<double>(H) - py;
+                if (px < d) { d = px; gx = -1.0; gy = 0.0; }
+                if (py < d) { d = py; gx = 0.0; gy = -1.0; }
+                if (bx1 < d) { d = bx1; gx = 1.0; gy = 0.0; }
+                if (by1 < d) { d = by1; gx = 0.0; gy = 1.0; }
+            }
+
+            const double len = std::sqrt(gx * gx + gy * gy);
+            float* p = img.rgba.data() + (static_cast<std::size_t>(y) * W + x) * 4;
+            p[0] = static_cast<float>(sign * d);
+            if (len > 0.0) {
+                p[1] = static_cast<float>(gx / len);
+                p[2] = static_cast<float>(gy / len);
+            }
+            const double cov = -static_cast<double>(p[0]) / aa + 0.5;
+            p[3] = static_cast<float>(cov < 0.0 ? 0.0 : (cov > 1.0 ? 1.0 : cov));
+        }
+    }
+    return img;
+}
+
+// One crossing of a segment with a scanline's CENTRE line: where it crosses and
+// which way the edge runs there.
+struct Crossing {
+    double x;
+    int dir;
+};
+
+// The contours, rasterised to an inside mask at pixel centres.
+//
+// The crossing rule is `FieldShape::distanceAt`'s, turned inside out: from "per
+// pixel, walk every segment" to "per segment, emit the rows it crosses". A
+// segment counts for the rows whose centre lies in
+// `[min(ay, by), max(ay, by))` -- the same half-open interval the brute force's
+// `ay <= py && by > py` pair describes, which is what stops a vertex sitting
+// exactly on a centre line from being counted twice. Within a row, a crossing
+// at exactly the pixel's own centre COUNTS, because the brute force's test is
+// the strict `px < xIntersect` over the crossings to the RIGHT and the sweep
+// below accumulates the ones to the LEFT. A closed contour's directions sum to
+// zero, so the left-hand winding is minus the right-hand one and "non-zero"
+// means the same thing measured from either side.
+void rasteriseContours(const std::vector<FieldContour>& contours, int w, int h, FieldRule rule,
+                       double scale, std::vector<char>& inside, std::size_t& insideCount) {
+    inside.assign(static_cast<std::size_t>(w) * h, 0);
+    insideCount = 0;
+
+    std::vector<std::vector<Crossing>> rows(static_cast<std::size_t>(h));
+    for (const FieldContour& c : contours) {
+        const std::size_t n = c.xy.size() / 2;
+        if (n < 2) continue;   // a contour of one point encloses nothing
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::size_t j = (i + 1) % n;   // the closing segment is implied
+            const double ax = static_cast<double>(c.xy[i * 2]) * scale;
+            const double ay = static_cast<double>(c.xy[i * 2 + 1]) * scale;
+            const double bx = static_cast<double>(c.xy[j * 2]) * scale;
+            const double by = static_cast<double>(c.xy[j * 2 + 1]) * scale;
+            if (ay == by) continue;   // a horizontal edge crosses no centre line
+
+            const int dir = ay < by ? 1 : -1;
+            const double lo = ay < by ? ay : by;
+            const double hi = ay < by ? by : ay;
+            int y0 = static_cast<int>(std::ceil(lo - 0.5));
+            int y1 = static_cast<int>(std::ceil(hi - 0.5));   // exclusive
+            if (y0 < 0) y0 = 0;
+            if (y1 > h) y1 = h;
+            const double invDy = 1.0 / (by - ay);
+            for (int y = y0; y < y1; ++y) {
+                const double cy = static_cast<double>(y) + 0.5;
+                const double t = (cy - ay) * invDy;
+                rows[static_cast<std::size_t>(y)].push_back({ax + t * (bx - ax), dir});
+            }
+        }
+    }
+
+    for (int y = 0; y < h; ++y) {
+        std::vector<Crossing>& r = rows[static_cast<std::size_t>(y)];
+        if (r.empty()) continue;
+        std::sort(r.begin(), r.end(),
+                  [](const Crossing& a, const Crossing& b) { return a.x < b.x; });
+        char* row = &inside[static_cast<std::size_t>(y) * w];
+        std::size_t k = 0;
+        int acc = 0;
+        for (int x = 0; x < w; ++x) {
+            const double px = static_cast<double>(x) + 0.5;
+            while (k < r.size() && r[k].x <= px) {
+                acc += rule == FieldRule::NonZero ? r[k].dir : 1;
+                ++k;
+            }
+            const bool in = rule == FieldRule::NonZero ? acc != 0 : (acc & 1) != 0;
+            if (in) {
+                row[x] = 1;
+                ++insideCount;
+            } else if (k >= r.size()) {
+                break;   // every crossing is behind us and we are out: so is the rest
+            }
+        }
+    }
+}
+
+}  // namespace
+
 FieldImage generateFieldFromAlpha(const std::vector<float>& rgba, std::uint32_t width,
                                   std::uint32_t height, FieldOptions options) {
     FieldImage img;
     const std::size_t texels = static_cast<std::size_t>(width) * height;
     if (width == 0 || height == 0 || rgba.size() < texels * 4) return img;
-
-    const int w = static_cast<int>(width);
-    const int h = static_cast<int>(height);
 
     std::vector<char> inside(texels, 0);
     std::size_t insideCount = 0;
@@ -437,80 +618,36 @@ FieldImage generateFieldFromAlpha(const std::vector<float>& rgba, std::uint32_t 
     // empty, so the caller names a gap instead of drawing nothing quietly.
     if (insideCount == 0) return img;
 
-    std::vector<char> outsideSeed(texels, 0);
-    for (std::size_t t = 0; t < texels; ++t) outsideSeed[t] = inside[t] ? 0 : 1;
+    return fieldFromInsideMask(inside, static_cast<int>(width), static_cast<int>(height), 1,
+                               options);
+}
 
-    // Distance from every texel to the nearest OUTSIDE centre (what an inside
-    // texel needs) and to the nearest INSIDE centre (what an outside texel
-    // needs). Two transforms and not one, because a signed field wants the
-    // depth on each side measured to the other side's seeds.
-    std::vector<double> sqOut, sqIn;
-    std::vector<int> siteOut, siteIn;
-    edt2d(outsideSeed, w, h, sqOut, siteOut);
-    edt2d(inside, w, h, sqIn, siteIn);
+FieldImage generateFieldFromContours(const std::vector<FieldContour>& contours,
+                                     std::uint32_t width, std::uint32_t height,
+                                     FieldOptions options, std::uint32_t superSample) {
+    FieldImage img;
+    if (width == 0 || height == 0) return img;
+    // Odd only: see the header. An even factor has no sub-texel centred on the
+    // pixel centre, and reading the field half a sub-texel off would shift the
+    // whole picture against `CoveragePass`.
+    int ss = superSample < 1 ? 1 : static_cast<int>(superSample);
+    if ((ss & 1) == 0) --ss;
+    if (ss < 1) ss = 1;
 
-    img.width = width;
-    img.height = height;
-    img.rgba.assign(texels * 4, 0.0f);
+    const int mw = static_cast<int>(width) * ss;
+    const int mh = static_cast<int>(height) * ss;
 
-    const double aa = options.aaWidth > 0.0f ? static_cast<double>(options.aaWidth) : 1.0;
+    std::vector<char> inside;
+    std::size_t insideCount = 0;
+    rasteriseContours(contours, mw, mh, options.rule, static_cast<double>(ss), inside,
+                      insideCount);
+    // A contour set that covers no sample point has no inside to sign, and the
+    // same rule applies as for an alpha that never reaches the threshold: an
+    // empty field, so the caller names the gap rather than being handed one
+    // that is everywhere-outside and draws nothing in silence.
+    if (insideCount == 0) return img;
 
-    for (int y = 0; y < h; ++y) {
-        for (int x = 0; x < w; ++x) {
-            const std::size_t t = static_cast<std::size_t>(y) * w + x;
-            double dist = 0.0;
-            double gx = 0.0;
-            double gy = 0.0;
-            double sign = 0.0;
-
-            if (inside[t]) {
-                sign = -1.0;
-                dist = std::sqrt(sqOut[t]);
-                const int s = siteOut[t];
-                if (s >= 0) {
-                    gx = static_cast<double>(s % w) - x;
-                    gy = static_cast<double>(s / w) - y;
-                }
-                // The four virtual outside rows one step beyond each edge. When
-                // one of them is nearer than any real outside texel it wins,
-                // and the gradient turns to face it -- axis aligned, because
-                // the row is.
-                const double bx0 = static_cast<double>(x) + 1.0;
-                const double by0 = static_cast<double>(y) + 1.0;
-                const double bx1 = static_cast<double>(w - x);
-                const double by1 = static_cast<double>(h - y);
-                if (bx0 < dist) { dist = bx0; gx = -1.0; gy = 0.0; }
-                if (by0 < dist) { dist = by0; gx = 0.0; gy = -1.0; }
-                if (bx1 < dist) { dist = bx1; gx = 1.0; gy = 0.0; }
-                if (by1 < dist) { dist = by1; gx = 0.0; gy = 1.0; }
-            } else {
-                sign = 1.0;
-                dist = std::sqrt(sqIn[t]);
-                const int s = siteIn[t];
-                if (s >= 0) {
-                    // Outside, `d` grows as the shape recedes, so the gradient
-                    // points AWAY from the nearest inside centre -- the
-                    // opposite sense from the inside branch, which is why the
-                    // two are written out rather than shared.
-                    gx = static_cast<double>(x) - (s % w);
-                    gy = static_cast<double>(y) - (s / w);
-                }
-            }
-
-            const double len = std::sqrt(gx * gx + gy * gy);
-            float* p = img.rgba.data() + t * 4;
-            // Centres to contour: the boundary sits half a pixel before the
-            // first centre of the opposite class.
-            p[0] = static_cast<float>(sign * (dist - 0.5));
-            if (len > 0.0) {
-                p[1] = static_cast<float>(gx / len);
-                p[2] = static_cast<float>(gy / len);
-            }
-            const double cov = -static_cast<double>(p[0]) / aa + 0.5;
-            p[3] = static_cast<float>(cov < 0.0 ? 0.0 : (cov > 1.0 ? 1.0 : cov));
-        }
-    }
-    return img;
+    return fieldFromInsideMask(inside, mw, mh, ss, options);
 }
 
 }  // namespace rb

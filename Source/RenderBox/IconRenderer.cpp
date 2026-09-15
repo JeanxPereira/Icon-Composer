@@ -369,6 +369,58 @@ const char* const kGlassRasterFieldNote =
     "precisePixelFormatThreshold, maxRelativeSmoothing, 0xA46E0) estao nomeados e nao lidos. "
     "Aqui o campo sai na resolucao do alvo.";
 
+// HOW MUCH FINER THAN THE FIELD THE MASK IS RASTERISED, and the number is ONE.
+//
+// It is a knob because a contour, unlike a bitmap, HAS something finer to
+// offer, and the question of whether to spend it deserved a measurement rather
+// than a preference. It got one, on `Apollo-Reborn__Apollo-Reborn__AppIcon` at
+// 512 px, against the brute force this replaces -- max delta per channel over
+// VISIBLE pixels, and the render at 1024 px:
+//
+//   ss   changed  mean |d|  p90  p99   1024 px render
+//    1    14.21 %     4.73    3  130     2.49 s
+//    3    12.97 %     3.22    2   98     6.49 s
+//    9    11.66 %     2.25    1   60    ~20 s
+//   15    10.94 %     1.92    1   45    ~52 s
+//
+// The ladder does not reach zero, and that is the whole finding: the floor at
+// ~10.9 % is NOT the grid. It is the crease the brute force put in the field
+// wherever one painted subpath is buried under another -- it measured to the
+// buried edge, which is inside the shape and invisible in the picture. `[ART]`
+// On `stem.svg` the two fields differ by up to 3.22 px for that reason, and the
+// worst 8x8 block of the whole render (121.9 levels, at 256,144) is exactly the
+// antenna base where the stem enters the ellipse. `DistanceField.h` had already
+// written that crease down as a known wrong; the rasterised field does not have
+// it, and `[BIN]` the target, which rasterises, cannot have it either.
+//
+// So `ss = 3` buys 1.5 levels of mean delta for 2.6x the render, and cannot buy
+// the floor at any price. One sample per pixel is also the grid
+// `generateFieldFromAlpha` already runs on for raster art, which leaves ONE
+// convention in the tower rather than two. The cheap way to the sub-texel
+// distance without `ss^2` -- seeding the transform from an anti-aliased
+// coverage instead of a binary mask -- is named as open in the laudo and is not
+// done here.
+//
+// If it is ever raised it must be ODD (`DistanceField.h` says why: only an odd
+// factor has a sub-texel whose centre IS the pixel centre).
+constexpr std::uint32_t kFieldSuperSample = 1;
+
+const char* const kGlassVectorFieldNote =
+    "vidro sobre arte vetorial: o campo de distancia desta camada NAO vem mais de um argmin "
+    "exato sobre os segmentos do contorno -- a arte e rasterizada na propria grade do campo "
+    "(mesma regra de preenchimento e mesmo teste de cruzamento meio-aberto que o argmin usava) "
+    "e o campo sai da mesma transformada euclidiana exata que a arte raster ja usava. `[BIN]` "
+    "E o que o alvo faz nos dois casos: sdfTextureWithBufferAllocator: (0x867F8) vai a um "
+    "CUINamedLayerImage (classref 0xCC928) que ABORTA sem image (0x28AE0/0x28AEC), e "
+    "IconRendering.SDF.SourceLayer (0xA3104) e {displayList, isOpaque}. O QUE SE PERDE e "
+    "sub-texel: `[ART]` na arte do Apollo a distancia difere do argmin em 0,27 a 0,34 px de "
+    "media e 0,78 px no pior caso, e a direcao do gradiente fica quantizada pela grade. O QUE "
+    "SE GANHA alem do tempo e que some a dobra que o argmin punha no campo sobre todo "
+    "subcaminho ENTERRADO por outro -- ele media ate uma aresta que esta dentro da forma e nao "
+    "aparece no desenho (em stem.svg, 3,22 px de diferenca por isso). `[OBS]` A GRADE do alvo "
+    "continua nao lida (TXRTexture, e os tres botoes de ICRRenderingParameters.SDFGeneration em "
+    "0xA46E0), entao uma amostra por pixel e escolha deste projeto, medida e nao lida.";
+
 PlacementRect artPlacementRect(const icf::svg::ViewBox& box, const LayerPlacement& p,
                                std::uint32_t size) {
     // Derived from `placeOnCanvas` rather than recomputed beside it: the art's
@@ -1101,9 +1153,37 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                         fieldGap =
                             "vidro: a arte nao fecha nenhum contorno pintado (" + *imageName + ")";
                     } else {
+                        // THE VECTOR TAKES THE RASTER'S DOOR TOO, AS OF THIS
+                        // FRONT. It used to call `generateField`, which walks
+                        // every segment for every pixel: exact, and `[ART]`
+                        // 73 % of a 1024 px render of the ten-layer
+                        // `Apollo-Reborn__Apollo-Reborn__AppIcon` (10 455 ms of
+                        // it) -- and 56.7 s of the 57.2 s the user's own grunge
+                        // icon took, whose 16 788 segments in ONE layer are the
+                        // worst case there is. `generateFieldFromContours`
+                        // rasterises the same contours, under the same fill
+                        // rule and the same half-open crossing rule, and runs
+                        // the SAME exact Euclidean transform the raster branch
+                        // below already runs. `[BIN]` It is also what the
+                        // target does -- `DistanceField.h` carries the
+                        // addresses -- so the cheaper path is the more faithful
+                        // one and not a trade.
                         FieldOptions fo;
                         fo.rule = shape.rule;
-                        field = generateField(shape.contours, options.size, options.size, fo);
+                        FieldImage fromShape = generateFieldFromContours(
+                            shape.contours, options.size, options.size, fo, kFieldSuperSample);
+                        if (fromShape.width == 0) {
+                            // Contours that close but cover no sample point --
+                            // a hairline, a shape smaller than a texel. The
+                            // brute force would have signed it anyway, from
+                            // outside; a grid cannot, and saying so is better
+                            // than a field that is everywhere-outside.
+                            fieldGap = "vidro: a arte fecha contornos mas nenhum ponto de amostra "
+                                       "cai dentro deles nesta resolucao (" + *imageName + ")";
+                        } else {
+                            field = std::move(fromShape);
+                            note(out.notes, kGlassVectorFieldNote);
+                        }
                     }
                 } else if (rasterPlaced) {
                     FieldImage fromAlpha =
