@@ -325,6 +325,71 @@ bool documentAsksForSpecular(const DenormalisedGlass& glass);
 //   4. The SDF texel encoding, which `GlassTranslucency.h` already carries as
 //      `[OBS]`. Here the `.gb` normal joins it: this file feeds the shader the
 //      field's own gradient, normalised, and the target feeds it `1 - 2*tex.gb`.
+//
+// ===========================================================================
+// WHAT APPLE'S OWN RENDER SAID ABOUT THE BAND -- `2026-09-15-realce-forma.md`
+// ===========================================================================
+//
+// The colour of the band closed against the oracle (bias +34.3 -> +0.10). The
+// PLACE did not, and the oracle says where it is instead. Measured against
+// `References/27.0-129/out/apple-512.png` (and the `.icns` 256 rendition), on
+// the 13 498 px of the band, with the render at 412 px pasted at (50,50) in a
+// 512 frame -- no resampling.
+//
+// `[BIN]` **THE UNITS AND THE SIZE CLASS ARE OURS ALREADY, AND THAT IS READ,
+// NOT ASSUMED.** `0x00042D3C`-`0x00042D50`: `ctx+0x46A0 = 1/scale` and
+// `ctx+0x46A8 = (1/scale) / [contentsScale]`, with
+// `scale = min(CGRectGetWidth(rect)/W, CGRectGetHeight(rect)/H)` of the canvas
+// (`_CGRectGetWidth` = `0x8DA28`, `_CGRectGetHeight` = `0x8D9D4`, resolved
+// through the INDIRECT SYMBOL TABLE and not by name). So `ctx+0x46A8` -- the
+// multiplier of `minDistancePixels` -- is CANVAS UNITS PER PIXEL, which is the
+// reciprocal of `SpecularArguments::pixelsPerPoint`, and `height`/`inset` live
+// in canvas units. `[BIN]` The size class is `min(rect.w, rect.h)` against
+// `params+0x230/0x238/0x240` (`0x00042D54`-`0x00042DE4`, and again in
+// `0x00018D70`-`0x00018DCC` over `size/scale`), whose values are read out of
+// the pool at `0x98600`/`0x98610`: `minMediumSize = 25`, `minLargeSize = 60`,
+// `minDisplaySize = 256`. The oracle's 512 px rendition is a 256 pt icon whose
+// chiclet rect is 206 pt -- `large`, which is what this renderer uses.
+//
+// `[BIN]` **AND `inset` REALLY IS ZERO.** The factory `0x00064604` was re-read
+// field by field: `keySharp` writes zeros at `+0x90`/`+0xA0` and the `nil` tag
+// `1` at `+0xD0` (`0x00064698`-`0x000646B0`), `keyDiffuse` the same
+// (`0x00064730`-`0x00064738`). Nothing in `0x0004BD90`, in `0x0000ED94` (which
+// only multiplies `height` and `inset` by `(sdfTexels-2)/rect.width`) or in the
+// pass grouping `0x0004C314` (which only COMPARES) adds a term.
+//
+// `[OBS]` **AND YET THE TARGET'S BAND IS ~7.5 CANVAS UNITS DEEPER THAN OURS.**
+// Profiles of luma against the field's own depth, per normal sector: Apple's
+// bright band runs from ~5 to ~20-30 units with its peak at ~9, over a rim
+// (0..~5 units) that is DARKER than the interior; ours peaks at 0..2.5 units
+// and is over by 6. Sliding our `sd` inward is the only thing that moves the
+// mean band error below the "draw no highlight" control:
+//
+//     none (control) 19.78   base 23.42   sd-2.4px 17.93   sd-3px 17.60
+//
+// and the same scan at the 256 px rendition peaks at 1.5 px -- `7.5 +- 0.9`
+// canvas units at BOTH sizes, so the displacement is geometric and not a pixel
+// artefact. NOTHING WAS CHANGED BECAUSE OF IT: a slide with no `[BIN]` behind
+// it is exactly the overfitting the oracle exists to prevent, and on the user's
+// own icon it moves 91 301 px (9.25 %) and takes the highlight off every stroke
+// thinner than 7.5 units. The two inputs that could carry such an offset are
+// both unread: the SDF texture's own zero level (CoreUI's
+// `sdfTextureWithBufferAllocator:`, in neither slice) and `[descriptor+0xA8]`,
+// the `maxDistance` that `0x00049238` loads for `sdfScale`.
+//
+// `[BIN]`+oracle **THE GRADIENT'S SIGN IS SETTLED.** The laudo of the
+// highlights carried it as ARGUED ("outward, because that is what makes
+// `angleFromKey = 0` light the top"). All eight symmetries of `(nx, ny)` were
+// rendered against the oracle; the identity is the best of the eight, and the
+// plain flip is the worst (band error 23.42 vs 25.74). The argument and the
+// oracle agree.
+//
+// `[ART]` **AND THE SPATIAL POST-PASS CANNOT BE THE CULPRIT HERE.**
+// `customLightDirection` is a field of `GlobalConfiguration`, not of the
+// document: of the 145 corpus documents, 82 carry a `lighting` key and its only
+// values are `individual` and `combined` -- no document can spell a light
+// direction, so the `nil` tag that makes `0x00012550` the identity is the state
+// every document renders in.
 
 // `[BIN]` The `SizeBasedValue<Double>` of `HighlightSettings`, plus the
 // `Optional` tag where the field has one. Four slots in MEMORY order --
