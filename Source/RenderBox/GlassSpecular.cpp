@@ -310,11 +310,18 @@ bool documentAsksForSpecular(const GlassMaterial& material) { return material.ha
 bool documentAsksForSpecular(const DenormalisedGlass& glass) { return glass.hasSpecular; }
 
 const char* specularDoesNotDrawNote() {
-    return "este documento pede um especular e ele NAO desenha NESTA CAMADA: a arte e raster e um "
-           "raster nao tem contorno para achatar, entao nao ha campo de distancia -- sem `sd` e "
-           "sem normal o shader `glassHighlight` nao tem o que amostrar. Os numeros existem "
-           "(Highlights, 16113 bytes, lidos em Docs/Laudos/2026-09-15-highlights.md); o que falta "
-           "e um gerador de campo a partir do alfa, a mesma lacuna da refracao e da translucidez";
+    // ARTE RASTER SAIU DESTA FRASE em 2026-09-15. Ela dizia que um raster nao
+    // tem contorno e por isso nao tem campo; `[BIN]` o alvo tambem constroi o
+    // campo dele a partir do alfa rasterizado (os enderecos estao em
+    // DistanceField.h, PARTE TRES), e `generateFieldFromAlpha` faz o mesmo aqui.
+    // O que sobra e o unico jeito que ainda resta de nao haver campo: uma arte
+    // cujo contorno nao da para assinar.
+    return "este documento pede um especular e ele NAO desenha NESTA CAMADA: nao ha campo de "
+           "distancia para esta arte -- ou ela mistura non-zero e even-odd (uma regra so "
+           "inverteria parte da forma), ou nao fecha contorno pintado nenhum, ou o alfa dela "
+           "nunca chega a 0.5. Sem `sd` e sem normal o shader `glassHighlight` nao tem o que "
+           "amostrar. Os numeros existem (Highlights, 16113 bytes, lidos em "
+           "Docs/Laudos/2026-09-15-highlights.md); a nota de cada camada diz qual dos tres casos e";
 }
 
 const char* specularDrawnNote() {

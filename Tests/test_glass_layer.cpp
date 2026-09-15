@@ -736,14 +736,24 @@ TEST_CASE(a_zero_displacement_encodes_to_the_maps_neutral_half) {
     CHECK(std::fabs(o.rgba[0] - 0.5f) > 0.4f); // and the displacement is not
 }
 
-// ---- the gap that is carried, not filled ---------------------------------
+// ---- the gap that WAS carried, and is now filled --------------------------
 
-// `[ART]` 45 of the corpus's 171 glass layers name `.png` art and one names
-// `.heic`. A raster has no path to flatten. That gets its OWN sentence: folding
-// it into "the glass is not transcribed" would hide the fact that the glass now
-// draws, and a reader counting blockers would never learn what is actually
-// missing (a field generator that reads a raster's alpha).
-TEST_CASE(a_glass_layer_over_raster_art_is_skipped_with_its_own_reason) {
+// This case used to assert the opposite: that a glass layer over `.png` art was
+// SKIPPED, with its own sentence, because a raster has no path to flatten.
+//
+// `[BIN]` It was our gap and not the format's. The target builds its field from
+// a rasterised alpha too -- `sdfTextureWithBufferAllocator:` (`0x000867F8`) is
+// sent to a `CUINamedLayerImage` (classref `0x000CC928`) whose `image` is
+// fetched at `0x00028AE0` and whose absence aborts the path at `0x00028AEC`,
+// and `IconRendering.SDF.SourceLayer` (`0xA3104`) is `{displayList, isOpaque}`,
+// a drawing and not a shape. So the raster now takes the same door as the
+// vector, and what this case gates is that it ARRIVES: drawn, refracted, and
+// nothing skipped for want of a contour.
+//
+// `[ART]` 45 of the corpus's 171 glass layers name `.png` art, across 31
+// documents, counting a `glass` that is true in ANY appearance; 39 of 146
+// across 29 documents counting only the base entry of a specialization.
+TEST_CASE(a_glass_layer_over_raster_art_draws_its_refraction_from_the_arts_alpha) {
     Device& d = gpu();
     if (!d.valid()) return;
     IconRenderOptions o;
@@ -753,14 +763,18 @@ TEST_CASE(a_glass_layer_over_raster_art_is_skipped_with_its_own_reason) {
     REQUIRE(bundle.has_value());
     auto icon = renderIcon(d, *bundle, o);
     REQUIRE(icon.has_value());
-    CHECK_EQ(icon->drawn, std::size_t{1});          // the backdrop, not the lens
-    REQUIRE(icon->skipped.size() == 1);
-    const std::string& why = icon->skipped[0].why;
-    std::printf("  raster glass skip: %s\n", why.c_str());
-    CHECK(why.find("raster") != std::string::npos);
-    // And it must NOT be the old sentence, which said the effect was not
-    // transcribed. It is.
-    CHECK(why.find("nao foi transcrito") == std::string::npos);
+    // The backdrop AND the lens, where it used to be the backdrop alone.
+    CHECK_EQ(icon->drawn, std::size_t{2});
+    CHECK_EQ(icon->skipped.size(), std::size_t{0});
+    CHECK_EQ(icon->glassRefracted, std::size_t{1});
+
+    // And it says which generator made the field, because one thing under it is
+    // still unread: the grid the target rasterises onto.
+    bool said = false;
+    for (const std::string& n : icon->notes) {
+        if (n.find("vidro sobre arte raster") != std::string::npos) said = true;
+    }
+    CHECK(said);
 }
 
 // A render at any size other than 1024 refracts, and SAYS what it had to

@@ -327,4 +327,190 @@ FieldImage generateField(const std::vector<FieldContour>& contours, std::uint32_
     return generateField(FieldShape(contours), width, height, options);
 }
 
+// ===========================================================================
+// PART THREE -- the field from a rasterised alpha. See `DistanceField.h` for
+// the `[BIN]` that says this is the input the TARGET uses, and for the line
+// between that reading and the transform below, which is ours.
+// ===========================================================================
+
+namespace {
+constexpr double kEdtInf = 1e20;
+
+// The full two-dimensional transform: seeds are the texels for which
+// `seed[t]` is true, and every other texel comes back with the squared
+// distance to the nearest seed CENTRE plus, in `site`, that seed's linear
+// index. Column pass then row pass, which is what makes the composition exact
+// rather than separable-approximate: after the column pass each column holds
+// the true 1D answer, and the row pass takes the lower envelope of those.
+void edt2d(const std::vector<char>& seed, int w, int h, std::vector<double>& sq,
+           std::vector<int>& site) {
+    const std::size_t texels = static_cast<std::size_t>(w) * h;
+    const int n = std::max(w, h);
+    std::vector<double> f(static_cast<std::size_t>(n));
+    std::vector<double> d(static_cast<std::size_t>(n));
+    std::vector<int> v(static_cast<std::size_t>(n) + 1);
+    std::vector<double> z(static_cast<std::size_t>(n) + 2);
+    std::vector<int> arg(static_cast<std::size_t>(n));
+
+    sq.assign(texels, 0.0);
+    site.assign(texels, -1);
+    // `siteY[t]` is the row of the nearest seed within t's own column, which is
+    // all the column pass can know. The row pass turns it into a full index.
+    std::vector<int> siteY(texels, -1);
+
+    for (std::size_t t = 0; t < texels; ++t) sq[t] = seed[t] ? 0.0 : kEdtInf;
+
+    for (int x = 0; x < w; ++x) {
+        for (int y = 0; y < h; ++y) f[static_cast<std::size_t>(y)] = sq[static_cast<std::size_t>(y) * w + x];
+        edtSquared1d(f, d, v, z, h, &arg);
+        for (int y = 0; y < h; ++y) {
+            const std::size_t t = static_cast<std::size_t>(y) * w + x;
+            sq[t] = d[static_cast<std::size_t>(y)];
+            siteY[t] = d[static_cast<std::size_t>(y)] >= kEdtInf ? -1 : arg[static_cast<std::size_t>(y)];
+        }
+    }
+    for (int y = 0; y < h; ++y) {
+        double* row = &sq[static_cast<std::size_t>(y) * w];
+        for (int x = 0; x < w; ++x) f[static_cast<std::size_t>(x)] = row[x];
+        edtSquared1d(f, d, v, z, w, &arg);
+        for (int x = 0; x < w; ++x) {
+            const std::size_t t = static_cast<std::size_t>(y) * w + x;
+            row[x] = d[static_cast<std::size_t>(x)];
+            const int sx = arg[static_cast<std::size_t>(x)];
+            const int sy = siteY[static_cast<std::size_t>(y) * w + sx];
+            site[t] = sy < 0 ? -1 : sy * w + sx;
+        }
+    }
+}
+}  // namespace
+
+void edtSquared1d(std::vector<double>& f, std::vector<double>& d, std::vector<int>& v,
+                  std::vector<double>& z, int n, std::vector<int>* arg) {
+    int k = 0;
+    v[0] = 0;
+    z[0] = -kEdtInf;
+    z[1] = kEdtInf;
+    for (int q = 1; q < n; ++q) {
+        double s = 0.0;
+        while (true) {
+            const double vk = v[static_cast<std::size_t>(k)];
+            s = ((f[static_cast<std::size_t>(q)] + static_cast<double>(q) * q) -
+                 (f[static_cast<std::size_t>(v[static_cast<std::size_t>(k)])] + vk * vk)) /
+                (2.0 * q - 2.0 * vk);
+            if (k == 0 || s > z[static_cast<std::size_t>(k)]) break;
+            --k;
+        }
+        ++k;
+        v[static_cast<std::size_t>(k)] = q;
+        z[static_cast<std::size_t>(k)] = s;
+        z[static_cast<std::size_t>(k) + 1] = kEdtInf;
+    }
+    k = 0;
+    for (int q = 0; q < n; ++q) {
+        while (z[static_cast<std::size_t>(k) + 1] < q) ++k;
+        const int vk = v[static_cast<std::size_t>(k)];
+        const double dq = static_cast<double>(q) - vk;
+        d[static_cast<std::size_t>(q)] = dq * dq + f[static_cast<std::size_t>(vk)];
+        if (arg) (*arg)[static_cast<std::size_t>(q)] = vk;
+    }
+}
+
+FieldImage generateFieldFromAlpha(const std::vector<float>& rgba, std::uint32_t width,
+                                  std::uint32_t height, FieldOptions options) {
+    FieldImage img;
+    const std::size_t texels = static_cast<std::size_t>(width) * height;
+    if (width == 0 || height == 0 || rgba.size() < texels * 4) return img;
+
+    const int w = static_cast<int>(width);
+    const int h = static_cast<int>(height);
+
+    std::vector<char> inside(texels, 0);
+    std::size_t insideCount = 0;
+    for (std::size_t t = 0; t < texels; ++t) {
+        if (rgba[t * 4 + 3] >= 0.5f) {
+            inside[t] = 1;
+            ++insideCount;
+        }
+    }
+    // No inside means no contour, and a field with no contour is not a field
+    // whose every pixel is outside -- it is no answer at all. Say so by being
+    // empty, so the caller names a gap instead of drawing nothing quietly.
+    if (insideCount == 0) return img;
+
+    std::vector<char> outsideSeed(texels, 0);
+    for (std::size_t t = 0; t < texels; ++t) outsideSeed[t] = inside[t] ? 0 : 1;
+
+    // Distance from every texel to the nearest OUTSIDE centre (what an inside
+    // texel needs) and to the nearest INSIDE centre (what an outside texel
+    // needs). Two transforms and not one, because a signed field wants the
+    // depth on each side measured to the other side's seeds.
+    std::vector<double> sqOut, sqIn;
+    std::vector<int> siteOut, siteIn;
+    edt2d(outsideSeed, w, h, sqOut, siteOut);
+    edt2d(inside, w, h, sqIn, siteIn);
+
+    img.width = width;
+    img.height = height;
+    img.rgba.assign(texels * 4, 0.0f);
+
+    const double aa = options.aaWidth > 0.0f ? static_cast<double>(options.aaWidth) : 1.0;
+
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const std::size_t t = static_cast<std::size_t>(y) * w + x;
+            double dist = 0.0;
+            double gx = 0.0;
+            double gy = 0.0;
+            double sign = 0.0;
+
+            if (inside[t]) {
+                sign = -1.0;
+                dist = std::sqrt(sqOut[t]);
+                const int s = siteOut[t];
+                if (s >= 0) {
+                    gx = static_cast<double>(s % w) - x;
+                    gy = static_cast<double>(s / w) - y;
+                }
+                // The four virtual outside rows one step beyond each edge. When
+                // one of them is nearer than any real outside texel it wins,
+                // and the gradient turns to face it -- axis aligned, because
+                // the row is.
+                const double bx0 = static_cast<double>(x) + 1.0;
+                const double by0 = static_cast<double>(y) + 1.0;
+                const double bx1 = static_cast<double>(w - x);
+                const double by1 = static_cast<double>(h - y);
+                if (bx0 < dist) { dist = bx0; gx = -1.0; gy = 0.0; }
+                if (by0 < dist) { dist = by0; gx = 0.0; gy = -1.0; }
+                if (bx1 < dist) { dist = bx1; gx = 1.0; gy = 0.0; }
+                if (by1 < dist) { dist = by1; gx = 0.0; gy = 1.0; }
+            } else {
+                sign = 1.0;
+                dist = std::sqrt(sqIn[t]);
+                const int s = siteIn[t];
+                if (s >= 0) {
+                    // Outside, `d` grows as the shape recedes, so the gradient
+                    // points AWAY from the nearest inside centre -- the
+                    // opposite sense from the inside branch, which is why the
+                    // two are written out rather than shared.
+                    gx = static_cast<double>(x) - (s % w);
+                    gy = static_cast<double>(y) - (s / w);
+                }
+            }
+
+            const double len = std::sqrt(gx * gx + gy * gy);
+            float* p = img.rgba.data() + t * 4;
+            // Centres to contour: the boundary sits half a pixel before the
+            // first centre of the opposite class.
+            p[0] = static_cast<float>(sign * (dist - 0.5));
+            if (len > 0.0) {
+                p[1] = static_cast<float>(gx / len);
+                p[2] = static_cast<float>(gy / len);
+            }
+            const double cov = -static_cast<double>(p[0]) / aa + 0.5;
+            p[3] = static_cast<float>(cov < 0.0 ? 0.0 : (cov > 1.0 ? 1.0 : cov));
+        }
+    }
+    return img;
+}
+
 }  // namespace rb
