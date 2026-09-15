@@ -28,6 +28,7 @@ add_library(RenderBox STATIC
     SvgRenderer.cpp
     SvgFilter.cpp
     SvgPattern.cpp
+    ChicletShape.cpp
     IconRenderer.cpp
     GradientOracle.cpp
     AutomaticGradient.cpp

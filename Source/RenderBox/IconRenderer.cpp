@@ -11,6 +11,7 @@
 #include "Source/CoreSVG/Document.h"
 #include "Source/RenderBox/AutomaticGradient.h"
 #include "Source/RenderBox/BlendFormula.h"
+#include "Source/RenderBox/ChicletShape.h"
 #include "Source/RenderBox/FillResolve.h"
 #include "Source/RenderBox/GlassLayer.h"
 #include "Source/RenderBox/GradientOracle.h"
@@ -307,9 +308,11 @@ const char* const kDiscardedBackgroundOrientationNote =
     "alvo, e portanto um pixel diferente";
 
 const char* const kBackgroundShapeNote =
-    "o fundo e pintado sobre o quadrado inteiro do canvas: `[OBS]` a geometria do "
-    "chiclet -- o raio de canto que o recortaria -- nao foi lida, entao nao ha forma a "
-    "que cortar";
+    "o fundo e recortado ao chiclet: `[BIN]` canto continuo de raio 266.24 num canvas de "
+    "1024 (0.26 do lado), e o regime da curva e o CANONICO -- add_rounded_rect 0x7F664 da "
+    "t = 1.746 >= 1 porque Coverage::Primitive::add_path 0x96838 desfaz o x1.275 do "
+    "armazenamento antes de montar o RBPathElement 9; `[OBS]` o recorte alcanca o FUNDO e "
+    "so ele: se o alvo corta tambem a arte das camadas ao mesmo contorno nao foi lido";
 
 const char* const kRasterFillNote =
     "o fill do documento nao alcanca a arte raster desta camada: o override so chega ao "
@@ -489,6 +492,12 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 out.backgroundGap = why;
             } else {
                 paintBackground(acc, options.size, paint);
+                // The one line this front adds to this file. The background is
+                // painted over the whole square and then CUT, which is the order
+                // that keeps the ramp's parameter mapped to the canvas -- see
+                // `ChicletShape.h` for the reading, and `kBackgroundShapeNote`
+                // for what it leaves open.
+                clipToChiclet(acc, options.size);
                 out.backgroundPainted = true;
                 note(out.notes, kBackgroundShapeNote);
                 if (paint.kind == FillOverride::Kind::Ramp) {
