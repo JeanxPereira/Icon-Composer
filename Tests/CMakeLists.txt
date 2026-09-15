@@ -54,4 +54,13 @@ add_executable(ic_tests EXCLUDE_FROM_ALL
 target_link_libraries(ic_tests PRIVATE IconComposer::Foundation IconComposer::CliLib IconComposer::CoreSVG IconComposer::RenderBox)
 target_include_directories(ic_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+# The UI's own cases. `-DIC_BUILD_UI=OFF` builds no Kit, and a suite that failed
+# to configure there would be a worse gate than one that runs four cases fewer --
+# so the Kit's cases are added only when the Kit exists, and the count printed at
+# the end of a run is the honest tally for the build that produced it.
+if(TARGET IconComposerKit)
+    target_sources(ic_tests PRIVATE test_kit_idiom.cpp)
+    target_link_libraries(ic_tests PRIVATE IconComposer::Kit)
+endif()
+
 add_test(NAME ic_tests COMMAND ic_tests)

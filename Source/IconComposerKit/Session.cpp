@@ -1,5 +1,7 @@
 #include "Source/IconComposerKit/Session.h"
 
+#include "Source/IconComposerKit/ViewModel.h"
+
 #include <fstream>
 #include <limits>
 #include <string>
@@ -11,7 +13,15 @@ namespace fs = std::filesystem;
 std::optional<Session> Session::open(const fs::path& dir) {
     auto b = icf::IconBundle::open(dir);
     if (!b) return std::nullopt;
-    return Session(std::move(*b));
+    Session s(std::move(*b));
+    // THE CANVAS OPENS WHERE THE DOCUMENT SAYS IT SHIPS (ViewModel.h).
+    //
+    // Only the VIEW moves, never the document and never `scope`: the inspector
+    // still edits Base by default, so nothing here turns an opened file into an
+    // idiom-specialized one. This is which composition a person is looking
+    // THROUGH, and `ViewContext` is exactly the place that is not undoable.
+    s.view.context.idiom = declaredIdiom(s.root());
+    return s;
 }
 
 std::optional<Session> Session::create(const fs::path& dir) {

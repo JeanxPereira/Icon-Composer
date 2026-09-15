@@ -64,7 +64,27 @@ std::size_t contextBar(Session& s) {
 
     ImGui::SameLine();
     ImGui::SetNextItemWidth(90);
-    if (ImGui::BeginCombo("##idiom", idiomLabel(s.view.context.idiom))) {
+    // Three unlabelled 90px combos in a row is three ways to pick the wrong one,
+    // and this is the one that changes the PROPORTIONS -- a `position`
+    // specialization moves the art's scale and offset. The tooltip goes on the
+    // combo button, which is the last item straight after `BeginCombo`, not
+    // after `EndCombo` (which closes the popup).
+    const bool idiomOpen = ImGui::BeginCombo("##idiom", idiomLabel(s.view.context.idiom));
+    {
+        const icf::Idiom declared = declaredIdiom(s.root());
+        std::string tip = "Idiom -- which platform's composition the canvas draws. "
+                          "`position`, `hidden` and `image-name` can each be specialized per idiom, "
+                          "so this is what makes the art change size or move.\nThis document declares "
+                          "supported-platforms " + declaredPlatformsText(s.root()) + ", so it opens on " +
+                          idiomLabel(declared) + ".";
+        if (s.view.context.idiom != declared) {
+            tip += "\nYou are looking at ";
+            tip += idiomLabel(s.view.context.idiom);
+            tip += ", which is not what the document declares.";
+        }
+        ImGui::SetItemTooltip("%s", tip.c_str());
+    }
+    if (idiomOpen) {
         for (auto i : {icf::Idiom::Base, icf::Idiom::Square, icf::Idiom::IOS, icf::Idiom::MacOS,
                        icf::Idiom::WatchOS}) {
             if (ImGui::Selectable(idiomLabel(i), i == s.view.context.idiom)) s.view.context.idiom = i;
@@ -205,6 +225,24 @@ DiagnosticsStats drawDiagnostics(const Session& s, const RenderView& view) {
         // that makes a missing layer visible at a glance.
         row("render", std::to_string(view.drawn) + " of " + std::to_string(view.total) + " layer(s) drawn");
         if (!view.error.empty()) row("render", view.error);
+
+        // WHICH COMPOSITION IS ON SCREEN, ALWAYS, AND WHETHER IT IS THE ONE THE
+        // DOCUMENT DECLARES. A `position` specialization changes the art's scale
+        // and offset, so "the proportions look wrong" and "I am on the wrong
+        // idiom" are the same sentence -- and until this row existed there was
+        // nothing on screen that said which idiom was active. The combo alone
+        // could not: it is 90px of unlabelled text among two identical
+        // neighbours.
+        const icf::Idiom declared = declaredIdiom(s.root());
+        std::string where = std::string("idiom ") + idiomLabel(s.view.context.idiom) + ", appearance " +
+                            appearanceLabel(s.view.context.appearance) + "; the document declares " +
+                            declaredPlatformsText(s.root());
+        if (s.view.context.idiom != declared) {
+            where += " -- which is ";
+            where += idiomLabel(declared);
+            where += ", not what the canvas is showing";
+        }
+        row("view", where);
         for (const auto& x : view.skipped) row("skipped", x);
         for (const auto& x : view.shapeGaps) row("shape", x);
         // `[OBS]` -- drawn, but on a ruler or a shape that was guessed rather

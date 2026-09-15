@@ -36,6 +36,58 @@ std::string nodeTitle(const Session& s, icf::NodePath p) {
     return p.layer ? "Layer " + std::to_string(*p.layer + 1) : "Group " + std::to_string(*p.group + 1);
 }
 
+// ---- what the document declares ---------------------------------------------
+// The forms of `supported-platforms` are the ones PanelInspectorDocument.cpp
+// measured for its editor -- `squares` is a string "shared" or a list drawn from
+// {iOS, macOS}, `circles` is present or absent and always ["watchOS"] -- and
+// this is the same reading asked a different question: not "what may I write?"
+// but "which composition should the canvas open on?".
+icf::Idiom declaredIdiom(const icf::json::Value& root) {
+    const icf::json::Value* sp = root.find("supported-platforms");
+    if (!sp || sp->kind() != icf::json::Value::Kind::Object) return icf::Idiom::Base;
+
+    if (const icf::json::Value* sq = sp->find("squares")) {
+        if (sq->kind() == icf::json::Value::Kind::String) return icf::Idiom::Square;
+        if (sq->kind() == icf::json::Value::Kind::Array) {
+            // Exactly one member names itself; two or more, and the only scope
+            // that covers both is the family. An empty list declares nothing.
+            const auto& members = sq->elements();
+            if (members.size() == 1 && members[0].kind() == icf::json::Value::Kind::String) {
+                if (auto parsed = icf::idiomFromString(members[0].rawString())) return *parsed;
+            }
+            if (!members.empty()) return icf::Idiom::Square;
+        }
+    }
+    // 0 of 145 documents get this far with `circles` alone, but a document that
+    // ships only on the round family should open there and not on a square.
+    if (sp->find("circles")) return icf::Idiom::WatchOS;
+    return icf::Idiom::Base;
+}
+
+std::string declaredPlatformsText(const icf::json::Value& root) {
+    const icf::json::Value* sp = root.find("supported-platforms");
+    if (!sp || sp->kind() != icf::json::Value::Kind::Object) return "nothing declared";
+    std::string out;
+    for (const auto& m : sp->members()) {
+        if (!out.empty()) out += ", ";
+        out += m.first;
+        out += ": ";
+        if (m.second.kind() == icf::json::Value::Kind::String) {
+            out += m.second.rawString();
+        } else if (m.second.kind() == icf::json::Value::Kind::Array) {
+            bool first = true;
+            for (const auto& e : m.second.elements()) {
+                if (!first) out += "/";
+                first = false;
+                out += e.kind() == icf::json::Value::Kind::String ? e.rawString() : icf::json::write(e);
+            }
+        } else {
+            out += icf::json::write(m.second);
+        }
+    }
+    return out.empty() ? "nothing declared" : out;
+}
+
 // ---- the vocabularies, spelled for the screen -------------------------------
 // NOT the disk spelling: `appearanceToString` and friends answer what the format
 // writes ("dark", "plus-lighter"), and these answer what the target puts in the
@@ -52,15 +104,22 @@ const char* appearanceLabel(icf::Appearance a) {
     return "Default";
 }
 
+// `[BIN]` "All" was the wrong word and it read as the opposite of what the case
+// does: `Idiom::Base` matches only the entries that name NO idiom, so it is the
+// one reading that shows no platform's composition. The target's own Swift case
+// name is `unspecified` -- the reflection field descriptor at 0x121358 of
+// `IconComposerFoundation.arm64` spells the five cases `unspecified`, `square`,
+// `iOS`, `macOS`, `watchOS`, against the disk names `base`, `square`, `iOS`,
+// `macOS`, `watchOS` at 0x1213E8. The menu takes the target's word.
 const char* idiomLabel(icf::Idiom i) {
     switch (i) {
-        case icf::Idiom::Base: return "All";
+        case icf::Idiom::Base: return "Unspecified";
         case icf::Idiom::Square: return "Square";
         case icf::Idiom::IOS: return "iOS";
         case icf::Idiom::MacOS: return "macOS";
         case icf::Idiom::WatchOS: return "watchOS";
     }
-    return "All";
+    return "Unspecified";
 }
 
 const char* blendModeLabel(icf::BlendMode m) {
