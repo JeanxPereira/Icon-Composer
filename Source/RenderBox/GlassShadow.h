@@ -543,8 +543,11 @@ std::vector<float> shadowImage(const std::vector<float>& art, std::uint32_t widt
 // The ring is now DRAWN, and this note no longer says it is missing. What it
 // says is the one thing under it that is still convention: the band's arithmetic
 // is measured, the distance field it samples is generated in a binary this
-// project does not have. Exactly the shape of `kShadowBlurKernelNote`, and it
-// fires on the same terms -- whenever a ring is actually applied.
+// project does not have. It fires only when a ring is actually applied.
+//
+// It is the LAST note of this shape in the file. `kShadowBlurKernelNote` was
+// the other one and it is gone (see below), which makes this the single place
+// where the shadow still rests on something unread.
 extern const char* const kShadowRingNote;
 
 // THERE IS NO NOTE FOR THE BLUR KERNEL EITHER, AND IT IS THE SAME RULE. This
