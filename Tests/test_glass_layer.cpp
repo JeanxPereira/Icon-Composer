@@ -161,13 +161,29 @@ private:
 // A ramp behind, one glass layer in front. `art` names the glass layer's art so
 // the raster gap can be exercised with the same document; `refractivity` is the
 // group key verbatim, or empty for a group that carries none.
+//
+// The BACKDROP spells `"glass" : false`, and it has to. A missing `glass` is
+// `true` -- `[BIN]` `Layer.init()` at `0x95C10` in
+// `IconComposerFoundation.arm64` stores 1 into `_isGlass.defaultValue`. The ramp
+// is a PNG, and glass over raster art is a named gap in this renderer, so
+// leaving the key off would make the backdrop vanish into `skipped` and the
+// fixture would stop being "a ramp behind" at all. "One glass layer in front"
+// means the lens is the only one, and the document now says so.
 std::string rampAndGlass(const char* art, const std::string& refractivity, bool glass,
                          double opacity = 0.25, const std::string& groupBlend = "") {
     // The lens group comes FIRST and the ramp LAST, because the array runs
     // front to back. It read the other way until 2026-09-04, when the
     // composition order was corrected -- the intent ("a ramp behind, one
     // glass layer in front") never changed, only how a document spells it.
-    std::string doc = "{\n  \"groups\" : [\n    { ";
+    // And the lens group spells `"specular" : false` for the SAME reason one
+    // level up. A missing `specular` is `.automatic` -- `[BIN]` `Group.init` at
+    // `0x9090C` stores 1 into `_specular.defaultValue`, and
+    // `IconComposerFoundation.SpecularHighlight` reads `off, automatic, inside,
+    // outside`. Every case built on this fixture is about the REFRACTION: what
+    // the displacement moves, which way a negative strength pushes it, and the
+    // ruler a render away from 1024 has to assume. A highlight drawn over the
+    // lens would put its own pixels and its own note into all three answers.
+    std::string doc = "{\n  \"groups\" : [\n    { \"specular\" : false,\n      ";
     if (!groupBlend.empty()) {
         doc += "\"blend-mode\" : \"" + groupBlend + "\",\n      ";
     }
@@ -180,6 +196,7 @@ std::string rampAndGlass(const char* art, const std::string& refractivity, bool 
     doc += std::string("        \"glass\" : ") + (glass ? "true" : "false") + ",\n";
     doc += "        \"opacity\" : " + std::to_string(opacity) + " } ] },\n"
            "    { \"layers\" : [ { \"image-name\" : \"ramp.png\", \"name\" : \"bg\",\n"
+           "        \"glass\" : false,\n"
            "        \"position\" : { \"scale\" : 8, \"translation-in-points\" : [0, 0] } } ] }\n"
            "  ]\n}\n";
     return doc;

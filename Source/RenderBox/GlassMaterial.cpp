@@ -107,24 +107,49 @@ std::optional<GlassMaterialDocument> readGlassMaterial(const icf::Group& group,
 GlassMaterial glassMaterialFrom(const GlassMaterialDocument& doc) {
     GlassMaterial m;
 
-    if (doc.specular) {
-        // `[INF]` 4 = 1 + 3. `hasSpecular` is the off/rest bit and
-        // `specularPlacement` carries the three remaining cases. `off` has no
-        // placement of its own, so it takes the placement default rather than
-        // inventing a fourth.
-        m.hasSpecular = *doc.specular != icf::SpecularHighlight::Off;
-        switch (*doc.specular) {
-            case icf::SpecularHighlight::Inside:
-                m.specularPlacement = SpecularPlacement::Inside;
-                break;
-            case icf::SpecularHighlight::Outside:
-                m.specularPlacement = SpecularPlacement::Outside;
-                break;
-            case icf::SpecularHighlight::Off:
-            case icf::SpecularHighlight::Automatic:
-                m.specularPlacement = SpecularPlacement::Automatic;
-                break;
-        }
+    // A MISSING `specular` IS `automatic`, NOT `off` -- `[BIN]`.
+    //
+    // `IconComposerFoundation.arm64`, `Group.init` at `0x9090C`. The group class
+    // writes every stored property in declaration order, and the one between
+    // `_translucency` and `_opacity` is `_specular`:
+    //
+    //     0x909B8  mov  w9, #1
+    //     0x909D4  strb w9, [x19, #0xe8]      ; _specular.defaultValue
+    //
+    // `[BIN]` `IconComposerFoundation.SpecularHighlight` (field descriptor
+    // `0x12CFF0`) lists its cases `off, automatic, inside, outside` -- so the
+    // stored `1` is `.automatic`, the case that names no placement.
+    //
+    // The offset is corroborated by its neighbours in the same initialiser,
+    // which name themselves against the corpus: `+0xB8 = 1` with `+0xC0 = 0.5`
+    // is `_shadow == Shadow(.neutral, 0.5)`, and `[ART]` `neutral/0.5` is
+    // exactly the corpus's dominant shadow (146 of 271 groups). `+0xF8 = 1.0` is
+    // `_opacity`; `+0x40 = 0` is `_isHidden`; `+0x120` is the empty `_layers`.
+    // A layout that lands all of those cannot be off by a field at `_specular`.
+    //
+    // `[ART]` It also matches how the corpus is written: 36 of the 271 groups
+    // spell `"specular": false` OUT LOUD. Under "absent == off" that spelling
+    // buys nothing; under this reading it is the only way to switch the
+    // highlight off.
+    //
+    // `[INF]` 4 = 1 + 3. `hasSpecular` is the off/rest bit and
+    // `specularPlacement` carries the three remaining cases. `off` has no
+    // placement of its own, so it takes the placement default rather than
+    // inventing a fourth.
+    const icf::SpecularHighlight specular =
+        doc.specular ? *doc.specular : icf::SpecularHighlight::Automatic;
+    m.hasSpecular = specular != icf::SpecularHighlight::Off;
+    switch (specular) {
+        case icf::SpecularHighlight::Inside:
+            m.specularPlacement = SpecularPlacement::Inside;
+            break;
+        case icf::SpecularHighlight::Outside:
+            m.specularPlacement = SpecularPlacement::Outside;
+            break;
+        case icf::SpecularHighlight::Off:
+        case icf::SpecularHighlight::Automatic:
+            m.specularPlacement = SpecularPlacement::Automatic;
+            break;
     }
 
     if (doc.shadow) {

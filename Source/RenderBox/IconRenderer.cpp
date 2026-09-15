@@ -719,7 +719,9 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
         bool groupWouldRefract = false;
         if (groupBlend && !glassRefractionIsIdentity(refraction)) {
             for (const icf::Layer& l : group.layers()) {
-                if (boolOr(l.resolve("glass", options.context), false)) {
+                // Same default as the layer gate below, and for the same read:
+                // a missing `glass` is `true`. See the `[BIN]` note there.
+                if (boolOr(l.resolve("glass", options.context), true)) {
                     groupWouldRefract = true;
                     break;
                 }
@@ -765,7 +767,51 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 continue;
             }
 
-            const bool isGlass = boolOr(layer.resolve("glass", options.context), false);
+            // THE MISSING KEY IS `true`, AND IT IS READ, NOT GUESSED.
+            //
+            // `[BIN]` `IconComposerFoundation.arm64`. The document field is
+            // `IconComposition.Layer.Snapshot.isGlass`, and its CodingKey spells
+            // itself `"glass"` at `0xBF84C` -- a Swift SMALL string, built by
+            // immediates and absent from the constant pool:
+            //
+            //     0xBF84C  mov  x1, #-0x1b00000000000000   ; 0xE5<<56 == count 5
+            //     0xBF850  mov  x0, #0x6c67                ; 'g','l'
+            //     0xBF854  movk x0, #0x7361, lsl #16       ; 'a','s'
+            //     0xBF858  movk x0, #0x73,   lsl #32       ; 's'
+            //
+            // `[BIN]` The field's TYPE settles what absence means. The field
+            // descriptor at `0x12D2E4` gives `isGlass` the mangled type
+            // `SpecializableProperty<Swift.Bool>.Snapshot` followed by `Sg` --
+            // an OPTIONAL. Absent decodes to `nil`, not to `false`. (The same
+            // dump spells a plain optional bool `SbSg` elsewhere, so the
+            // distinction is legible, not assumed.)
+            //
+            // `[BIN]` The LIVE model's field is NOT optional: the class
+            // descriptor at `0x12C604` types `Layer._isGlass` as
+            // `SpecializableProperty<Swift.Bool>`. So a `nil` snapshot leaves
+            // whatever `Layer.init()` installed -- and `Layer.init()` at
+            // `0x95C10` installs `true`:
+            //
+            //     0x95CDC  mov  w8, #1
+            //     0x95CE0  strb w8, [x20, #0x118]       ; _isGlass.defaultValue
+            //
+            // The offset is not guessed either. `Layer.init()` writes every
+            // stored property in declaration order and the neighbours identify
+            // themselves: `+0xF8 = 0` is `_blendMode == .normal`, `+0x108 = 1.0`
+            // is `_opacity`, `+0x138 = 0` is `_isHidden == false`, and `+0x58 /
+            // +0x68` is `_position == (translate (0,0), scale 1.0)`. `_isGlass`
+            // is the one between `_opacity` and `_assetMirroring`, and it is 1.
+            //
+            // `[ART]` This is why Apple writes `"glass": false` EXPLICITLY 90
+            // times over the 145 corpus documents. Under the old reading that
+            // spelling was redundant; under this one it is the only way to turn
+            // the glass OFF.
+            //
+            // `[INF]` The onward link -- document `glass` becoming
+            // `Icon.Element.participatesInGlass` in `IconRendering` -- is still
+            // inference and still marked as such below. What is `[BIN]` here is
+            // narrower and enough: the DOCUMENT's own answer for a missing key.
+            const bool isGlass = boolOr(layer.resolve("glass", options.context), true);
 
             // The LAYER's blend mode, resolved rather than refused. The eight
             // modes the format cannot spell cannot appear here; what can is a

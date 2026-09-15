@@ -164,10 +164,21 @@ std::string tree(const IconBundle& bundle, Context ctx) {
 
         for (const auto& l : g.layers()) {
             o << "    " << (l.name().empty() ? "(unnamed)" : std::string(l.name()));
+            // A MISSING `glass` IS `true`, so the absence of the key is not the
+            // absence of the mark. `[BIN]` `Layer.init()` at `0x95C10` in
+            // `IconComposerFoundation.arm64` stores 1 into `_isGlass`'s
+            // `defaultValue` -- `Docs/Laudos/2026-09-15-portao-glass.md` §4.
+            // Only an explicit `false` takes the glass away, and `[ART]` 90 of
+            // the corpus's 437 layers spell exactly that.
+            //
+            // Printing the old way here would make this report disagree with the
+            // renderer about 212 corpus layers, which is the worst shape a
+            // reporting tool can take: a reader checks the tree to find out why
+            // a picture looks the way it does.
             const json::Value* glass = l.resolve("glass", ctx);
-            if (glass && glass->kind() == json::Value::Kind::Bool && glass->boolean()) {
-                o << " [glass]";
-            }
+            const bool isGlass =
+                !glass || glass->kind() != json::Value::Kind::Bool || glass->boolean();
+            if (isGlass) o << " [glass]";
             const json::Value* image = l.resolve("image-name", ctx);
             if (image) o << "  <- " << scalarText(*image);
             std::ostringstream lp;

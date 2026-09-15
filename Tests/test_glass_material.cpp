@@ -575,19 +575,41 @@ TEST_CASE(the_enabled_bits_stay_visible_and_are_not_applied_to_the_value) {
     CHECK(m.translucency == 0.5);                // ...and it was not applied
 }
 
-// An absent key leaves the field at its struct default, and the three defaults
-// that were actually read survive a document that says nothing.
+// An absent key leaves the field at its struct default, and the defaults that
+// were actually read survive a document that says nothing.
+//
+// `[BIN]` `specular` is the one that is NOT the struct's zero. A missing
+// `specular` is `.automatic`, read out of `Group.init` at `0x9090C` in
+// `IconComposerFoundation.arm64` (`0x909D4  strb w9, [x19, #0xe8]`, w9 == 1,
+// and `SpecularHighlight` lists `off, automatic, inside, outside`). So an empty
+// group HAS a highlight, and the document has to say `"specular": false` to
+// take it away -- which `[ART]` 36 of the 271 corpus groups do, out loud.
 TEST_CASE(absent_keys_leave_the_read_defaults_in_place) {
     Doc d(R"({ "name": "Back" })");
     REQUIRE(d.ok());
     auto doc = read(d);
     REQUIRE(doc.has_value());
+    CHECK(!doc->specular.has_value());  // the DOCUMENT still says nothing...
     const GlassMaterial m = glassMaterialFrom(*doc);
     CHECK(m.refractionHeight == 0.5);
     CHECK(m.refractionStrength == 0.0);
     CHECK(m.specularPlacement == SpecularPlacement::Automatic);
-    CHECK(!m.hasSpecular);
+    CHECK(m.hasSpecular);  // ...and the MATERIAL still lights it
     CHECK(m.shadowStyle == ShadowStyle::Automatic);
+}
+
+// And the way to switch it off is to spell it, which is why the corpus spells
+// it. This is the companion to the case above: without it, "absent is
+// automatic" could be mistaken for "the off switch stopped working".
+TEST_CASE(an_explicit_specular_false_still_switches_the_highlight_off) {
+    Doc d(R"({ "specular": false })");
+    REQUIRE(d.ok());
+    auto doc = read(d);
+    REQUIRE(doc.has_value());
+    REQUIRE(doc->specular.has_value());
+    const GlassMaterial m = glassMaterialFrom(*doc);
+    CHECK(!m.hasSpecular);
+    CHECK(m.specularPlacement == SpecularPlacement::Automatic);
 }
 
 // ---------------------------------------------------------------------------
