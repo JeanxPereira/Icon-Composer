@@ -13,6 +13,7 @@
 #include "Source/RenderBox/BlendFormula.h"
 #include "Source/RenderBox/FillResolve.h"
 #include "Source/RenderBox/GlassLayer.h"
+#include "Source/RenderBox/GlassSpecular.h"
 #include "Source/RenderBox/GradientOracle.h"
 #include "Source/RenderBox/SystemFill.h"
 #include "Source/IconComposerFoundation/Png.h"
@@ -589,6 +590,22 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
         const OpacityMaskArguments groupMaskArgs = opacityMaskArguments(
             kGlyphTranslucency, options.sizeClass, groupTranslucency);
         const bool groupWantsMask = !opacityMaskIsIdentity(groupMaskArgs);
+
+        // ---- the specular, which is the half that still does NOT draw ------
+        //
+        // `Docs/Laudos/2026-09-15-especular.md` closed where the highlight goes
+        // -- the `glassHighlight` shader of the IconRendering metallib -- and
+        // did not close a single number it is handed. So this says so, once,
+        // instead of drawing something plausible. `GlassSpecular.h` carries the
+        // addresses; the note carries the short version to the caller.
+        //
+        // `[ART]` It fires for real: over the 145 corpus documents 67 carry a
+        // group-level `specular`, and of the 103 values 64 are `true` and 3 are
+        // the string `"inside"`. Sixty-seven documents are currently rendered
+        // without a highlight they asked for, and until now without a word.
+        if (documentAsksForSpecular(glassNumbers)) {
+            note(out.notes, specularDoesNotDrawNote());
+        }
 
         // `blend-mode` LIVES ON THE GROUP TOO, and the group is where it is
         // actually used: over the 145 documents `plus-lighter` appears **17
