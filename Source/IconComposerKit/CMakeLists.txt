@@ -6,12 +6,12 @@
 # through Ports.h, implemented in Source/app.
 add_library(IconComposerKit STATIC
     Headless.cpp
-    PanelInspector.cpp
-    Ports.cpp
-    PanelLayers.cpp
-    RenderCoordinator.cpp
     MenuBar.cpp
     PanelCanvas.cpp
+    PanelInspector.cpp
+    PanelLayers.cpp
+    Ports.cpp
+    RenderCoordinator.cpp
     Session.cpp
     ViewModel.cpp
 )

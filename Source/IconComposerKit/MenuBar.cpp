@@ -161,9 +161,11 @@ MenuStats drawMenuBar(Session& s, MenuActions& a) {
         if (b.item("Toggle Visibility", nullptr, hasSel)) {
             if (const icf::json::Value* node = icf::nodeAt(s.root(), *s.selection)) {
                 const bool hidden = booleanUnderBase(*node, "hidden");
+                // Writes the boolean, never removes the key -- same reason as the
+                // sidebar's toggle: the corpus spells "not hidden" both ways, and
+                // removal would drop a key the encoder wrote (250 of them).
                 s.setProperty(*s.selection, "hidden", icf::Context{},
-                              hidden ? std::optional<icf::json::Value>{}
-                                     : std::optional<icf::json::Value>{icf::json::Value::boolean(true)});
+                              icf::json::Value::boolean(!hidden));
             }
         }
         ImGui::Separator();

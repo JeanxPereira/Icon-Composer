@@ -104,11 +104,13 @@ void drawRow(Session& s, icf::NodePath path, LayersStats& st, Pending& pending, 
     bool visible = !(hidden && hidden->kind() == icf::json::Value::Kind::Bool && hidden->boolean());
     if (ImGui::Checkbox("##visible", &visible)) {
         // Visible again REMOVES this scope's entry instead of writing `false`:
-        // absent is how the corpus spells a layer that is not hidden, and a
-        // removal at Base still leaves any per-appearance override standing.
-        std::optional<icf::json::Value> value;
-        if (!visible) value = icf::json::Value::boolean(true);
-        s.setProperty(path, "hidden", icf::Context{}, std::move(value));
+        // The checkbox writes the boolean it asserts, it does not remove the key.
+        // `[ART]` Both spellings live in the corpus -- 250 nodes carry
+        // `"hidden" : false` and one carries `true`, while the rest carry no key
+        // at all -- so absence is NOT "how the corpus says not hidden", and
+        // removing would delete a key Apple's own encoder wrote. Writing the
+        // value keeps this toggle symmetric with the glass one right below.
+        s.setProperty(path, "hidden", icf::Context{}, icf::json::Value::boolean(!visible));
     }
     ImGui::SetItemTooltip("Toggle visibility");
 

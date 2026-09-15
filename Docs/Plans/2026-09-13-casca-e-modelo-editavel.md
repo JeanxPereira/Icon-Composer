@@ -2644,7 +2644,7 @@ Expected: três casos, zero falhas.
   ```
   `drawLayers` faz `ImGui::Begin("Layers")` … `End()`. Por grupo: `TreeNodeEx` com a seta, o nome (`Selectable` para selecionar), e no fim da linha dois `Checkbox` — visibilidade (`!hidden`) e vidro (`glass`, só em camadas). Duplo clique num nome abre um `InputText` inline; `Enter` chama `s.rename`. Menu de contexto por linha: Move Up, Move Down, Delete. Rodapé: `+` abre um popup com "Add Group" e "Add Image Layer" (a camada nova vai para o grupo selecionado ou para o último, com `image-name` vazio até a rodada 4 importar), `−` remove a seleção.
 
-- [ ] **Step 1: implementar**
+- [x] **Step 1: implementar**
 
 `Panels.h`:
 
@@ -2850,12 +2850,12 @@ LayersStats drawLayers(Session& s) {
 
 Acrescentar `PanelLayers.cpp` ao Kit e `test_kit_panels.cpp` ao bloco de testes.
 
-- [ ] **Step 2: conferir que compila**
+- [x] **Step 2: conferir que compila**
 
 Run: `cmake --build --preset mingw`
 Expected: compila limpo, sem warning novo.
 
-- [ ] **Step 3: commitar**
+- [x] **Step 3: commitar**
 
 ```bash
 git add Source/IconComposerKit/Panels.h Source/IconComposerKit/PanelLayers.cpp Source/IconComposerKit/CMakeLists.txt
@@ -2955,7 +2955,7 @@ Controles:
 - Specular: `Combo` de `SpecularHighlight`.
 - Liquid Glass: `Checkbox` sobre `glass`.
 
-- [ ] **Step 1: implementar**
+- [x] **Step 1: implementar**
 
 `PanelInspector.cpp`:
 
@@ -3291,12 +3291,12 @@ InspectorStats drawInspector(Session& s) {
 
 Acrescentar `#include <cstdlib>` (para `std::atof`). Acrescentar `PanelInspector.cpp` ao Kit.
 
-- [ ] **Step 2: conferir que compila**
+- [x] **Step 2: conferir que compila**
 
 Run: `cmake --build --preset mingw`
 Expected: compila limpo, sem warning novo.
 
-- [ ] **Step 3: commitar**
+- [x] **Step 3: commitar**
 
 ```bash
 git add Source/IconComposerKit/PanelInspector.cpp Source/IconComposerKit/CMakeLists.txt
@@ -3379,7 +3379,7 @@ Expected: passa. Se `layerTinted.inherited` vier menor que 5, uma seção está 
 - Diagnóstico: uma tabela de duas colunas (origem, texto) com as linhas: `drawn/total` (sempre), cada `skipped`, cada `shapeGaps`, cada `notes` prefixada `[OBS]`, cada `missingAssets` do bundle, cada `unknownKeys` do documento, e `error` quando houver.
 - Menu: `File` (New, Open…, Save, Save As…, Close, Quit), `Edit` (Undo, Redo, Delete), `View` (Appearance ▸ 4 itens, Idiom ▸ 5, Preview Size ▸ 2, Zoom ▸ 5), `Layer` (Add Group, Add Image Layer, Toggle Glass, Toggle Visibility, Move Up, Move Down). Desabilitados com tooltip: `File > Export Icon as Image…` ("Round 5"), `Edit > Copy Properties`/`Paste Properties` ("Round 5"), `Edit > Localization` ("Round 5"). `Save` desabilitado quando `!isDirty()`; `Undo`/`Redo` seguem `canUndo/canRedo`; os de `Layer` seguem a seleção.
 
-- [ ] **Step 1: implementar**
+- [x] **Step 1: implementar**
 
 `MenuBar.cpp`:
 
@@ -3650,12 +3650,12 @@ DiagnosticsStats drawDiagnostics(const Session& s, const RenderView& view) {
 
 Acrescentar `PanelCanvas.cpp` e `MenuBar.cpp` ao Kit.
 
-- [ ] **Step 2: conferir que compila**
+- [x] **Step 2: conferir que compila**
 
 Run: `cmake --build --preset mingw`
 Expected: compila limpo, sem warning novo.
 
-- [ ] **Step 3: commitar**
+- [x] **Step 3: commitar**
 
 ```bash
 git add Source/IconComposerKit/PanelCanvas.cpp Source/IconComposerKit/MenuBar.cpp Source/IconComposerKit/CMakeLists.txt
