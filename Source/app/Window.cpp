@@ -209,6 +209,15 @@ void defaultLayout(ImGuiID dockspaceId) {
     ImGui::DockBuilderDockWindow(ick::kLayersWindow, left);
     ImGui::DockBuilderDockWindow(ick::kCanvasWindow, centre);
     ImGui::DockBuilderDockWindow(ick::kInspectorWindow, right);
+    // Onyx brings windows of its own that this tree does not place: "Viewer",
+    // drawn unconditionally by its DocumentWindow (not a panel, so
+    // `setPanelVisible` does not reach it, and with no Onyx document open it
+    // only ever says "No documents open"), and "Log", which is worth keeping --
+    // it prints the adapter and the swapchain. Undocked, either one floats over
+    // the Layers tree. They go to the bottom as tabs, and Diagnostics is docked
+    // LAST so it is the tab that comes up selected.
+    ImGui::DockBuilderDockWindow("Viewer", bottom);
+    ImGui::DockBuilderDockWindow("Log", bottom);
     ImGui::DockBuilderDockWindow(ick::kDiagnosticsWindow, bottom);
     ImGui::DockBuilderFinish(dockspaceId);
 }
