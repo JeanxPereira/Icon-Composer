@@ -283,6 +283,10 @@ std::size_t drawSpecular(std::vector<float>& rgba, const FieldImage& field,
 
     std::size_t count = 0;
     const HighlightSlot* slots = glyphHighlightSlots(count);
+    // `[BIN]` The highlight draws are the ones the `shouldClampPlusLBlending`
+    // gate covers -- see `SpecularArguments::clampPlusLighter`.
+    BlendOptions blendOptions;
+    blendOptions.clampPlusLighter = args.clampPlusLighter;
     // Distinct pixels, not pixel-passes: five highlights over the same rim
     // would otherwise report five times the area they cover.
     std::vector<char> hit(n, 0);
@@ -316,7 +320,7 @@ std::size_t drawSpecular(std::vector<float>& rgba, const FieldImage& field,
                 const std::size_t i = px * 4;
                 BlendColour dst;
                 for (int c = 0; c < 4; ++c) dst.rgba[c] = rgba[i + c];
-                const BlendColour outc = blend(g.blendMode, src, dst);
+                const BlendColour outc = blend(g.blendMode, src, dst, blendOptions);
                 for (int c = 0; c < 4; ++c) {
                     const double v = outc.rgba[c] < 0.0 ? 0.0 : outc.rgba[c];
                     if (static_cast<float>(v) != rgba[i + c]) hit[px] = 1;
@@ -401,18 +405,43 @@ const char* specularDrawnNote() {
            "apaga a latitude; `[BIN]` a pos-passagem espacial 0x12550 e ICRRenderingParameters."
            "spatialHighlighting e, com phi = 0, o fator dela t = max(0, 1 - hypot(dir.xy)/"
            "sin(alignmentRange)) e exatamente 0 para QUALQUER valor dos seis parametros, entao as "
-           "quatro reescritas colapsam. `[OBS]` O QUE FALTA, E E POR ISSO QUE O REALCE SAI FORTE: "
-           "o alvo NAO compoe a saida branca do shader direto. Por realce ele faz save/beginLayer "
+           "quatro reescritas colapsam. `[BIN]` E o grampo de plusLighter, que parecia ser a causa "
+           "barata do excesso, foi MEDIDO e NAO e daqui: "
+           "ICRRenderingParameters.shouldClampPlusLBlending (params+0x220) e TRUE (0x5EAE8, "
+           "com w22 = 1 de 0x5E8BC, imediatamente antes do 266.24 de defaultChicletCornerRadius "
+           "em +0x228), e onde ele vale o alvo troca o composite por um setBlendShader: cujo nome "
+           "-- soletrado por mov/movk em 0xD88C/0xD89C, dentro do corpo de swift_once 0xD848 que "
+           "monta o global de 0xCE8D0 -- e `clampedPlusL`, um entry point Metal deste proprio "
+           "bundle (metallib-iconrendering/default_mod8.ll:37): "
+           "max(dest, (min(1, source+dest).rgb, saturate(source.a+dest.a))), com `source` e `dest` "
+           "NOMEADOS pelo metadado AIR. So que os quatro sitios de troca (0x44654, 0x44908, "
+           "0x4B57C, 0x4B7F4) vivem todos dentro de 0x435A0 e 0x4B4EC, e o desenho do especular "
+           "do glifo (0x491C0-0x49DBC) nao chama nenhuma das duas: ele entrega o blendMode direto "
+           "ao drawShape:fill:alpha:blendMode: de 0x0000ED00. `[OBS]` Quais desenhos o grampo "
+           "cobre nao foi lido, entao ele esta transcrito em BlendFormula.h e DESLIGADO aqui -- "
+           "liga-lo sem saber move pixel por conta de quem mede, nao do alvo. "
+           "`[OBS]` O QUE AINDA FALTA PARA A COR, E E AI QUE MORA O `forte demais`: o alvo "
+           "nao pinta branco, ele FILTRA o que esta embaixo. Por realce faz save/beginLayer "
            "(0x4977C/0x49784), desenha o glassHighlight dentro da camada, fecha com "
-           "clipLayerWithAlpha:1.0 mode:0 (0x497BC) e so entao pinta ATRAVES dessa mascara uma cor "
-           "montada por transformadas de cor compostas (addStyle:, 0x49800/0x49AB8, via 0x7064) a "
-           "partir de glyphHighlightVCM = [0.2, 1.2, 1.25, 0.0] + bool (Highlights+0xB0) ou "
-           "glyphDarklightVCM = [-0.15, 0.7, 1.25, 0.0] (Highlights+0xD8), com a base em 0xE2960 "
-           "inicializada em tempo de execucao por 0x49C78. O portao e glyphHighlightsUseVCM "
-           "(Highlights+0x90), lido em 0x494D8, e ele e TRUE nesta versao. Este renderizador esta "
-           "no ramo useVCM == false, cuja unica escala e glyphHighlightNonVCMScale = 1.0 (0x4955C) "
-           "-- isto e, forca cheia e sem polimento. A cor do realce, nao a geometria dele, e o que "
-           "sobra por ler";
+           "clipLayerWithAlpha:1.0 mode:0 (0x497BC), instala addColorMatrixFilterWithArray:flags:0 "
+           "(0x49C48) e entao beginLayerWithFlags:1 + drawLayerWithAlpha:1.0 blendMode:0 "
+           "(0x49C54/0x49C64). A matriz esta LIDA inteira: a base de 0xE2960 (que e __common) e "
+           "preenchida pelo corpo de swift_once em 0x6948 a partir do __const 0x938E0, e e a "
+           "CAColorMatrix 4x5 do BT.709 RGB->YCbCr (0.2126/0.7152/0.0722, com Cb e Cr enviesados "
+           "em 0.5); a inversa YCbCr->RGB esta em 0xE2910 (once 0x6988, 1.5748/-0.1873/-0.4681/"
+           "1.8556). Entre as duas o alvo aplica, de glyphHighlightVCM = [0.2, 1.2, 1.25, 0.0, "
+           "true] (Highlights+0xB0) ou glyphDarklightVCM = [-0.15, 0.7, 1.25, 0.0] "
+           "(Highlights+0xD8), duas matrizes: Y <- (VCM[1]-VCM[0])*Y + VCM[0] (0x49A64, so a linha "
+           "do Y) e Cb,Cr <- VCM[2]*c + (0.5 - 0.5*VCM[2]) (0x49B18, e a linha do Y e [1,0,0,0,0] "
+           "-- VCM[2] e SATURACAO, nao contraste de luma). Ou seja: levantar a luma em 0.2 e abrir "
+           "a croma em 1.25, atraves da forma do realce. O addStyle:9 de 0x49800 e um "
+           "RB::Filter::ColorClamp (tabela de salto 0x15E440 do RBDrawingStateAddStyle) e aqui ele "
+           "e PULADO, porque VCM[4] == 1. O portao e glyphHighlightsUseVCM (Highlights+0x90), "
+           "lido em 0x494D8, e e TRUE nesta versao; este renderizador segue no ramo "
+           "useVCM == false, cuja escala e glyphHighlightNonVCMScale = 1.0 (0x4955C). O UNICO "
+           "elo que falta e se beginLayerWithFlags:1 instancia o "
+           "BackdropFilterItem<Filter::ColorMatrix> do RenderBox (0x7D798) -- isto e, se a matriz "
+           "le o fundo. Sem esse elo a cor nao foi pintada aqui";
 }
 
 }  // namespace rb

@@ -60,14 +60,112 @@ struct BlendColour {
 // `[OBS]` What the icon path sets it to was not read, so it is a parameter with
 // no default baked into the arithmetic. A caller that does not know says so by
 // leaving it false, and gets the unclamped number.
+//
+// `clampPlusLighter` is a THIRD case, and the difference matters: the flag it
+// carries IS read and IS `true`, but what it reaches is narrower than "every
+// plus-lighter composite". So it defaults to `false` here and the one caller
+// that can prove it is inside that set turns it on. `clampedPlusL()` below has
+// the formula AND the boundary.
 struct BlendOptions {
     bool extendedColor = false;
+    bool clampPlusLighter = false;
 };
 
 // The nine the corpus asks for are total; the rest of the eighteen fall back to
 // `Normal` (source-over) rather than to a silent identity, because a mode this
 // file has not transcribed must not look like one it has.
 bool blendIsTranscribed(BlendMode mode);
+
+// `[BIN]` THE SHADER THE TARGET SUBSTITUTES FOR PLUS-LIGHTER.
+//
+// `plusLighter` is the one blend mode the target does not let CoreGraphics
+// composite. `0x0004B530` and `0x00044618` are the same three lines in two
+// draw paths:
+//
+//     ldrb w24, [x0, #0x31]     ; the drawn node's blend mode
+//     cmp  w24, #8              ; 8 == BlendMode::PlusLighter (BlendMode.h)
+//     b.ne <plain path>
+//     ldrb w8,  [x20, #0x288]   ; ICRRenderingParameters+0x220, embedded at
+//     cmp  w8,  #1              ; self+0x68 -- shouldClampPlusLBlending
+//     b.ne <plain path>
+//     ... objc_msgSend$setBlendShader:<the once-built global at 0xCE8D0>
+//
+// and the global is built by the `swift_once` body at `0x0000D848`, which calls
+// `initWithLibrary:function:` with a function name spelled by two `mov`/`movk`
+// chains rather than living in `__cstring` -- `0x0000D88C` gives
+// `0x5064_6570_6D61_6C63` and `0x0000D89C` gives `0xEC00_0000_4C73_756C`, which
+// as a Swift small string is **`clampedPlusL`** (12 bytes, discriminator `0xEC`).
+//
+// `[BIN]` And that name is a Metal entry point in this bundle's own stitching
+// library, `metallib-iconrendering/default_mod8.ll:37`, whole:
+//
+//     %3  = fadd fast <4 x half> %1, %0
+//     %5  = air.fmin.v3f16(splat(half 0xH3C00), %3.rgb)     ; min against 1.0
+//     %10 = air.saturate.f16(%0.a + %1.a)
+//     %12 = air.fmax.v4f16(%1, (%5, %10))
+//
+// `[BIN]` WHICH OPERAND IS WHICH IS NOT INFERRED. The AIR metadata names them:
+// `!19 = !{i32 0, ..., !"air.arg_name", !"source"}` and `!20` the same for
+// `dest`. So `%0` is the source and `%1` the backdrop, and the `fmax` floors
+// the result at the BACKDROP.
+//
+// Three things follow, and the middle one is the whole point:
+//
+//   * the rgb cap is the literal `1.0`, NOT the output alpha -- a different
+//     clamp from the `extendedColor` one in `pdf_mode`;
+//   * so a stack of bright highlights stops at white instead of running to 2 or
+//     3, which is what leaves the `plusDarker` highlights drawn afterwards
+//     somewhere to descend from;
+//   * and the `fmax` against `dest` means the cap can never DARKEN a backdrop
+//     that was already above one -- it removes the overshoot, it does not
+//     remove light.
+//
+// `[BIN]` `plusDarker` gets no such treatment: the gate is `cmp w24, #8` and
+// nothing else, so mode 4 keeps the plain formula.
+//
+// `[BIN]` THE FLAG IS `true`. `ICRRenderingParameters.shouldClampPlusLBlending`
+// is `params+0x220` (`fieldmd_iconrendering.txt`, field 21 of 35; the struct is
+// embedded at `self+0x68`, which is why the two readers say `+0x288`). The
+// aggregate default constructor writes it at `0x0005EAE8`
+// (`strb w22, [x19, #0x220]`) with `w22` set to `1` at `0x0005E8BC` and never
+// reassigned in between.
+//
+// `[BIN]` And the offset is anchored from OUTSIDE this reading: the very next
+// store, `0x0005EAFC str x8, [x19, #0x228]`, is the `0x4070A3D70A3D70A4` that
+// doc 03 §29.3 already read as `defaultChicletCornerRadius` = `266.24`, and the
+// field list puts `shouldClampPlusLBlending` immediately before it. `+0x218`
+// holds the `Int` `2` that is `refractionSupersampling`, the field before that;
+// `+0x230` is the `thresholds` the shadow front read. Four consecutive fields
+// in declaration order, two of them read by other fronts on other days.
+//
+// WHICH COMPOSITES THIS REACHES -- AND WHY NOTHING HERE IS WIRED TO IT
+// ---------------------------------------------------------------------
+// `[OBS]` **THE CONSUMER SET IS NOT READ, AND THAT IS WHY THE DEFAULT ABOVE IS
+// `false`.** Both gates read the blend mode out of a DRAW DESCRIPTOR
+// (`ldrb w24, [x0, #0x31]`, `0x0004B518`), and the substitution happens in
+// exactly four places -- `0x00044654` and `0x00044908` inside `0x000435A0`, and
+// `0x0004B57C` and `0x0004B7F4` inside `0x0004B4EC`. Who builds a descriptor
+// that reaches them was not followed to the end.
+//
+// `[BIN]` What IS settled is a NEGATIVE, and it is the one that matters for the
+// front that went looking: **the glyph specular highlights are not clamped.**
+// Their draw is `0x000491C0`-`0x00049DBC`, it calls neither `0x000435A0` nor
+// `0x0004B4EC`, and the blend mode it resolves goes straight to
+// `-[RBDisplayList drawShape:fill:alpha:blendMode:]` at `0x0000ED00`, the tail
+// of the `glassHighlight` builder `0x0000E834`. There is no `cmp #8` and no
+// `setBlendShader:` on that path.
+//
+// `[BIN]` The document layer NODE is likewise built without a gate:
+// `0x00025354` calls `addLayer:`, `setOpacity:`, then `setBlendMode:` with `w2`
+// read from the 18-entry CGBlendMode table at `0x00094AC0`
+// (`ldr w2, [x8, x23, lsl #2]`, `0x00025578` -- the table `BlendMode.h`
+// transcribes), then `setHasSpecular:`. That does not settle the DRAW, which is
+// a different function and is where the gate lives.
+//
+// So this file transcribes the shader and reads the flag, and stops there.
+// Wiring it into a composite without knowing which composites the target wires
+// it into would be a change with an address on it and no measurement under it.
+BlendColour clampedPlusL(const BlendColour& source, const BlendColour& dest);
 
 // `src` over `dst`, premultiplied, by `mode`.
 BlendColour blend(BlendMode mode, const BlendColour& src, const BlendColour& dst,

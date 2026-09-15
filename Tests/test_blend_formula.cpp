@@ -123,21 +123,79 @@ TEST_CASE(screen_skips_the_composition_tail) {
 // overshoot, they are the same function -- which is exactly why no corpus case
 // can tell them apart and why the tables had to.
 TEST_CASE(the_two_plus_modes_differ_only_once_the_alphas_overshoot) {
+    // The RAW formula, which is what the default options ask for -- it is what
+    // a DOCUMENT `plus-lighter` gets (`0x00025354` composites those through
+    // `setBlendMode:`, with no clamp gate). The next test is the other one.
+    rb::BlendOptions raw;
+
     const BlendColour a = premul(1.0, 1.0, 1.0, 0.25);
     const BlendColour b = premul(1.0, 1.0, 1.0, 0.25);
-    const BlendColour lighter = rb::blend(BlendMode::PlusLighter, a, b);
-    const BlendColour darker = rb::blend(BlendMode::PlusDarker, a, b);
+    const BlendColour lighter = rb::blend(BlendMode::PlusLighter, a, b, raw);
+    const BlendColour darker = rb::blend(BlendMode::PlusDarker, a, b, raw);
     for (int k = 0; k < 4; ++k) CHECK(near(lighter.rgba[k], darker.rgba[k]));
     CHECK(near(lighter.rgba[3], 0.5));
 
     const BlendColour c = premul(1.0, 1.0, 1.0, 0.75);
-    const BlendColour hot = rb::blend(BlendMode::PlusLighter, c, c);
-    const BlendColour cold = rb::blend(BlendMode::PlusDarker, c, c);
+    const BlendColour hot = rb::blend(BlendMode::PlusLighter, c, c, raw);
+    const BlendColour cold = rb::blend(BlendMode::PlusDarker, c, c, raw);
     CHECK(near(hot.rgba[3], 1.0));
     CHECK(near(cold.rgba[3], 1.0));
     // slack = saturate(1.5) - 1.5 = -0.5
     CHECK(near(hot.rgba[0], 1.5));
     CHECK(near(cold.rgba[0], 1.0));
+}
+
+// `clampedPlusL`, and the three things about it that a "clamp to 1" written
+// from the name alone would get wrong.
+TEST_CASE(clamped_plus_l_caps_at_one_floors_at_the_backdrop_and_spares_plus_darker) {
+    // 1. IT BITES. Three opaque white highlights over white run the raw formula
+    //    to 4; the shader stops at 1, which is the whole reason the two
+    //    `plusDarker` highlights drawn afterwards have anywhere to descend from.
+    rb::BlendOptions raw;
+    rb::BlendOptions on;
+    on.clampPlusLighter = true;
+    const BlendColour white = premul(1.0, 1.0, 1.0, 1.0);
+    BlendColour rawAcc = white, clampedAcc = white;
+    for (int i = 0; i < 3; ++i) {
+        rawAcc = rb::blend(BlendMode::PlusLighter, white, rawAcc, raw);
+        clampedAcc = rb::blend(BlendMode::PlusLighter, white, clampedAcc, on);
+    }
+    CHECK(near(rawAcc.rgba[0], 4.0));
+    CHECK(near(clampedAcc.rgba[0], 1.0));
+    CHECK(near(clampedAcc.rgba[3], 1.0));
+
+    // A `plusDarker` on top now has room. Against the unclamped stack it does
+    // not: 4 - 1 is still far above white.
+    const BlendColour dark = BlendColour{{0.0, 0.0, 0.0, 0.5}};
+    CHECK(rb::blend(BlendMode::PlusDarker, dark, clampedAcc, on).rgba[0] < 1.0);
+    CHECK(rb::blend(BlendMode::PlusDarker, dark, rawAcc, raw).rgba[0] > 3.0);
+
+    // 2. THE CAP IS THE LITERAL 1.0, NOT THE OUTPUT ALPHA. A half-covered
+    //    highlight over a half-covered backdrop sums rgb to 1.0 with alpha 1.0;
+    //    push the source rgb over one and rgb still stops at 1 while the
+    //    `extendedColor` clamp of `pdf_mode` would have stopped it at `out.a`.
+    const BlendColour halfA = premul(1.0, 1.0, 1.0, 0.4);
+    const BlendColour halfB = premul(1.0, 1.0, 1.0, 0.3);
+    const BlendColour mid = rb::blend(BlendMode::PlusLighter, halfA, halfB, on);
+    CHECK(near(mid.rgba[0], 0.7));
+    CHECK(near(mid.rgba[3], 0.7));
+
+    // 3. THE `fmax` IS AGAINST THE BACKDROP, so a backdrop already above one --
+    //    which is exactly the state an unclamped stack leaves behind -- is never
+    //    pulled DOWN by the cap. Clamping without the `fmax` would darken it.
+    const BlendColour over = BlendColour{{2.5, 2.5, 2.5, 1.0}};
+    const BlendColour kept = rb::blend(BlendMode::PlusLighter, white, over, on);
+    for (int k = 0; k < 3; ++k) CHECK(near(kept.rgba[k], 2.5));
+
+    // And the direct entry point agrees with the dispatch.
+    const BlendColour direct = rb::clampedPlusL(halfA, halfB);
+    for (int k = 0; k < 4; ++k) CHECK(near(direct.rgba[k], mid.rgba[k]));
+
+    // 4. `plusDarker` IS NOT TOUCHED: the gate in the target is `cmp w24, #8`
+    //    and nothing else, so mode 4 reads the same with the option either way.
+    const BlendColour d1 = rb::blend(BlendMode::PlusDarker, halfA, halfB, on);
+    const BlendColour d2 = rb::blend(BlendMode::PlusDarker, halfA, halfB, raw);
+    for (int k = 0; k < 4; ++k) CHECK(near(d1.rgba[k], d2.rgba[k]));
 }
 
 // A transparent operand is the identity on the other one, for every mode this
