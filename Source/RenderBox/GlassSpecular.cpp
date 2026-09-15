@@ -276,6 +276,95 @@ double glassHighlightFragment(const GlassHighlightSettings& s, double sd, double
     return band * a / std::max(1.0 + (1.0 - a) * bias, kEps);
 }
 
+namespace {
+
+// `[BIN]` The two `CAColorMatrix` bases, 4 rows x 5 columns of `float`, copied
+// byte for byte from `IconRendering.arm64 __const`: the `swift_once` bodies
+// `0x00006948` (-> `0xE2960`, from `0x938E0`) and `0x00006988` (-> `0xE2910`,
+// from `0x93920`), whose last `stp q1, q2, [x8, #0x30]` writes the shared
+// alpha row `[0, 0, 0, 1, 0]` from `0x938D0`. Kept as `float` because that is
+// the precision the target composes them in.
+constexpr float kRgbToYcbcr709[4][5] = {
+    {0.2126f, 0.7152f, 0.0722f, 0.0f, 0.0f},
+    {-0.1146f, -0.3854f, 0.5f, 0.0f, 0.5f},
+    {0.5f, -0.4542f, -0.0458f, 0.0f, 0.5f},
+    {0.0f, 0.0f, 0.0f, 1.0f, 0.0f},
+};
+constexpr float kYcbcrToRgb709[4][5] = {
+    {1.0f, 0.0f, 1.5748f, 0.0f, -0.7874f},
+    {1.0f, -0.1873f, -0.4681f, 0.0f, 0.3277f},
+    {1.0f, 1.8556f, 0.0f, 0.0f, -0.9278f},
+    {0.0f, 0.0f, 0.0f, 1.0f, 0.0f},
+};
+
+}  // namespace
+
+const GlyphVCM& glyphHighlightVCM() {
+    // `[BIN]` `Highlights+0xB0`..`+0xD0`.
+    static const GlyphVCM v{0.2, 1.2, 1.25, 0.0, true};
+    return v;
+}
+
+const GlyphVCM& glyphDarklightVCM() {
+    // `[BIN]` `Highlights+0xD8`..`+0xF8`.
+    static const GlyphVCM v{-0.15, 0.7, 1.25, 0.0, true};
+    return v;
+}
+
+// THE LEG THAT WAS MISSING, READ -- `Docs/Laudos/2026-09-15-realce-vcm-fechado.md`
+// -----------------------------------------------------------------------------
+// `[BIN]` `-[RBDisplayList beginLayerWithFlags:]` (`RenderBox 0x0003BCA0`) masks
+// its argument (`0x7B`/`0x77`, `|0x80` when `0xA0` is set) and for `1` passes
+// `1` unchanged to `Builder::begin_layer(State, OptionSet<Layer::Flag>)`
+// (`0x000C9A28`) -> `make_layer` (`0x000C9940`) -> `Layer::Layer(uint,
+// OptionSet<Flag>)` (`0x0014DB74`), whose `stp w1, w2, [x0, #0x40]` puts the
+// flags at `Layer+0x44`.
+//
+// `[BIN]` `Builder::null_style_draw` (`0x000CDD80`) is where a finished layer
+// item is placed, and at `0x000CE028` it reads that word:
+//
+//     0x000CE028  ldr  w8, [x22, #0x44]      ; Layer::Flag
+//     0x000CE02C  tbz  w8, #0, 0xCE050       ; bit 0 clear -> ordinary append
+//     ...                                    ; (parent bit 7 clear, +0x38 == 0,
+//     0x000CE04C  b.eq 0xCE160               ;  effect & 3 == 0)
+//     0x000CE160  ldr  x0, [x22, #0x18]      ; the layer's filter list
+//     0x000CE174  ldr  x8, [x8, #0x70]       ; vtable slot 14
+//     0x000CE17C  blr  x8                    ; -> make_backdrop_item(Builder&)
+//     0x000CE1A4  bl   Heap::alloc<BackdropFilterItem<Filter::ColorMatrix>>
+//                                            ; (no filter: an identity copy)
+//     0x000CE20C  bl   Builder::append       ; into the PARENT layer
+//     0x000CE210  str  xzr, [x22, #0x18]     ; the filter is consumed
+//
+// Slot `+0x70` is `make_backdrop_item` by the vtable, not by guess:
+// `GenericFilter<Filter::ColorMatrix>`'s vtable (`0x0018B658`) lists entry 16
+// = `0x0007E850` = `GenericFilter<ColorMatrix>::make_backdrop_item`, and
+// entries start at `+0x10`, so the call offset is `(16 - 2) * 8 = 0x70`. The
+// vtable the fallback stores (`0x0018B0A0`) starts with `0x0007D798`, the
+// `BackdropFilterItem<Filter::ColorMatrix>` the previous laudo named. The same
+// bit also blocks the inline merge at `0x000CDEF0` (`tbnz w11, #0`).
+//
+// So bit 0 of `Layer::Flag` is the BACKDROP bit: the `addColorMatrixFilter`
+// installed on that layer is turned into an item that filters what is already
+// in the parent -- the matrix reads the backdrop.
+void applyGlyphVCM(const GlyphVCM& vcm, double rgb[3]) {
+    double ycc[3];
+    for (int r = 0; r < 3; ++r) {
+        ycc[r] = kRgbToYcbcr709[r][0] * rgb[0] + kRgbToYcbcr709[r][1] * rgb[1] +
+                 kRgbToYcbcr709[r][2] * rgb[2] + kRgbToYcbcr709[r][4];
+    }
+    // `[BIN]` The levels matrix, `0x00049A64`-`0x00049AA8`: Y row only.
+    ycc[0] = (vcm.lumaCeiling - vcm.lumaFloor) * ycc[0] + vcm.lumaFloor;
+    // `[BIN]` The chroma matrix, `0x00049B18`-`0x00049B68`, skipped by
+    // `0x00049AE4` when `VCM[2] == 1.0` -- where it would be the identity anyway.
+    const double k = 0.5 - 0.5 * vcm.saturation;
+    ycc[1] = vcm.saturation * ycc[1] + k;
+    ycc[2] = vcm.saturation * ycc[2] + k;
+    for (int r = 0; r < 3; ++r) {
+        rgb[r] = kYcbcrToRgb709[r][0] * ycc[0] + kYcbcrToRgb709[r][1] * ycc[1] +
+                 kYcbcrToRgb709[r][2] * ycc[2] + kYcbcrToRgb709[r][4];
+    }
+}
+
 std::size_t drawSpecular(std::vector<float>& rgba, const FieldImage& field,
                          const SpecularArguments& args) {
     const std::size_t n = static_cast<std::size_t>(field.width) * field.height;
@@ -310,14 +399,46 @@ std::size_t drawSpecular(std::vector<float>& rgba, const FieldImage& field,
                 if (f <= 0.0) continue;
 
                 const double alpha = f * g.opacity;
+                const std::size_t px = static_cast<std::size_t>(y) * field.width + x;
+                const std::size_t i = px * 4;
+
+                if (args.useVCM) {
+                    // `[BIN]` The highlight shape is drawn into a layer and
+                    // closed with `clipLayerWithAlpha:1.0 mode:0` (`0x000497BC`),
+                    // so what survives of it is its coverage; the colour and
+                    // blend mode of the shape draw do not reach the pixel.
+                    // `[INF]` `mode:0` is the alpha clip: a luminance clip would
+                    // erase both darklights, whose colour is black.
+                    const double cov = alpha > 1.0 ? 1.0 : alpha;
+                    const double a = rgba[i + 3];
+                    // An empty backdrop has nothing for the matrix to lift; its
+                    // alpha row is `[0,0,0,1,0]`, so the result stays invisible.
+                    if (a <= 0.0) continue;
+                    double straight[3];
+                    for (int c = 0; c < 3; ++c) straight[c] = rgba[i + c] / a;
+                    double lifted[3] = {straight[0], straight[1], straight[2]};
+                    applyGlyphVCM(slots[s].isDarklight ? glyphDarklightVCM() : glyphHighlightVCM(),
+                                  lifted);
+                    // `[INF]` `lerp(backdrop, VCM(backdrop), coverage)` with the
+                    // backdrop's alpha kept. Where the backdrop is opaque this is
+                    // exactly `drawLayerWithAlpha:1.0 blendMode:0` of the filtered
+                    // copy through the clip; on a fringe with alpha < 1, whether
+                    // the backdrop item REPLACES or composites over is `[OBS]`.
+                    for (int c = 0; c < 3; ++c) {
+                        double v = (straight[c] + cov * (lifted[c] - straight[c])) * a;
+                        if (v < 0.0) v = 0.0;
+                        if (static_cast<float>(v) != rgba[i + c]) hit[px] = 1;
+                        rgba[i + c] = static_cast<float>(v);
+                    }
+                    continue;
+                }
+
                 BlendColour src;
                 src.rgba[0] = g.colour[0] * alpha;
                 src.rgba[1] = g.colour[1] * alpha;
                 src.rgba[2] = g.colour[2] * alpha;
                 src.rgba[3] = alpha;
 
-                const std::size_t px = static_cast<std::size_t>(y) * field.width + x;
-                const std::size_t i = px * 4;
                 BlendColour dst;
                 for (int c = 0; c < 4; ++c) dst.rgba[c] = rgba[i + c];
                 const BlendColour outc = blend(g.blendMode, src, dst, blendOptions);
@@ -420,28 +541,25 @@ const char* specularDrawnNote() {
            "ao drawShape:fill:alpha:blendMode: de 0x0000ED00. `[OBS]` Quais desenhos o grampo "
            "cobre nao foi lido, entao ele esta transcrito em BlendFormula.h e DESLIGADO aqui -- "
            "liga-lo sem saber move pixel por conta de quem mede, nao do alvo. "
-           "`[OBS]` O QUE AINDA FALTA PARA A COR, E E AI QUE MORA O `forte demais`: o alvo "
-           "nao pinta branco, ele FILTRA o que esta embaixo. Por realce faz save/beginLayer "
-           "(0x4977C/0x49784), desenha o glassHighlight dentro da camada, fecha com "
-           "clipLayerWithAlpha:1.0 mode:0 (0x497BC), instala addColorMatrixFilterWithArray:flags:0 "
-           "(0x49C48) e entao beginLayerWithFlags:1 + drawLayerWithAlpha:1.0 blendMode:0 "
-           "(0x49C54/0x49C64). A matriz esta LIDA inteira: a base de 0xE2960 (que e __common) e "
-           "preenchida pelo corpo de swift_once em 0x6948 a partir do __const 0x938E0, e e a "
-           "CAColorMatrix 4x5 do BT.709 RGB->YCbCr (0.2126/0.7152/0.0722, com Cb e Cr enviesados "
-           "em 0.5); a inversa YCbCr->RGB esta em 0xE2910 (once 0x6988, 1.5748/-0.1873/-0.4681/"
-           "1.8556). Entre as duas o alvo aplica, de glyphHighlightVCM = [0.2, 1.2, 1.25, 0.0, "
-           "true] (Highlights+0xB0) ou glyphDarklightVCM = [-0.15, 0.7, 1.25, 0.0] "
-           "(Highlights+0xD8), duas matrizes: Y <- (VCM[1]-VCM[0])*Y + VCM[0] (0x49A64, so a linha "
-           "do Y) e Cb,Cr <- VCM[2]*c + (0.5 - 0.5*VCM[2]) (0x49B18, e a linha do Y e [1,0,0,0,0] "
-           "-- VCM[2] e SATURACAO, nao contraste de luma). Ou seja: levantar a luma em 0.2 e abrir "
-           "a croma em 1.25, atraves da forma do realce. O addStyle:9 de 0x49800 e um "
-           "RB::Filter::ColorClamp (tabela de salto 0x15E440 do RBDrawingStateAddStyle) e aqui ele "
-           "e PULADO, porque VCM[4] == 1. O portao e glyphHighlightsUseVCM (Highlights+0x90), "
-           "lido em 0x494D8, e e TRUE nesta versao; este renderizador segue no ramo "
-           "useVCM == false, cuja escala e glyphHighlightNonVCMScale = 1.0 (0x4955C). O UNICO "
-           "elo que falta e se beginLayerWithFlags:1 instancia o "
-           "BackdropFilterItem<Filter::ColorMatrix> do RenderBox (0x7D798) -- isto e, se a matriz "
-           "le o fundo. Sem esse elo a cor nao foi pintada aqui";
+           "`[BIN]` A COR E PINTADA COMO O ALVO PINTA: o realce NAO soma branco, ele FILTRA o "
+           "que esta embaixo. Por realce o alvo faz save/beginLayer (0x4977C/0x49784), desenha o "
+           "glassHighlight dentro da camada, fecha com clipLayerWithAlpha:1.0 mode:0 (0x497BC), "
+           "instala addColorMatrixFilterWithArray:flags:0 (0x49C48) e entao beginLayerWithFlags:1 + "
+           "drawLayerWithAlpha:1.0 blendMode:0 (0x49C54/0x49C64). A matriz e a CAColorMatrix 4x5 "
+           "BT.709 RGB->YCbCr de 0xE2960 (swift_once 0x6948, __const 0x938E0), os niveis "
+           "Y <- (VCM[1]-VCM[0])*Y + VCM[0] (0x49A64), a croma Cb,Cr <- VCM[2]*c + (0.5-0.5*VCM[2]) "
+           "(0x49B18) e a inversa de 0xE2910 (0x6988, 0x93920), com glyphHighlightVCM = "
+           "[0.2, 1.2, 1.25, 0.0, true] (Highlights+0xB0) nos tres claros e glyphDarklightVCM = "
+           "[-0.15, 0.7, 1.25, 0.0] (+0xD8) nos dois escuros; o ColorClamp do addStyle:9 e PULADO "
+           "porque VCM[4] == 1. `[BIN]` E a matriz le o FUNDO: beginLayerWithFlags: (RenderBox "
+           "0x3BCA0) passa o 1 intacto a Builder::begin_layer (0xC9A28), o Layer guarda-o em +0x44 "
+           "(0x14DB74), e Builder::null_style_draw testa o bit 0 em 0xCE02C e, ligado, chama "
+           "make_backdrop_item pela vtable +0x70 (0xCE174; entrada 16 de 0x18B658 = 0x7E850) ou "
+           "aloca um BackdropFilterItem<Filter::ColorMatrix> (0xCE1A4, vtable 0x18B0A0 -> 0x7D798) "
+           "e o anexa a camada PAI. Aqui: lerp(fundo, VCM(fundo), cobertura) sobre o composto, com a "
+           "cobertura do glassHighlight. `[OBS]` Na franja com alfa < 1, se o item de fundo substitui "
+           "ou compoe por cima nao foi lido; e dentro de um grupo com blend proprio o fundo e so o do "
+           "grupo";
 }
 
 }  // namespace rb

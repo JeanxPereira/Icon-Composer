@@ -1399,26 +1399,27 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 }
                 castShadow(drew->rgba);
                 // THE HIGHLIGHT GOES ON AFTER THE SHADOW IS CAST, ON PURPOSE.
-                // It is `plusLighter`/`plusDarker` over the layer's own pixels,
-                // so it adds alpha where it lands; casting the shadow from the
-                // art plus its own highlight would swell the silhouette by the
-                // rim. `[BIN]` The target keeps them apart too -- the highlight
-                // is its own `drawShape:fill:alpha:blendMode:` at `0x0000ED00`,
-                // inside a pass gated by `hasSpecular` at `0x00049200`, and the
-                // shadow is a different `drawShape:` in a different function.
+                // `[BIN]` The target keeps them apart -- the highlight is its
+                // own clip + backdrop colour matrix inside a pass gated by
+                // `hasSpecular` at `0x00049200`, and the shadow is a different
+                // `drawShape:` in a different function.
+                blendOver(target, drew->rgba, static_cast<float>(opacity), layerBlend);
+                // THE HIGHLIGHT FILTERS THE BACKDROP, SO IT GOES ON AFTER THE
+                // LAYER IS IN IT. `[BIN]` `beginLayerWithFlags:1` sets bit 0 of
+                // `RB::DisplayList::Layer::Flag`, and `Builder::null_style_draw`
+                // (`0x000CE028`) turns that layer's colour matrix into a
+                // `BackdropFilterItem` appended to the PARENT -- so the matrix
+                // reads the composite, not the layer's own buffer (GlassSpecular.cpp
+                // has the addresses). `layerOpacity` is now `opacity` because the
+                // highlight is a sibling of the layer again, as `[descriptor+0x38]`
+                // (`0x000495F0`) says it is in the target.
                 if (specularField) {
-                    // `layerOpacity` STAYS AT ONE here and it is not an
-                    // oversight: `[BIN]` the target's `alpha:` carries
-                    // `[descriptor+0x38]` because its highlight is a sibling of
-                    // the layer in one display list, and here the highlight is
-                    // composited INTO the layer's own buffer, which `blendOver`
-                    // then multiplies by `opacity` two lines down. Passing it
-                    // twice would square it.
-                    const std::size_t moved = drawSpecular(drew->rgba, *specularField, specularArgs);
+                    SpecularArguments layerSpecular = specularArgs;
+                    layerSpecular.layerOpacity = opacity;
+                    const std::size_t moved = drawSpecular(target, *specularField, layerSpecular);
                     if (moved > 0) ++out.glassSpecular;
                     note(out.notes, specularDrawnNote());
                 }
-                blendOver(target, drew->rgba, static_cast<float>(opacity), layerBlend);
                 ++out.drawn;
             } else if (rasterPlaced) {
                 // THE RASTER NOW RUNS THE WHOLE GLASS, in the same order the
@@ -1455,12 +1456,15 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                     ++out.glassTranslucent;
                 }
                 castShadow(placed);
+                blendOver(target, placed, static_cast<float>(opacity), layerBlend);
                 if (specularField) {
-                    const std::size_t moved = drawSpecular(placed, *specularField, specularArgs);
+                    // The same backdrop reading as the vector branch above.
+                    SpecularArguments layerSpecular = specularArgs;
+                    layerSpecular.layerOpacity = opacity;
+                    const std::size_t moved = drawSpecular(target, *specularField, layerSpecular);
                     if (moved > 0) ++out.glassSpecular;
                     note(out.notes, specularDrawnNote());
                 }
-                blendOver(target, placed, static_cast<float>(opacity), layerBlend);
                 ++out.drawn;
             } else {
                 skip("arte com extensao que este leitor nao le: " + *imageName);

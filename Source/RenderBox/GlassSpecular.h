@@ -520,7 +520,38 @@ struct SpecularArguments {
     // glyph path, which is what that reading predicts. The field is kept so the
     // front that identifies the covered draws has somewhere to put the answer.
     bool clampPlusLighter = false;
+    // `[BIN]` `glyphHighlightsUseVCM`, `Highlights+0x90`, read at `0x000494D8`,
+    // `true` in this version. When set, a highlight does not paint its colour:
+    // its shape becomes a CLIP and the backdrop under it is run through
+    // `glyphVCMMatrix()` -- see `applyGlyphVCM` for the whole chain and the
+    // RenderBox addresses that prove the matrix reads the backdrop.
+    //
+    // `false` keeps the old plusLighter/plusDarker composite, which is the
+    // `useVCM == false` branch scaled by `glyphHighlightNonVCMScale == 1.0`
+    // (`0x0004955C`). No caller in this renderer takes it any more.
+    bool useVCM = true;
 };
+
+// `[BIN]` The five fields of a `VCM` ("Video Color Matrix"): `glyphHighlightVCM`
+// at `Highlights+0xB0` and `glyphDarklightVCM` at `+0xD8`
+// (`Docs/Laudos/2026-09-15-highlights.md` §4.1, `0x00062AB8`-`0x00062B34`).
+struct GlyphVCM {
+    double lumaFloor = 0.0;     // VCM[0]: Y <- (VCM[1] - VCM[0]) * Y + VCM[0]   (0x00049A64)
+    double lumaCeiling = 1.0;   // VCM[1]
+    double saturation = 1.0;    // VCM[2]: Cb,Cr <- VCM[2]*c + (0.5 - 0.5*VCM[2]) (0x00049B18)
+    double headroom = 0.0;      // VCM[3]: the `addContentHeadroom:` argument
+    bool skipHeadroomClamp = true;  // VCM[4]: `cmp w19, #1; b.eq` at 0x000497C0
+};
+
+// `[BIN]` `[0.2, 1.2, 1.25, 0.0, true]` and `[-0.15, 0.7, 1.25, 0.0, true]`.
+const GlyphVCM& glyphHighlightVCM();
+const GlyphVCM& glyphDarklightVCM();
+
+// Runs one STRAIGHT (not premultiplied) rgb triple through the target's chain:
+// BT.709 RGB->YCbCr (`0xE2960`, from `__const 0x938E0`), levels on Y, chroma
+// gain about 0.5, BT.709 YCbCr->RGB (`0xE2910`, from `__const 0x93920`). No
+// clamp: `VCM[4] == 1` skips the `RB::Filter::ColorClamp` of `addStyle:9`.
+void applyGlyphVCM(const GlyphVCM& vcm, double rgb[3]);
 
 // `[BIN]` `0x0004BD90`, plus the `inside`/`outside` fold of `0x000495D8`.
 GlassHighlightSettings resolveHighlight(const HighlightSlot& slot, const SpecularArguments& args);
@@ -537,8 +568,11 @@ double glassHighlightFragment(const GlassHighlightSettings& s, double sd, double
                               double fwidthSd);
 
 // Composites the five highlights over `rgba` (premultiplied, `field.width` x
-// `field.height`), each with its own blend mode and its own `alpha`.
-// Returns the number of pixels the composite actually moved.
+// `field.height`). With `args.useVCM` (the shipped state) each highlight is
+// `lerp(backdrop, VCM(backdrop), coverage)` with alpha untouched, so `rgba`
+// must be the BACKDROP -- the composite the layer has already gone into, not
+// the layer's own buffer. Without it, each highlight is its colour under its
+// own blend mode. Returns the number of pixels the composite actually moved.
 std::size_t drawSpecular(std::vector<float>& rgba, const FieldImage& field,
                          const SpecularArguments& args);
 
