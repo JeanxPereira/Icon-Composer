@@ -28,6 +28,12 @@ std::string_view idiomToString(Idiom i);
 struct Context {
     Appearance appearance = Appearance::Base;
     Idiom idiom = Idiom::Base;
+
+    // Two contexts are the same when they resolve the same, which for an
+    // aggregate of two enums is memberwise. The canvas needs this to ask
+    // "is what is on screen still what was asked for?" without spelling the
+    // fields out at each call site.
+    bool operator==(const Context&) const = default;
 };
 
 // The value of `property` on `owner` under `ctx`, or nullptr when neither the

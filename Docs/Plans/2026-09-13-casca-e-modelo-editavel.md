@@ -1926,7 +1926,7 @@ Expected: dois casos, zero falhas. A configuração puxa o Onyx e o ImGui; o bui
   };
   ```
 
-- [ ] **Step 1: implementar**
+- [x] **Step 1: implementar**
 
 `Session.h`:
 
@@ -2197,12 +2197,12 @@ de dentro do `apply`, sobre `root()` e o caminho completo. O snapshot do PAI cap
 mudança mesmo assim, e nenhum ponteiro se move: apagar dentro de `groups[g].layers` não
 move `groups[g]`, e apagar dentro de `groups` não move a raiz.
 
-- [ ] **Step 2: conferir que compila**
+- [x] **Step 2: conferir que compila**
 
 Run: `cmake --build --preset mingw`
 Expected: compila limpo, sem warning novo.
 
-- [ ] **Step 3: commitar**
+- [x] **Step 3: commitar**
 
 ```bash
 git add Source/IconComposerKit/Session.h Source/IconComposerKit/Session.cpp Source/IconComposerKit/CMakeLists.txt
