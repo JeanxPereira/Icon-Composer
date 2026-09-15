@@ -2988,12 +2988,39 @@ de uma tela de 1024. É `[INF]`, e fica marcado assim.
      (`Docs/Laudos/2026-09-15-translucencia.md`).
    - `shadowOpacity` — `[BIN]` atravessa **cru**: `alpha = shadowOpacity ×
      Shadow.<vibrant|neutral>Opacity[3−classe] × [descritor+0x38]`, direto no `alpha:`
-     do `drawShape:` (`Docs/Laudos/2026-09-15-sombra.md`). `[OBS]` o **terceiro fator
-     não foi nomeado** — a fórmula tem três e o laudo nomeia dois, o que basta para
-     documentar e **não** basta para implementar.
-   - `specularPlacement` — segue `[OBS]`. Meia resposta: lido em `0x4922C`, **sem
-     aritmética**, colapsa num bit consumido uma vez em `0x494E8`; onde essa alpha
-     desemboca não foi seguido.
+     do `drawShape:` (`Docs/Laudos/2026-09-15-sombra.md`). **FECHADO em 15/09/2026**
+     (`Docs/Laudos/2026-09-15-sombra-desenho.md`): o terceiro fator é
+     `[BIN]` **`IconRendering.FinalizedIcon.Layer.opacity`**, e o próprio "descritor
+     de `0xC0` bytes" **é** o `FinalizedIcon.Layer` — três leituras independentes
+     concordam: a reflexão (`__swift5_fieldmd` `0xA301C`, `opacity` tipado `Sd`), o
+     vetor de deslocamentos emitido (`0xBD3F0`, `opacity@0x38`, VWT size/stride
+     `0xC0`) e o **escritor** (`0x17038 str d8,[x8,#0x58]`, com `d8` vindo de
+     `Icon.Layer.opacity` — cópia verbatim). De carona, duas correções: `+0x31`
+     **não** é um `Bool`, é `blendMode`, e `+0xB0` é `shadowImage`. **A sombra
+     desenha** — `Apollo-Reborn/AppIcon` muda 388.659 de 1.048.576 pixels.
+     `[ART]` das 302 resoluções de `shadow` do corpus, **três passam de 1.0** e caem
+     em décimos exatos contra a tabela medida (`2.4 × 0.375 = 0.9`), o que corrobora
+     o construtor **e** a inexistência do grampo pelo documento.
+   - `specularPlacement` — **FECHADO em 15/09/2026**
+     (`Docs/Laudos/2026-09-15-especular.md`). `[BIN]` O brilho desemboca no shader
+     **`glassHighlight`** do metallib do próprio `IconRendering` (montado por nome em
+     `0xE834`, literal *small string* em `0xE92C`–`0xE948`, dez
+     `setArgumentBytes:atIndex:`, `drawShape:` em `0xED00`) — **não** é `CAFilter`,
+     **não** é o `glass-highlight` do RenderBox. `hasSpecular` deixa de ser "campo
+     sem aritmética": é o **portão de uma função inteira** (`0x491C0`–`0x49DBC`),
+     o que fecha também o `[OBS] consumo` dele no §29.7. Os três valores do enum:
+     `inside` e `outside` são **a mesma espessura, a mesma âncora, espelhados**
+     (`[inset, inset+height]` contra `[inset−height, inset]`), com o de fora chapado
+     (curvatura 0) e opacidade própria; `automatic` segue o estado identidade **para
+     `outside`**, direção oposta à do portão de forma idêntica na sombra. E o bit era
+     **metade** da decisão: `0x494E0`–`0x494FC` dá
+     `(outsetOpacity_tag==1) ? 1 : (bit | ¬isDarklight)`.
+     `[OBS]` **Não desenha**, e a parede tem tamanho: os nove valores do shader vêm
+     de `ICRRenderingParameters.Highlights` (`params+0x250`), **16.113 bytes**
+     construídos em `0x62A78`–`0x63C1C`, nenhum número lido. A parede **não** é o
+     QuartzCore: o shader é do `IconRendering` e está em `References/`.
+     `[ART]` **67 dos 145 documentos** pedem especular (103 valores: 64 `true`,
+     36 `false`, 3 `"inside"`, **0 `"outside"`**).
    - **A armadilha que isso abre:** o enum de tamanho é `small 0 … display 3` e os
      structs declaram `display, large, medium, small`, então é `valor[3 − classe]`.
      Com os defaults desta versão **os quatro valores são iguais em todas as cinco
