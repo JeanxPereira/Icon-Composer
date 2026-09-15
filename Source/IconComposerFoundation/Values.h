@@ -11,6 +11,7 @@
 #include "Source/IconComposerFoundation/Json.h"
 
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -89,5 +90,25 @@ std::optional<Shadow> shadowFrom(const json::Value& v);
 std::optional<Position> positionFrom(const json::Value& v);
 std::optional<Translucency> translucencyFrom(const json::Value& v);
 std::optional<Refractivity> refractivityFrom(const json::Value& v);
+
+// ---- writing, since 2026-09-13 --------------------------------------------
+// The inverse of the readers above, and each one is held to the bytes it reads:
+// `write(toJson(fromJson(v)))` must equal `write(v)` over every value the corpus
+// resolves (test_values_tojson).
+//
+// `[ART]` A colour component is "%.5f": 1,978 of 1,978 in the corpus (spec 13/09
+// §2.2). Doubles elsewhere go through `json::Value::number(double)`.
+std::string colorToString(const Color& c);
+std::string_view blendModeToString(BlendMode m);
+std::string_view shadowKindToString(ShadowKind k);
+std::string_view specularHighlightToString(SpecularHighlight s);
+std::string_view lightingToString(Lighting l);
+std::string_view fillKindToString(FillKind k);
+
+json::Value fillToJson(const Fill& f);
+json::Value shadowToJson(const Shadow& s);
+json::Value positionToJson(const Position& p);
+json::Value translucencyToJson(const Translucency& t);
+json::Value refractivityToJson(const Refractivity& r);
 
 }  // namespace icf

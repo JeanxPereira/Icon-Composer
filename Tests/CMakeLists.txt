@@ -4,9 +4,12 @@
 add_executable(ic_tests EXCLUDE_FROM_ALL
     main.cpp
     test_json.cpp
+    test_json_mutate.cpp
     test_corpus.cpp
     test_document.cpp
+    test_document_edit.cpp
     test_values.cpp
+    test_values_tojson.cpp
     test_svg_path.cpp
     test_svg_corpus.cpp
     test_svg_xml.cpp
@@ -14,6 +17,7 @@ add_executable(ic_tests EXCLUDE_FROM_ALL
     test_svg_paint.cpp
     test_svg_css.cpp
     test_bundle.cpp
+    test_bundle_save.cpp
     test_cli.cpp
     test_rb_device.cpp
     test_rb_pathbuffer.cpp

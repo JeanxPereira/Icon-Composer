@@ -6,6 +6,7 @@
 add_library(IconComposerFoundation STATIC
     Json.cpp
     IconDocument.cpp
+    Edit.cpp
     Coverage.cpp
     Values.cpp
     IconBundle.cpp

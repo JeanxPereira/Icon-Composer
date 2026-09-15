@@ -94,4 +94,59 @@ fs::path IconBundle::assetPath(std::string_view imageName) const {
     return dir_ / "Assets" / fs::path(std::string(imageName));
 }
 
+namespace {
+std::string writeAtomically(const fs::path& target, const std::string& bytes) {
+    const fs::path tmp = target.string() + ".tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (!f) return "could not open " + tmp.string() + " for writing";
+        f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        if (!f) return "could not write " + tmp.string();
+    }
+    std::error_code ec;
+    fs::rename(tmp, target, ec);
+    if (ec) {
+        fs::remove(tmp, ec);
+        return "could not replace " + target.string() + ": " + ec.message();
+    }
+    return {};
+}
+}  // namespace
+
+IconBundle IconBundle::clone() const {
+    return IconBundle(dir_, std::make_unique<json::Value>(*tree_), assets_);
+}
+
+std::string IconBundle::save() const {
+    return writeAtomically(dir_ / "icon.json", json::write(*tree_));
+}
+
+std::string IconBundle::saveAs(const fs::path& dir) {
+    std::error_code ec;
+    fs::create_directories(dir / "Assets", ec);
+    if (ec) return "could not create " + (dir / "Assets").string() + ": " + ec.message();
+    for (const auto& a : assets_) {
+        fs::copy_file(dir_ / "Assets" / a, dir / "Assets" / a, fs::copy_options::overwrite_existing, ec);
+        if (ec) return "could not copy " + a + ": " + ec.message();
+    }
+    const std::string wrote = writeAtomically(dir / "icon.json", json::write(*tree_));
+    if (!wrote.empty()) return wrote;
+    dir_ = dir;
+    return {};
+}
+
+std::string IconBundle::importAsset(const fs::path& file) {
+    std::error_code ec;
+    if (!fs::is_regular_file(file, ec)) return "not a file: " + file.string();
+    const std::string name = file.filename().string();
+    fs::create_directories(dir_ / "Assets", ec);
+    fs::copy_file(file, dir_ / "Assets" / name, fs::copy_options::overwrite_existing, ec);
+    if (ec) return "could not copy " + name + ": " + ec.message();
+    if (std::find(assets_.begin(), assets_.end(), name) == assets_.end()) {
+        assets_.push_back(name);
+        std::sort(assets_.begin(), assets_.end());
+    }
+    return {};
+}
+
 }  // namespace icf

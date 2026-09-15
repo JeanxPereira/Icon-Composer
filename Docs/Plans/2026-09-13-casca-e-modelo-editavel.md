@@ -281,7 +281,7 @@ Expected: os cinco casos novos passam, e o caso do corpus imprime `... re-spelle
   - `std::string_view blendModeToString(BlendMode)`, `shadowKindToString(ShadowKind)`, `specularHighlightToString(SpecularHighlight)`, `lightingToString(Lighting)`, `fillKindToString(FillKind)`
   - `json::Value fillToJson(const Fill&)`, `shadowToJson(const Shadow&)`, `positionToJson(const Position&)`, `translucencyToJson(const Translucency&)`, `refractivityToJson(const Refractivity&)`
 
-- [ ] **Step 1: implementar**
+- [x] **Step 1: implementar**
 
 Em `Values.h`, depois dos `fromString`:
 
@@ -438,12 +438,12 @@ json::Value refractivityToJson(const Refractivity& r) {
 
 Acrescentar `#include <cstdio>` em `Values.cpp`.
 
-- [ ] **Step 2: conferir que compila**
+- [x] **Step 2: conferir que compila**
 
 Run: `cmake --build --preset mingw`
 Expected: compila limpo, sem warning novo.
 
-- [ ] **Step 3: commitar**
+- [x] **Step 3: commitar**
 
 ```bash
 git add Source/IconComposerFoundation/Values.h Source/IconComposerFoundation/Values.cpp
@@ -584,7 +584,8 @@ TEST_CASE(values_to_json_round_trips_every_corpus_value) {
 }
 ```
 
-Acrescentar `test_values_tojson.cpp` em `Tests/CMakeLists.txt` depois de `test_values.cpp`.
+Acrescentar `test_values_tojson.cpp` em `Tests/CMakeLists.txt` depois de `test_values.cpp`,
+e o stem `"test_values_tojson"` ao array `kSlow` de `Tests/main.cpp` (varre o corpus).
 
 
 **Como rodar e o que esperar:**
@@ -615,7 +616,7 @@ Expected: os quatro casos passam; o do corpus imprime `N typed values re-encoded
   - `void setProperty(json::Value& owner, std::string_view prop, Context scope, std::optional<json::Value> value)`
   - `bool hasOwnEntry(const json::Value& owner, std::string_view prop, Context scope)` — o escopo tem valor próprio (não herdado)
 
-- [ ] **Step 1: implementar**
+- [x] **Step 1: implementar**
 
 Em `IconDocument.h`, depois de `idiomFromString`:
 
@@ -856,12 +857,12 @@ bool hasOwnEntry(const json::Value& owner, std::string_view prop, Context scope)
 
 Em `Source/IconComposerFoundation/CMakeLists.txt`, acrescentar `Edit.cpp` à lista.
 
-- [ ] **Step 2: conferir que compila**
+- [x] **Step 2: conferir que compila**
 
 Run: `cmake --build --preset mingw`
 Expected: compila limpo, sem warning novo.
 
-- [ ] **Step 3: commitar**
+- [x] **Step 3: commitar**
 
 ```bash
 git add Source/IconComposerFoundation/Edit.h Source/IconComposerFoundation/Edit.cpp Source/IconComposerFoundation/IconDocument.h Source/IconComposerFoundation/IconDocument.cpp Source/IconComposerFoundation/CMakeLists.txt
@@ -1044,7 +1045,9 @@ TEST_CASE(edit_every_corpus_node_survives_a_write_under_every_scope) {
 }
 ```
 
-Acrescentar `test_document_edit.cpp` em `Tests/CMakeLists.txt` depois de `test_document.cpp`.
+Acrescentar `test_document_edit.cpp` em `Tests/CMakeLists.txt` depois de `test_document.cpp`,
+e o stem `"test_document_edit"` ao array `kSlow` de `Tests/main.cpp` — ele varre o corpus,
+e aquele array é o que mantém o sweep de mutação barato.
 
 
 **Como rodar e o que esperar:**
@@ -1071,7 +1074,7 @@ Expected: os oito casos passam; o do corpus imprime `N nodes, M scoped writes, i
   - `bool moveNode(json::Value& root, NodePath, int delta)` — troca com o vizinho (`-1` sobe, `+1` desce); false quando não há vizinho
   - `bool setName(json::Value& root, NodePath, std::string)` — escreve `name`
 
-- [ ] **Step 1: implementar**
+- [x] **Step 1: implementar**
 
 Em `Edit.h`, antes do fecho do namespace:
 
@@ -1161,12 +1164,12 @@ bool setName(json::Value& root, NodePath path, std::string name) {
 
 Acrescentar `#include <utility>` em `Edit.cpp`.
 
-- [ ] **Step 2: conferir que compila**
+- [x] **Step 2: conferir que compila**
 
 Run: `cmake --build --preset mingw`
 Expected: compila limpo, sem warning novo.
 
-- [ ] **Step 3: commitar**
+- [x] **Step 3: commitar**
 
 ```bash
 git add Source/IconComposerFoundation/Edit.h Source/IconComposerFoundation/Edit.cpp
@@ -1245,7 +1248,7 @@ Expected: onze casos, zero falhas.
   - `std::string saveAs(const std::filesystem::path& dir)` — cria `dir/Assets`, copia os assets, escreve, e passa a apontar para `dir`
   - `std::string importAsset(const std::filesystem::path& file)` — copia para `Assets/<nome>` e acrescenta a `assetFiles()`; vazio no sucesso
 
-- [ ] **Step 1: implementar**
+- [x] **Step 1: implementar**
 
 Em `IconBundle.h`, dentro da classe, depois de `document()`:
 
@@ -1325,12 +1328,12 @@ std::string IconBundle::importAsset(const fs::path& file) {
 }
 ```
 
-- [ ] **Step 2: conferir que compila**
+- [x] **Step 2: conferir que compila**
 
 Run: `cmake --build --preset mingw`
 Expected: compila limpo, sem warning novo.
 
-- [ ] **Step 3: commitar**
+- [x] **Step 3: commitar**
 
 ```bash
 git add Source/IconComposerFoundation/IconBundle.h Source/IconComposerFoundation/IconBundle.cpp
@@ -1458,7 +1461,8 @@ TEST_CASE(bundle_save_keeps_every_byte_exact_corpus_document_byte_exact) {
 }
 ```
 
-Acrescentar `test_bundle_save.cpp` em `Tests/CMakeLists.txt` depois de `test_bundle.cpp`.
+Acrescentar `test_bundle_save.cpp` em `Tests/CMakeLists.txt` depois de `test_bundle.cpp`,
+e o stem `"test_bundle_save"` ao array `kSlow` de `Tests/main.cpp` (varre o corpus).
 
 
 **Como rodar e o que esperar:**
@@ -1472,14 +1476,14 @@ Expected: os cinco casos passam; o do corpus imprime `135 byte-exact documents s
 
 ### Task 6 (opcional): âncoras do gate para a Foundation editável
 
-> **Fora do caminho crítico.** A varredura de mutação virou coisa de marco, não de task — esta task só faz sentido no dia em que o gate for rodado de novo. Pule e siga para a Parte B.
+> **Fora do caminho crítico.** A varredura de mutação virou coisa de marco, não de task — esta task só faz sentido no dia em que o gate for rodado de novo.
 
 **Files:**
 - Modify: `scripts/gate-m1.ps1` (o mapa `$sources` e a lista `$mutations`)
 
 **Interfaces:** nenhuma. Cada mutação abaixo tem de deixar a suíte **vermelha com uma asserção**; uma que só derruba o processo é falha do teste.
 
-- [ ] **Step 1: acrescentar a fonte**
+- [x] **Step 1: acrescentar a fonte**
 
 No `$sources`, depois de `bundle`:
 
@@ -1487,36 +1491,43 @@ No `$sources`, depois de `bundle`:
     edit     = Join-Path $root "Source/IconComposerFoundation/Edit.cpp"
 ```
 
-- [ ] **Step 2: acrescentar as mutações**
+- [x] **Step 2: acrescentar as mutações**
 
-Na lista `$mutations`, depois do bloco `# ---- the JSON layer ----` existente:
+Na lista `$mutations`, depois do bloco `# ---- the JSON layer ----` existente.
+
+**Toda âncora é de UMA linha.** O C++ deste repositório é CRLF por decisão registrada no
+`.gitattributes`, e um `` `n `` do PowerShell é LF puro, que nunca casa; as 316 âncoras
+que já existiam são todas de uma linha, e essa convenção é indiferente ao fim de linha.
 
 ```powershell
     @{ file = "json"; name = "number(double) spelled with a fixed precision"
        from = 'auto r = std::to_chars(buf, buf + sizeof buf, d);'
        to   = 'auto r = std::to_chars(buf, buf + sizeof buf, d, std::chars_format::fixed, 6);' },
     @{ file = "json"; name = "set appends a duplicate instead of replacing"
-       from = 'if (m.first == key) {' + "`n" + '            m.second = std::move(v);'
-       to   = 'if (false) {' + "`n" + '            m.second = std::move(v);' },
+       from = '        if (m.first == key) {'
+       to   = '        if (false) {' },
     # ---- the editing layer ----
     @{ file = "edit"; name = "the plain key survives beside its new list"
-       from = 'entries.push_back(entryFor(Context{}, *plain));' + "`n" + '            owner.erase(plainKey);'
-       to   = 'entries.push_back(entryFor(Context{}, *plain));' },
+       from = '            owner.erase(plainKey);'
+       to   = '' },
     @{ file = "edit"; name = "a new unpredicated entry lands at the end, not index 0"
        from = 'list->elements().insert(list->elements().begin(), entryFor(scope, std::move(*value)));'
        to   = 'list->elements().push_back(entryFor(scope, std::move(*value)));' },
+    @{ file = "edit"; name = "a non-array specialization list is walked anyway"
+       from = 'if (list && list->kind() != json::Value::Kind::Array) {'
+       to   = 'if (false) {' },
     @{ file = "edit"; name = "predicate equality ignores the idiom"
-       from = 'if ((scope.idiom != Idiom::Base) != (i != nullptr)) return false;'
-       to   = '' },
+       from = 'return named && named->appearance == scope.appearance && named->idiom == scope.idiom;'
+       to   = 'return named && named->appearance == scope.appearance;' },
     @{ file = "edit"; name = "a list left with only its default is not collapsed"
        from = 'if (entries.size() == 1 && predicateIs(entries[0], Context{})) {'
        to   = 'if (false) {' },
     @{ file = "edit"; name = "hasOwnEntry answers for the resolved value, not the scope's own"
        from = 'return isBase(scope) && owner.find(prop) != nullptr;'
        to   = 'return owner.find(prop) != nullptr;' },
-    @{ file = "edit"; name = "moveNode never refuses at the top edge"
-       from = 'if (delta < 0 && index == 0) return false;'
-       to   = '' },
+    @{ file = "edit"; name = "moveNode swaps a node with itself"
+       from = 'std::swap(v[index], v[other]);'
+       to   = 'std::swap(v[index], v[index]);' },
     @{ file = "values"; name = "a colour component written with four decimals"
        from = 'std::snprintf(buf, sizeof buf, "%.5f", c.components[i]);'
        to   = 'std::snprintf(buf, sizeof buf, "%.4f", c.components[i]);' },
@@ -1528,12 +1539,12 @@ Na lista `$mutations`, depois do bloco `# ---- the JSON layer ----` existente:
        to   = 'fs::copy_file(tmp, target, fs::copy_options::overwrite_existing, ec);' },
 ```
 
-- [ ] **Step 3: rodar a fatia**
+- [x] **Step 3: rodar a fatia**
 
 Run: `powershell -File scripts\gate-m1.ps1 -Files json,edit,values,bundle`
 Expected: cada mutação nova reporta que foi apanhada por uma asserção; o veredito diz PARTIAL (uma fatia nunca é o gate). Uma mutação não apanhada é um buraco no teste da task correspondente: volta-se à task, acrescenta-se a asserção, e só então esta task fecha.
 
-- [ ] **Step 4: commitar**
+- [x] **Step 4: commitar**
 
 ```bash
 git add scripts/gate-m1.ps1
@@ -1586,7 +1597,8 @@ set(IC_ONYX_SOURCE_DIR "D:/CodingProjects/OnyxSDK"
     CACHE PATH "Local OnyxSDK checkout; empty to fetch the pinned SHA from GitHub")
 ```
 
-Depois de `add_subdirectory(Source/cli)`:
+Depois de `add_subdirectory(Source/cli)` e **antes** do `if(IC_BUILD_TESTS)` — `Tests`
+linka `IconComposer::Kit`, que tem de existir quando aquele bloco roda:
 
 ```cmake
 if(IC_BUILD_UI)
@@ -1663,6 +1675,9 @@ add_library(IconComposer::Kit ALIAS IconComposerKit)
 
 namespace ick {
 
+// An AGGREGATE, and it stays one: `icf::IconBundle` has no default constructor, so a
+// caller builds this with `RenderRequest r{version, bundle.clone(), context, size}`.
+// Adding a constructor here breaks every call site.
 struct RenderRequest {
     std::uint64_t version = 0;   // Session::version() this was made from
     icf::IconBundle bundle;      // a clone: the job reads it while the UI keeps editing
@@ -1993,6 +2008,11 @@ private:
     explicit Session(icf::IconBundle b) : bundle_(std::move(b)) {}
     // Snapshots `target`, runs `edit` on it, snapshots again, records. Returns
     // what `edit` returned. Nothing is recorded when the node does not exist.
+    // Snapshots the node at `target`, runs `edit`, snapshots again, and records a
+    // command when the two differ. `edit` takes the target node and returns bool;
+    // a structural edit ignores that argument and calls the `icf::` function on
+    // `root()` instead -- the parent snapshot captures the change either way, and
+    // no pointer moves (erasing inside `groups[g].layers` does not move `groups[g]`).
     template <class F>
     bool apply(icf::NodePath target, std::string key, F&& edit);   // edit: bool(json::Value&)
     void push(Command c);
@@ -2102,16 +2122,9 @@ bool Session::removeNode(icf::NodePath path) {
     coalesceKey_.clear();
     if (!path.group) return false;
     const icf::NodePath parent = path.layer ? icf::NodePath{path.group, std::nullopt} : icf::NodePath{};
-    const bool ok = apply(parent, "", [&](icf::json::Value& p) {
-        // The snapshot is the PARENT's, so the edit is spelled on the parent's own
-        // list rather than through `icf::removeNode`, which walks from the root.
-        const char* key = path.layer ? "layers" : "groups";
-        const std::size_t index = path.layer ? *path.layer : *path.group;
-        icf::json::Value* list = p.find(key);
-        if (!list || index >= list->elements().size()) return false;
-        list->elements().erase(list->elements().begin() + static_cast<std::ptrdiff_t>(index));
-        return true;
-    });
+    // The snapshot is the PARENT's; the edit is `icf::removeNode` on the root, which
+    // is the one spelling of this operation. Two spellings are two places to be wrong.
+    const bool ok = apply(parent, "", [&](icf::json::Value&) { return icf::removeNode(root(), path); });
     if (ok) dropSelectionIfGone();
     return ok;
 }
@@ -2120,17 +2133,7 @@ bool Session::moveNode(icf::NodePath path, int delta) {
     coalesceKey_.clear();
     if (!path.group) return false;
     const icf::NodePath parent = path.layer ? icf::NodePath{path.group, std::nullopt} : icf::NodePath{};
-    const bool ok = apply(parent, "", [&](icf::json::Value& p) {
-        const char* key = path.layer ? "layers" : "groups";
-        const std::size_t index = path.layer ? *path.layer : *path.group;
-        icf::json::Value* list = p.find(key);
-        if (!list || index >= list->elements().size() || delta == 0) return false;
-        auto& v = list->elements();
-        if (delta < 0 && index == 0) return false;
-        if (delta > 0 && index + 1 >= v.size()) return false;
-        std::swap(v[index], v[delta < 0 ? index - 1 : index + 1]);
-        return true;
-    });
+    const bool ok = apply(parent, "", [&](icf::json::Value&) { return icf::moveNode(root(), path, delta); });
     if (ok && selection == path) {
         if (path.layer) selection = icf::NodePath{path.group, *path.layer + (delta < 0 ? -1 : 1)};
         else selection = icf::NodePath{*path.group + (delta < 0 ? -1 : 1), std::nullopt};
@@ -2140,10 +2143,7 @@ bool Session::moveNode(icf::NodePath path, int delta) {
 
 bool Session::rename(icf::NodePath path, std::string name) {
     coalesceKey_.clear();
-    return apply(path, "", [&](icf::json::Value& node) {
-        node.set("name", icf::json::Value::string(std::move(name)));
-        return true;
-    });
+    return apply(path, "", [&](icf::json::Value&) { return icf::setName(root(), path, std::move(name)); });
 }
 
 bool Session::undo() {
@@ -2189,7 +2189,13 @@ void Session::dropSelectionIfGone() {
 }  // namespace ick
 ```
 
-Acrescentar `#include <utility>` e `#include <string>` em `Session.cpp`. Acrescentar `Session.cpp` ao `add_library` do Kit.
+Acrescentar `#include <string>` em `Session.cpp`. Acrescentar `Session.cpp` ao
+`add_library` do Kit.
+
+As três operações estruturais chamam `icf::removeNode`, `icf::moveNode` e `icf::setName`
+de dentro do `apply`, sobre `root()` e o caminho completo. O snapshot do PAI captura a
+mudança mesmo assim, e nenhum ponteiro se move: apagar dentro de `groups[g].layers` não
+move `groups[g]`, e apagar dentro de `groups` não move a raiz.
 
 - [ ] **Step 2: conferir que compila**
 
@@ -2674,7 +2680,9 @@ LayersStats drawLayers(Session& s);
 
 // The last render the canvas has to show, and what it did not draw.
 struct RenderView {
-    ImTextureID texture = 0;
+    // `ImTextureID_Invalid`, never a literal 0: ImGui 1.92 is mid-migration to
+    // `ImTextureRef`, and Onyx's own TexturePool already spells it this way.
+    ImTextureID texture = ImTextureID_Invalid;
     std::uint32_t width = 0, height = 0;
     bool pending = false;   // a newer render is on its way
     std::size_t drawn = 0, total = 0;
@@ -3578,7 +3586,7 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions)
         pan.y += ImGui::GetIO().MouseDelta.y;
     }
 
-    if (view.texture != 0 && view.width > 0) {
+    if (view.texture != ImTextureID_Invalid && view.width > 0) {
         const float side = static_cast<float>(view.width) * s.view.zoom;
         const ImVec2 tl(origin.x + (avail.x - side) * 0.5f + pan.x, origin.y + (avail.y - side) * 0.5f + pan.y);
         const ImVec2 br(tl.x + side, tl.y + side);
@@ -3803,17 +3811,16 @@ private:
 namespace ick {
 
 RenderCoordinator::~RenderCoordinator() {
-    if (view_.texture != 0) sink_.remove(view_.texture);
+    if (view_.texture != ImTextureID_Invalid) sink_.remove(view_.texture);
 }
 
 void RenderCoordinator::tick(Session& s) {
     const Key now{s.version(), s.view.context, s.view.size};
     if (!everRequested_ || !(now == requested_)) {
-        RenderRequest r;
-        r.version = now.version;
-        r.bundle = s.bundle().clone();
-        r.context = now.context;
-        r.size = now.size;
+        // AGGREGATE initialisation, in declaration order. `RenderRequest r;` does not
+        // compile: it holds an `icf::IconBundle`, which has no default constructor
+        // (only the private one `open` uses). `RenderRequest` must stay an aggregate.
+        RenderRequest r{now.version, s.bundle().clone(), now.context, now.size};
         scheduler_.request(std::move(r));
         requested_ = now;
         everRequested_ = true;
@@ -3829,10 +3836,11 @@ void RenderCoordinator::tick(Session& s) {
         view_.notes = result->notes;
         view_.error = result->error;
         if (result->error.empty() && !result->rgba8.empty()) {
-            if (view_.texture != 0 && view_.width == result->width && view_.height == result->height) {
+            if (view_.texture != ImTextureID_Invalid && view_.width == result->width &&
+                view_.height == result->height) {
                 sink_.update(view_.texture, result->width, result->height, result->rgba8.data());
             } else {
-                if (view_.texture != 0) sink_.remove(view_.texture);
+                if (view_.texture != ImTextureID_Invalid) sink_.remove(view_.texture);
                 view_.texture = sink_.create(result->width, result->height, result->rgba8.data());
                 view_.width = result->width;
                 view_.height = result->height;
@@ -3936,7 +3944,7 @@ TEST_CASE(coordinator_requests_once_per_change_and_uploads_the_answer) {
         sched.results.push_back(sched.answer(s->version(), 512));
         c.tick(*s);
         CHECK(!c.view().pending);
-        CHECK(c.view().texture != 0);
+        CHECK(c.view().texture != ImTextureID_Invalid);
         CHECK_EQ(sink.creates, std::uint64_t(1));
         CHECK_EQ(c.view().drawn, std::size_t(1));
 
@@ -4504,6 +4512,9 @@ namespace {
 
 // Everything the panels share, owned by run() so destruction order is stated once.
 struct State {
+    // The window handle, kept because `glfwGetCurrentContext()` is an OpenGL call
+    // and returns null in a Vulkan app -- Quit through it would silently do nothing.
+    GLFWwindow* window = nullptr;
     std::optional<ick::Session> session;
     std::unique_ptr<OnyxTextureSink> sink;
     std::unique_ptr<JobScheduler> scheduler;
@@ -4594,10 +4605,6 @@ struct CanvasPanel : Onyx::App::IPanel {
             ImGui::TextDisabled("Open a .icon bundle");
             ImGui::End();
         }
-        st.sink->advanceFrame();
-        st.act();
-        st.title();
-        if (st.quit && st.app) glfwSetWindowShouldClose(glfwGetCurrentContext(), 1);
     }
     std::string_view getName() const override { return ick::kCanvasWindow; }
     State& st;
@@ -4618,6 +4625,14 @@ struct DiagnosticsPanel : Onyx::App::IPanel {
     void Draw() override {
         if (st.session && st.coordinator) ick::drawDiagnostics(*st.session, st.coordinator->view());
         else { ImGui::Begin(ick::kDiagnosticsWindow); ImGui::End(); }
+        // End of frame work, here because this panel is registered LAST: `act()` can
+        // replace or close the session, and a swap mid-frame would leave the panels
+        // after it drawing against state that changed under them. `advanceFrame`
+        // likewise belongs after every upload this frame made.
+        st.sink->advanceFrame();
+        st.act();
+        st.title();
+        if (st.quit && st.window) glfwSetWindowShouldClose(st.window, 1);
     }
     std::string_view getName() const override { return ick::kDiagnosticsWindow; }
     State& st;
@@ -4656,6 +4671,7 @@ int run(const std::filesystem::path& initial) {
     Onyx::App::Window window;
 
     State state;
+    state.window = window.getGLFWwindow();
     state.sink = std::make_unique<OnyxTextureSink>(window.vkContext());
     state.scheduler = std::make_unique<JobScheduler>(window.workspace().Jobs(), *device);
 
@@ -4681,8 +4697,6 @@ int run(const std::filesystem::path& initial) {
 
 }  // namespace icapp
 ```
-
-Se `glfwSetWindowShouldClose(glfwGetCurrentContext(), 1)` não fechar a janela do Onyx, trocar por `glfwSetWindowShouldClose(window.getGLFWwindow(), 1)` guardando o `GLFWwindow*` em `State` no `run()`.
 
 `main.cpp`:
 
@@ -4789,7 +4803,11 @@ No `$sources` do gate: `session = Join-Path $root "Source/IconComposerKit/Sessio
 - [ ] **Step 3: o gate inteiro, no worktree**
 
 Run: `powershell -File scripts\gate-worktree.ps1`
-Expected: termina em `gate-m1 passed: N de N`, com N = 292 + as 13 mutações novas. Qualquer mutação não apanhada volta para a task dona dela.
+Expected: termina em `VERDICT: gate-m1 passed`. O script imprime o total ele mesmo — na
+abertura da Task 6 ele dizia 328 mutações, então é esse número, mais as duas da Task 16,
+que tem de aparecer em `sweep: N of N mutations caught`. Qualquer mutação não apanhada
+volta para a task dona dela; uma que derruba o processo em vez de falhar numa asserção é
+falha do TESTE, pela regra do próprio cabeçalho do script.
 
 - [ ] **Step 4: commitar**
 

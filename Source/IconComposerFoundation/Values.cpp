@@ -1,6 +1,7 @@
 #include "Source/IconComposerFoundation/Values.h"
 
 #include <charconv>
+#include <cstdio>
 #include <string>
 
 namespace icf {
@@ -233,6 +234,131 @@ std::optional<Refractivity> refractivityFrom(const json::Value& v) {
     if (!asDouble(v.find("strength"), r.strength)) return std::nullopt;
     if (!asDouble(v.find("depth"), r.depth)) return std::nullopt;
     return r;
+}
+
+std::string colorToString(const Color& c) {
+    std::string out;
+    for (const auto& e : kSpaces) {
+        if (e.space == c.space) {
+            out = std::string(e.name);
+            break;
+        }
+    }
+    out += ':';
+    char buf[32];
+    for (int i = 0; i < c.count; ++i) {
+        std::snprintf(buf, sizeof buf, "%.5f", c.components[i]);
+        if (i) out += ',';
+        out += buf;
+    }
+    return out;
+}
+
+std::string_view blendModeToString(BlendMode m) {
+    switch (m) {
+        case BlendMode::Normal: return "normal";
+        case BlendMode::PlusLighter: return "plus-lighter";
+        case BlendMode::PlusDarker: return "plus-darker";
+        case BlendMode::Overlay: return "overlay";
+        case BlendMode::Multiply: return "multiply";
+        case BlendMode::SoftLight: return "soft-light";
+        case BlendMode::HardLight: return "hard-light";
+        case BlendMode::Darken: return "darken";
+        case BlendMode::Lighten: return "lighten";
+        case BlendMode::Screen: return "screen";
+    }
+    return "normal";
+}
+
+std::string_view shadowKindToString(ShadowKind k) {
+    switch (k) {
+        case ShadowKind::Automatic: return "automatic";
+        case ShadowKind::Neutral: return "neutral";
+        case ShadowKind::LayerColor: return "layer-color";
+        case ShadowKind::None: return "none";
+    }
+    return "none";
+}
+
+std::string_view specularHighlightToString(SpecularHighlight s) {
+    switch (s) {
+        case SpecularHighlight::Off: return "off";
+        case SpecularHighlight::Automatic: return "automatic";
+        case SpecularHighlight::Inside: return "inside";
+        case SpecularHighlight::Outside: return "outside";
+    }
+    return "off";
+}
+
+std::string_view lightingToString(Lighting l) {
+    return l == Lighting::Combined ? "combined" : "individual";
+}
+
+std::string_view fillKindToString(FillKind k) {
+    switch (k) {
+        case FillKind::None: return "none";
+        case FillKind::Automatic: return "automatic";
+        case FillKind::Solid: return "solid";
+        case FillKind::AutomaticGradient: return "automatic-gradient";
+        case FillKind::LinearGradient: return "linear-gradient";
+        case FillKind::SystemLight: return "system-light";
+        case FillKind::SystemDark: return "system-dark";
+    }
+    return "none";
+}
+
+namespace {
+json::Value pointToJson(const Point& p) {
+    return json::Value::object({{"x", json::Value::number(p.x)}, {"y", json::Value::number(p.y)}});
+}
+json::Value orientationToJson(const Orientation& o) {
+    return json::Value::object({{"start", pointToJson(o.start)}, {"stop", pointToJson(o.stop)}});
+}
+}  // namespace
+
+json::Value fillToJson(const Fill& f) {
+    switch (f.kind) {
+        case FillKind::Solid:
+        case FillKind::AutomaticGradient: {
+            json::Value o = json::Value::object({});
+            const char* key = f.kind == FillKind::Solid ? "solid" : "automatic-gradient";
+            o.set(key, json::Value::string(colorToString(f.colors.empty() ? Color{} : f.colors[0])));
+            if (f.orientation) o.set("orientation", orientationToJson(*f.orientation));
+            return o;
+        }
+        case FillKind::LinearGradient: {
+            std::vector<json::Value> ramp;
+            for (const auto& c : f.colors) ramp.push_back(json::Value::string(colorToString(c)));
+            json::Value o = json::Value::object({{"linear-gradient", json::Value::array(std::move(ramp))}});
+            if (f.orientation) o.set("orientation", orientationToJson(*f.orientation));
+            return o;
+        }
+        default:
+            return json::Value::string(std::string(fillKindToString(f.kind)));
+    }
+}
+
+json::Value shadowToJson(const Shadow& s) {
+    return json::Value::object({{"kind", json::Value::string(std::string(shadowKindToString(s.kind)))},
+                                {"opacity", json::Value::number(s.opacity)}});
+}
+
+json::Value positionToJson(const Position& p) {
+    return json::Value::object(
+        {{"scale", json::Value::number(p.scale)},
+         {"translation-in-points",
+          json::Value::array({json::Value::number(p.translation.x), json::Value::number(p.translation.y)})}});
+}
+
+json::Value translucencyToJson(const Translucency& t) {
+    return json::Value::object({{"enabled", json::Value::boolean(t.enabled)},
+                                {"value", json::Value::number(t.value)}});
+}
+
+json::Value refractivityToJson(const Refractivity& r) {
+    return json::Value::object({{"enabled", json::Value::boolean(r.enabled)},
+                                {"strength", json::Value::number(r.strength)},
+                                {"depth", json::Value::number(r.depth)}});
 }
 
 }  // namespace icf
