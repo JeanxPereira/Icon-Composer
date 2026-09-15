@@ -284,7 +284,11 @@ void paintBackground(std::vector<float>& acc, std::uint32_t size,
                 const double px = static_cast<double>(x) + 0.5;
                 const double py = static_cast<double>(y) + 0.5;
                 const double t = paint.m[0] * px + paint.m[1] * py + paint.m[2];
-                rampAtPositions(paint.stops, static_cast<float>(t), colour);
+                if (paint.smooth) {
+                    rampSmoothAtPositions(paint.stops, static_cast<float>(t), colour);
+                } else {
+                    rampAtPositions(paint.stops, static_cast<float>(t), colour);
+                }
             }
             const std::size_t i = (static_cast<std::size_t>(y) * size + x) * 4;
             for (int k = 0; k < 3; ++k) acc[i + k] = colour[k] * colour[3];
@@ -493,6 +497,12 @@ FillOverride fillPaint(const ResolvedFill& fill, const PlacementRect& shapeRect,
         return out;
     }
     out.kind = FillOverride::Kind::Ramp;
+    // `[BIN]` Every ramp this function can build is a DOCUMENT fill, and every
+    // document fill reaches `RBFill` through `IconRendering 0x1BC74` with
+    // `flags = 0x400` -- interpolation code 4, ramp kind 3, word0 bit 25, the
+    // cubic. The four cases above differ in where the stops come from and not in
+    // how they are sampled, so the flag is set once, here.
+    out.smooth = true;
     return out;
 }
 

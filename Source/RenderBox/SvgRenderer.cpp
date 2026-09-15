@@ -499,7 +499,11 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
                 const double py = static_cast<double>(t / options.width) + 0.5;
                 const double gx = options.override.m[0] * px + options.override.m[1] * py +
                                   options.override.m[2];
-                rampAtPositions(options.override.stops, static_cast<float>(gx), colour);
+                if (options.override.smooth) {
+                    rampSmoothAtPositions(options.override.stops, static_cast<float>(gx), colour);
+                } else {
+                    rampAtPositions(options.override.stops, static_cast<float>(gx), colour);
+                }
             } else if (pattern.ok) {
                 // The pixel CENTRE, back through the placement into user space,
                 // and from there into the tile. A point the tile does not cover

@@ -530,3 +530,106 @@ TEST_CASE(a_stop_table_holds_at_both_ends_rather_than_extrapolating) {
     CHECK_EQ(out[2], 1.0f);
     CHECK(out[2] == out[2]);   // and never a NaN
 }
+
+// THE CUBIC THE ICON ACTUALLY DRAWS, and the one line of it that is a claim
+// about the PICTURE rather than about four coefficients.
+//
+// `[BIN]` `smooth_color_coefficients` (`RenderBox 0x9DEB0`) is a Fritsch-Carlson
+// monotone cubic, and the whole reason it matters is what it degenerates to at
+// the only stop count an icon fill ever has. Two stops, `pad` spread, ends
+// duplicated by the caller: both tangents are clamped to `3 * 0` and the cubic
+// becomes `3f^2 - 2f^3`. That is checked against the CLOSED FORM here rather
+// than against a recomputation of the same four coefficients, because a
+// transcription that got the clamp backwards would still agree with itself.
+TEST_CASE(two_stops_with_padded_ends_are_exactly_smoothstep) {
+    std::vector<RampPoint> stops(2);
+    stops[0].location = 0.0f;
+    stops[1].location = 1.0f;
+    for (int k = 0; k < 4; ++k) {
+        stops[0].rgba[k] = 0.25f;
+        stops[1].rgba[k] = 0.75f;
+    }
+
+    float out[4];
+    for (int i = 0; i <= 32; ++i) {
+        const float t = static_cast<float>(i) / 32.0f;
+        const float s = t * t * (3.0f - 2.0f * t);
+        rampSmoothAtPositions(stops, t, out);
+        for (int k = 0; k < 4; ++k) CHECK(std::fabs(out[k] - (0.25f + 0.5f * s)) < 1.0e-5f);
+    }
+
+    // The three points where smoothstep and a straight mix AGREE. They are
+    // pinned separately: a failure at one of THESE means the transcription broke
+    // something other than the curve's shape.
+    rampSmoothAtPositions(stops, 0.0f, out);
+    CHECK(std::fabs(out[0] - 0.25f) < 1.0e-6f);
+    rampSmoothAtPositions(stops, 0.5f, out);
+    CHECK(std::fabs(out[0] - 0.5f) < 1.0e-6f);
+    rampSmoothAtPositions(stops, 1.0f, out);
+    CHECK(std::fabs(out[0] - 0.75f) < 1.0e-6f);
+
+    // And the pad: `t` is saturated BEFORE the scale, so outside is the end
+    // colour and never an extrapolation of the cubic, which overshoots hard.
+    rampSmoothAtPositions(stops, -4.0f, out);
+    CHECK(std::fabs(out[0] - 0.25f) < 1.0e-6f);
+    rampSmoothAtPositions(stops, 4.0f, out);
+    CHECK(std::fabs(out[0] - 0.75f) < 1.0e-6f);
+}
+
+// The monotone guard, on the input that is the reason it exists.
+//
+// `[BIN]` `0x9DEE0`-`0x9DEEC` zeroes a tangent whose neighbouring deltas
+// disagree in sign, and `0x9DEF0`-`0x9DF28` clamps what survives to three times
+// each delta. A Catmull-Rom WITHOUT those two guards is the obvious
+// transcription, and on a ramp that rises then falls it paints a colour
+// brighter than any stop -- a visible wrong that no two-stop test can see.
+TEST_CASE(the_monotone_guard_refuses_to_overshoot_a_peak) {
+    std::vector<RampPoint> stops(3);
+    stops[0].location = 0.0f;
+    stops[1].location = 0.5f;
+    stops[2].location = 1.0f;
+    stops[0].rgba[0] = 0.0f;
+    stops[1].rgba[0] = 1.0f;
+    stops[2].rgba[0] = 0.0f;
+
+    float out[4];
+    float peak = 0.0f;
+    for (int i = 0; i <= 200; ++i) {
+        rampSmoothAtPositions(stops, static_cast<float>(i) / 200.0f, out);
+        if (out[0] > peak) peak = out[0];
+        CHECK(out[0] >= -1.0e-5f);
+    }
+    CHECK(peak <= 1.0f + 1.0e-5f);
+
+    // And the curve is FLAT at the peak rather than crossing through it, which
+    // is what the sign guard buys.
+    float a[4];
+    float b[4];
+    rampSmoothAtPositions(stops, 0.5f - 0.01f, a);
+    rampSmoothAtPositions(stops, 0.5f + 0.01f, b);
+    CHECK(std::fabs(a[0] - b[0]) < 1.0e-3f);
+}
+
+// `[OBS]` Ramp kind 3 has no locations to read. A ramp whose stops are NOT
+// evenly spaced takes a kind this project has not decoded, so this falls back to
+// the piecewise-linear reading rather than pretending the cubic applies -- and
+// the fallback is pinned, because it is the difference between a known gap and a
+// silent wrong answer.
+TEST_CASE(a_non_uniform_ramp_falls_back_to_the_linear_reading) {
+    std::vector<RampPoint> stops(3);
+    stops[0].location = 0.0f;
+    stops[1].location = 0.9f;
+    stops[2].location = 1.0f;
+    stops[0].rgba[0] = 0.0f;
+    stops[1].rgba[0] = 1.0f;
+    stops[2].rgba[0] = 1.0f;
+
+    float smooth[4];
+    float linear[4];
+    for (int i = 0; i <= 20; ++i) {
+        const float t = static_cast<float>(i) / 20.0f;
+        rampSmoothAtPositions(stops, t, smooth);
+        rampAtPositions(stops, t, linear);
+        for (int k = 0; k < 4; ++k) CHECK_EQ(smooth[k], linear[k]);
+    }
+}

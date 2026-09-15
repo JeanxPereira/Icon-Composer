@@ -166,4 +166,80 @@ void rampAtPositions(const std::vector<RampPoint>& stops, float t, float (&out)[
     for (int k = 0; k < 4; ++k) out[k] = lo.rgba[k] + (hi.rgba[k] - lo.rgba[k]) * f;
 }
 
+CubicColor smoothColorCoefficients(const float (&p0)[4], const float (&p1)[4],
+                                   const float (&p2)[4], const float (&p3)[4]) {
+    CubicColor out;
+    for (int k = 0; k < 4; ++k) {
+        const float d0 = p1[k] - p0[k];
+        const float d1 = p2[k] - p1[k];
+        const float d2 = p3[k] - p2[k];
+
+        // `[BIN]` The sign test is `fcmlt ... #0.0` on each delta and an `eor`
+        // of the two masks, so a delta of exactly zero counts as NOT negative.
+        // Which side zero falls on never shows: the clamp below multiplies that
+        // same zero by three and forces the tangent to it anyway.
+        float m1 = (d0 + d1) * 0.5f;
+        if ((d0 < 0.0f) != (d1 < 0.0f)) m1 = 0.0f;
+        if (std::fabs(m1) > std::fabs(3.0f * d0)) m1 = 3.0f * d0;
+        if (std::fabs(m1) > std::fabs(3.0f * d1)) m1 = 3.0f * d1;
+
+        float m2 = (d1 + d2) * 0.5f;
+        if ((d1 < 0.0f) != (d2 < 0.0f)) m2 = 0.0f;
+        if (std::fabs(m2) > std::fabs(3.0f * d1)) m2 = 3.0f * d1;
+        if (std::fabs(m2) > std::fabs(3.0f * d2)) m2 = 3.0f * d2;
+
+        // The two inner Bezier control points, and the power basis they give.
+        const float b0 = p1[k] + m1 * (1.0f / 3.0f);
+        const float b1 = p2[k] - m2 * (1.0f / 3.0f);
+        out.c[0][k] = p1[k];
+        out.c[1][k] = m1;
+        out.c[2][k] = 3.0f * (p1[k] - 2.0f * b0 + b1);
+        out.c[3][k] = d1 + 3.0f * (b0 - b1);
+    }
+    return out;
+}
+
+void rampSmoothAtPositions(const std::vector<RampPoint>& stops, float t, float (&out)[4]) {
+    for (int i = 0; i < 4; ++i) out[i] = 0.0f;
+    if (stops.empty()) return;
+    if (stops.size() == 1) {
+        for (int i = 0; i < 4; ++i) out[i] = stops.front().rgba[i];
+        return;
+    }
+
+    // The uniform sampler has no locations to read, so it can only be used where
+    // the stops ARE the positions it assumes. Anything else goes back to the
+    // piecewise-linear reading, which is the honest answer for a kind this
+    // project has not decoded.
+    const std::size_t n = stops.size();
+    const float step = 1.0f / static_cast<float>(n - 1);
+    for (std::size_t i = 0; i < n; ++i) {
+        const float want = static_cast<float>(i) * step;
+        if (std::fabs(stops[i].location - want) > 1.0e-4f) {
+            rampAtPositions(stops, t, out);
+            return;
+        }
+    }
+
+    // `[BIN]` `t` arrives saturated and multiplied by the scale the CPU wrote
+    // (`0x9ABE0`: `stops - 1`); the integer part indexes the segment and the
+    // fraction drives the cubic.
+    const float scaled = saturate(t) * static_cast<float>(n - 1);
+    std::size_t seg = static_cast<std::size_t>(scaled);
+    if (seg + 1 >= n) seg = n - 2;
+    const float f = scaled - static_cast<float>(seg);
+
+    const float* p1 = stops[seg].rgba;
+    const float* p2 = stops[seg + 1].rgba;
+    const float* p0 = seg == 0 ? p1 : stops[seg - 1].rgba;
+    const float* p3 = seg + 2 < n ? stops[seg + 2].rgba : p2;
+
+    const CubicColor cc = smoothColorCoefficients(
+        reinterpret_cast<const float(&)[4]>(*p0), reinterpret_cast<const float(&)[4]>(*p1),
+        reinterpret_cast<const float(&)[4]>(*p2), reinterpret_cast<const float(&)[4]>(*p3));
+    for (int k = 0; k < 4; ++k) {
+        out[k] = cc.c[0][k] + f * (cc.c[1][k] + f * (cc.c[2][k] + f * cc.c[3][k]));
+    }
+}
+
 }  // namespace rb
