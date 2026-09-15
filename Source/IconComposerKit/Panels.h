@@ -24,8 +24,37 @@ inline constexpr const char* kDiagnosticsWindow = "Diagnostics";
 struct LayersStats {
     std::size_t groups = 0, layers = 0;
     bool selectionChanged = false;
+    std::size_t rows = 0;       // rows actually on screen: a closed group hides its layers
+    std::size_t problems = 0;   // of those, rows drawn with a diagnostic (no art, or art gone)
 };
 LayersStats drawLayers(Session& s);
+
+// THE TWO PIECES OF THE LAYER PANEL THAT ARE ARITHMETIC, NOT DRAWING
+// -----------------------------------------------------------------------------
+// The selftest counts `imgui errors` and cannot see a gesture, so the gesture's
+// logic is lifted out of the frame and asserted on its own (Tests/test_kit_layers.cpp).
+
+// What a drop between two rows costs in `Session::moveNode` calls.
+//
+// `moveNode` SWAPS two siblings one position apart (Edit.h), so it is the only
+// move the model has, and a drag of five positions has to become five of them --
+// but exactly five, and never six. `gap` is the INSERTION SLOT the row was
+// dropped at, counted like an iterator: 0 is above the first sibling, `count` is
+// below the last, so slot `g` sits between siblings `g-1` and `g`.
+struct DropPlan {
+    bool valid = false;         // false: the drop changes nothing, or is out of range
+    int delta = 0;              // -1 (up) or +1 (down), applied `steps` times
+    std::size_t steps = 0;      // how many single-position swaps
+    std::size_t to = 0;         // the index the dragged sibling ends at
+};
+DropPlan planDrop(std::size_t from, std::size_t gap, std::size_t count);
+
+// The tree flattened to what a person can see and therefore walk with the arrow
+// keys: every group, and the layers of the OPEN ones, top to bottom. `expanded`
+// is indexed by group; a group past its end counts as open, which is how a group
+// that was just added arrives.
+std::vector<icf::NodePath> visibleRows(const icf::json::Value& root,
+                                       const std::vector<unsigned char>& expanded);
 
 // The last render the canvas has to show, and what it did not draw.
 struct RenderView {

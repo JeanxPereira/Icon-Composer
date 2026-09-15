@@ -97,7 +97,12 @@ public:
     std::optional<std::size_t> addGroup(std::string name);
     std::optional<std::size_t> addLayer(std::size_t group, std::string name, std::string imageName);
     bool removeNode(icf::NodePath path);
-    bool moveNode(icf::NodePath path, int delta);
+    // `coalesce` is the drag rule of the header note applied to structure: a drop
+    // five rows down is five swaps, and five entries on the undo stack for one
+    // gesture is five presses of Ctrl+Z to take back one drag. Consecutive moves
+    // under the same parent fold into one command while it is set; the panel
+    // calls `endCoalescing` when the gesture ends, so two separate drags stay two.
+    bool moveNode(icf::NodePath path, int delta, bool coalesce = false);
     bool rename(icf::NodePath path, std::string name);
 
     bool undo();

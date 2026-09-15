@@ -748,7 +748,12 @@ TEST_CASE(a_raster_edge_does_not_bleed_the_colour_of_transparent_pixels) {
     // boundary lands between output pixels and the sampler has to interpolate.
     const TempBundle b(
         "{\n  \"groups\" : [\n    {\n      \"layers\" : [\n"
-        "        { \"image-name\" : \"edge.png\", \"name\" : \"edge\",\n"
+        // `"glass" : false` SPELLED OUT, and it is load-bearing. Since
+        // 2026-09-15 an ABSENT `glass` means TRUE (`Layer.init()` writes 1 at
+        // `0x95CE0`), and the raster path gained its own distance field the
+        // same day -- so silence here would hand this layer the whole glass
+        // chain. What this case measures is premultiplication, not glass.
+        "        { \"image-name\" : \"edge.png\", \"name\" : \"edge\", \"glass\" : false,\n"
         "          \"position\" : { \"scale\" : 15.5, \"translation-in-points\" : [0, 0] } }\n"
         "      ]\n    }\n  ]\n}\n");
     auto bundle = icf::IconBundle::open(b.path());

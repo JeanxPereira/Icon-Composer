@@ -112,11 +112,22 @@ bool Session::removeNode(icf::NodePath path) {
     return ok;
 }
 
-bool Session::moveNode(icf::NodePath path, int delta) {
-    coalesceKey_.clear();
+bool Session::moveNode(icf::NodePath path, int delta, bool coalesce) {
     if (!path.group) return false;
     const icf::NodePath parent = path.layer ? icf::NodePath{path.group, std::nullopt} : icf::NodePath{};
-    const bool ok = apply(parent, "", [&](icf::json::Value&) { return icf::moveNode(root(), path, delta); });
+    // The key names the PARENT, not the node: the node's index is exactly what
+    // each swap changes, so keying on it would fold nothing. The parent's
+    // snapshot is what the command already holds, and folding a run of swaps
+    // under one parent gives a single before/after of that parent -- which is
+    // precisely "the drag, undone".
+    std::string key;
+    if (coalesce) {
+        key = "move/" + (parent.group ? std::to_string(*parent.group) : std::string("r"));
+    } else {
+        coalesceKey_.clear();
+    }
+    const bool ok =
+        apply(parent, std::move(key), [&](icf::json::Value&) { return icf::moveNode(root(), path, delta); });
     if (ok) reindexSelectionAfterMove(path, delta);
     return ok;
 }
