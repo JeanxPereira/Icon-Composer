@@ -2386,7 +2386,7 @@ Expected: seis casos, zero falhas.
   const char* fillKindLabel(icf::FillKind);
   ```
 
-- [ ] **Step 1: implementar**
+- [x] **Step 1: implementar**
 
 `ViewModel.h`:
 
@@ -2529,12 +2529,12 @@ const char* fillKindLabel(icf::FillKind k) {
 }  // namespace ick
 ```
 
-- [ ] **Step 2: conferir que compila**
+- [x] **Step 2: conferir que compila**
 
 Run: `cmake --build --preset mingw`
 Expected: compila limpo, sem warning novo.
 
-- [ ] **Step 3: commitar**
+- [x] **Step 3: commitar**
 
 ```bash
 git add Source/IconComposerKit/ViewModel.h Source/IconComposerKit/ViewModel.cpp Source/IconComposerKit/CMakeLists.txt
