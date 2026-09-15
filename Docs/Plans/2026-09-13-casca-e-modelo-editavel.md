@@ -4298,7 +4298,7 @@ Expected: passa e imprime a linha do `describe`. `bytes round-tripped NO` num bu
   ```
   `main`: `iconcomposer [bundle.icon]`, `iconcomposer --selftest <bundle.icon> [--frames N]`. O selftest imprime `describe(...)` e devolve 0 só se `failure` vazio, `bytesRoundTripped` e `textured` verdadeiros e `imguiErrors == 0`.
 
-- [ ] **Step 1: implementar**
+- [x] **Step 1: implementar**
 
 `Source/app/CMakeLists.txt`:
 
@@ -4752,14 +4752,14 @@ int main(int argc, char** argv) {
 Descomentar `add_subdirectory(Source/app)` no `CMakeLists.txt` da raiz.
 
 
-- [ ] **Step 2: rodar o selftest, e depois abrir a janela** — este alvo linka Onyx, então nunca entrou em `ic_tests`; a conferência aqui é o próprio binário rodando.
+- [x] **Step 2: rodar o selftest, e depois abrir a janela** — este alvo linka Onyx, então nunca entrou em `ic_tests`; a conferência aqui é o próprio binário rodando.
 
 Run: `cmake --preset mingw && cmake --build --preset mingw && build/mingw/Source/app/iconcomposer.exe --selftest References/corpus/<um bundle byte-exato>.icon --frames 30`
 Expected: `textured yes; bytes round-tripped yes; imgui errors 0`, exit 0.
 
 Depois, à mão: `build/mingw/Source/app/iconcomposer.exe References/corpus/<o mesmo>.icon` abre a janela com os quatro painéis dockados, o ícone no canvas, e trocar a appearance no combo redesenha. Anotar no commit se o gama do canvas e o do PNG do `icrender` diferem a olho (spec §6 `[OBS]`).
 
-- [ ] **Step 3: commitar**
+- [x] **Step 3: commitar**
 
 ```bash
 git add CMakeLists.txt Source/app
