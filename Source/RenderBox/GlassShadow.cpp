@@ -126,14 +126,56 @@ std::vector<float> translate(const std::vector<float>& src, std::uint32_t w, std
     return out;
 }
 
+// The 1D squared Euclidean distance transform of Felzenszwalb and Huttenlocher:
+// the lower envelope of the parabolas `(q - i)^2 + f[i]`, in one pass forward and
+// one back. It is O(n) and it is EXACT -- no chamfer weights, no approximation
+// that would show up as a faceted ring on a circle.
+//
+// `f` is squared distance in, squared distance out; `v` and `z` are the
+// envelope's vertices and their breakpoints, passed in so the two-dimensional
+// caller allocates once instead of per row.
+constexpr double kEdtInf = 1e20;
+
+void edt1d(std::vector<double>& f, std::vector<double>& d, std::vector<int>& v,
+           std::vector<double>& z, int n) {
+    int k = 0;
+    v[0] = 0;
+    z[0] = -kEdtInf;
+    z[1] = kEdtInf;
+    for (int q = 1; q < n; ++q) {
+        double s = 0.0;
+        while (true) {
+            const double vk = v[k];
+            s = ((f[static_cast<std::size_t>(q)] + static_cast<double>(q) * q) -
+                 (f[static_cast<std::size_t>(v[k])] + vk * vk)) /
+                (2.0 * q - 2.0 * vk);
+            if (k == 0 || s > z[static_cast<std::size_t>(k)]) break;
+            --k;
+        }
+        ++k;
+        v[static_cast<std::size_t>(k)] = q;
+        z[static_cast<std::size_t>(k)] = s;
+        z[static_cast<std::size_t>(k) + 1] = kEdtInf;
+    }
+    k = 0;
+    for (int q = 0; q < n; ++q) {
+        while (z[static_cast<std::size_t>(k) + 1] < q) ++k;
+        const double dq = static_cast<double>(q) - v[static_cast<std::size_t>(k)];
+        d[static_cast<std::size_t>(q)] = dq * dq + f[static_cast<std::size_t>(v[k])];
+    }
+}
+
 }  // namespace
 
 const char* const kShadowRingNote =
-    "sombra desenhada SEM o anel: Shadow.ringWidth vem preenchido nesta versao ([16,16,16,16], "
-    "0x5EC58), entao o alvo recorta a sombra com uma forma inset de -(16 x escala) via "
-    "clipLayerWithAlpha: em 0x20CE8. A largura esta lida; a GEOMETRIA da forma de recorte "
-    "(construida em 0x11C40) nao foi transcrita, entao a sombra sai sem esse corte e cobre "
-    "tambem a area sob o proprio glifo.";
+    "sombra: o anel de Shadow.ringWidth ([16,16,16,16], 0x5EC58) E aplicado -- a banda do "
+    "addAlphaThresholdFilter de 0x11D64 colapsa em clamp(profundidade / (ringWidth x escala)) "
+    "a partir da propria silhueta, com o maxDistance do SDF se cancelando. O que NAO foi lido e "
+    "o CAMPO DE DISTANCIA que essa banda amostra: o alvo le um SDF gerado por "
+    "sdfTextureWithBufferAllocator: num TXRTexture, que nao esta nem no IconRendering nem no "
+    "RenderBox deste dump. Aqui a distancia e uma transformada euclidiana exata sobre o contorno "
+    "alpha = 0.5 da propria arte, na resolucao do alvo, e uma eventual saturacao do SDF do alvo "
+    "(ringWidth em texels acima do maxDistance dele) nao teria como aparecer.";
 
 const char* const kShadowBlurKernelNote =
     "sombra: o raio do desfoque e medido (escala x blurStrengthMax x clamp(Shadow.radius[3-c],"
@@ -203,6 +245,60 @@ ShadowGeometry shadowGeometry(std::uint32_t size, IconSizeClass sizeClass,
     return out;
 }
 
+std::vector<float> shadowRingMask(const std::vector<float>& art, std::uint32_t width,
+                                  std::uint32_t height, double ringWidth) {
+    const std::size_t texels = static_cast<std::size_t>(width) * height;
+    if (width == 0 || height == 0 || art.size() < texels * 4) return {};
+    // A non-positive width is the degenerate band: `maxAlpha == minAlpha`, and
+    // the remap's `1 / (maxAlpha - minAlpha)` is infinite, so every alpha above
+    // the contour saturates to one. That is the identity mask, not an empty one.
+    if (!(ringWidth > 0.0)) return std::vector<float>(texels, 1.0f);
+
+    const int w = static_cast<int>(width);
+    const int h = static_cast<int>(height);
+
+    // Seeds are the texels OUTSIDE the silhouette. Everything else starts at
+    // infinity and the transform brings it down to its true distance.
+    std::vector<double> f(static_cast<std::size_t>(std::max(w, h)));
+    std::vector<double> d(static_cast<std::size_t>(std::max(w, h)));
+    std::vector<int> v(static_cast<std::size_t>(std::max(w, h)) + 1);
+    std::vector<double> z(static_cast<std::size_t>(std::max(w, h)) + 2);
+    std::vector<double> sq(texels);
+    for (std::size_t t = 0; t < texels; ++t) {
+        sq[t] = art[t * 4 + 3] >= 0.5f ? kEdtInf : 0.0;
+    }
+
+    for (int x = 0; x < w; ++x) {
+        for (int y = 0; y < h; ++y) f[static_cast<std::size_t>(y)] = sq[static_cast<std::size_t>(y) * w + x];
+        edt1d(f, d, v, z, h);
+        for (int y = 0; y < h; ++y) sq[static_cast<std::size_t>(y) * w + x] = d[static_cast<std::size_t>(y)];
+    }
+    for (int y = 0; y < h; ++y) {
+        double* row = &sq[static_cast<std::size_t>(y) * w];
+        for (int x = 0; x < w; ++x) f[static_cast<std::size_t>(x)] = row[x];
+        edt1d(f, d, v, z, w);
+        for (int x = 0; x < w; ++x) row[x] = d[static_cast<std::size_t>(x)];
+    }
+
+    std::vector<float> mask(texels, 0.0f);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const std::size_t t = static_cast<std::size_t>(y) * w + x;
+            if (art[t * 4 + 3] < 0.5f) continue;   // outside: the mask is zero there
+            double dist = std::sqrt(sq[t]);
+            // The empty border ring of the target's SDF, as a distance to four
+            // virtual outside rows one step beyond each edge.
+            dist = std::min(dist, static_cast<double>(x) + 1.0);
+            dist = std::min(dist, static_cast<double>(y) + 1.0);
+            dist = std::min(dist, static_cast<double>(w - x));
+            dist = std::min(dist, static_cast<double>(h - y));
+            const double depth = dist - 0.5;   // centres to contour
+            mask[t] = static_cast<float>(std::clamp(depth / ringWidth, 0.0, 1.0));
+        }
+    }
+    return mask;
+}
+
 std::vector<float> shadowImage(const std::vector<float>& art, std::uint32_t width,
                                std::uint32_t height, ShadowStyle style,
                                const ShadowGeometry& geometry, const ShadowParameters& p) {
@@ -221,6 +317,19 @@ std::vector<float> shadowImage(const std::vector<float>& art, std::uint32_t widt
     // already true of a black silhouette) -- so it is folded in here rather than
     // applied twice.
     std::vector<float> img(art.begin(), art.begin() + static_cast<std::ptrdiff_t>(texels * 4));
+
+    // STEP 4 FIRST. The clip is installed on the state the art is drawn into and
+    // the blur is a filter on that state's layer, so the clip is inside it --
+    // see the header, where that ordering is `[INF]` and argued. It multiplies
+    // ALPHA only: `clipLayerWithAlpha:` masks coverage, it does not tint.
+    if (geometry.ringWidth) {
+        const std::vector<float> mask =
+            shadowRingMask(img, width, height, *geometry.ringWidth);
+        if (mask.size() == texels) {
+            for (std::size_t t = 0; t < texels; ++t) img[t * 4 + 3] *= mask[t];
+        }
+    }
+
     if (shadowUsesVibrantTable(style)) {
         const double v = p.vibrantBrightness;
         // `0x20BC0` SKIPS the filter when `v == 1.0`. Transcribed as a branch
@@ -244,9 +353,6 @@ std::vector<float> shadowImage(const std::vector<float>& art, std::uint32_t widt
     // afterwards instead of the resampling being fed into the kernel.
     img = gaussian(img, width, height, geometry.blurRadius * kShadowBlurSigmaPerRadius);
     img = translate(img, width, height, geometry.offsetX, geometry.offsetY);
-
-    // STEP 4, the ring clip, is NOT applied. `geometry.ringWidth` carries the
-    // width for the caller to report through `kShadowRingNote`.
     return img;
 }
 

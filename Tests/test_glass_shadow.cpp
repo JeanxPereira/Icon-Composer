@@ -7,6 +7,8 @@
 #include "check.h"
 
 #include <cmath>
+#include <cstddef>
+#include <vector>
 
 #include "Source/RenderBox/GlassShadow.h"
 
@@ -154,6 +156,89 @@ TEST_CASE(glass_shadow_neutral_blackens_and_vibrant_dims_the_glyph_colour) {
         rb::shadowImage(art, 2, 2, ShadowStyle::Vibrant, g, p);
     CHECK(near(vibrant[0], 0.75, 1e-6));  // red x vibrantBrightness
     CHECK(near(vibrant[3], 1.0, 1e-6));
+}
+
+// THE RING IS A RAMP AND NOT A CROWN, which is the whole of what `0x11C40` says
+// and the one thing a plausible-looking transcription would get wrong.
+//
+// `[BIN]` The band `[minAlpha, maxAlpha]` goes into ONE scale and ONE bias
+// (`0x89400`-`0x89424`), so the mask is MONOTONE in depth: it cannot come back
+// down. A crown -- opaque between the outline and the outline inset by
+// `ringWidth`, transparent on both sides -- is the reading this rules out, and
+// it is the reading the shape of the parameter invites.
+//
+// A 41-wide horizontal bar in a 41x41 field, ring width 8: the centre column
+// runs from the top edge to the bottom edge of the bar.
+TEST_CASE(glass_shadow_ring_ramps_inward_and_never_comes_back_down) {
+    const int n = 41;
+    std::vector<float> art(static_cast<std::size_t>(n) * n * 4, 0.0f);
+    for (int y = 4; y <= 36; ++y) {
+        for (int x = 0; x < n; ++x) art[(static_cast<std::size_t>(y) * n + x) * 4 + 3] = 1.0f;
+    }
+
+    const std::vector<float> mask = rb::shadowRingMask(art, n, n, 8.0);
+    REQUIRE(mask.size() == static_cast<std::size_t>(n) * n);
+
+    const int x = n / 2;
+    // Outside the bar: nothing.
+    CHECK(mask[static_cast<std::size_t>(3) * n + x] == 0.0f);
+    // The first row inside sits half a pixel in, over a ring of eight.
+    CHECK(near(mask[static_cast<std::size_t>(4) * n + x], 0.5 / 8.0, 1e-6));
+    // Eight rows further in it has saturated, and it STAYS saturated all the way
+    // to the middle -- a crown would have fallen back to zero by row 20.
+    CHECK(near(mask[static_cast<std::size_t>(12) * n + x], 1.0, 1e-6));
+    CHECK(near(mask[static_cast<std::size_t>(20) * n + x], 1.0, 1e-6));
+    // Monotone down the half-section, which is what one scale and one bias means.
+    for (int y = 4; y < 20; ++y) {
+        CHECK(mask[static_cast<std::size_t>(y) * n + x] <=
+              mask[static_cast<std::size_t>(y + 1) * n + x]);
+    }
+    // And symmetric: the bar's far edge feathers the same way.
+    CHECK(near(mask[static_cast<std::size_t>(36) * n + x],
+               mask[static_cast<std::size_t>(4) * n + x], 1e-6));
+}
+
+// `[BIN]` OUTSIDE THE CANVAS IS OUTSIDE THE SHAPE. The target's SDF texture is
+// one texel wider than the rect on every side (`rectW / (sdfTexelsW - 2)` and
+// the `(-1, -1)` translate at `0x10F48`-`0x10F6C`), so its border ring is empty
+// and art that runs off the canvas feathers at the canvas edge.
+//
+// A field that is opaque everywhere has no contour of its own; if the canvas
+// edge did not count, the mask would be one everywhere.
+TEST_CASE(glass_shadow_ring_feathers_at_the_canvas_edge) {
+    const int n = 16;
+    std::vector<float> art(static_cast<std::size_t>(n) * n * 4, 0.0f);
+    for (std::size_t t = 0; t < static_cast<std::size_t>(n) * n; ++t) art[t * 4 + 3] = 1.0f;
+
+    const std::vector<float> mask = rb::shadowRingMask(art, n, n, 4.0);
+    REQUIRE(mask.size() == static_cast<std::size_t>(n) * n);
+    // The corner is one step from two virtual outside rows: distance 1, depth .5.
+    CHECK(near(mask[0], 0.5 / 4.0, 1e-6));
+    // The middle is four rows in and saturated.
+    CHECK(near(mask[static_cast<std::size_t>(8) * n + 8], 1.0, 1e-6));
+}
+
+// A width of zero is the DEGENERATE band, not an empty mask: `maxAlpha` meets
+// `minAlpha`, the remap's `1 / (maxAlpha - minAlpha)` runs to infinity, and
+// every alpha above the contour saturates. The identity, which is also what
+// `shadowImage` must do when `ringWidth` is nil.
+TEST_CASE(glass_shadow_ring_of_zero_width_is_the_identity) {
+    std::vector<float> art(2 * 2 * 4, 0.0f);
+    art[3] = 1.0f;
+    const std::vector<float> mask = rb::shadowRingMask(art, 2, 2, 0.0);
+    REQUIRE(mask.size() == 4);
+    for (float m : mask) CHECK(m == 1.0f);
+
+    // And a nil `ringWidth` leaves the art's alpha alone end to end.
+    rb::ShadowParameters p;
+    p.offsetX = p.offsetY = 0.0;
+    p.radius = rb::SizeBasedValue{{0.0, 0.0, 0.0, 0.0}};
+    p.ringWidth.reset();
+    const rb::ShadowGeometry g = rb::shadowGeometry(2, IconSizeClass::Large, p);
+    CHECK(!g.ringWidth.has_value());
+    const std::vector<float> img = rb::shadowImage(art, 2, 2, ShadowStyle::Neutral, g, p);
+    REQUIRE(img.size() == art.size());
+    CHECK(near(img[3], 1.0, 1e-6));
 }
 
 // `[BIN]` §5.3, the overdraw pass this file transcribes and does NOT draw:

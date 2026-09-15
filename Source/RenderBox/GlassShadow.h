@@ -123,9 +123,94 @@
 //   3. a BLUR of `radius = s * blurStrengthMax * clamp(Shadow.radius[3-c], 0, 1)`
 //      (`0x20C38`), clamped on BOTH sides (`0x20C14`-`0x20C28`) -- unlike the
 //      material's own blur at `0x4A948`, which has a ceiling and no floor;
-//   4. a RING clip when `Shadow.ringWidth` is non-nil -- NOT implemented, see
-//      `kShadowRingNote`;
+//   4. a RING clip when `Shadow.ringWidth` is non-nil -- read end to end by this
+//      front, see below;
 //   5. `drawDisplayList:` (`0x20CF4`).
+//
+// THE RING, WHICH IS NOT A RING
+// ------------------------------
+// The laudo (§8, open item 5) left the clip's GEOMETRY untranscribed: it had the
+// width read, scaled and negated at `0x20C8C` and handed to `0x11C40`, and
+// stopped there. `0x11C40` is 1604 bytes and it is read out here.
+//
+// `[BIN]` **`0x11C40` IS `0x10E1C` WITH TWO FILTERS AROUND IT.** It takes the
+// same fourteen arguments as `0x10E1C` -- the generic "draw this SDF into this
+// rect" helper -- and forwards every one of them except three: the width
+// `d5` becomes `1.0`, the colour pointer `x2` becomes `nil`, and the flag `w5`
+// becomes `0` (`0x12144`-`0x1216C`). Between `save` (`0x11CB8`) and `restore`
+// (`0x12174`) it installs exactly two filters, and nothing else:
+//
+//   A. `[BIN]` `addAlphaThresholdFilterWithMinAlpha:maxAlpha:color:colorSpace:`
+//      (`0x11D64`), `colorSpace = 3`, colour = the four `Double` at the
+//      lazily-initialised global `0xCDE70`, whose `swift_once` initialiser
+//      (`0x3DAA0`) writes `fmov v0.2d, #1.0` twice: **opaque white**.
+//   B. `[BIN]` `addColorMatrixFilterWithArray:flags:0` (`0x12138`) over twenty
+//      `Float` assembled from `0xCE900`. Nineteen of them are ZERO; the only
+//      non-zero is flat index 15, which is `1.0`. In a 4x5 matrix over
+//      `(r,g,b,a,1)` that is `out.rgb = 0, out.a = in.r` -- the move that turns
+//      a white-on-transparent premultiplied ramp into a pure alpha mask, which
+//      is what `clipLayerWithAlpha:mode:` at `0x20CE8` then consumes.
+//
+// So the "shape" is not a shape. `[BIN]` The mask is the LAYER'S OWN SIGNED
+// DISTANCE FIELD -- `FinalizedIcon.Layer.sdf` (`IconRendering.SDF`, the
+// `{texture, maxDistance: Double}` pair the reflection lists at `0xA2FF4`,
+// occupying `Layer+0x98..0xB0`) -- run through a LINEAR REMAP of its alpha. The
+// band is computed at `0x11CF8`-`0x11D3C`:
+//
+//     u        = -(ringWidth[3-c] * s) * (sdfTexelsW - 2) / rectW   // texels
+//     minAlpha = min( u/(-2*maxDistance) + 0.5 , 0 /(-2*maxDistance) + 0.5 )
+//     maxAlpha = max( ... )                                         // = the pair
+//
+// with `u <= 0`, so `minAlpha = 0.5` and `maxAlpha = 0.5 + w/(2*maxDistance)`,
+// `w` being the ring width in SDF texels.
+//
+// `[BIN]` **AND THE FILTER IS A CLAMPED LINEAR REMAP, NOT A BAND PASS.** That is
+// read out of `RenderBox.arm64`, which unlike `IconRendering` KEEPS its symbols:
+// `RB::_GLOBAL__N_1::render_(AlphaThresholdEffect const&, ...)` at `0x893A4`
+// computes, into the shader globals at `+0x44`/`+0x48`,
+//
+//     scale = 1 / (maxAlpha - minAlpha)        (`0x89400`-`0x89410`)
+//     bias  = -minAlpha * scale                (`0x89414`-`0x89424`)
+//
+// i.e. `t = (alpha - minAlpha) / (maxAlpha - minAlpha)`, and the output is the
+// filter's colour times `t`. One scale and one bias is a MONOTONE function of
+// the distance: it cannot be non-zero inside a band and zero on both sides of
+// it, so whatever else the clip is, **it is not a crown between two contours.**
+//
+// `[BIN]` THE SIGN, which decides inward from outward, comes from the same
+// binary. `-[RBDisplayList addDistanceFilterWithMaxDistance:scale:flags:]`
+// (`0x3F354`) builds an `RBDisplayListDistanceFilter` whose first two fields are
+// the ones its sibling `addDistanceFilterWithZeroDistance:oneDistance:scale:`
+// (`0x3F390`) takes in that order, and it fills them `zeroDistance = +maxDistance,
+// oneDistance = -maxDistance` (`fneg d2, d0` at `0x3F360`, `stp d0, d2` at
+// `0x3F368`). Alpha therefore RISES as the signed distance falls: `0` at
+// `+maxDistance` (outside), `0.5` on the contour, `1` at `-maxDistance` (inside)
+// -- which is also the only encoding under which dividing by `2 * maxDistance`
+// is the right conversion. So `alpha > 0.5` is INSIDE, and the band
+// `[0.5, 0.5 + w/(2*maxDistance)]` is the band of depths `[0, w]` INSIDE the
+// silhouette.
+//
+// THE WHOLE THING COLLAPSES, AND `maxDistance` CANCELS:
+//
+//     mask(p) = clamp( depthInside(p) / (ringWidth[3-c] * s), 0, 1 )
+//
+// zero ON the layer's own outline, rising linearly to one at `ringWidth` points
+// inside it, one everywhere deeper. It is a one-sided INWARD FEATHER of the
+// silhouette, not a coroa. `shadowRingMask` is that line.
+//
+// `[BIN]` Two guards precede it, and the laudo named only one of them: the clip
+// is skipped when `Shadow.ringWidth` is `nil` (`ldrb w8,[x27,#0x30]; cmp #1` at
+// `0x20C48`) AND when the low byte of the SDF's second word is `0xFF`
+// (`mvn w8,w25; tst x8,#0xff` at `0x20C3C`) -- the empty case of the layer's own
+// SDF. A layer with no distance field gets no ring.
+//
+// `[INF]` THE CLIP RUNS BEFORE THE BLUR, and that is a reading and not a
+// measurement. `beginLayer`/`clipLayerWithAlpha:` installs the mask as a CLIP on
+// the drawing state that `drawDisplayList:` then draws the art into, while the
+// blur added at `0x20C38` is a FILTER on that same state's layer; a filter
+// applies to the layer once composited, so the clip is inside it. The
+// consequence is visible: clipping first lets the blur soften the feathered edge,
+// clipping afterwards would leave the shadow hard-edged along the silhouette.
 //
 // and is then composited (§5.2) as `drawShape:fill:alpha:blendMode:` at
 // `0x4A20C`: a rect filled with that image under a `tintColor:`, at the alpha
@@ -216,6 +301,19 @@ struct ShadowParameters {
 
     // `[BIN]` `0.75` (`0x5EC9C`). The grey the VIBRANT branch multiplies the
     // glyph's own colour by before blurring.
+    //
+    // ONE CONSUMER, AND NOW BY SWEEP RATHER THAN BY ABSENCE OF SEARCH. The laudo
+    // could only say it had found one. `[BIN]` A pass over all 142,694
+    // instructions of `__text` finds every `ldr dN, [xM, #0xa0]` (ten) and every
+    // `ldr dN, [xM, #0x350]` (six -- `Shadow` sits at `params+0x2B0`, so the
+    // field has two spellings). Of the sixteen: `0x20BB4` is the `colorMultiply`
+    // grey of §5.1; `0x6E024` and `0x6E044` are the two sides of the
+    // `Shadow == Shadow` compare at `0x6DFE4`; `0x2E500`, `0x4E0D8`, `0x711C4`,
+    // `0x713FC` and `0x81540` are each one line of a field-by-field COPY, every
+    // one flanked by the neighbouring offsets `+0x348` and `+0x358`; and the
+    // remaining eight belong to other structs (`0xFD8C`'s base indexes a byte at
+    // `+0x469F` and puts a four-slot table at `+0x330`, which would fall inside
+    // `neutralOpacity` if the base were the parameters). **No second arithmetic.**
     double vibrantBrightness = 0.75;
 
     // `[BIN]` both `true`, from the `strh w25` at `0x5ECA4` with `w25 == 0x0101`.
@@ -355,13 +453,10 @@ struct ShadowGeometry {
 
     // `[BIN]` Present when `Shadow.ringWidth` is non-nil (tag at `Shadow+0x30`,
     // tested at `0x20C48`), as `s * ringWidth[3-c]`; the binary NEGATES it at
-    // `0x20C8C` to inset a clip shape.
-    //
-    // `[OBS]` Carried and NOT applied. The width is read; the SHAPE it insets --
-    // built through `0x11C40` and handed to `clipLayerWithAlpha:mode:` at
-    // `0x20CE8` -- was not transcribed (laudo §8, open item 5). Drawing an
-    // invented ring would be exactly the plausible-and-wrong this tower refuses,
-    // and not drawing it silently would be worse: `kShadowRingNote` says it.
+    // `0x20C8C` because the threshold band it feeds is expressed against a
+    // distance that grows OUTWARD. In this struct it is the positive depth, in
+    // the same target pixels as `blurRadius`: the ramp runs from the silhouette
+    // to `ringWidth` pixels inside it. See the header.
     std::optional<double> ringWidth;
 };
 
@@ -386,13 +481,41 @@ ShadowGeometry shadowGeometry(std::uint32_t size, IconSizeClass sizeClass,
 // render that blurs.
 inline constexpr double kShadowBlurSigmaPerRadius = 1.0 / 3.0;
 
+// STEP 4, as one scalar per texel in `[0, 1]`, to multiply into the art's alpha.
+//
+// `mask = clamp(depthInside / ringWidth, 0, 1)`, `depthInside` measured from the
+// art's own silhouette -- the header reads that line out of `0x11C40`,
+// `0x893A4` and `0x3F354`, and shows why `SDF.maxDistance` cancels out of it.
+//
+// THE SILHOUETTE IS THE `alpha >= 0.5` CONTOUR of `art`, and the distance is an
+// exact Euclidean transform over pixel centres (Felzenszwalb-Huttenlocher),
+// less the half pixel that puts the contour between centres rather than on one.
+//
+// `[BIN]` OUTSIDE THE CANVAS COUNTS AS OUTSIDE THE SHAPE, which is not a default
+// but a transcription: the target's SDF texture is one texel WIDER than the rect
+// it covers on every side -- `0x10E1C` scales by `rectW / (sdfTexelsW - 2)` and
+// translates by `(-1, -1)` (`0x10F48`-`0x10F6C`) -- so the field is padded and
+// its border ring is empty. A shape that runs off the canvas gets feathered at
+// the canvas edge, not carried through it.
+//
+// `[OBS]` The TEXEL GRID is not transcribed, and cannot be from these slices:
+// the target samples a distance field generated by `sdfTextureWithBufferAllocator:`
+// into a `TXRTexture`, which is neither in `IconRendering.arm64` nor in
+// `RenderBox.arm64`. Two consequences, both named by `kShadowRingNote`: the
+// field's resolution is unknown, so this transform is computed at the target's
+// own resolution instead; and if `ringWidth` in texels ever exceeded that
+// field's `maxDistance` the band would run off the encodable range and the ramp
+// would truncate, which is a saturation this cannot see.
+std::vector<float> shadowRingMask(const std::vector<float>& art, std::uint32_t width,
+                                  std::uint32_t height, double ringWidth);
+
 // The shadow IMAGE: one layer's own art turned into what gets composited under
 // it. `art` is STRAIGHT RGBA with its alpha in `.w`, the form `renderSvgPlaced`
 // and `placeRaster` both produce, and the result has the same shape.
 //
-// `[BIN]` Colour, then translation, then blur -- steps 1 to 3 of §5.1. The ring
-// (step 4) is not applied; `geometry.ringWidth` carries it for the caller to
-// report.
+// `[BIN]` The ring clip, then colour, then blur, then translation -- steps 1 to
+// 4 of §5.1 in the order the header argues for. The clip is skipped exactly when
+// `geometry.ringWidth` is absent.
 //
 // The blur runs on PREMULTIPLIED values and the edges are CLAMPED, which is the
 // same pair of choices `SvgFilter.cpp`'s Gaussian already makes and for the same
@@ -418,10 +541,11 @@ std::vector<float> shadowImage(const std::vector<float>& art, std::uint32_t widt
 // its place by naming a gap that is still open; keeping one after the gap closes
 // trains a reader to skip the list, which costs the notes that are still true.
 
-// `Shadow.ringWidth` is non-nil by default, so by default this note ALWAYS
-// fires when a shadow draws. That is correct and it is the point: with the read
-// parameters the target clips its shadow with a ring this renderer does not
-// build, so every shadow drawn here is short of one step.
+// The ring is now DRAWN, and this note no longer says it is missing. What it
+// says is the one thing under it that is still convention: the band's arithmetic
+// is measured, the distance field it samples is generated in a binary this
+// project does not have. Exactly the shape of `kShadowBlurKernelNote`, and it
+// fires on the same terms -- whenever a ring is actually applied.
 extern const char* const kShadowRingNote;
 
 // The blur radius is measured; the kernel it feeds is not.
