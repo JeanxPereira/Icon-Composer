@@ -175,6 +175,14 @@ struct RenderedIcon {
     // refracts nothing, and the two outcomes must be distinguishable.
     std::size_t glassRefracted = 0;
 
+    // Layers whose `specular` actually put a highlight on the pixel. Counted
+    // apart from `drawn` for the fourth time and the fourth version of the same
+    // reason: a layer can ask for a specular and get none, either because its
+    // art is a raster with no contour to build a field from, or because every
+    // one of the five resolved highlights came out at zero opacity. "Asked and
+    // got nothing" must not read as "asked and got something".
+    std::size_t glassSpecular = 0;
+
     // Layers that cast a glass shadow under themselves. Counted apart from
     // `drawn` for the third time and for the third version of the same reason:
     // `[ART]` 25 of the corpus's 302 `shadow` resolutions are `none` and 226 of

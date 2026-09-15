@@ -602,21 +602,27 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             kGlyphTranslucency, options.sizeClass, groupTranslucency);
         const bool groupWantsMask = !opacityMaskIsIdentity(groupMaskArgs);
 
-        // ---- the specular, which is the half that still does NOT draw ------
+        // ---- the specular, which NOW DRAWS ---------------------------------
         //
         // `Docs/Laudos/2026-09-15-especular.md` closed where the highlight goes
         // -- the `glassHighlight` shader of the IconRendering metallib -- and
-        // did not close a single number it is handed. So this says so, once,
-        // instead of drawing something plausible. `GlassSpecular.h` carries the
-        // addresses; the note carries the short version to the caller.
+        // closed no number it is handed. `Docs/Laudos/2026-09-15-highlights.md`
+        // read the 16113 bytes of `ICRRenderingParameters.Highlights` those
+        // numbers come from, so this stops being a note and starts being pixels.
+        //
+        // FIVE highlights, not one: `0x00030E88` expands one `HighlightsSet`
+        // into seven candidates and this version's glyph defaults leave five
+        // alive -- a sharp key rim, a diffuse key wash, a sharp fill rim
+        // opposite it, and the dark one drawn twice at +-90 degrees.
         //
         // `[ART]` It fires for real: over the 145 corpus documents 67 carry a
         // group-level `specular`, and of the 103 values 64 are `true` and 3 are
-        // the string `"inside"`. Sixty-seven documents are currently rendered
-        // without a highlight they asked for, and until now without a word.
-        if (documentAsksForSpecular(glassNumbers)) {
-            note(out.notes, specularDoesNotDrawNote());
-        }
+        // the string `"inside"`.
+        const bool wantsSpecular = documentAsksForSpecular(glassNumbers);
+        SpecularArguments specularArgs;
+        specularArgs.sizeClass = options.sizeClass;
+        specularArgs.pixelsPerPoint = static_cast<double>(options.size) / kCanvasPoints;
+        specularArgs.placement = glassNumbers.specularPlacement;
 
         // ---- `blur-material`, which is now ONE unread thing and not two -----
         //
@@ -932,9 +938,13 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             // would fade layers whose author never asked for glass at all.
             const bool wantsRefraction = isGlass && !glassRefractionIsIdentity(refraction);
             const bool wantsTranslucency = isGlass && groupWantsMask;
+            // The highlight rides the SAME distance field as the other two, so
+            // it joins the same gate rather than building a second one.
+            const bool wantsHighlight = isGlass && wantsSpecular;
             std::optional<OpacityMask> mask;
+            std::optional<FieldImage> specularField;
 
-            if (wantsRefraction || wantsTranslucency) {
+            if (wantsRefraction || wantsTranslucency || wantsHighlight) {
                 // `[ART]` 45 of the corpus's 171 glass layers name `.png` art
                 // and one names `.heic`. A raster has no path to flatten, so
                 // there is no shape to build a field from. This is NOT the same
@@ -984,9 +994,17 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                         skip(fieldGap);
                         continue;
                     }
+                    // A specular with no field is the ONE case left that still
+                    // cannot draw, and it is not this front's gap: a raster has
+                    // no contour to sign, so there is no `sd` and no normal.
+                    if (wantsHighlight) note(out.notes, specularDoesNotDrawNote());
                     // Translucency alone: draw opaque, and say so.
-                    note(out.notes, haveShape ? fieldGap : std::string(kTranslucencyRasterNote));
+                    if (wantsTranslucency) {
+                        note(out.notes,
+                             haveShape ? fieldGap : std::string(kTranslucencyRasterNote));
+                    }
                 } else {
+                    if (wantsHighlight) specularField = field;
                     if (wantsRefraction) {
                         glassOver(target, options.size, options.size,
                                   glassDisplacementMap(*field, refraction), refraction);
@@ -1115,6 +1133,26 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                     ++out.glassTranslucent;
                 }
                 castShadow(drew->rgba);
+                // THE HIGHLIGHT GOES ON AFTER THE SHADOW IS CAST, ON PURPOSE.
+                // It is `plusLighter`/`plusDarker` over the layer's own pixels,
+                // so it adds alpha where it lands; casting the shadow from the
+                // art plus its own highlight would swell the silhouette by the
+                // rim. `[BIN]` The target keeps them apart too -- the highlight
+                // is its own `drawShape:fill:alpha:blendMode:` at `0x0000ED00`,
+                // inside a pass gated by `hasSpecular` at `0x00049200`, and the
+                // shadow is a different `drawShape:` in a different function.
+                if (specularField) {
+                    // `layerOpacity` STAYS AT ONE here and it is not an
+                    // oversight: `[BIN]` the target's `alpha:` carries
+                    // `[descriptor+0x38]` because its highlight is a sibling of
+                    // the layer in one display list, and here the highlight is
+                    // composited INTO the layer's own buffer, which `blendOver`
+                    // then multiplies by `opacity` two lines down. Passing it
+                    // twice would square it.
+                    const std::size_t moved = drawSpecular(drew->rgba, *specularField, specularArgs);
+                    if (moved > 0) ++out.glassSpecular;
+                    note(out.notes, specularDrawnNote());
+                }
                 blendOver(target, drew->rgba, static_cast<float>(opacity), layerBlend);
                 ++out.drawn;
             } else if (ext == ".png") {
