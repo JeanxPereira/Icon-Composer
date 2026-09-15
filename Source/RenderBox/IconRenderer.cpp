@@ -14,6 +14,7 @@
 #include "Source/RenderBox/ChicletShape.h"
 #include "Source/RenderBox/FillResolve.h"
 #include "Source/RenderBox/GlassLayer.h"
+#include "Source/RenderBox/GlassShadow.h"
 #include "Source/RenderBox/GlassSpecular.h"
 #include "Source/RenderBox/GradientOracle.h"
 #include "Source/RenderBox/SystemFill.h"
@@ -986,6 +987,61 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 }
             }
 
+            // ---- THE SHADOW, UNDER THE ART ------------------------------
+            //
+            // `[BIN]` Until 2026-09-15 this renderer drew NO shadow at all:
+            // `GlassMaterial.h` transported `shadowStyle` and `shadowOpacity`
+            // and named them as fields with no known consumer, and the one
+            // `shadow` in this file was a comment about an SVG's own drop
+            // shadow. `Docs/Laudos/2026-09-15-sombra.md` read the alpha and the
+            // geometry end to end, so it now draws. `GlassShadow.h` carries the
+            // whole of it -- the three-factor alpha, the size-class inversion,
+            // the offset, the blur, and the two steps that are named instead of
+            // drawn.
+            //
+            // GATED ON `glass`, FOR THE SAME REASON THE MASK IS, and it is the
+            // same `[INF]`. The shadow is a field of `Icon.GlassMaterial` and
+            // `[ART]` the document's `glass` bit is
+            // `Icon.Element.participatesInGlass`. `[ART]` All 271 corpus groups
+            // carry a `shadow` key while only 113 contain glass, so honouring
+            // it everywhere would put a drop shadow under 158 groups whose
+            // author never asked for glass.
+            //
+            // CAST FROM THE ART AS IT WILL BE COMPOSITED -- after the
+            // translucency mask, if there is one. `[OBS]` Which image the target
+            // feeds its shadow (`[descriptor+0xB0]`, fetched through `0x85ED8`)
+            // was not traced, so the order of mask and shadow is unread; with
+            // an identity mask, which is every corpus group whose translucency
+            // is absent or switched off, the two readings are the same pixel.
+            //
+            // THE LAYER'S `opacity` GOES IN TWICE, and that is the transcription
+            // and not a slip. `[BIN]` The third factor of the shadow's alpha is
+            // `FinalizedIcon.Layer.opacity` (`GlassShadow.h` names the three
+            // readings), and the SAME field multiplies the element's own draw at
+            // `0x495F0` -- which is the `opacity` this loop has always handed to
+            // `blendOver` below. One field, two draws, one multiplication each.
+            const ShadowInputs shadowIn{glassNumbers.shadowStyle, glassNumbers.shadowOpacity,
+                                        opacity, options.sizeClass};
+            const bool castsShadow = isGlass && shadowDraws(shadowIn);
+            auto castShadow = [&](const std::vector<float>& artRgba) {
+                if (!castsShadow) return;
+                const ShadowGeometry geometry =
+                    shadowGeometry(options.size, options.sizeClass);
+                blendOver(target,
+                          shadowImage(artRgba, options.size, options.size,
+                                      shadowIn.style, geometry),
+                          static_cast<float>(shadowAlpha(shadowIn)),
+                          shadowBlendMode(shadowIn.style));
+                if (geometry.ringWidth) note(out.notes, kShadowRingNote);
+                if (geometry.blurRadius > 0.0) note(out.notes, kShadowBlurKernelNote);
+                if (kShadow.drawOverContent &&
+                    shadowOverdrawAlpha(groupTranslucency, shadowIn.style,
+                                        options.sizeClass) > 0.0) {
+                    note(out.notes, kShadowOverdrawNote);
+                }
+                ++out.glassShadowed;
+            };
+
             if (svg) {
                 RenderOptions ro;
                 ro.width = ro.height = options.size;
@@ -1033,6 +1089,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                     applyOpacityMask(drew->rgba, *mask);
                     ++out.glassTranslucent;
                 }
+                castShadow(drew->rgba);
                 blendOver(target, drew->rgba, static_cast<float>(opacity), layerBlend);
                 ++out.drawn;
             } else if (ext == ".png") {
@@ -1042,6 +1099,13 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                     continue;
                 }
                 const std::vector<float> placed = placeRaster(png, lp, options.size);
+                // A raster CAN cast a shadow, where it cannot carry a
+                // translucency mask: the shadow is built from the art's own
+                // alpha and needs no contour to flatten. The asymmetry is real,
+                // not an oversight -- `[ART]` 45 of the corpus's 171 glass
+                // layers name `.png` art, and every one of them was losing both
+                // effects for one effect's reason.
+                castShadow(placed);
                 blendOver(target, placed, static_cast<float>(opacity), layerBlend);
                 ++out.drawn;
             } else {

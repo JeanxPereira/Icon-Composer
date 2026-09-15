@@ -41,12 +41,23 @@
 //   that arithmetic is INFERENCE by name**, supported by the clamp to [0,1]
 //   before the `pow` and by the output being points on a 1024 canvas.
 //
-//   `[OBS]` `shadowOpacity`, `hasSpecular` and `specularPlacement` have no known
-//   consumer. They cross Swift<->ObjC verbatim with no arithmetic anywhere on
-//   the path, and there is no `Max`/`Power` partner for any of them in
-//   `ICRRenderingParameters`. They are carried through here as the raw document
-//   values and denormalised by nothing, because inventing a denormalisation for
-//   them is exactly the kind of plausible-and-wrong this project refuses.
+//   `[OBS]` `hasSpecular` and `specularPlacement` have no known consumer. They
+//   cross Swift<->ObjC verbatim with no arithmetic anywhere on the path, and
+//   there is no `Max`/`Power` partner for either in `ICRRenderingParameters`.
+//   They are carried through here as the raw document values and denormalised by
+//   nothing, because inventing a denormalisation for them is exactly the kind of
+//   plausible-and-wrong this project refuses.
+//
+//   `shadowOpacity` WAS in that list until 2026-09-15 and is no longer.
+//   `Docs/Laudos/2026-09-15-sombra.md` found the consumer and
+//   `Docs/Laudos/2026-09-15-sombra-desenho.md` drew it: the field is multiplied
+//   by `ICRRenderingParameters.Shadow.<vibrant|neutral>Opacity[3 - sizeClass]`
+//   and by `FinalizedIcon.Layer.opacity` and becomes the `alpha:` of
+//   `-[RBDisplayList drawShape:fill:alpha:blendMode:]`. There is no `Max`/`Power`
+//   partner because there is NO DENORMALISATION and, more than that, NO CLAMP --
+//   `[ART]` three corpus resolutions carry an opacity above 1 and depend on it.
+//   `GlassShadow.h` carries the whole of it. Still transported raw through this
+//   file, which is now a reading and not a shrug.
 //
 //   `translucency` WAS in that list until 2026-09-15 and is no longer.
 //   `Docs/Laudos/2026-09-15-translucencia.md` found its consumer: it is the
@@ -318,6 +329,10 @@ struct DenormalisedGlass {
     // value and its switch are two facts, and the fold belongs to whoever
     // builds the mask.
     bool translucencyEnabled = true;
+    // `[BIN]` And for `shadowOpacity` it is settled the same way since
+    // 2026-09-15, only more strongly: the field meets two multiplications and
+    // NOTHING else -- no `Max`, no `Power`, and no clamp either, so a value above
+    // 1 has to leave here intact. `GlassShadow.h` is the whole of it.
     double shadowOpacity = 0.0;
     bool hasSpecular = false;
     SpecularPlacement specularPlacement = SpecularPlacement::Automatic;

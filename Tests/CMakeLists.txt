@@ -40,6 +40,7 @@ add_executable(ic_tests EXCLUDE_FROM_ALL
     test_rb_sdf_displacement.cpp
     test_glass_material.cpp
     test_glass_layer.cpp
+    test_glass_shadow.cpp
     test_fill_resolve.cpp
     test_system_fill.cpp
     test_blend_mode.cpp

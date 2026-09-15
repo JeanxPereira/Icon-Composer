@@ -75,6 +75,17 @@
 // decision, and the two gaps that are named rather than filled: the
 // points-to-pixels ruler (which lands in `RenderedIcon::notes`) and raster art,
 // which has no contour to flatten.
+//
+// AND THE SHADOW, SINCE 2026-09-15
+// --------------------------------
+// A glass layer casts one under itself before its art is drawn. The alpha is
+// three multiplications with no clamp anywhere, the offset and the blur radius
+// come off `ICRRenderingParameters.Shadow`, and `shadowStyle` picks the opacity
+// table, the colour and the blend byte at once. `GlassShadow.h` carries all of
+// it, including the two steps that are NAMED instead of drawn: the ring that
+// clips the shadow (present by default, and its geometry unread) and the second
+// overdraw composite. Unlike the translucency mask, this one runs on raster art
+// too -- it needs the art's alpha and not a contour.
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -163,6 +174,15 @@ struct RenderedIcon {
     // identity (`refractionStrength == 0`, the read default) draws its art and
     // refracts nothing, and the two outcomes must be distinguishable.
     std::size_t glassRefracted = 0;
+
+    // Layers that cast a glass shadow under themselves. Counted apart from
+    // `drawn` for the third time and for the third version of the same reason:
+    // `[ART]` 25 of the corpus's 302 `shadow` resolutions are `none` and 226 of
+    // the rest carry `opacity: 0.5`, so "drew no shadow because the document
+    // asked for none" has to stay distinguishable from "drew no shadow because
+    // the renderer has none" -- which is what every render of this project said,
+    // silently, until 2026-09-15.
+    std::size_t glassShadowed = 0;
 };
 
 // The placement of one layer's art on the canvas, in the target's own terms.
