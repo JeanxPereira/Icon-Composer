@@ -2973,12 +2973,32 @@ de uma tela de 1024. É `[INF]`, e fica marcado assim.
    de um documento. Eles vêm de um `CAFilter` de tipo `"glassBackground"` que
    nenhum binário deste corpus constrói. Fechar isso exige o **QuartzCore**, que
    não está em `References/`.
-2. `[OBS]` A ligação do argumento: que o `x` de `0x4A708` seja
-   `material.refractionHeight`. Fechá-la exige seguir o descritor de `0xC0` bytes
-   do §29.6 até quem o preenche.
-3. `[OBS]` O consumo de `translucency`, `shadowOpacity` e `specularPlacement`.
-   Nenhum deles tem par `Max`/`Power` em `ICRRenderingParameters`; a normalização
-   deles, se existe, tem outra forma.
+2. ~~`[OBS]` A ligação do argumento: que o `x` de `0x4A708` seja
+   `material.refractionHeight`.~~ **FECHADO em 15/09/2026** pelo laudo da sombra
+   (`Docs/Laudos/2026-09-15-sombra.md`), de carona: o descritor de `0xC0` bytes
+   começa **no próprio `GlassMaterial`**, e `0x4A30C` lê `[x0+0x18]`/`[x0+0x20]`
+   como os operandos de `0x4A948`/`0x4A708`. O `x` **é** o `refractionHeight`, e
+   isso deixa de ser `[INF]`.
+3. **Dois dos três FECHADOS em 15/09/2026**, e a suposição embutida nesta linha
+   era o que travava: não havia par `Max`/`Power` porque **não há desnormalização**.
+   No lugar do par existe um sub-struct por campo, com tabela **por classe de
+   tamanho** (`SizeBasedValue`, quatro `Double`).
+   - `translucency` — `[BIN]` `f = glyphTranslucency.strength[classe] × translucency`,
+     `eff(x) = 1 − (1 − x)·f`, consumida pelo shader `simplifiedShapeAwareGradientMask`
+     (`Docs/Laudos/2026-09-15-translucencia.md`).
+   - `shadowOpacity` — `[BIN]` atravessa **cru**: `alpha = shadowOpacity ×
+     Shadow.<vibrant|neutral>Opacity[3−classe] × [descritor+0x38]`, direto no `alpha:`
+     do `drawShape:` (`Docs/Laudos/2026-09-15-sombra.md`). `[OBS]` o **terceiro fator
+     não foi nomeado** — a fórmula tem três e o laudo nomeia dois, o que basta para
+     documentar e **não** basta para implementar.
+   - `specularPlacement` — segue `[OBS]`. Meia resposta: lido em `0x4922C`, **sem
+     aritmética**, colapsa num bit consumido uma vez em `0x494E8`; onde essa alpha
+     desemboca não foi seguido.
+   - **A armadilha que isso abre:** o enum de tamanho é `small 0 … display 3` e os
+     structs declaram `display, large, medium, small`, então é `valor[3 − classe]`.
+     Com os defaults desta versão **os quatro valores são iguais em todas as cinco
+     tabelas**: transcrever `valor[classe]` dá pixel idêntico e não avermelha teste
+     nenhum — só acorda num documento que diferencie as classes.
 4. `[OBS]` O `range` do `RBDisplayListGlassDisplacement`: os campos estão
    nomeados e os offsets lidos, mas o valor `v` que o `IconRendering` escreve
    como `(v, −v)` não foi atribuído a nenhuma grandeza nomeada.
@@ -3163,7 +3183,7 @@ apareça em vez de ser silenciosamente boa.
 
 | | por quê |
 |---|---|
-| **o retângulo do alinhamento ao chiclet** | `[BIN]` `supportsChicletAlignmentForSystemFills` é `true` por default, e quando ligado o rect é origem `(0,0)` com um `CGSize` do contexto de desenho. `[OBS]` **Se esse tamanho é o canvas, o chiclet ou o quadro full-bleed não foi lido.** A implementação desenha sobre o `boundingRect` da própria forma e **recusa** o outro caminho, em vez de chutar o rect |
+| **o retângulo do alinhamento ao chiclet** | `[CONTESTADO em 15/09/2026]` A frase anterior dizia que `supportsChicletAlignmentForSystemFills` é `true` por default **e que quando ligado o rect é origem `(0,0)` com um `CGSize` do contexto**. A segunda metade **não foi reproduzida**: o laudo do chiclet mediu que o campo (Swift #32, `+0x360`) **não dirige ramo nenhum** nesta fatia — toda carga dele é cópia, `==` ou *value witness*, com `str` na instrução seguinte. Enquanto ninguém der o endereço de onde a afirmação saiu, ela não vale. O `[OBS]` do tamanho perde a urgência: em iOS/macOS canvas, chiclet e full-bleed são o mesmo `(0,0,1024,1024)`, porque `1088 = 1024 + 2 × chicletOutset(32)`. A implementação segue desenhando sobre o `boundingRect` da própria forma |
 | a lateralidade de y do display list | `[OBS]` na rampa clara (255→245) é quase invisível; **na escura (31→15) não é** |
 | o `Bool` do `.system(_, Double, Bool)` | `[OBS]` os três construtores gravam `1`; nenhum escritor de `0` foi achado |
 | o espaço de cor das rampas | `[OBS]` `IconColor` são quatro `Double` sem tag de espaço |
