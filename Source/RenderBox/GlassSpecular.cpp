@@ -13,6 +13,8 @@ constexpr double kPi = 3.14159265358979323846;
 // `[BIN]` `2^-10`, the floor the shader clamps `fwidth` and the two
 // denominators to (`default_mod1.ll`, `0x3AA00000` as a half / `0.0009765625`).
 constexpr double kEps = 0.0009765625;
+// `[BIN]` The half `0xH3AAA` of `default_mod1.ll` `%15`, decoded exactly.
+constexpr double kBandWidth = 0.8330078125;
 
 double sat(double v) { return v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v); }
 
@@ -152,23 +154,30 @@ GlassHighlightSettings resolveHighlight(const HighlightSlot& slot, const Specula
     }
 
     // `[BIN]` `0x0004BEF8` then `0x0004C014`-`0x0004C030`: two `__sincos_stret`
-    // calls, `theta` for the plane and `phi` for the tilt out of it.
-    // `[OBS]` `phi` is `0` here -- the branch `0x0004BE74` takes when
-    // `ctx[0x20] == 1`, which is a state the target has and not one invented.
+    // calls, `theta` for the plane and `phi` for the tilt out of it, folded as
+    // `(cos phi sin theta, cos phi cos theta, sin phi)`.
+    //
+    // `[BIN]` `phi == 0` here because `0x0004BE74` takes that branch when the
+    // `customLightDirection` Optional tag `ctx[0x20]` is `1` (`nil`). And it
+    // would not matter if it were not: `spatialHighlight()` below overwrites
+    // the direction with the `phi = 0` form on every path.
     const double theta = slot.angleFromKey + args.lightLongitude;
-    out.directionX = std::sin(theta);
-    out.directionY = std::cos(theta);
-    out.directionZ = 0.0;
+    const double cosPhi = std::cos(args.lightLatitude);
+    out.directionX = cosPhi * std::sin(theta);
+    out.directionY = cosPhi * std::cos(theta);
+    out.directionZ = std::sin(args.lightLatitude);
 
     out.spread = highlightSizeValue(hs.spread, args.sizeClass);
     out.bias = hs.bias;
     out.height = heightPx;
     out.inset = insetPx;
     out.curvature = curvature;
-    // `[OBS]` `ctx[0]` (`0x0004C010`, `fmul d12, d13, d12` at `0x0004C0A8`) was
-    // not read; it enters here as the identity and `layerOpacity` is the one
-    // multiplier that IS read (`[descriptor+0x38]`, `0x000495F0`).
-    out.opacity = alpha * args.layerOpacity;
+    // `[BIN]` `ctx[0]` (`0x0004C010`) is `GlobalConfiguration.lightIntensity`
+    // and `0x0004C0A8` (`fmul d12, d13, d12`) multiplies the size-resolved
+    // opacity by it. It is no longer a silent identity: it is a named field
+    // whose shipped value is `1.0`. `layerOpacity` is the second multiplier
+    // (`[descriptor+0x38]`, `0x000495F0`).
+    out.opacity = args.lightIntensity * alpha * args.layerOpacity;
 
     // `[BIN]` `0x0004C078`-`0x0004C0B0`: `brightness` broadcast into rgb with
     // alpha forced to `1.0`, and the mode picked off the same number.
@@ -179,7 +188,55 @@ GlassHighlightSettings resolveHighlight(const HighlightSlot& slot, const Specula
     out.blendMode = hs.hasBlendModeOverride
                         ? hs.blendModeOverride
                         : (hs.brightness < 0.5 ? BlendMode::PlusDarker : BlendMode::PlusLighter);
+
+    // `[BIN]` `0x0004C0F8` runs the spatial post-pass over the block it has
+    // just written, and `0x0004C0FC` (`ldur d8, [x29, #-0x100]`) reloads the
+    // opacity from it -- which is how we know it writes in place.
+    //
+    // With the six parameters unread we may only run it where it is provably
+    // the identity, and `spatialHighlight()` states where that is. Running it
+    // anyway with placeholder numbers would be inventing a magnitude; NOT
+    // running it at `phi == 0` invents nothing, because there it does nothing.
+    if (args.spatial.read) {
+        spatialHighlight(out, args.spatial);
+    } else {
+        // `[BIN]` `0x0001263C`-`0x00012650`, the one rewrite that is
+        // unconditional and parameter-free: the direction is re-derived from
+        // its own azimuth and `z` is zeroed. At `phi == 0` this is already
+        // where `resolveHighlight` left it, so it is written out rather than
+        // skipped, to keep the two branches the same function.
+        const double az = std::atan2(out.directionX, out.directionY);
+        out.directionX = std::sin(az);
+        out.directionY = std::cos(az);
+        out.directionZ = 0.0;
+    }
     return out;
+}
+
+void spatialHighlight(GlassHighlightSettings& s, const SpatialHighlighting& p) {
+    // `[BIN]` `0x00012588`-`0x000125B8`. `hypot` of the two PLANAR components,
+    // divided by the SINE of `alignmentRange` -- not by the angle itself.
+    const double planar = std::hypot(s.directionX, s.directionY);
+    const double t = std::max(0.0, 1.0 - planar / std::sin(p.alignmentRange));
+
+    // `[BIN]` `0x000125BC`-`0x000125E0`. Aligned (`t -> 1`) sinks the opacity
+    // to `minIntensity`; unaligned (`t == 0`) leaves it alone.
+    s.opacity *= p.minIntensity + (1.0 - p.minIntensity) * (1.0 - std::pow(t, p.intensityPower));
+
+    // `[BIN]` `0x000125E4`-`0x00012614`. The cone opens TOWARDS pi, which is
+    // the sentinel the shader boundary reads as "no cone at all".
+    s.spread += std::pow(t, p.spreadPower) * (kPi - s.spread);
+
+    // `[BIN]` `0x00012618`-`0x00012638`.
+    s.height *= 1.0 + p.maxExtraHeight * std::pow(t, p.heightPower);
+
+    // `[BIN]` `0x0001263C`-`0x00012650`. `atan2` then `__sincos_stret`, and
+    // `str xzr, [x20, #0x18]`: the latitude is gone by the time the shader
+    // sees the direction.
+    const double az = std::atan2(s.directionX, s.directionY);
+    s.directionX = std::sin(az);
+    s.directionY = std::cos(az);
+    s.directionZ = 0.0;
 }
 
 double glassHighlightFragment(const GlassHighlightSettings& s, double sd, double nx, double ny,
@@ -190,7 +247,14 @@ double glassHighlightFragment(const GlassHighlightSettings& s, double sd, double
     const double d = sd - s.inset;
     if (s.height <= 0.0) return 0.0;
 
-    const double w = std::min(std::max(fwidthSd, kEps), 2.0) * 0.83349;
+    // `[BIN]` `%15 = fmul fast half %14, 0xH3AAA` (`default_mod1.ll`). The
+    // multiply is in HALF, so the constant the hardware uses is the half that
+    // `0xH3AAA` decodes to and not the decimal it was written from:
+    // exponent `0xE` and mantissa `0x2AA` give `2^-1 * (1 + 682/1024)` =
+    // `0.8330078125`. This file carried `0.83349` -- the source decimal, five
+    // parts in ten thousand away from the value the band edge is actually
+    // divided by.
+    const double w = std::min(std::max(fwidthSd, kEps), 2.0) * kBandWidth;
     const double band = sat(d / w + 0.5) * sat((s.height - d) / w + 0.5);
     if (band <= 0.0) return 0.0;
 
@@ -329,9 +393,26 @@ const char* specularDrawnNote() {
            "ICRRenderingParameters.Highlights (0x2008, 0x629 bytes, identico aos outros quatro "
            "conjuntos de glifo nesta versao) -- keySharp (distance 4/6 pt, cone pi/2, bias 0.5), "
            "keyDiffuse (16/24 pt, pi/3, 0.08), fillSharp a pi de distancia angular, e o `dark` "
-           "duas vezes a +-pi/2 com brightness 0 e portanto plusDarker; `[OBS]` sobram o escalar "
-           "ctx[0] que multiplica toda opacidade (0x4C010) e a pos-passagem espacial 0x12550, "
-           "ambos tomados como identidade";
+           "duas vezes a +-pi/2 com brightness 0 e portanto plusDarker. As tres identidades que "
+           "este bloco tomava por fe foram MEDIDAS e as tres sao identidades de verdade: `[BIN]` "
+           "ctx[0] (0x4C010) e GlobalConfiguration.lightIntensity, que vale 1.0; `[BIN]` a "
+           "latitude phi da luz e 0 porque customLightDirection e nil (a tag ctx+0x20 de 0x4BE74) "
+           "e, mesmo que nao fosse, 0x12550 reescreve a direcao como (sin theta, cos theta, 0) e "
+           "apaga a latitude; `[BIN]` a pos-passagem espacial 0x12550 e ICRRenderingParameters."
+           "spatialHighlighting e, com phi = 0, o fator dela t = max(0, 1 - hypot(dir.xy)/"
+           "sin(alignmentRange)) e exatamente 0 para QUALQUER valor dos seis parametros, entao as "
+           "quatro reescritas colapsam. `[OBS]` O QUE FALTA, E E POR ISSO QUE O REALCE SAI FORTE: "
+           "o alvo NAO compoe a saida branca do shader direto. Por realce ele faz save/beginLayer "
+           "(0x4977C/0x49784), desenha o glassHighlight dentro da camada, fecha com "
+           "clipLayerWithAlpha:1.0 mode:0 (0x497BC) e so entao pinta ATRAVES dessa mascara uma cor "
+           "montada por transformadas de cor compostas (addStyle:, 0x49800/0x49AB8, via 0x7064) a "
+           "partir de glyphHighlightVCM = [0.2, 1.2, 1.25, 0.0] + bool (Highlights+0xB0) ou "
+           "glyphDarklightVCM = [-0.15, 0.7, 1.25, 0.0] (Highlights+0xD8), com a base em 0xE2960 "
+           "inicializada em tempo de execucao por 0x49C78. O portao e glyphHighlightsUseVCM "
+           "(Highlights+0x90), lido em 0x494D8, e ele e TRUE nesta versao. Este renderizador esta "
+           "no ramo useVCM == false, cuja unica escala e glyphHighlightNonVCMScale = 1.0 (0x4955C) "
+           "-- isto e, forca cheia e sem polimento. A cor do realce, nao a geometria dele, e o que "
+           "sobra por ler";
 }
 
 }  // namespace rb

@@ -386,6 +386,68 @@ struct GlassHighlightSettings {
     BlendMode blendMode = BlendMode::PlusLighter;
 };
 
+// `[BIN]` `ICRRenderingParameters.SpatialHighlighting`, `params+0x258`, six
+// `Double`s, named by `fieldmd_iconrendering.txt 0xA48AC` and consumed -- all
+// six, in this order and nowhere else -- by `0x00012550`.
+//
+// `[OBS]` THE SIX VALUES ARE NOT READ. The builder that fills `params+0x258`
+// was not followed. What IS read is the function, and the function is what
+// decides whether they can matter: see `spatialHighlight()`.
+struct SpatialHighlighting {
+    double alignmentRange = 0.0;   // `params+0x258`, an ANGLE: `sin()` is taken
+    double intensityPower = 0.0;   // `params+0x260`
+    double minIntensity = 0.0;     // `params+0x268`
+    double spreadPower = 0.0;      // `params+0x270`
+    double heightPower = 0.0;      // `params+0x278`
+    double maxExtraHeight = 0.0;   // `params+0x280`
+    // `false` says the six above are placeholders, not measurements. The only
+    // caller that may pass `false` is one where the pass is provably the
+    // identity -- which is every caller with `lightLatitude == 0`.
+    bool read = false;
+};
+
+// `[BIN]` `0x00012550` (288 bytes), the post-pass `0x0004C0F8` runs over the
+// `GlassHighlightSettings` it has just built, in place. Four rewrites, and one
+// scalar drives all four:
+//
+//     t = max(0, 1 - hypot(dir.x, dir.y) / sin(alignmentRange))   ; 0x12594-0x125B8
+//     opacity *= minIntensity + (1 - minIntensity)*(1 - t^intensityPower)
+//                                                                ; 0x125BC-0x125E0
+//     spread  += t^spreadPower * (pi - spread)                   ; 0x125E4-0x12614
+//     height  *= 1 + maxExtraHeight * t^heightPower              ; 0x12618-0x12638
+//     theta    = atan2(dir.x, dir.y)
+//     dir      = (sin theta, cos theta, 0)                       ; 0x1263C-0x12650
+//
+// The stubs are named, not guessed: `0x8DD28` is `_hypot`, `0x8DE00` is `_sin`,
+// `0x8DDF4` is `_pow`, `0x8DCEC` is `_atan2`, `0x8DC68` is `___sincos_stret`.
+// The pi at `0x125F0`-`0x125FC` is a `mov`/`movk` quartet spelling
+// `0x400921FB54442D18`, which is why it is not in the constant pool.
+//
+// TWO CONSEQUENCES, AND BOTH ARE RESULTS RATHER THAN CODE
+// -------------------------------------------------------
+//   1. `[BIN]` THE LAST REWRITE DELETES THE LATITUDE. The direction that
+//      reaches the shader is ALWAYS `(sin theta, cos theta, 0)`, whatever
+//      `phi` was: `atan2` throws the length away and `str xzr, [x20, #0x18]`
+//      zeroes `z` unconditionally. So `phi` cannot move a highlight. It can
+//      only reach the pixel through `t`.
+//
+//   2. `[BIN]` AT `phi == 0` THE WHOLE PASS IS THE IDENTITY, AND THE SIX
+//      UNREAD NUMBERS CANNOT CHANGE THAT. `resolveHighlight` builds
+//      `dir = (cos(phi) sin(theta), cos(phi) cos(theta), sin(phi))`, so
+//      `hypot(dir.x, dir.y) == |cos(phi)| == 1`. `sin` of any angle is at most
+//      `1`, so `1/sin(alignmentRange) >= 1` and `t = max(0, 1 - something >= 1)`
+//      is exactly `0`. `pow(0, p) == 0`, so the opacity factor collapses to
+//      `minIntensity + (1 - minIntensity) == 1`, the spread gains nothing, the
+//      height gains nothing, and the direction is already flat.
+//
+// And `phi` IS `0` here -- not by assumption but by the tag: `0x0004BE74`
+// takes the `phi = 0` branch when `ctx[0x20] == 1`, and `ctx+0x00..0x67` is a
+// verbatim copy of `IconRendering.GlobalConfiguration` (see
+// `SpecularArguments::lightIntensity`), whose second field is
+// `customLightDirection: ICRUnitCartesianCoordinates?` -- so `ctx[0x20]` is
+// that Optional's tag and `== 1` is `nil`.
+void spatialHighlight(GlassHighlightSettings& settings, const SpatialHighlighting& p);
+
 // Everything the resolution needs that is not in the slot.
 struct SpecularArguments {
     IconSizeClass sizeClass = IconSizeClass::Large;
@@ -395,12 +457,52 @@ struct SpecularArguments {
     // `[BIN]` `Highlights.defaultGlyphLight.longitude`, `Highlights+0x08`,
     // which this version sets to `0.0` (`stp xzr, xzr, [x8]`, `0x00062AB8`).
     double lightLongitude = 0.0;
+    // `[BIN]` THE SCALAR THAT MULTIPLIES EVERY RESOLVED OPACITY, and it has a
+    // name now. `0x0004C010` loads `ctx[0x00]` and `0x0004C0A8`
+    // (`fmul d12, d13, d12`) multiplies the size-resolved opacity by it; it is
+    // loaded in exactly ONE place in the whole slice and stored in exactly one
+    // (`0x00042884`, `str q0, [sp, #0x480]`, where `sp+0x480` is the context
+    // base -- `add x19, sp, #0x480` at `0x00042B28`, immediately before
+    // `add x0, x19, #0x5f0` and the `0x3EF1`-byte `memmove` of `Highlights`).
+    //
+    // `[BIN]` Those first `0x68` bytes are copied verbatim from the fifth
+    // argument (`x4`) of `0x0004266C`, and the struct is
+    // `IconRendering.GlobalConfiguration` (`fieldmd 0xA327C`, 13 fields). Its
+    // layout falls out field for field:
+    //
+    //     +0x00 lightIntensity            Double   <- THIS
+    //     +0x08 customLightDirection      ICRUnitCartesianCoordinates? (3 x Double
+    //           .. +0x18                           + tag at +0x20)
+    //     +0x21 effectsAreEnabled         Bool     +0x22 drawMitigatedVersion
+    //     +0x23 forceEnableEnhancedGlass  Bool     +0x24/+0x25 the two ClearMode
+    //     +0x26 allowHDR                  Bool?
+    //     +0x28 enabledRenderingSteps     Int      <- the one `0x0004284C` ANDs
+    //     +0x30 _relativeIconInset        Double?  +0x40/+0x48 canvasSize
+    //     +0x50 chicletDropShadow         Bool?    +0x51..+0x67 iconShape
+    //
+    // which is `0x68` bytes exactly, and which is why `0x0004BE74` reads
+    // `ctx[0x20]` as an Optional tag and `0x0004BEA8` reads a size class far
+    // above it.
+    //
+    // `[BIN]` The value is `1.0`. `Docs/_confrontar/kernels/default-ramps.md`
+    // read the other initialiser of the same struct -- the `lightAngle:` one at
+    // `0x35DF0` -- and found `*param_1 = 0x3ff0000000000000` baked in at struct
+    // offset `0x0` precisely because that init supplies no intensity. So the
+    // identity this front took on faith is the identity the target ships.
+    double lightIntensity = 1.0;
+    // `[BIN]` The light's latitude, `phi`. `0x0004BE74` takes the `phi = 0`
+    // branch when the `customLightDirection` Optional tag (`ctx+0x20`) is `1`,
+    // i.e. `nil` -- the state this renderer is in. And see
+    // `spatialHighlight()`: even a non-zero `phi` cannot move a highlight,
+    // because `0x00012550` overwrites the direction with the `phi = 0` form.
+    double lightLatitude = 0.0;
     // `[BIN]` `[descriptor+0x38]`, the same multiplier the shadow front named:
     // it scales the `alpha:` of the `drawShape:` (`fmul d0, d10, d0`,
     // `0x000495F0`).
     double layerOpacity = 1.0;
     SpecularPlacement placement = SpecularPlacement::Automatic;
     bool identityRecolour = true;
+    SpatialHighlighting spatial;
 };
 
 // `[BIN]` `0x0004BD90`, plus the `inside`/`outside` fold of `0x000495D8`.

@@ -963,3 +963,120 @@ TEST_CASE(highlights_defaults_are_the_read_numbers_and_the_size_table_runs_backw
     CHECK(std::abs(rb::glassHighlightFragment(flat, 2.0, 0.0, -1.0, 1.0) - 1.0) < 1e-9);
     CHECK(std::abs(rb::glassHighlightFragment(flat, 2.0, 0.0, 1.0, 1.0) - 999.0 / 1001.0) < 1e-9);
 }
+
+// As tres identidades que o laudo dos realces deixou em aberto, agora medidas.
+// O caso trava as tres, e trava duas delas como TEOREMA e nao como numero de
+// conforto: valem para qualquer valor dos parametros que ainda nao foram lidos.
+TEST_CASE(the_three_assumed_identities_are_identities_and_one_of_them_for_any_parameters) {
+    std::size_t count = 0;
+    const rb::HighlightSlot* slots = rb::glyphHighlightSlots(count);
+    CHECK_EQ(count, static_cast<std::size_t>(5));
+
+    rb::SpecularArguments args;
+    args.sizeClass = rb::IconSizeClass::Display;
+    args.pixelsPerPoint = 1.0;
+
+    // 1. `[BIN]` `ctx[0]` e `GlobalConfiguration.lightIntensity`, e o valor que
+    // o alvo assa e `1.0` -- mas ele agora e um CAMPO, e um campo tem de
+    // multiplicar. Se alguem trocar o default por 0.5 a opacidade tem de cair
+    // pela metade; se `lightIntensity` estiver desligado do resultado, este
+    // CHECK e o que percebe.
+    const double full = rb::resolveHighlight(slots[0], args).opacity;
+    CHECK_EQ(args.lightIntensity, 1.0);
+    rb::SpecularArguments dim = args;
+    dim.lightIntensity = 0.5;
+    CHECK(std::abs(rb::resolveHighlight(slots[0], dim).opacity - full * 0.5) < 1e-12);
+
+    // 2. `[BIN]` `0x00012550` apaga a latitude. Seja qual for `phi`, a direcao
+    // que chega ao shader e `(sin theta, cos theta, 0)` -- `z` zerado por
+    // `str xzr, [x20, #0x18]` e o comprimento jogado fora pelo `atan2`. Um
+    // transcritor que guardasse `cos(phi)` nas componentes planares teria uma
+    // direcao mais curta, um `dot` menor, e o realce inteiro enfraqueceria com
+    // a luz alta pelo motivo errado.
+    rb::SpecularArguments tilted = args;
+    tilted.lightLatitude = 0.7;
+    const rb::GlassHighlightSettings up = rb::resolveHighlight(slots[0], tilted);
+    const rb::GlassHighlightSettings flatLight = rb::resolveHighlight(slots[0], args);
+    CHECK(std::abs(up.directionX - flatLight.directionX) < 1e-12);
+    CHECK(std::abs(up.directionY - flatLight.directionY) < 1e-12);
+    CHECK_EQ(up.directionZ, 0.0);
+    CHECK(std::abs(up.directionX * up.directionX + up.directionY * up.directionY - 1.0) < 1e-12);
+
+    // 3. `[BIN]` A pos-passagem espacial e a IDENTIDADE em `phi == 0`, e a
+    // prova nao depende dos seis numeros: `hypot(dir.xy) == |cos phi| == 1`,
+    // `sin` de qualquer angulo e no maximo 1, logo `t = max(0, 1 - 1/sin) == 0`
+    // e `pow(0, p) == 0` colapsa as quatro reescritas. O laco abaixo passa
+    // parametros diferentes e absurdos de proposito: se algum deles mover um
+    // bit, a leitura de `0x12550` esta errada.
+    const double ranges[4] = {0.3, 1.0, 1.5707963267948966, 3.0};
+    for (int i = 0; i < 4; ++i) {
+        rb::SpatialHighlighting p;
+        p.read = true;
+        p.alignmentRange = ranges[i];
+        p.intensityPower = 0.5 + i;
+        p.minIntensity = 0.1 * i;
+        p.spreadPower = 1.0 + i;
+        p.heightPower = 2.0;
+        p.maxExtraHeight = 3.0 + i;
+
+        const rb::GlassHighlightSettings before = rb::resolveHighlight(slots[0], args);
+        rb::GlassHighlightSettings after = before;
+        rb::spatialHighlight(after, p);
+        CHECK(std::abs(after.opacity - before.opacity) < 1e-12);
+        CHECK(std::abs(after.spread - before.spread) < 1e-12);
+        CHECK(std::abs(after.height - before.height) < 1e-12);
+        CHECK(std::abs(after.directionX - before.directionX) < 1e-12);
+        CHECK(std::abs(after.directionY - before.directionY) < 1e-12);
+    }
+
+    // E a passagem NAO e a funcao vazia: com a luz saindo do plano ela morde,
+    // e morde nos tres sentidos que `0x125BC`-`0x12638` escrevem.
+    rb::SpatialHighlighting live;
+    live.read = true;
+    live.alignmentRange = 1.5707963267948966;  // sin == 1
+    live.intensityPower = 1.0;
+    live.minIntensity = 0.25;
+    live.spreadPower = 1.0;
+    live.heightPower = 1.0;
+    live.maxExtraHeight = 2.0;
+    rb::GlassHighlightSettings bitten = rb::resolveHighlight(slots[0], args);
+    bitten.directionX = 0.0;
+    bitten.directionY = 0.5;  // hypot == 0.5 -> t == 0.5
+    bitten.directionZ = 0.8660254037844387;
+    const double beforeSpread = bitten.spread;
+    const double beforeHeight = bitten.height;
+    const double beforeOpacity = bitten.opacity;
+    rb::spatialHighlight(bitten, live);
+    // `opacity *= min + (1-min)*(1 - t^p)`, com `t = 0.5`, `p = 1`, `min = 0.25`
+    CHECK(std::abs(bitten.opacity - beforeOpacity * (0.25 + 0.75 * 0.5)) < 1e-12);
+    // `spread += t^p * (pi - spread)`
+    CHECK(std::abs(bitten.spread - (beforeSpread + 0.5 * (3.14159265358979323846 - beforeSpread)))
+          < 1e-12);
+    // `height *= 1 + maxExtraHeight * t^p`
+    CHECK(std::abs(bitten.height - beforeHeight * (1.0 + 2.0 * 0.5)) < 1e-12);
+    // e a direcao volta normalizada e plana, como nos dois ramos
+    CHECK_EQ(bitten.directionZ, 0.0);
+    CHECK(std::abs(bitten.directionY - 1.0) < 1e-12);
+}
+
+// `[BIN]` A largura da banda e a HALF `0xH3AAA` e nao a decimal de onde ela
+// veio. Cinco partes em dez mil so aparecem na borda fina -- que e exatamente
+// onde este realce vive.
+TEST_CASE(the_band_width_constant_is_the_half_the_shader_multiplies_by) {
+    rb::GlassHighlightSettings s;
+    s.height = 100.0;
+    s.spread = 3.2;  // sentinela: `lit == 1` na direcao certa
+    s.bias = 0.5;    // `bias' == 0`, denominador 1
+    s.curvature = 0.0;
+    s.directionX = 0.0;
+    s.directionY = 1.0;
+    // A borda de dentro e `saturate(sd/w + 0.5)`, e o joelho dela esta em
+    // `sd == w/2`. E so ali que as duas leituras da constante se separam.
+    const double w = 0.8330078125;
+    CHECK(rb::glassHighlightFragment(s, w * 0.5 + 1e-9, 0.0, -1.0, 1.0) >= 1.0 - 1e-9);
+    CHECK(rb::glassHighlightFragment(s, w * 0.5 - 1e-6, 0.0, -1.0, 1.0) < 1.0);
+    // a decimal antiga `0.83349` poria o joelho depois deste ponto, e portanto
+    // ainda daria banda cheia onde a half ja nao da
+    const double oldKnee = 0.83349 * 0.5;
+    CHECK(rb::glassHighlightFragment(s, oldKnee - 1e-9, 0.0, -1.0, 1.0) >= 1.0 - 1e-9);
+}
