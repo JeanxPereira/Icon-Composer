@@ -218,6 +218,20 @@ bool endsAre(float top, float bottom, float x, float y) {
     return (near(top, x) && near(bottom, y)) || (near(top, y) && near(bottom, x));
 }
 
+// HOW FAR IN THE RAMP IS SAMPLED, and why it is no longer row zero.
+//
+// The pastille draws its OWN highlights now (`ChicletHighlights.h`), and the
+// widest of the six is `keyDiffuse`/`fillDiffuse` at `distance == 40` canvas
+// points -- `40 * n / 1024` pixels, so 2.5 px at `n == 64` and 1.25 px at
+// `n == 32`. The outermost rows are lit, deliberately, and asking them what the
+// ramp's end value is now asks the wrong pixel.
+//
+// Four rows in clears the widest band at both sizes and costs almost nothing in
+// ramp value: the light pair spans 0.039 over the whole edge and the dark pair
+// 0.063, so 4/64 of the way in moves the sample by at most 0.004 -- well inside
+// `near`'s 0.01. What is being pinned is WHICH RAMP, and that is unchanged.
+constexpr std::uint32_t kRampInset = 4;
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -267,20 +281,23 @@ TEST_CASE(an_automatic_background_paints_the_chiclet_ramp_of_its_appearance) {
     for (icf::Appearance a : {icf::Appearance::Base, icf::Appearance::Light}) {
         auto icon = render(d, b.path(), a, n);
         REQUIRE(icon.has_value());
-        CHECK(endsAre(at(*icon, n / 2, 0).r, at(*icon, n / 2, n - 1).r, kLight0, kLight1));
+        CHECK(endsAre(at(*icon, n / 2, kRampInset).r,
+                      at(*icon, n / 2, n - 1 - kRampInset).r, kLight0, kLight1));
     }
 
     auto dark = render(d, b.path(), icf::Appearance::Dark, n);
     REQUIRE(dark.has_value());
     // 31 against 15 -- the pair where the undetermined direction is visible,
     // which is why it is named in the notes rather than silently chosen.
-    CHECK(endsAre(at(*dark, n / 2, 0).r, at(*dark, n / 2, n - 1).r, kDark0, kDark1));
+    CHECK(endsAre(at(*dark, n / 2, kRampInset).r, at(*dark, n / 2, n - 1 - kRampInset).r,
+                  kDark0, kDark1));
     CHECK(hasNote(*dark, kGradientAxisDirectionNote));
     CHECK(hasNote(*dark, kChicletRectNote));
     CHECK(hasNote(*dark, kBackgroundShapeNote));
 
     // A ramp, not a flat: the two ends differ by the whole of 31 -> 15.
-    CHECK(std::fabs(at(*dark, n / 2, 0).r - at(*dark, n / 2, n - 1).r) > 0.05f);
+    CHECK(std::fabs(at(*dark, n / 2, kRampInset).r -
+                    at(*dark, n / 2, n - 1 - kRampInset).r) > 0.05f);
 }
 
 // `[BIN]` `none` on the background is the SAME BLOCK as `automatic`, byte for
@@ -311,7 +328,8 @@ TEST_CASE(a_system_light_background_stays_the_light_ramp_under_dark) {
     const std::uint32_t n = 32;
     auto dark = render(d, b.path(), icf::Appearance::Dark, n);
     REQUIRE(dark.has_value());
-    CHECK(endsAre(at(*dark, n / 2, 0).r, at(*dark, n / 2, n - 1).r, kLight0, kLight1));
+    CHECK(endsAre(at(*dark, n / 2, kRampInset).r, at(*dark, n / 2, n - 1 - kRampInset).r,
+                  kLight0, kLight1));
 }
 
 // ---------------------------------------------------------------------------
