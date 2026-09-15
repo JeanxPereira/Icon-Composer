@@ -22,12 +22,15 @@
 // the two runs side by side.
 //
 // A single number would therefore either be a lie in Debug (unreachable, so it
-// never bites) or a lie in Release (reachable, so it flakes). The ceilings below
-// are written in RELEASE seconds -- the configuration a user's render actually
-// runs in -- and multiplied by `kBuildFactor` when `NDEBUG` is absent. `NDEBUG`
-// is the right discriminator and not a guess: CMake's `Release` adds `-DNDEBUG`
-// and its `Debug` does not, so the constant follows the build that produced the
-// binary rather than an environment variable somebody has to remember to set.
+// never bites) or a lie in Release (reachable, so it flakes). So each fixture
+// carries TWO measured seconds, one per build, and `kSlack` multiplies whichever
+// one this binary was compiled as. `NDEBUG` is the right discriminator and not a
+// guess: CMake's `Release` adds `-DNDEBUG` and its `Debug` does not, so the
+// constant follows the build that produced the binary rather than an environment
+// variable somebody has to remember to set.
+//
+// Deriving one build from the other by a ratio was the FIRST design and it was
+// wrong -- see the note above `kSlack`, and the measurement that condemned it.
 //
 // WHY THE SLACK IS SO LARGE
 // -------------------------
@@ -96,16 +99,15 @@ constexpr bool kIsRelease = false;
 //     full glass chain, 4, 512       0.229s     1.914s    8.4x
 //     corpus, 10 glass layers, 512   2.218s    16.181s    7.3x
 //
-// The ratio is NOT one number -- it runs 2.3x to 8.4x here, and a filtered run
-// of the glass case earlier put it at 11.2x. Debug taxes the inner loops (the
-// distance field's exact EDT) far harder than it taxes the parse and the
-// composite around them, so the fixture with the most field per second has the
-// worst ratio. 12 is the worst seen, rounded up, so the Debug ceiling is never
-// TIGHTER in real terms than the Release one it is derived from. It makes the
-// floor case's Debug ceiling very loose indeed -- 22 s against a 0.6 s
-// measurement -- and that is the right trade: the cheap case exists to say "the
-// glass chain is not what broke", and a 90x regression on it still lands at 54 s,
-// well over.
+// The ratio is NOT one number -- it runs 2.3x to 8.4x there, and a filtered run
+// of the glass case put it at 11.2x. Debug taxes the inner loops (the distance
+// field's transform) far harder than it taxes the parse and the composite around
+// them, so the fixture with the most field per second has the worst ratio.
+//
+// THAT SPREAD IS EXACTLY WHY NO SINGLE RATIO IS USED ANY MORE. The table is kept
+// because it is the evidence: a constant that has to cover 2.3x and 11.2x at
+// once is a constant that is wrong for every fixture. Each one now carries its
+// own Debug measurement instead.
 constexpr const char* kBuildName = "Debug (NDEBUG absent)";
 #endif
 
@@ -125,6 +127,15 @@ constexpr const char* kBuildName = "Debug (NDEBUG absent)";
 // so the headroom is 8x everywhere and 90x is red everywhere. The Debug numbers
 // are whole-suite runs on this machine taken after the blur ladder landed; the
 // Release ones are this front's own, kept as measured.
+//
+// RECALIBRADO no mesmo dia, horas depois, e o motivo e o proprio ponto deste
+// arquivo. O campo de distancia passou a sair de uma rasterizacao em vez de
+// `pixels x segmentos` e o caso do corpus caiu de 14.61 s para 1.98 s em Debug
+// (2.22 s -> 0.49 s em Release). Os tetos anteriores viraram 70x de margem, o
+// que e o mesmo que nao ter teto. Um orcamento so serve enquanto alguem o
+// reescreve quando o renderizador MELHORA -- e essa e a manutencao que ninguem
+// lembra de fazer, porque nada fica vermelho quando o codigo fica rapido.
+// Os numeros abaixo sao da suite inteira, ambas as configuracoes, apos o campo.
 
 // See the header note. Eight, because the machine alone has been seen to move a
 // render by 1.8x and a catastrophe moves it by ninety.
@@ -350,7 +361,7 @@ TEST_CASE(time_budget_no_glass_512) {
     std::size_t drawn = 0;
     const double s = timeRender(*bundle, renderSize(), drawn, /*warmUp=*/true);
     CHECK_EQ(drawn, static_cast<std::size_t>(kPlainLayers));
-    expectUnder("no glass, 64 layers, 512 px", s, 0.230, 0.650, drawn);
+    expectUnder("no glass, 64 layers, 512 px", s, 0.240, 0.620, drawn);
 }
 
 // `[INF]` 0.310 s, the worst of six whole-suite runs in Release. Four glass layers with the whole chain on
@@ -363,7 +374,7 @@ TEST_CASE(time_budget_full_glass_chain_512) {
     std::size_t drawn = 0;
     const double s = timeRender(*bundle, renderSize(), drawn, /*warmUp=*/true);
     CHECK_EQ(drawn, static_cast<std::size_t>(kGlassLayers));
-    expectUnder("full glass chain, 4 layers, 512 px", s, 0.310, 1.950, drawn);
+    expectUnder("full glass chain, 4 layers, 512 px", s, 0.130, 0.620, drawn);
 }
 
 // `[INF]` 2.800 s, the worst of six whole-suite runs in Release, on `Apollo-Reborn__Apollo-Reborn__AppIcon`,
@@ -387,5 +398,5 @@ TEST_CASE(time_budget_corpus_heaviest_512) {
     const double s = timeRender(*bundle, renderSize(), drawn, /*warmUp=*/false);
     const std::string what = "corpus " + p.filename().string() + ", " +
                              std::to_string(glassLayers) + " glass layer(s), 512 px";
-    expectUnder(what.c_str(), s, 2.800, 17.500, drawn);
+    expectUnder(what.c_str(), s, 0.500, 2.000, drawn);
 }
