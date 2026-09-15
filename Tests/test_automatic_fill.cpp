@@ -174,8 +174,15 @@ std::string backgroundOnly(const std::string& fillJson) {
     return "{\n  \"fill\" : " + fillJson + ",\n  \"groups\" : []\n}\n";
 }
 
+// `"glass" : false` is SPELLED here, and it has to be. A missing `glass` is
+// `true` -- `[BIN]` `Layer.init()` at `0x95C10` in
+// `IconComposerFoundation.arm64` stores 1 into `_isGlass.defaultValue`. These
+// fixtures are about the FILL, and a layer that participates in glass gets a
+// highlight and a translucency mask over the ramp, which is exactly the flatness
+// these cases measure. So the fixture says what it means.
 std::string oneLayer(const std::string& fillJson) {
     return "{\n  \"groups\" : [\n    {\n      \"layers\" : [\n        {\n"
+           "          \"glass\" : false,\n"
            "          \"image-name\" : \"red.svg\",\n"
            "          \"name\" : \"only\",\n"
            "          " + fillJson + "\n"
