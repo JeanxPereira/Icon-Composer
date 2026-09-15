@@ -1587,7 +1587,7 @@ git commit -m "o gate ganha onze mutacoes na Foundation editavel, e cada uma cai
     ```
   - `Headless.h`: `class HeadlessImGui { public: HeadlessImGui(float w = 1440, float h = 900); ~HeadlessImGui(); void newFrame(); void render(); std::uint64_t errors() const; }` — contexto sem backend, com `io.DisplaySize`, o atlas construído e `SetTexID(1)`, e um error callback que conta
 
-- [ ] **Step 1: implementar**
+- [x] **Step 1: implementar**
 
 No `CMakeLists.txt` da raiz, depois de `option(IC_SANITIZE ...)`:
 
@@ -1829,12 +1829,12 @@ if(IC_BUILD_UI)
 endif()
 ```
 
-- [ ] **Step 2: conferir que compila**
+- [x] **Step 2: conferir que compila**
 
 Run: `cmake --build --preset mingw`
 Expected: compila limpo, sem warning novo.
 
-- [ ] **Step 3: commitar**
+- [x] **Step 3: commitar**
 
 ```bash
 git add CMakeLists.txt Source/IconComposerKit
