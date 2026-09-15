@@ -15,6 +15,7 @@
 #include "Source/RenderBox/IconRenderer.h"
 #include "Source/RenderBox/SvgRenderer.h"
 
+#include <chrono>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -49,6 +50,38 @@ std::string readFile(const std::string& path, bool& ok) {
     ok = std::ferror(f) == 0;
     std::fclose(f);
     return out;
+}
+
+// HOW LONG THE DRAWING TOOK, AND WHY IT IS PRINTED AT ALL.
+//
+// On 2026-09-15 six fronts landed in one afternoon, every one of them green on
+// pixels, and together they took a 1024 px glass render from about a second to
+// eighty-seven. Nothing failed. Nothing was reported. The editor showed an empty
+// canvas because the work simply did not finish inside a human's patience, and
+// there was no number anywhere on the screen or in the terminal that said so.
+//
+// A tool that prints `10 of 10 layer(s) drawn` and nothing else cannot tell the
+// difference between fast and catastrophic, so neither can the person reading
+// it. The clock is around `renderIcon`/`renderSvg` ONLY -- not the parse, not
+// the PNG encode -- because that is the number the budget in
+// `Tests/test_time_budget.cpp` gates and the two must mean the same thing.
+class Clock {
+public:
+    double seconds() const {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count();
+    }
+
+private:
+    std::chrono::steady_clock::time_point t0_ = std::chrono::steady_clock::now();
+};
+
+// Seconds, with enough digits to be useful at both ends of the range this
+// pipeline actually spans: a no-glass 512 is a few hundredths, a glass 1024 is
+// tens of seconds.
+std::string secondsText(double s) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%.3f", s);
+    return buf;
 }
 
 }  // namespace
@@ -102,13 +135,16 @@ int main(int argc, char** argv) {
         io.size = options.width;
         io.subdivisions = options.subdivisions;
         io.context = ctx;
+        const Clock clock;
         auto icon = rb::renderIcon(*device, *bundle, io);
+        const double elapsed = clock.seconds();
         if (!icon) return fail(icon.error());
         const std::string wrote =
             icf::writePng(output, icon->rgba, icon->width, icon->height);
         if (!wrote.empty()) return fail(wrote);
-        std::fprintf(stdout, "%s: %u x %u, %zu of %zu layer(s) drawn\n", output.c_str(),
-                     icon->width, icon->height, icon->drawn, icon->total);
+        std::fprintf(stdout, "%s: %u x %u, %zu of %zu layer(s) drawn in %s s\n",
+                     output.c_str(), icon->width, icon->height, icon->drawn, icon->total,
+                     secondsText(elapsed).c_str());
         for (const auto& s : icon->skipped) {
             std::fprintf(stderr, "  grupo %zu / %s: %s\n", s.group, s.layer.c_str(),
                          s.why.c_str());
@@ -134,14 +170,17 @@ int main(int argc, char** argv) {
     auto doc = icf::svg::SvgDocument::parse(svg);
     if (!doc) return fail("not an SVG this reader can open: " + input);
 
+    const Clock clock;
     auto image = rb::renderSvg(*device, *doc, options);
+    const double elapsed = clock.seconds();
     if (!image) return fail(image.error());
 
     const std::string wrote = icf::writePng(output, image->rgba, image->width, image->height);
     if (!wrote.empty()) return fail(wrote);
 
-    std::fprintf(stdout, "%s: %u x %u, %zu of %zu shape(s) drawn\n", output.c_str(),
-                 image->width, image->height, image->drawn, doc->shapes.size());
+    std::fprintf(stdout, "%s: %u x %u, %zu of %zu shape(s) drawn in %s s\n", output.c_str(),
+                 image->width, image->height, image->drawn, doc->shapes.size(),
+                 secondsText(elapsed).c_str());
 
     // Every gap is reported, and the exit code says whether there was one. A
     // picture with a piece missing that exits 0 is a picture nobody checks.

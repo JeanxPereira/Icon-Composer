@@ -9,6 +9,7 @@
 #include "Source/IconComposerKit/Ports.h"
 #include "Source/IconComposerKit/Session.h"
 
+#include <chrono>
 #include <cstdint>
 
 namespace ick {
@@ -35,6 +36,12 @@ private:
     RenderView view_;
     Key requested_;
     bool everRequested_ = false;
+    // When the request now in flight was made. Wall time from HERE, and not from
+    // inside the render job, because the queue is part of what the person waits
+    // for: a scheduler that is already busy with an 87 second render will not
+    // start this one for 87 seconds, and a clock that only timed the draw would
+    // report a fast render while the canvas stayed empty.
+    std::chrono::steady_clock::time_point requestedAt_{};
 };
 
 }  // namespace ick

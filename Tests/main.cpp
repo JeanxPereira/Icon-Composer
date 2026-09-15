@@ -49,6 +49,15 @@ bool isSlow(const char* file) {
     static const char* kSlow[] = {
         "test_automatic_fill", "test_glass_layer", "test_icon_render", "test_png",
         "test_values_tojson", "test_document_edit", "test_bundle_save",
+        // The time budget is here for a DIFFERENT reason from the other six, and
+        // the reason matters. The others are slow because they walk the corpus;
+        // this one is slow ON PURPOSE -- it renders the corpus's heaviest
+        // document at the preview size and asks how long that took, which is
+        // 2.6s in Release and about 15s in Debug. Running it early would put
+        // fifteen seconds in front of every mutation the sweep's early exit was
+        // meant to answer in one. Last, it is paid only by the pristine run and
+        // by mutations that survived everything else.
+        "test_time_budget",
     };
     for (const char* s : kSlow) {
         if (std::strstr(file, s)) return true;
