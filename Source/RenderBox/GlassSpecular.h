@@ -503,6 +503,23 @@ struct SpecularArguments {
     SpecularPlacement placement = SpecularPlacement::Automatic;
     bool identityRecolour = true;
     SpatialHighlighting spatial;
+    // `shouldClampPlusLBlending` (`params+0x220`), which swaps CoreGraphics'
+    // plus-lighter for the `clampedPlusL` Metal shader. The flag is `[BIN]` and
+    // `true`, and the shader is `[BIN]` and transcribed in `BlendFormula.h`.
+    //
+    // `[OBS]` **IT IS OFF HERE, AND THAT IS A MEASUREMENT, NOT A HEDGE.** The
+    // substitution happens in exactly four places (`0x00044654`, `0x00044908`,
+    // `0x0004B57C`, `0x0004B7F4`), all inside the two content-draw functions
+    // `0x000435A0` and `0x0004B4EC`. **The glyph specular draw reaches none of
+    // them**: `0x000491C0`-`0x00049DBC` calls neither function, and it hands its
+    // blend mode straight to `drawShape:fill:alpha:blendMode:` at the bottom of
+    // `0x0000E834` (`0x0000ED00`), where there is no gate.
+    //
+    // So the clamp is real, it is on in the target, and what it covers is NOT
+    // this. Turning it on here moved zero pixels of the user's icon through the
+    // glyph path, which is what that reading predicts. The field is kept so the
+    // front that identifies the covered draws has somewhere to put the answer.
+    bool clampPlusLighter = false;
 };
 
 // `[BIN]` `0x0004BD90`, plus the `inside`/`outside` fold of `0x000495D8`.

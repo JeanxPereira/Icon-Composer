@@ -33,6 +33,26 @@ BlendColour composeWith(const BlendColour& src, const BlendColour& dst,
 
 }  // namespace
 
+BlendColour clampedPlusL(const BlendColour& source, const BlendColour& dest) {
+    // `[BIN]` `%3 = fadd fast <4 x half> %1, %0` -- the plain plus, all four
+    // channels, written dest-first because that is the order in the IR.
+    double sum[4];
+    for (int k = 0; k < 4; ++k) sum[k] = dest.rgba[k] + source.rgba[k];
+
+    BlendColour capped;
+    // `[BIN]` `air.fmin.v3f16(splat(half 0xH3C00), sum.rgb)`. `0xH3C00` is the
+    // half `1.0`, and `fmin` is an UPPER cap only: nothing puts a floor under
+    // rgb here, which is why the `fmax` below is not redundant.
+    for (int k = 0; k < 3; ++k) capped.rgba[k] = std::min(1.0, sum[k]);
+    // `[BIN]` `air.saturate.f16` on the alpha -- both ends, unlike rgb.
+    capped.rgba[3] = sat(sum[3]);
+
+    // `[BIN]` `air.fmax.v4f16(%1, ...)`: per channel against the BACKDROP.
+    BlendColour out;
+    for (int k = 0; k < 4; ++k) out.rgba[k] = std::max(dest.rgba[k], capped.rgba[k]);
+    return out;
+}
+
 bool blendIsTranscribed(BlendMode mode) {
     switch (mode) {
         case BlendMode::Normal:
@@ -78,6 +98,11 @@ BlendColour blend(BlendMode mode, const BlendColour& src, const BlendColour& dst
         // 44 adds is the negative slack `saturate(as+ab) - (as+ab)`, pushed
         // into rgb -- which is why it is the darker of the two.
         case BlendMode::PlusLighter:
+            // `[BIN]` `0x0004B530`/`0x00044618`: mode 8 with
+            // `shouldClampPlusLBlending` set never reaches the formula below --
+            // `setBlendShader:` hands the composite to `clampedPlusL`.
+            if (options.clampPlusLighter) return clampedPlusL(src, dst);
+            [[fallthrough]];
         case BlendMode::PlusDarker: {
             const double sum = as + ab;
             const double a = sat(sum);
