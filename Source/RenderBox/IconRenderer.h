@@ -308,6 +308,15 @@ extern const char* const kTranslucencyBoundsNote;
 // target rasterises onto before it transforms.
 extern const char* const kGlassRasterFieldNote;
 
+// A glass layer whose art is a VECTOR, whose distance field was nonetheless
+// built by rasterising that vector and transforming the rasterisation -- the
+// same door the raster art takes, and the same door `[BIN]` the target takes
+// for both. What the note carries that the raster one does not is the price:
+// the exact `argmin` over the contour is gone, and with it the sub-texel
+// distance and the continuous gradient direction. The laudo measures what that
+// costs in the picture.
+extern const char* const kGlassVectorFieldNote;
+
 Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                                 IconRenderOptions options = IconRenderOptions{});
 
