@@ -16,6 +16,27 @@
 // Localization -- are drawn DISABLED with the reason in a tooltip (spec 13/09
 // §7), not hidden. A menu that omits what the target has teaches the wrong
 // shape of the program.
+//
+// THE SHORTCUT COLUMN WAS TEXT, AND NOTHING WAS LISTENING
+// -------------------------------------------------------
+// `ImGui::MenuItem(label, shortcut, ...)` DRAWS its third argument right-aligned
+// and binds NOTHING: the string is a picture of a key. This bar advertised nine
+// chords -- Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+Shift+S, Ctrl+W, Ctrl+Q, Ctrl+Z, Ctrl+Y
+// and Del -- and a search of the whole Kit for `ImGuiKey`, `IsKeyPressed` or
+// `Shortcut` before this change returned nothing at all, in the Kit and in
+// `Source/app/` alike. So every one of them did nothing, including the undo the
+// coalescing work in the inspector exists to make usable.
+//
+// They are bound here, next to the labels that promise them, so the two cannot
+// drift apart. `ImGuiInputFlags_RouteGlobal` is the right route and not a
+// shortcut around focus: a route loses to an ACTIVE item, so Ctrl+Z inside the
+// asset panel's import field still edits the text, and Del while renaming a
+// layer still deletes a character rather than the layer. ImGui's text input
+// claims the whole keyboard while it is active, which is what makes that true.
+//
+// Redo answers BOTH Ctrl+Y and Ctrl+Shift+Z. The menu can only print one, and
+// the two halves of the world disagree about which; binding one and printing it
+// is cheaper than being right about the argument.
 #include "Source/IconComposerKit/Panels.h"
 #include "Source/IconComposerKit/ViewModel.h"
 
@@ -46,6 +67,12 @@ struct Builder {
 };
 
 constexpr const char* kRound5 = "Round 5: not built yet";
+
+// One chord, routed globally. Split out so that the binding and the label can be
+// read against each other in one place below.
+bool chord(ImGuiKeyChord keys) {
+    return ImGui::Shortcut(keys, ImGuiInputFlags_RouteGlobal);
+}
 
 // Reads a boolean property as the canvas would see it under the base context.
 // A property that is absent, or present with another type, is `false` -- the
@@ -183,6 +210,26 @@ MenuStats drawMenuBar(Session& s, MenuActions& a) {
     }
 
     ImGui::EndMenuBar();
+
+    // ---- the chords the labels above promise --------------------------------
+    // Outside the menu bar, so the routes are registered against the window and
+    // not against a menu that is open for one frame in a hundred. Each line is
+    // the same call the corresponding `b.item` makes, and each is guarded by the
+    // same condition, so a chord can never do what its greyed menu item cannot.
+    if (chord(ImGuiMod_Ctrl | ImGuiKey_N)) a.newDocument = true;
+    if (chord(ImGuiMod_Ctrl | ImGuiKey_O)) a.open = true;
+    if (chord(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S)) a.saveAs = true;
+    if (chord(ImGuiMod_Ctrl | ImGuiKey_S) && s.isDirty()) a.save = true;
+    if (chord(ImGuiMod_Ctrl | ImGuiKey_W)) a.close = true;
+    if (chord(ImGuiMod_Ctrl | ImGuiKey_Q)) a.quit = true;
+    if (chord(ImGuiMod_Ctrl | ImGuiKey_Z)) s.undo();
+    // Both calls run every frame, never short-circuited: `Shortcut` REGISTERS the
+    // route as well as reading it, and a route that is registered only on the
+    // frames the other chord missed is a route that intermittently is not there.
+    const bool redoY = chord(ImGuiMod_Ctrl | ImGuiKey_Y);
+    const bool redoZ = chord(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z);
+    if (redoY || redoZ) s.redo();
+    if (chord(ImGuiKey_Delete) && s.selection && s.selection->group) s.removeNode(*s.selection);
     return st;
 }
 

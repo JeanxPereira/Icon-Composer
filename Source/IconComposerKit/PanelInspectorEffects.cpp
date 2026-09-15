@@ -109,14 +109,14 @@ void blurMaterial(Section& x) {
         const bool isNull = !absent && v.value->kind() == icf::json::Value::Kind::Null;
         // `[ART]` 0.5 is the corpus's most common explicit strength, 41 of 75,
         // so it is what a switch from `null` to a number starts from.
-        float strength = static_cast<float>(numberOr(v.value, 0.5));
+        double strength = numberOr(v.value, 0.5);
         const char* preview = absent ? "not set" : (isNull ? "null" : "Explicit strength");
-        if (ImGui::BeginCombo("##blur-shape", preview)) {
+        if (ImGui::BeginCombo("Value", preview)) {
             if (ImGui::Selectable("null", isNull)) {
                 x.write("blur-material", icf::json::Value::null(), false);
             }
             if (ImGui::Selectable("Explicit strength", !absent && !isNull)) {
-                x.write("blur-material", icf::json::Value::number(static_cast<double>(strength)), false);
+                x.write("blur-material", icf::json::Value::number(strength), false);
             }
             ImGui::EndCombo();
         }
@@ -125,10 +125,12 @@ void blurMaterial(Section& x) {
             // negative strength is a negative radius rather than a clamp. The
             // slider stops at 0 because the corpus does -- 0.05 is its smallest
             // -- and not because the format does.
-            if (ImGui::SliderFloat("Strength", &strength, 0.0f, 1.0f, "%.4f")) {
-                x.write("blur-material", icf::json::Value::number(static_cast<double>(strength)), true);
-            }
-            if (ImGui::IsItemDeactivatedAfterEdit()) x.s.endCoalescing();
+            NumberEdit e = sliderNumber("Strength", &strength, 0.0, 1.0, "%.4f",
+                                        "Blur strength, 0 to 1. [BIN] the radius is min(b, 1) x 64 "
+                                        "points; the floor at 0 is the corpus's habit, not the "
+                                        "format's rule.");
+            if (e.changed) x.write("blur-material", icf::json::Value::number(strength), true);
+            if (e.released) x.s.endCoalescing();
         }
         caveat("The document stores this; the renderer does not draw it yet.",
                "readGlassMaterial reads blur-material and denormaliseBlurRadius turns it into a "
@@ -160,24 +162,30 @@ void refractivity(Section& x) {
         if (ImGui::Checkbox("Enabled", &r.enabled)) {
             x.write("refractivity", icf::refractivityToJson(r), false);
         }
-        float strength = static_cast<float>(r.strength);
-        float depth = static_cast<float>(r.depth);
+        double strength = r.strength;
+        double depth = r.depth;
         // `[BIN]` The strength keeps its SIGN and clamps only its magnitude --
         // which is why this slider is bipolar and the depth's is not. `[ART]`
         // both enabled entries in the whole corpus are negative
         // (-0.5269921875 and -0.3591796875), so a 0..1 slider could not reach
-        // either of the two real values the format is known to carry.
-        bool changed = ImGui::SliderFloat("Strength", &strength, -1.0f, 1.0f, "%.4f");
-        bool released = ImGui::IsItemDeactivatedAfterEdit();
+        // either of the two real values the format is known to carry. Those two
+        // numbers are also why this row had to gain typed entry: neither is
+        // reachable by dragging, and they are the only two the format is known
+        // to hold.
+        NumberEdit a = sliderNumber("Strength", &strength, -1.0, 1.0, "%.7f",
+                                    "Signed: [BIN] only the magnitude is clamped, so the sign is "
+                                    "the direction of the displacement. [ART] the corpus's two "
+                                    "enabled values are -0.5269921875 and -0.3591796875.");
         // `[BIN]` The depth is clamped on both sides before the power.
-        changed |= ImGui::SliderFloat("Depth", &depth, 0.0f, 1.0f, "%.4f");
-        released |= ImGui::IsItemDeactivatedAfterEdit();
-        if (changed) {
+        NumberEdit b = sliderNumber("Depth", &depth, 0.0, 1.0, "%.7f",
+                                    "[BIN] clamped on both sides before the power. A group that "
+                                    "carries no refractivity key is already at 0.5.");
+        if (a.changed || b.changed) {
             r.strength = strength;
             r.depth = depth;
             x.write("refractivity", icf::refractivityToJson(r), true);
         }
-        if (released) x.s.endCoalescing();
+        if (a.released || b.released) x.s.endCoalescing();
         caveat("`Enabled` does not gate the refraction.",
                "[OBS] glassMaterialFrom carries strength and depth across whether or not the bit "
                "is set: the eight-field GlassMaterial has no counterpart for it and where it "
@@ -204,7 +212,7 @@ void lighting(Section& x) {
         if (v.value && v.value->kind() == icf::json::Value::Kind::String) {
             if (auto read = icf::lightingFromString(v.value->rawString())) current = *read;
         }
-        if (ImGui::BeginCombo("##lighting", lightingLabel(current))) {
+        if (ImGui::BeginCombo("Mode", lightingLabel(current))) {
             for (auto c : kCases) {
                 if (ImGui::Selectable(lightingLabel(c), c == current)) {
                     x.write("lighting", icf::json::Value::string(std::string(icf::lightingToString(c))),
