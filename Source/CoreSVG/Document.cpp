@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <functional>
 
 namespace icf::svg {
 namespace {
@@ -222,6 +223,37 @@ bool isIgnorable(std::string_view name) {
            name == "sodipodi:namedview" || name == "inkscape:path-effect";
 }
 
+// WHERE THE TARGET'S PARSER LOOKS FOR DEFINITIONS -- which is not "inside
+// `<defs>`".
+//
+// `[BIN]` `SVGReader::parseXMLNode` (`CoreSVG.arm64 0x677C`) dispatches on the
+// element's atom BEFORE it looks at the parent, and its main switch
+// (0x6968-0x6CC0) sends `linearGradient` (atom 0x21) and `radialGradient`
+// (0x30) to `parseXMLNodeGradient` at 0x6AC0, `clipPath` (0x05) to 0x6AD8,
+// `pattern` (0x4F) to 0x6B30, `mask` (0x4A) to 0x6C90, `style` (0x3C) to 0x6CA4
+// and `filter` (0x54) to 0x6CB4 -- wherever the element stands. The `<defs>`
+// branch (0x6B44) is the SAME dispatch run over its children, plus one thing
+// the main switch does not do: a child that is not a definition is parsed into a
+// scratch node and each result handed to `addDefinitionNode` (0x6C38-0x6C78),
+// so `<defs><g><linearGradient>` is reached too. Every one of those helpers ends
+// in `SVGNode::addDefinitionNode` (0x2D648), which files the node under its id
+// in ONE map on the root (+0xA0). References are resolved only after the whole
+// tree is read -- `SVGReader::SVGReader` calls `parseXMLNode` at 0x5910 and
+// `resolveDefinitions` at 0x5924 -- so a reference BEFORE its definition
+// resolves like any other.
+//
+// `[BIN]` What it descends INTO is narrower than the document: `svg` (0x3D,
+// 0x6A24), `g` (0x1D, 0x6890), `symbol` (0x3E, built as a `g`, 0x6AEC), `defs`,
+// and the content of `clipPath`, `mask` and `pattern` (their helpers call
+// `parseXMLNode` on each child at 0x223D0, 0x224C8 and 0x225BC). A shape
+// primitive (0x68E8) and every other element (0x6CE4) become a node WITHOUT
+// their children being read -- `a` and `switch` are not even atoms in the table
+// `SVGAtom::initializeTable` (0x27D8) builds.
+bool targetDescendsInto(std::string_view name) {
+    return name == "svg" || name == "g" || name == "symbol" || name == "defs" ||
+           name == "clipPath" || name == "mask" || name == "pattern";
+}
+
 // The builder owns its own outputs; `SvgDocument::parse` is a member and moves
 // them in. A friend declaration would have to name a type from this file's
 // anonymous namespace, which a header cannot do.
@@ -370,6 +402,7 @@ struct Builder {
         if (e.name == "pattern") {
             const std::string* id = e.attribute("id");
             if (!id) return;  // unreferenceable, so it changes nothing
+            patterns.erase(*id);  // the last definition of an id wins -- see `collectClipPath`
             SvgDocument::Pattern p;
             if (const std::string* u = e.attribute("patternUnits")) {
                 if (*u == "userSpaceOnUse") {
@@ -475,6 +508,105 @@ struct Builder {
             return;
         }
         for (const auto& c : e.children) collectPatterns(c);
+    }
+
+    // Every gradient the target's parser reaches, before anything is drawn.
+    //
+    // `[ART]` Until 2026-09-15 `collectGradient` was called from ONE place: the
+    // `<defs>` branch of `walk`, for its direct children. A gradient anywhere
+    // else fell into the "not drawn" branch, and the shape naming it was drawn
+    // with a reference that resolved to nothing -- which the renderer turns into
+    // no colour at all. The corpus never showed it (161 of 161 gradients are
+    // direct children of `<defs>`); Adobe Illustrator 29 does it in every file,
+    // putting each `<linearGradient>` inside the `<g>` of the shape that uses it,
+    // and the six layers of the Icon Composer's own app icon came out
+    // `6 of 6 layer(s) drawn` and colourless.
+    //
+    // A PASS OF ITS OWN, so the order of the document stops mattering. And the
+    // reach is the target's (`targetDescendsInto`), not "the whole tree": a
+    // gradient inside an `<a>` is one the target never files.
+    void collectGradients(const Element& e) {
+        if (e.name == "linearGradient" || e.name == "radialGradient") {
+            collectGradient(e);
+            return;  // its children are stops, not definitions
+        }
+        if (!targetDescendsInto(e.name)) return;
+        for (const auto& c : e.children) collectGradients(c);
+    }
+
+    // ONE ID, TWO KINDS OF DEFINITION. The target keeps a single id -> node map
+    // (`addDefinitionNode`, root +0xA0), so a later `<mask id="x">` REPLACES an
+    // earlier `<linearGradient id="x">` and a `fill="url(#x)"` then meets a
+    // mask. This reader keeps one map per kind and would answer the fill with
+    // the gradient. `[ART]` No corpus file does it -- the 10 files with a
+    // repeated id repeat it on `<path>`, never on a definition -- so it is
+    // NAMED, not reproduced.
+    void nameIdsSharedAcrossKinds(const Element& root) {
+        std::map<std::string, std::set<std::string>> kinds;
+        std::function<void(const Element&)> visit = [&](const Element& e) {
+            const bool gradient = e.name == "linearGradient" || e.name == "radialGradient";
+            if (gradient || e.name == "clipPath" || e.name == "mask" || e.name == "pattern" ||
+                e.name == "filter") {
+                if (const std::string* id = e.attribute("id")) {
+                    kinds[*id].insert(gradient ? std::string("gradient") : e.name);
+                }
+            }
+            if (!targetDescendsInto(e.name)) return;
+            for (const auto& c : e.children) visit(c);
+        };
+        visit(root);
+        for (const auto& [id, k] : kinds) {
+            if (k.size() > 1) unsupported.insert("id repetido entre definicoes de tipos diferentes: " + id);
+        }
+    }
+
+    // The clip paths and masks inside a subtree the walk does not draw, filed
+    // where the target's parser would file them.
+    //
+    // `walk` reaches a `<clipPath>` or `<mask>` wherever it WALKS, and it does
+    // not walk everywhere the target parses: not under a group whose filter
+    // collapses (it returns before the children), not inside `<symbol>` or
+    // `<pattern>`, and not inside a `<defs>` child that is not itself a
+    // definition -- `<defs><g><clipPath>`. `[ART]` The corpus has none of the
+    // four (its 1 clip path and 3 masks all sit where the walk already goes), so
+    // this moves no corpus pixel; it closes the same gap the gradients had, for
+    // the kinds that share it.
+    //
+    // THE TRANSFORM IS THE CONTAINER'S, as in the `<defs>` branch: a definition's
+    // own `transform` is not folded in there either.
+    void collectDefinitionsIn(const Element& e, const Transform& here) {
+        for (const auto& c : e.children) {
+            if (c.name == "clipPath") {
+                collectClipPath(c, here);
+            } else if (c.name == "mask") {
+                collectMask(c, here);
+            } else if (targetDescendsInto(c.name)) {
+                collectDefinitionsOf(c, here);
+            }
+        }
+    }
+
+    // The same, for one element that is itself not drawn: a container is
+    // searched under its own `transform`, a clip path or mask is filed. A
+    // `transform` this cannot read files nothing -- `walk` names it wherever it
+    // does walk, and inventing a placement would be worse than a missing clip.
+    void collectDefinitionsOf(const Element& e, const Transform& parent) {
+        if (e.name == "clipPath") {
+            collectClipPath(e, parent);
+            return;
+        }
+        if (e.name == "mask") {
+            collectMask(e, parent);
+            return;
+        }
+        if (!targetDescendsInto(e.name)) return;
+        Transform here = parent;
+        if (const std::string* t = e.attribute("transform")) {
+            auto local = parseTransform(*t);
+            if (!local) return;
+            here = local->then(parent);
+        }
+        collectDefinitionsIn(e, here);
     }
 
     // What this element's `class` list contributes, later classes winning.
@@ -611,6 +743,14 @@ struct Builder {
         collectLiveRefs(e);
         const std::string* id = e.attribute("id");
         if (!id) return;
+        // THE LAST DEFINITION OF AN ID WINS. `[BIN]` `addDefinitionNode`
+        // (0x2D648) finds the id already in the root's map, releases the node
+        // it held and erases the entry (0x2D714-0x2D72C) before inserting the
+        // new one (0x2D768). This used to APPEND to the earlier clip's paths --
+        // the union of both, which is neither definition. And a later one that
+        // is refused below still displaces the earlier: in the target the
+        // earlier is gone either way.
+        clipPaths.erase(*id);
         // `objectBoundingBox` re-scales the clip to each USER's bounding box, so
         // one definition means different geometry per referrer. That is a real
         // difference and it is named rather than silently read as user space.
@@ -642,6 +782,7 @@ struct Builder {
         collectLiveRefs(e);
         const std::string* id = e.attribute("id");
         if (!id) return;
+        masks.erase(*id);  // the last definition of an id wins -- see `collectClipPath`
         // `maskUnits` DEFAULTS TO `objectBoundingBox`, which re-scales the
         // region per referrer. `[ART]` All three corpus masks say
         // `userSpaceOnUse` outright, so refusing the other reading costs
@@ -763,6 +904,11 @@ struct Builder {
         // either.
         if (!inherited.filterId.empty()) {
             auto f = filters.find(inherited.filterId);
+            // Nothing here is DRAWN -- but a clip path or mask defined in here is
+            // still a definition, and the target files it at parse time, long
+            // before any filter runs. Two lines on the same test, not one block:
+            // the second is an anchor of the mutation sweep (`gate-m1.ps1`).
+            if (f != filters.end() && f->second.collapses()) collectDefinitionsOf(e, parent);
             if (f != filters.end() && f->second.collapses()) return;
         }
 
@@ -877,12 +1023,19 @@ struct Builder {
         } else if (e.name == "mask") {
             collectMask(e, here);
             return;
+        } else if (e.name == "linearGradient" || e.name == "radialGradient") {
+            // A DEFINITION WHEREVER IT STANDS, and already collected by
+            // `collectGradients`. It draws nothing and it is not a gap -- until
+            // 2026-09-15 this fell into the last branch and was named
+            // `linearGradient`, while the shape that used it lost its colour.
+            return;
         } else if (e.name == "filter" || e.name == "pattern" || e.name == "image") {
             // All three are collected before the walk. `<image>` is the odd one:
             // SVG DOES draw it where it stands, and this reader only reads the
             // ones a `<pattern>` names -- so a bare `<image>` on the canvas is
             // still a gap, and says so.
             if (e.name == "image" && !e.attribute("id")) unsupported.insert("image");
+            if (e.name == "pattern") collectDefinitionsIn(e, here);
             return;
         } else if (e.name == "clipPath") {
             // Outside `<defs>` as well: `<clipPath>` is a definition wherever it
@@ -896,7 +1049,8 @@ struct Builder {
             // is named once.
             for (const auto& c : e.children) {
                 if (c.name == "linearGradient" || c.name == "radialGradient") {
-                    collectGradient(c);
+                    // Collected before the walk, with every other gradient the
+                    // target reaches -- see `collectGradients`.
                 } else if (c.name == "clipPath") {
                     collectClipPath(c, here);
                 } else if (c.name == "mask") {
@@ -913,6 +1067,7 @@ struct Builder {
                         cid && (c.name == "pattern" ? patterns.count(*cid) > 0
                                                     : images.count(*cid) > 0);
                     if (!collected) recordDefinition(c);
+                    if (c.name == "pattern") collectDefinitionsIn(c, here);
                 } else if (c.name != "style" && c.name != "filter") {
                     // `style` and `filter` are collected in passes of their own,
                     // before the walk.
@@ -932,6 +1087,12 @@ struct Builder {
                     // whether anything drawn can reach it, and that is not known
                     // until the walk is over.
                     recordDefinition(c);
+                    // AND SEARCHED. `[BIN]` The target parses a non-definition
+                    // child of `<defs>` like any other element and files what it
+                    // finds inside (0x6C38-0x6C78), so `<defs><g><clipPath>` is
+                    // a clip path there. Gradients are already covered by their
+                    // own pass; this is for the kinds the walk collects.
+                    collectDefinitionsOf(c, here);
                 }
             }
             return;
@@ -945,6 +1106,9 @@ struct Builder {
             // whatever an editor invented. Doc 04 §4 is the scope; this is how a
             // file that leaves it says so.
             unsupported.insert(e.name);
+            // `<symbol>` is still not DRAWN here, but the target parses its
+            // content (as a `g`, 0x6AEC), so what it defines is filed.
+            if (e.name == "symbol") collectDefinitionsIn(e, here);
             return;
         }
 
@@ -1108,6 +1272,8 @@ std::optional<SvgDocument> SvgDocument::parse(std::string_view svg) {
     b.collectStyles(xml->root);
     b.collectFilters(xml->root);
     b.collectPatterns(xml->root);
+    b.collectGradients(xml->root);
+    b.nameIdsSharedAcrossKinds(xml->root);
     b.walk(xml->root, Transform{}, Inherited{});
     doc.shapes = std::move(b.shapes);
     doc.gradients = std::move(b.gradients);

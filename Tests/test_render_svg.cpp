@@ -1005,3 +1005,42 @@ TEST_CASE(a_clip_cuts_the_stroke_and_not_only_the_fill) {
     CHECK(std::fabs(alphaAt(*img, 4, 16) - 1.0f) < 0.01f);    // stroke, inside
     CHECK(std::fabs(alphaAt(*img, 27, 16) - 0.0f) < 0.01f);   // stroke, clipped
 }
+
+// THE PIXEL, NOT THE COUNTER. `[ART]` The Icon Composer's own app icon rendered
+// `6 of 6 layer(s) drawn` with every gradient outside `<defs>` and no colour in
+// any of them: the shapes WERE drawn, with a reference that resolved to nothing.
+// So this compares the image, not `drawn`: the same gradient outside `<defs>`
+// and AFTER its user has to give the same pixels as the ordinary arrangement.
+TEST_CASE(a_gradient_outside_defs_paints_the_same_pixels_as_one_inside) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    const std::string grad =
+        "<linearGradient id=\"g\" x1=\"0\" y1=\"0\" x2=\"32\" y2=\"0\" "
+        "gradientUnits=\"userSpaceOnUse\">"
+        "<stop offset=\"0\" style=\"stop-color:#004EF3\"/>"
+        "<stop offset=\"1\" style=\"stop-color:#77C0F8\"/></linearGradient>";
+    const std::string shape = "<path d=\"M0 0 L32 0 L32 32 L0 32 Z\" fill=\"url(#g)\"/>";
+    auto inDefs = icf::svg::SvgDocument::parse(
+        svgWith("0 0 32 32", "<defs>" + grad + "</defs><g>" + shape + "</g>"));
+    auto outside = icf::svg::SvgDocument::parse(
+        svgWith("0 0 32 32", "<g>" + shape + grad + "</g>"));
+    REQUIRE(inDefs.has_value());
+    REQUIRE(outside.has_value());
+    RenderOptions o;
+    o.width = o.height = 32;
+    o.subdivisions = 1;
+    auto a = renderSvg(d, *inDefs, o);
+    auto b = renderSvg(d, *outside, o);
+    REQUIRE(a.has_value());
+    REQUIRE(b.has_value());
+    CHECK(b->skipped.empty());
+    // Coloured at all: the left end is the first stop's blue, not black or empty.
+    CHECK(channelAt(*b, 1, 16, 2) > 0.8f);
+    CHECK(alphaAt(*b, 1, 16) > 0.99f);
+    REQUIRE(a->rgba.size() == b->rgba.size());
+    std::size_t differing = 0;
+    for (std::size_t i = 0; i < a->rgba.size(); ++i) {
+        if (a->rgba[i] != b->rgba[i]) ++differing;
+    }
+    CHECK_EQ(differing, std::size_t(0));
+}

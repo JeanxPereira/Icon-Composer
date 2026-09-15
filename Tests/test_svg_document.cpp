@@ -629,3 +629,121 @@ TEST_CASE(a_stroke_reference_seeds_the_reachability_walk_too) {
     CHECK_EQ(doc->unsupported().count("defs:pattern"), std::size_t(1));
     CHECK_EQ(doc->unsupported().count("defs:image"), std::size_t(1));
 }
+
+// ---- definitions outside `<defs>` ---------------------------------------
+//
+// `[BIN]` `SVGReader::parseXMLNode` (CoreSVG.arm64 0x677C) sends a gradient,
+// clip path, mask, pattern, filter or style to its collector WHEREVER it stands,
+// and resolves references only after the whole tree is read (0x5910, then
+// `resolveDefinitions` at 0x5924). Until 2026-09-15 this reader collected a
+// gradient only as a direct child of `<defs>` -- and no corpus file noticed,
+// because all 161 corpus gradients are one. Adobe Illustrator puts them inside
+// the `<g>` of the shape that uses them, and the Icon Composer's own app icon
+// came out `6 of 6 layer(s) drawn` and without colour.
+
+// THE CASE NOBODY CAUGHT, in its hardest form: the gradient is outside `<defs>`
+// AND after the shape that names it. A reader that collects on the way down in
+// one pass fails the second half even once it fixes the first.
+TEST_CASE(a_gradient_outside_defs_and_after_its_user_is_still_the_fill) {
+    auto d = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
+        <g id="art">
+          <path d="M1 1 L9 1 L9 9 Z" fill="url(#late)"/>
+          <linearGradient id="late" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="10" y2="0">
+            <stop offset="0" style="stop-color:#FF0000"/>
+            <stop offset="1" style="stop-color:#0000FF"/>
+          </linearGradient>
+        </g></svg>)SVG");
+    REQUIRE(d.has_value());
+    REQUIRE(d->gradients.count("late") == 1);
+    CHECK_EQ(d->gradients.at("late").stops.size(), std::size_t(2));
+    // A DEFINITION DRAWS NOTHING: one shape, the path, and no geometry made of
+    // the gradient or its stops.
+    REQUIRE(d->shapes.size() == 1);
+    CHECK_EQ(d->shapes[0].element, std::string("path"));
+    CHECK_EQ(paintText(d->shapes[0].fill), std::string("url:late"));
+    // And the report no longer calls it an element the reader does not draw.
+    CHECK_EQ(d->unsupported().count("linearGradient"), std::size_t(0));
+    CHECK(d->unsupported().empty());
+}
+
+// Illustrator 29's exact arrangement, radial as well as linear, and one level
+// deeper inside `<defs>` -- `<defs><g><linearGradient>` -- which the target's
+// `<defs>` branch reaches through 0x6C38-0x6C78.
+TEST_CASE(a_gradient_is_collected_wherever_the_target_parser_reaches) {
+    auto d = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
+        <g><g><radialGradient id="deep" cx="5" cy="5" r="4"><stop offset="0" stop-color="black"/>
+        </radialGradient><path d="M1 1" fill="url(#deep)"/></g></g>
+        <defs><g><linearGradient id="nested"><stop offset="0" stop-color="white"/></linearGradient></g></defs>
+        <symbol id="s"><linearGradient id="insymbol"/></symbol>
+        </svg>)SVG");
+    REQUIRE(d.has_value());
+    CHECK_EQ(d->gradients.count("deep"), std::size_t(1));
+    CHECK_EQ(d->gradients.count("nested"), std::size_t(1));
+    CHECK_EQ(d->gradients.count("insymbol"), std::size_t(1));
+    CHECK_EQ(d->shapes.size(), std::size_t(1));
+}
+
+// THE REACH IS THE TARGET'S, NOT THE DOCUMENT'S. `[BIN]` `a` is not an atom in
+// `SVGAtom::initializeTable` (0x27D8) and falls to the default branch of
+// `parseXMLNode` (0x6CE4), which builds a node WITHOUT reading its children --
+// so a gradient in there is never filed, and a reference to it resolves to
+// nothing in the target too.
+TEST_CASE(a_gradient_where_the_target_parser_does_not_descend_is_not_collected) {
+    auto d = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
+        <a><linearGradient id="ina"/></a><path d="M1 1"/></svg>)SVG");
+    REQUIRE(d.has_value());
+    CHECK_EQ(d->gradients.count("ina"), std::size_t(0));
+}
+
+// THE LAST DEFINITION OF AN ID WINS. `[BIN]` `SVGNode::addDefinitionNode`
+// (0x2D648) erases the id's earlier node (0x2D714-0x2D72C) and inserts the new
+// one (0x2D768). For clip paths this reader used to APPEND the second to the
+// first -- the union of both, which is neither.
+TEST_CASE(a_repeated_definition_id_keeps_the_last_one_and_not_the_union) {
+    auto d = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
+        <defs>
+          <linearGradient id="g"><stop offset="0" stop-color="#FF0000"/></linearGradient>
+          <clipPath id="c"><rect x="0" y="0" width="2" height="2"/></clipPath>
+        </defs>
+        <g><linearGradient id="g"><stop offset="0" stop-color="#00FF00"/>
+             <stop offset="1" stop-color="#0000FF"/></linearGradient>
+           <clipPath id="c"><rect x="5" y="5" width="2" height="2"/></clipPath></g>
+        <path d="M1 1" fill="url(#g)" clip-path="url(#c)"/></svg>)SVG");
+    REQUIRE(d.has_value());
+    REQUIRE(d->gradients.count("g") == 1);
+    CHECK_EQ(d->gradients.at("g").stops.size(), std::size_t(2));
+    REQUIRE(d->clipPaths.count("c") == 1);
+    REQUIRE(d->clipPaths.at("c").size() == 1);
+    CHECK_EQ(pointText(d->clipPaths.at("c")[0].segments[0].p[0]), std::string("500,500"));
+}
+
+// One id on two KINDS of definition is a question the per-kind maps cannot
+// answer the target's way (its single map keeps only the later node), so it is
+// named instead of quietly answered with the gradient.
+TEST_CASE(an_id_shared_by_two_kinds_of_definition_is_named) {
+    auto d = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
+        <defs><linearGradient id="x"/><clipPath id="x"><rect width="1" height="1"/></clipPath></defs>
+        <path d="M1 1"/></svg>)SVG");
+    REQUIRE(d.has_value());
+    CHECK_EQ(d->unsupported().count("id repetido entre definicoes de tipos diferentes: x"),
+             std::size_t(1));
+}
+
+// The walk returns before the children of a group whose filter collapses --
+// correctly, for DRAWING. But a clip path defined in there is a definition the
+// target filed at parse time, and a shape outside the group may name it. The
+// same for a mask one level inside a `<defs>` child that is not itself a
+// definition.
+TEST_CASE(a_clip_path_the_walk_never_draws_through_is_still_collected) {
+    auto d = SvgDocument::parse(R"SVG(<svg viewBox="0 0 10 10">
+        <g filter="url(#f)"><clipPath id="hidden"><rect width="3" height="3"/></clipPath>
+           <rect width="4" height="4"/></g>
+        <defs><g><mask id="m" maskUnits="userSpaceOnUse"><rect width="2" height="2" fill="white"/></mask></g>
+          <filter id="f"><feColorMatrix/></filter></defs>
+        <path d="M1 1 L2 2" clip-path="url(#hidden)" mask="url(#m)"/></svg>)SVG");
+    REQUIRE(d.has_value());
+    CHECK_EQ(d->clipPaths.count("hidden"), std::size_t(1));
+    CHECK_EQ(d->masks.count("m"), std::size_t(1));
+    // The collapsed group still draws nothing, and the clip's rect is not a shape.
+    CHECK_EQ(d->shapes.size(), std::size_t(1));
+}
