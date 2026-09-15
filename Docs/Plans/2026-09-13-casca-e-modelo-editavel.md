@@ -4797,8 +4797,16 @@ mutação não apanhada** — exatamente o que o gate existe para proibir.
 E linkar o Kit na suíte não é opção barata: o Kit depende de `imgui_lib`, que
 **nenhum `CMakeLists.txt` deste repositório define** — ele vem do OnyxSDK por
 `FetchContent`, sob `IC_BUILD_UI`. Amarrar a suíte ao Kit amarraria a suíte ao
-Onyx, e a regra 2 da spec de arquitetura existe para impedir isso. O Kit continua
-afirmado pelo `--selftest` sobre os 145 bundles, que é outro instrumento.
+Onyx, e a regra 2 da spec de arquitetura existe para impedir isso.
+
+> **Correção, mesma data, mais tarde.** A frente do idiom do canvas achou a saída
+> que este parágrafo não viu: `Tests/CMakeLists.txt:61` linka o Kit **atrás de
+> `if(TARGET IconComposerKit)`**. Com `-DIC_BUILD_UI=OFF` o alvo não existe, o
+> `if` é falso e a suíte segue sem Onyx; com a UI ligada, quatro casos passam a
+> exercitar o `RenderCoordinator` de verdade. **Não era impossível — era
+> condicional.** O que continua verdade é a conclusão prática para o gate: ele
+> roda com `IC_BUILD_UI=OFF`, logo esses casos não correm nele, e uma âncora de
+> mutação em `Session.cpp` **continua sem quem a apanhe na varredura**.
 
 > A grafia do `from` do rascunho também já não casava: entre `redo_.clear();` e o
 > `if (cleanDepth_ > undo_.size())` há duas linhas de comentário, e a âncora
