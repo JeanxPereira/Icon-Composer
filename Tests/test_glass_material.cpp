@@ -21,6 +21,7 @@
 #include "Source/IconComposerFoundation/IconDocument.h"
 #include "Source/IconComposerFoundation/Json.h"
 #include "Source/RenderBox/GlassMaterial.h"
+#include "Source/RenderBox/GlassSpecular.h"
 
 #include <cmath>
 #include <cstdio>
@@ -781,4 +782,55 @@ TEST_CASE(glass_material_corpus_gate) {
     // `[ART]` And every real height lands inside the read range.
     CHECK(minHeight >= 12.8);
     CHECK(maxHeight <= 256.0);
+}
+
+// The specular placement fold. Nothing draws from it yet -- the shader it feeds
+// is named and its parameter block is not (`GlassSpecular.h`) -- so what is
+// pinned here is the SHAPE of the decision, which is the part a reader of the
+// enum would get wrong.
+//
+// A three-case enum that collapses to one bit invites exactly one conclusion:
+// that two of the three cases are the same case. They are not. What is true is
+// narrower and stranger, and both halves of it are `[BIN]`:
+//
+//   - the bit can only ever ASK for `outside`; two conditions that belong to
+//     the renderer and not to the document can refuse it;
+//   - `automatic` is a third answer, not a synonym for either neighbour: it
+//     follows the identity recolour state, and it follows it towards `outside`,
+//     which is the OPPOSITE direction from the shadow's gate of the same shape.
+TEST_CASE(specular_placement_is_a_request_that_two_renderer_conditions_can_refuse) {
+    using rb::SpecularPlacement;
+
+    // `[BIN]` `0x000494E4`: a bright highlight ORs a literal 1 into the result,
+    // so no document can move it. Only the `multiply` pass can go outside.
+    for (auto p : {SpecularPlacement::Automatic, SpecularPlacement::Inside,
+                   SpecularPlacement::Outside}) {
+        CHECK(rb::specularDrawsInside(p, /*identityRecolour=*/false, /*isDarklight=*/false,
+                                      /*hasOutsetOpacity=*/true));
+    }
+
+    // `[BIN]` `0x000494F8`: a nil `constraints.outsetOpacity` forces inside too.
+    CHECK(rb::specularDrawsInside(SpecularPlacement::Outside, false, true, false));
+
+    // With both refusals out of the way the document is finally heard, and the
+    // three cases are three answers.
+    CHECK(!rb::specularDrawsInside(SpecularPlacement::Outside, true, true, true));
+    CHECK(rb::specularDrawsInside(SpecularPlacement::Inside, false, true, true));
+    CHECK(rb::specularDrawsInside(SpecularPlacement::Automatic, true, true, true));
+    CHECK(!rb::specularDrawsInside(SpecularPlacement::Automatic, false, true, true));
+
+    // `[BIN]` `0x000495E0`-`0x000495EC`. Same thickness, mirrored about the
+    // anchor, and flat on the outside because `curvature` is zeroed there.
+    const rb::SpecularBand declared{/*height=*/4.0, /*inset=*/10.0, /*curvature=*/0.75};
+    const rb::SpecularBand inside = rb::specularBand(declared, true);
+    const rb::SpecularBand outside = rb::specularBand(declared, false);
+
+    // The shader's band is `0 <= distance - inset <= height`, so these are the
+    // two intervals in distance, and they meet at the anchor without overlap.
+    CHECK_EQ(inside.inset, 10.0);
+    CHECK_EQ(inside.inset + inside.height, 14.0);
+    CHECK_EQ(outside.inset, 6.0);
+    CHECK_EQ(outside.inset + outside.height, 10.0);
+    CHECK_EQ(inside.curvature, 0.75);
+    CHECK_EQ(outside.curvature, 0.0);
 }

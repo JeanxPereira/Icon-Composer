@@ -40,6 +40,7 @@ add_library(RenderBox STATIC
     SdfDisplacement.cpp
     GlassMaterial.cpp
     GlassTranslucency.cpp
+    GlassSpecular.cpp
     GlassLayer.cpp
     FillResolve.cpp
     SystemFill.cpp
