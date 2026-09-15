@@ -23,19 +23,21 @@ Result<Buffer> Buffer::create(Device& device, VkDeviceSize size, VkBufferUsageFl
 
     Buffer b;
     b.device_ = device.handle();
+    b.api_ = &device.api();
     b.size_ = size;
+    const DeviceApi& api = device.api();
 
     VkBufferCreateInfo bci{};
     bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bci.size = size;
     bci.usage = usage;
     bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (VkResult r = vkCreateBuffer(b.device_, &bci, nullptr, &b.buffer_); r != VK_SUCCESS) {
+    if (VkResult r = api.vkCreateBuffer(b.device_, &bci, nullptr, &b.buffer_); r != VK_SUCCESS) {
         return std::unexpected(std::string("vkCreateBuffer: ") + describe(r));
     }
 
     VkMemoryRequirements req{};
-    vkGetBufferMemoryRequirements(b.device_, b.buffer_, &req);
+    api.vkGetBufferMemoryRequirements(b.device_, b.buffer_, &req);
     auto index = device.memoryTypeIndex(req.memoryTypeBits, properties);
     if (!index) return std::unexpected(index.error());
 
@@ -43,10 +45,10 @@ Result<Buffer> Buffer::create(Device& device, VkDeviceSize size, VkBufferUsageFl
     mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     mai.allocationSize = req.size;
     mai.memoryTypeIndex = *index;
-    if (VkResult r = vkAllocateMemory(b.device_, &mai, nullptr, &b.memory_); r != VK_SUCCESS) {
+    if (VkResult r = api.vkAllocateMemory(b.device_, &mai, nullptr, &b.memory_); r != VK_SUCCESS) {
         return std::unexpected(std::string("vkAllocateMemory: ") + describe(r));
     }
-    if (VkResult r = vkBindBufferMemory(b.device_, b.buffer_, b.memory_, 0); r != VK_SUCCESS) {
+    if (VkResult r = api.vkBindBufferMemory(b.device_, b.buffer_, b.memory_, 0); r != VK_SUCCESS) {
         return std::unexpected(std::string("vkBindBufferMemory: ") + describe(r));
     }
 
@@ -54,7 +56,7 @@ Result<Buffer> Buffer::create(Device& device, VkDeviceSize size, VkBufferUsageFl
     // it is written, copied and dropped, and map/unmap around every touch buys
     // nothing but calls.
     if ((properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
-        if (VkResult r = vkMapMemory(b.device_, b.memory_, 0, VK_WHOLE_SIZE, 0, &b.mapped_);
+        if (VkResult r = api.vkMapMemory(b.device_, b.memory_, 0, VK_WHOLE_SIZE, 0, &b.mapped_);
             r != VK_SUCCESS) {
             return std::unexpected(std::string("vkMapMemory: ") + describe(r));
         }
@@ -64,10 +66,11 @@ Result<Buffer> Buffer::create(Device& device, VkDeviceSize size, VkBufferUsageFl
 
 void Buffer::destroy() {
     if (device_ == VK_NULL_HANDLE) return;
-    if (mapped_ != nullptr) vkUnmapMemory(device_, memory_);
-    if (buffer_ != VK_NULL_HANDLE) vkDestroyBuffer(device_, buffer_, nullptr);
-    if (memory_ != VK_NULL_HANDLE) vkFreeMemory(device_, memory_, nullptr);
+    if (mapped_ != nullptr) api_->vkUnmapMemory(device_, memory_);
+    if (buffer_ != VK_NULL_HANDLE) api_->vkDestroyBuffer(device_, buffer_, nullptr);
+    if (memory_ != VK_NULL_HANDLE) api_->vkFreeMemory(device_, memory_, nullptr);
     device_ = VK_NULL_HANDLE;
+    api_ = nullptr;
     buffer_ = VK_NULL_HANDLE;
     memory_ = VK_NULL_HANDLE;
     mapped_ = nullptr;
@@ -77,7 +80,7 @@ void Buffer::destroy() {
 Buffer::~Buffer() { destroy(); }
 
 Buffer::Buffer(Buffer&& other) noexcept
-    : device_(other.device_), buffer_(other.buffer_), memory_(other.memory_),
+    : device_(other.device_), api_(other.api_), buffer_(other.buffer_), memory_(other.memory_),
       size_(other.size_), mapped_(other.mapped_) {
     other.device_ = VK_NULL_HANDLE;
     other.buffer_ = VK_NULL_HANDLE;
@@ -90,6 +93,7 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
     if (this != &other) {
         destroy();
         device_ = other.device_;
+        api_ = other.api_;
         buffer_ = other.buffer_;
         memory_ = other.memory_;
         size_ = other.size_;
@@ -122,10 +126,11 @@ Result<void> upload(Device& device, Buffer& destination, const void* bytes, std:
 
     VkBuffer src = stage->handle();
     VkBuffer dst = destination.handle();
-    return device.submitAndWait([src, dst, count](VkCommandBuffer cmd) {
+    const DeviceApi* api = &device.api();
+    return device.submitAndWait([api, src, dst, count](VkCommandBuffer cmd) {
         VkBufferCopy region{};
         region.size = count;
-        vkCmdCopyBuffer(cmd, src, dst, 1, &region);
+        api->vkCmdCopyBuffer(cmd, src, dst, 1, &region);
     });
 }
 
@@ -144,10 +149,11 @@ Result<std::vector<std::uint8_t>> download(Device& device, const Buffer& source)
 
     VkBuffer src = source.handle();
     VkBuffer dst = stage->handle();
-    auto ran = device.submitAndWait([src, dst, count](VkCommandBuffer cmd) {
+    const DeviceApi* api = &device.api();
+    auto ran = device.submitAndWait([api, src, dst, count](VkCommandBuffer cmd) {
         VkBufferCopy region{};
         region.size = count;
-        vkCmdCopyBuffer(cmd, src, dst, 1, &region);
+        api->vkCmdCopyBuffer(cmd, src, dst, 1, &region);
     });
     if (!ran) return std::unexpected(ran.error());
 

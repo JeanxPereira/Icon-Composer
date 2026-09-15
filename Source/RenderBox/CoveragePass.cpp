@@ -12,13 +12,14 @@ static const std::uint32_t kFragmentSpirv[] =
 namespace rb {
 namespace {
 
-Result<VkShaderModule> module(VkDevice device, const std::uint32_t* code, std::size_t bytes) {
+Result<VkShaderModule> module(const DeviceApi& api, VkDevice device, const std::uint32_t* code,
+                             std::size_t bytes) {
     VkShaderModuleCreateInfo ci{};
     ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     ci.codeSize = bytes;
     ci.pCode = code;
     VkShaderModule m = VK_NULL_HANDLE;
-    if (VkResult r = vkCreateShaderModule(device, &ci, nullptr, &m); r != VK_SUCCESS) {
+    if (VkResult r = api.vkCreateShaderModule(device, &ci, nullptr, &m); r != VK_SUCCESS) {
         return std::unexpected(std::string("vkCreateShaderModule: ") + describe(r));
     }
     return m;
@@ -30,6 +31,8 @@ Result<CoveragePass> CoveragePass::create(Device& device, VkFormat format) {
     if (!device.valid()) return std::unexpected(std::string("CoveragePass on an invalid device"));
     CoveragePass p;
     p.device_ = device.handle();
+    p.api_ = &device.api();
+    const DeviceApi& api = device.api();
 
     // ---- the render pass -------------------------------------------------
     VkAttachmentDescription colour{};
@@ -59,7 +62,7 @@ Result<CoveragePass> CoveragePass::create(Device& device, VkFormat format) {
     rpi.pAttachments = &colour;
     rpi.subpassCount = 1;
     rpi.pSubpasses = &sub;
-    if (VkResult r = vkCreateRenderPass(p.device_, &rpi, nullptr, &p.renderPass_);
+    if (VkResult r = api.vkCreateRenderPass(p.device_, &rpi, nullptr, &p.renderPass_);
         r != VK_SUCCESS) {
         return std::unexpected(std::string("vkCreateRenderPass: ") + describe(r));
     }
@@ -74,7 +77,7 @@ Result<CoveragePass> CoveragePass::create(Device& device, VkFormat format) {
     dsl.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     dsl.bindingCount = 1;
     dsl.pBindings = &binding;
-    if (VkResult r = vkCreateDescriptorSetLayout(p.device_, &dsl, nullptr, &p.setLayout_);
+    if (VkResult r = api.vkCreateDescriptorSetLayout(p.device_, &dsl, nullptr, &p.setLayout_);
         r != VK_SUCCESS) {
         return std::unexpected(std::string("vkCreateDescriptorSetLayout: ") + describe(r));
     }
@@ -88,16 +91,16 @@ Result<CoveragePass> CoveragePass::create(Device& device, VkFormat format) {
     pli.pSetLayouts = &p.setLayout_;
     pli.pushConstantRangeCount = 1;
     pli.pPushConstantRanges = &push;
-    if (VkResult r = vkCreatePipelineLayout(p.device_, &pli, nullptr, &p.layout_);
+    if (VkResult r = api.vkCreatePipelineLayout(p.device_, &pli, nullptr, &p.layout_);
         r != VK_SUCCESS) {
         return std::unexpected(std::string("vkCreatePipelineLayout: ") + describe(r));
     }
 
     // ---- the pipeline ----------------------------------------------------
-    auto vs = module(p.device_, kVertexSpirv, sizeof kVertexSpirv);
+    auto vs = module(api, p.device_, kVertexSpirv, sizeof kVertexSpirv);
     if (!vs) return std::unexpected(vs.error());
     p.vertex_ = *vs;
-    auto fs = module(p.device_, kFragmentSpirv, sizeof kFragmentSpirv);
+    auto fs = module(api, p.device_, kFragmentSpirv, sizeof kFragmentSpirv);
     if (!fs) return std::unexpected(fs.error());
     p.fragment_ = *fs;
 
@@ -170,7 +173,7 @@ Result<CoveragePass> CoveragePass::create(Device& device, VkFormat format) {
     gpi.pDynamicState = &dyn;
     gpi.layout = p.layout_;
     gpi.renderPass = p.renderPass_;
-    if (VkResult r = vkCreateGraphicsPipelines(p.device_, VK_NULL_HANDLE, 1, &gpi, nullptr,
+    if (VkResult r = api.vkCreateGraphicsPipelines(p.device_, VK_NULL_HANDLE, 1, &gpi, nullptr,
                                                &p.pipeline_);
         r != VK_SUCCESS) {
         return std::unexpected(std::string("vkCreateGraphicsPipelines: ") + describe(r));
@@ -184,7 +187,7 @@ Result<CoveragePass> CoveragePass::create(Device& device, VkFormat format) {
     dpi.maxSets = 1;
     dpi.poolSizeCount = 1;
     dpi.pPoolSizes = &size;
-    if (VkResult r = vkCreateDescriptorPool(p.device_, &dpi, nullptr, &p.pool_); r != VK_SUCCESS) {
+    if (VkResult r = api.vkCreateDescriptorPool(p.device_, &dpi, nullptr, &p.pool_); r != VK_SUCCESS) {
         return std::unexpected(std::string("vkCreateDescriptorPool: ") + describe(r));
     }
     VkDescriptorSetAllocateInfo dsa{};
@@ -192,7 +195,7 @@ Result<CoveragePass> CoveragePass::create(Device& device, VkFormat format) {
     dsa.descriptorPool = p.pool_;
     dsa.descriptorSetCount = 1;
     dsa.pSetLayouts = &p.setLayout_;
-    if (VkResult r = vkAllocateDescriptorSets(p.device_, &dsa, &p.set_); r != VK_SUCCESS) {
+    if (VkResult r = api.vkAllocateDescriptorSets(p.device_, &dsa, &p.set_); r != VK_SUCCESS) {
         return std::unexpected(std::string("vkAllocateDescriptorSets: ") + describe(r));
     }
     return p;
@@ -200,14 +203,17 @@ Result<CoveragePass> CoveragePass::create(Device& device, VkFormat format) {
 
 void CoveragePass::destroy() {
     if (device_ == VK_NULL_HANDLE) return;
-    if (pipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(device_, pipeline_, nullptr);
-    if (layout_ != VK_NULL_HANDLE) vkDestroyPipelineLayout(device_, layout_, nullptr);
-    if (pool_ != VK_NULL_HANDLE) vkDestroyDescriptorPool(device_, pool_, nullptr);
-    if (setLayout_ != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device_, setLayout_, nullptr);
-    if (renderPass_ != VK_NULL_HANDLE) vkDestroyRenderPass(device_, renderPass_, nullptr);
-    if (vertex_ != VK_NULL_HANDLE) vkDestroyShaderModule(device_, vertex_, nullptr);
-    if (fragment_ != VK_NULL_HANDLE) vkDestroyShaderModule(device_, fragment_, nullptr);
+    if (pipeline_ != VK_NULL_HANDLE) api_->vkDestroyPipeline(device_, pipeline_, nullptr);
+    if (layout_ != VK_NULL_HANDLE) api_->vkDestroyPipelineLayout(device_, layout_, nullptr);
+    if (pool_ != VK_NULL_HANDLE) api_->vkDestroyDescriptorPool(device_, pool_, nullptr);
+    if (setLayout_ != VK_NULL_HANDLE) {
+        api_->vkDestroyDescriptorSetLayout(device_, setLayout_, nullptr);
+    }
+    if (renderPass_ != VK_NULL_HANDLE) api_->vkDestroyRenderPass(device_, renderPass_, nullptr);
+    if (vertex_ != VK_NULL_HANDLE) api_->vkDestroyShaderModule(device_, vertex_, nullptr);
+    if (fragment_ != VK_NULL_HANDLE) api_->vkDestroyShaderModule(device_, fragment_, nullptr);
     device_ = VK_NULL_HANDLE;
+    api_ = nullptr;
     pipeline_ = VK_NULL_HANDLE;
     layout_ = VK_NULL_HANDLE;
     pool_ = VK_NULL_HANDLE;
@@ -221,7 +227,7 @@ void CoveragePass::destroy() {
 CoveragePass::~CoveragePass() { destroy(); }
 
 CoveragePass::CoveragePass(CoveragePass&& o) noexcept
-    : device_(o.device_), renderPass_(o.renderPass_), setLayout_(o.setLayout_),
+    : device_(o.device_), api_(o.api_), renderPass_(o.renderPass_), setLayout_(o.setLayout_),
       layout_(o.layout_), pipeline_(o.pipeline_), pool_(o.pool_), set_(o.set_),
       vertex_(o.vertex_), fragment_(o.fragment_) {
     o.device_ = VK_NULL_HANDLE;
@@ -238,6 +244,7 @@ CoveragePass& CoveragePass::operator=(CoveragePass&& o) noexcept {
     if (this != &o) {
         destroy();
         device_ = o.device_;
+        api_ = o.api_;
         renderPass_ = o.renderPass_;
         setLayout_ = o.setLayout_;
         layout_ = o.layout_;
@@ -287,7 +294,8 @@ Result<void> CoveragePass::draw(Device& device, Image& target, const PathBuffer&
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     write.pBufferInfo = &bi;
-    vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    const DeviceApi& api = *api_;
+    api.vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
 
     VkImageView view = target.view();
     VkFramebufferCreateInfo fbi{};
@@ -299,7 +307,8 @@ Result<void> CoveragePass::draw(Device& device, Image& target, const PathBuffer&
     fbi.height = target.height();
     fbi.layers = 1;
     VkFramebuffer framebuffer = VK_NULL_HANDLE;
-    if (VkResult r = vkCreateFramebuffer(device_, &fbi, nullptr, &framebuffer); r != VK_SUCCESS) {
+    if (VkResult r = api.vkCreateFramebuffer(device_, &fbi, nullptr, &framebuffer);
+        r != VK_SUCCESS) {
         return std::unexpected(std::string("vkCreateFramebuffer: ") + describe(r));
     }
 
@@ -323,26 +332,26 @@ Result<void> CoveragePass::draw(Device& device, Image& target, const PathBuffer&
         rbi.renderArea.extent = {w, h};
         rbi.clearValueCount = 1;
         rbi.pClearValues = &clear;
-        vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+        api.vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
 
         VkViewport viewport{};
         viewport.width = static_cast<float>(w);
         viewport.height = static_cast<float>(h);
         viewport.maxDepth = 1.0f;
-        vkCmdSetViewport(cmd, 0, 1, &viewport);
+        api.vkCmdSetViewport(cmd, 0, 1, &viewport);
         VkRect2D scissor{};
         scissor.extent = {w, h};
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
+        api.vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0,
+        api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0,
                                 nullptr);
-        vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PathGlobals),
+        api.vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PathGlobals),
                            &globals);
-        vkCmdDraw(cmd, indices * 6, instances, 0, 0);
-        vkCmdEndRenderPass(cmd);
+        api.vkCmdDraw(cmd, indices * 6, instances, 0, 0);
+        api.vkCmdEndRenderPass(cmd);
     });
-    vkDestroyFramebuffer(device_, framebuffer, nullptr);
+    api.vkDestroyFramebuffer(device_, framebuffer, nullptr);
     if (!ran) return std::unexpected(ran.error());
     return {};
 }

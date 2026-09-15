@@ -38,6 +38,7 @@ private:
     void destroy();
 
     VkDevice device_ = VK_NULL_HANDLE;
+    const DeviceApi* api_ = nullptr;   // this device's dispatch -- see Buffer.h
     VkShaderModule module_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout layout_ = VK_NULL_HANDLE;

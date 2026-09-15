@@ -61,7 +61,15 @@ const char* describe(VkResult r) {
 }
 
 Result<Device> Device::create(DeviceOptions options) {
+    // Before ANY Vulkan call, and `hasLayer` below is one: with volk in the build
+    // every entry point -- `vkEnumerateInstanceLayerProperties` included -- is a
+    // null function pointer until the loader has been brought up.
+    if (VkResult r = initialiseLoader(); r != VK_SUCCESS) {
+        return std::unexpected(fail("the Vulkan loader could not be initialised", r));
+    }
+
     Device d;
+    d.api_ = std::make_unique<DeviceApi>();
 
     VkApplicationInfo app{};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -83,6 +91,11 @@ Result<Device> Device::create(DeviceOptions options) {
     if (VkResult r = vkCreateInstance(&ici, nullptr, &d.instance_); r != VK_SUCCESS) {
         return std::unexpected(fail("vkCreateInstance", r));
     }
+    // Instance-level entry points, for the enumeration below. These land in the
+    // loader's global slots and that is safe: they are trampolines that dispatch
+    // on the handle they are passed, so Onyx reading them and this tower reading
+    // them are the same read.
+    loadInstanceApi(d.instance_);
 
     std::uint32_t count = 0;
     vkEnumeratePhysicalDevices(d.instance_, &count, nullptr);
@@ -133,14 +146,19 @@ Result<Device> Device::create(DeviceOptions options) {
     if (VkResult r = vkCreateDevice(d.physical_, &dci, nullptr, &d.device_); r != VK_SUCCESS) {
         return std::unexpected(fail("vkCreateDevice", r));
     }
-    vkGetDeviceQueue(d.device_, d.queueFamily_, 0, &d.queue_);
+    // From here on nothing in this tower touches a global Vulkan symbol: the
+    // device's own dispatch is loaded once, and every device-level call goes
+    // through it.
+    loadDeviceApi(*d.api_, d.device_);
+    d.api_->vkGetDeviceQueue(d.device_, d.queueFamily_, 0, &d.queue_);
 
     VkCommandPoolCreateInfo pci{};
     pci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT |
                 VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     pci.queueFamilyIndex = d.queueFamily_;
-    if (VkResult r = vkCreateCommandPool(d.device_, &pci, nullptr, &d.pool_); r != VK_SUCCESS) {
+    if (VkResult r = d.api_->vkCreateCommandPool(d.device_, &pci, nullptr, &d.pool_);
+        r != VK_SUCCESS) {
         return std::unexpected(fail("vkCreateCommandPool", r));
     }
     return d;
@@ -148,9 +166,9 @@ Result<Device> Device::create(DeviceOptions options) {
 
 void Device::destroy() {
     if (device_ != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(device_);
-        if (pool_ != VK_NULL_HANDLE) vkDestroyCommandPool(device_, pool_, nullptr);
-        vkDestroyDevice(device_, nullptr);
+        api_->vkDeviceWaitIdle(device_);
+        if (pool_ != VK_NULL_HANDLE) api_->vkDestroyCommandPool(device_, pool_, nullptr);
+        api_->vkDestroyDevice(device_, nullptr);
     }
     if (instance_ != VK_NULL_HANDLE) vkDestroyInstance(instance_, nullptr);
     instance_ = VK_NULL_HANDLE;
@@ -163,7 +181,8 @@ void Device::destroy() {
 Device::~Device() { destroy(); }
 
 Device::Device(Device&& other) noexcept
-    : instance_(other.instance_), physical_(other.physical_), device_(other.device_),
+    : api_(std::move(other.api_)),
+      instance_(other.instance_), physical_(other.physical_), device_(other.device_),
       queue_(other.queue_), pool_(other.pool_), queueFamily_(other.queueFamily_),
       name_(std::move(other.name_)) {
     other.instance_ = VK_NULL_HANDLE;
@@ -176,6 +195,7 @@ Device::Device(Device&& other) noexcept
 Device& Device::operator=(Device&& other) noexcept {
     if (this != &other) {
         destroy();
+        api_ = std::move(other.api_);
         instance_ = other.instance_;
         physical_ = other.physical_;
         device_ = other.device_;
@@ -217,20 +237,21 @@ Result<void> Device::submitAndWait(const std::function<void(VkCommandBuffer)>& r
     ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     ai.commandBufferCount = 1;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
-    if (VkResult r = vkAllocateCommandBuffers(device_, &ai, &cmd); r != VK_SUCCESS) {
+    const DeviceApi& api = *api_;
+    if (VkResult r = api.vkAllocateCommandBuffers(device_, &ai, &cmd); r != VK_SUCCESS) {
         return std::unexpected(fail("vkAllocateCommandBuffers", r));
     }
 
     VkCommandBufferBeginInfo bi{};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (VkResult r = vkBeginCommandBuffer(cmd, &bi); r != VK_SUCCESS) {
-        vkFreeCommandBuffers(device_, pool_, 1, &cmd);
+    if (VkResult r = api.vkBeginCommandBuffer(cmd, &bi); r != VK_SUCCESS) {
+        api.vkFreeCommandBuffers(device_, pool_, 1, &cmd);
         return std::unexpected(fail("vkBeginCommandBuffer", r));
     }
     record(cmd);
-    if (VkResult r = vkEndCommandBuffer(cmd); r != VK_SUCCESS) {
-        vkFreeCommandBuffers(device_, pool_, 1, &cmd);
+    if (VkResult r = api.vkEndCommandBuffer(cmd); r != VK_SUCCESS) {
+        api.vkFreeCommandBuffers(device_, pool_, 1, &cmd);
         return std::unexpected(fail("vkEndCommandBuffer", r));
     }
 
@@ -240,8 +261,8 @@ Result<void> Device::submitAndWait(const std::function<void(VkCommandBuffer)>& r
     VkFenceCreateInfo fi{};
     fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     VkFence fence = VK_NULL_HANDLE;
-    if (VkResult r = vkCreateFence(device_, &fi, nullptr, &fence); r != VK_SUCCESS) {
-        vkFreeCommandBuffers(device_, pool_, 1, &cmd);
+    if (VkResult r = api.vkCreateFence(device_, &fi, nullptr, &fence); r != VK_SUCCESS) {
+        api.vkFreeCommandBuffers(device_, pool_, 1, &cmd);
         return std::unexpected(fail("vkCreateFence", r));
     }
 
@@ -249,13 +270,13 @@ Result<void> Device::submitAndWait(const std::function<void(VkCommandBuffer)>& r
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cmd;
-    VkResult submitted = vkQueueSubmit(queue_, 1, &si, fence);
+    VkResult submitted = api.vkQueueSubmit(queue_, 1, &si, fence);
     if (submitted == VK_SUCCESS) {
         constexpr std::uint64_t kTenSeconds = 10ull * 1000 * 1000 * 1000;
-        submitted = vkWaitForFences(device_, 1, &fence, VK_TRUE, kTenSeconds);
+        submitted = api.vkWaitForFences(device_, 1, &fence, VK_TRUE, kTenSeconds);
     }
-    vkDestroyFence(device_, fence, nullptr);
-    vkFreeCommandBuffers(device_, pool_, 1, &cmd);
+    api.vkDestroyFence(device_, fence, nullptr);
+    api.vkFreeCommandBuffers(device_, pool_, 1, &cmd);
     if (submitted == VK_TIMEOUT) {
         return std::unexpected(std::string("the submission did not complete in 10 s on ") + name_);
     }

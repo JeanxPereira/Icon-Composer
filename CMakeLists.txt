@@ -76,7 +76,7 @@ if(IC_BUILD_UI)
         unset(CMAKE_POLICY_VERSION_MINIMUM CACHE)
     endif()
     add_subdirectory(Source/IconComposerKit)
-    # add_subdirectory(Source/app)   # the executable does not exist yet
+    add_subdirectory(Source/app)
 endif()
 
 if(IC_BUILD_TESTS)

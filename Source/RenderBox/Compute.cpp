@@ -14,13 +14,15 @@ Result<ComputePass> ComputePass::create(Device& device, const std::uint32_t* spi
 
     ComputePass p;
     p.device_ = device.handle();
+    p.api_ = &device.api();
     p.pushBytes_ = pushConstantBytes;
+    const DeviceApi& api = device.api();
 
     VkShaderModuleCreateInfo smi{};
     smi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     smi.codeSize = byteCount;
     smi.pCode = spirv;
-    if (VkResult r = vkCreateShaderModule(p.device_, &smi, nullptr, &p.module_); r != VK_SUCCESS) {
+    if (VkResult r = api.vkCreateShaderModule(p.device_, &smi, nullptr, &p.module_); r != VK_SUCCESS) {
         return std::unexpected(std::string("vkCreateShaderModule: ") + describe(r));
     }
 
@@ -35,7 +37,7 @@ Result<ComputePass> ComputePass::create(Device& device, const std::uint32_t* spi
     dsl.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     dsl.bindingCount = 2;
     dsl.pBindings = bindings;
-    if (VkResult r = vkCreateDescriptorSetLayout(p.device_, &dsl, nullptr, &p.setLayout_);
+    if (VkResult r = api.vkCreateDescriptorSetLayout(p.device_, &dsl, nullptr, &p.setLayout_);
         r != VK_SUCCESS) {
         return std::unexpected(std::string("vkCreateDescriptorSetLayout: ") + describe(r));
     }
@@ -49,7 +51,7 @@ Result<ComputePass> ComputePass::create(Device& device, const std::uint32_t* spi
     pli.pSetLayouts = &p.setLayout_;
     pli.pushConstantRangeCount = pushConstantBytes > 0 ? 1 : 0;
     pli.pPushConstantRanges = &push;
-    if (VkResult r = vkCreatePipelineLayout(p.device_, &pli, nullptr, &p.layout_);
+    if (VkResult r = api.vkCreatePipelineLayout(p.device_, &pli, nullptr, &p.layout_);
         r != VK_SUCCESS) {
         return std::unexpected(std::string("vkCreatePipelineLayout: ") + describe(r));
     }
@@ -61,7 +63,7 @@ Result<ComputePass> ComputePass::create(Device& device, const std::uint32_t* spi
     cpi.stage.module = p.module_;
     cpi.stage.pName = "main";
     cpi.layout = p.layout_;
-    if (VkResult r = vkCreateComputePipelines(p.device_, VK_NULL_HANDLE, 1, &cpi, nullptr,
+    if (VkResult r = api.vkCreateComputePipelines(p.device_, VK_NULL_HANDLE, 1, &cpi, nullptr,
                                               &p.pipeline_);
         r != VK_SUCCESS) {
         return std::unexpected(std::string("vkCreateComputePipelines: ") + describe(r));
@@ -75,7 +77,7 @@ Result<ComputePass> ComputePass::create(Device& device, const std::uint32_t* spi
     dpi.maxSets = 1;
     dpi.poolSizeCount = 1;
     dpi.pPoolSizes = &size;
-    if (VkResult r = vkCreateDescriptorPool(p.device_, &dpi, nullptr, &p.pool_); r != VK_SUCCESS) {
+    if (VkResult r = api.vkCreateDescriptorPool(p.device_, &dpi, nullptr, &p.pool_); r != VK_SUCCESS) {
         return std::unexpected(std::string("vkCreateDescriptorPool: ") + describe(r));
     }
 
@@ -84,7 +86,7 @@ Result<ComputePass> ComputePass::create(Device& device, const std::uint32_t* spi
     dsa.descriptorPool = p.pool_;
     dsa.descriptorSetCount = 1;
     dsa.pSetLayouts = &p.setLayout_;
-    if (VkResult r = vkAllocateDescriptorSets(p.device_, &dsa, &p.set_); r != VK_SUCCESS) {
+    if (VkResult r = api.vkAllocateDescriptorSets(p.device_, &dsa, &p.set_); r != VK_SUCCESS) {
         return std::unexpected(std::string("vkAllocateDescriptorSets: ") + describe(r));
     }
     return p;
@@ -92,12 +94,15 @@ Result<ComputePass> ComputePass::create(Device& device, const std::uint32_t* spi
 
 void ComputePass::destroy() {
     if (device_ == VK_NULL_HANDLE) return;
-    if (pipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(device_, pipeline_, nullptr);
-    if (layout_ != VK_NULL_HANDLE) vkDestroyPipelineLayout(device_, layout_, nullptr);
-    if (pool_ != VK_NULL_HANDLE) vkDestroyDescriptorPool(device_, pool_, nullptr);
-    if (setLayout_ != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device_, setLayout_, nullptr);
-    if (module_ != VK_NULL_HANDLE) vkDestroyShaderModule(device_, module_, nullptr);
+    if (pipeline_ != VK_NULL_HANDLE) api_->vkDestroyPipeline(device_, pipeline_, nullptr);
+    if (layout_ != VK_NULL_HANDLE) api_->vkDestroyPipelineLayout(device_, layout_, nullptr);
+    if (pool_ != VK_NULL_HANDLE) api_->vkDestroyDescriptorPool(device_, pool_, nullptr);
+    if (setLayout_ != VK_NULL_HANDLE) {
+        api_->vkDestroyDescriptorSetLayout(device_, setLayout_, nullptr);
+    }
+    if (module_ != VK_NULL_HANDLE) api_->vkDestroyShaderModule(device_, module_, nullptr);
     device_ = VK_NULL_HANDLE;
+    api_ = nullptr;
     pipeline_ = VK_NULL_HANDLE;
     layout_ = VK_NULL_HANDLE;
     pool_ = VK_NULL_HANDLE;
@@ -109,7 +114,7 @@ void ComputePass::destroy() {
 ComputePass::~ComputePass() { destroy(); }
 
 ComputePass::ComputePass(ComputePass&& o) noexcept
-    : device_(o.device_), module_(o.module_), setLayout_(o.setLayout_), layout_(o.layout_),
+    : device_(o.device_), api_(o.api_), module_(o.module_), setLayout_(o.setLayout_), layout_(o.layout_),
       pipeline_(o.pipeline_), pool_(o.pool_), set_(o.set_), pushBytes_(o.pushBytes_) {
     o.device_ = VK_NULL_HANDLE;
     o.module_ = VK_NULL_HANDLE;
@@ -124,6 +129,7 @@ ComputePass& ComputePass::operator=(ComputePass&& o) noexcept {
     if (this != &o) {
         destroy();
         device_ = o.device_;
+        api_ = o.api_;
         module_ = o.module_;
         setLayout_ = o.setLayout_;
         layout_ = o.layout_;
@@ -168,7 +174,8 @@ Result<void> ComputePass::run(Device& device, const Buffer& input, const Buffer&
         writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[i].pBufferInfo = &buffers[i];
     }
-    vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
+    const DeviceApi& api = *api_;
+    api.vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
 
     const std::uint32_t groups = (invocations + localSize - 1) / localSize;
     VkPipeline pipeline = pipeline_;
@@ -177,21 +184,21 @@ Result<void> ComputePass::run(Device& device, const Buffer& input, const Buffer&
     const std::size_t bytes = pushBytes_;
 
     return device.submitAndWait([&](VkCommandBuffer cmd) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0,
+        api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+        api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0,
                                 nullptr);
         if (bytes > 0) {
-            vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+            api.vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                                static_cast<std::uint32_t>(bytes), constants);
         }
-        vkCmdDispatch(cmd, groups, 1, 1);
+        api.vkCmdDispatch(cmd, groups, 1, 1);
         // The copy that reads the output back is a separate submission, and a
         // queue submission is not an implicit barrier for a HOST read.
         VkMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_HOST_READ_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        api.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0, 1,
                              &barrier, 0, nullptr, 0, nullptr);
     });

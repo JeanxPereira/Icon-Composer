@@ -35,6 +35,10 @@ private:
     void destroy();
 
     VkDevice device_ = VK_NULL_HANDLE;
+    // The dispatch of the device above, so that destroy() can free without being
+    // handed the Device again. It points into the Device, which outlives every
+    // buffer made from it -- the same lifetime rule `device_` already relies on.
+    const DeviceApi* api_ = nullptr;
     VkBuffer buffer_ = VK_NULL_HANDLE;
     VkDeviceMemory memory_ = VK_NULL_HANDLE;
     VkDeviceSize size_ = 0;
