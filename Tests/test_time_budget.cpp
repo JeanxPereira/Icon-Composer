@@ -84,9 +84,10 @@ namespace fs = std::filesystem;
 // ---- the budget ---------------------------------------------------------
 
 #if defined(NDEBUG)
-constexpr double kBuildFactor = 1.0;
+constexpr bool kIsRelease = true;
 constexpr const char* kBuildName = "Release";
 #else
+constexpr bool kIsRelease = false;
 // MEASURED, not assumed, and NOT the 5.6x this front was handed. The same three
 // fixtures, the same corpus, whole-suite runs of both builds (laudo section 4):
 //
@@ -105,9 +106,25 @@ constexpr const char* kBuildName = "Release";
 // measurement -- and that is the right trade: the cheap case exists to say "the
 // glass chain is not what broke", and a 90x regression on it still lands at 54 s,
 // well over.
-constexpr double kBuildFactor = 12.0;
 constexpr const char* kBuildName = "Debug (NDEBUG absent)";
 #endif
+
+// WHY THAT RATIO IS NO LONGER USED AS A MULTIPLIER, and it matters.
+//
+// The first version of this file built the Debug ceiling as
+// `releaseSeconds x kSlack x 12`. Multiplying the slack BY the build ratio
+// COMPOUNDS them: 8 x 12 = 96x of headroom, and the defect this whole file
+// exists to catch is 90x. MEASURED on 2026-09-15: the negative control -- four
+// times the side, SIXTEEN times the pixels -- goes red in Release and passes
+// clean in Debug, `3 case(s), 0 failure(s)`. The instrument did not bite in the
+// configuration everybody builds in, which is the only one where a regression
+// gets caught as it lands.
+//
+// The fix is to stop deriving one build from the other. Each fixture carries
+// its OWN measured seconds for each build and `kSlack` is the same 8 in both,
+// so the headroom is 8x everywhere and 90x is red everywhere. The Debug numbers
+// are whole-suite runs on this machine taken after the blur ladder landed; the
+// Release ones are this front's own, kept as measured.
 
 // See the header note. Eight, because the machine alone has been seen to move a
 // render by 1.8x and a catastrophe moves it by ninety.
@@ -128,7 +145,9 @@ std::uint32_t renderSize() {
     return control ? kPreviewSize * kControlScale : kPreviewSize;
 }
 
-double ceilingFor(double releaseSeconds) { return releaseSeconds * kSlack * kBuildFactor; }
+double ceilingFor(double releaseSeconds, double debugSeconds) {
+    return (kIsRelease ? releaseSeconds : debugSeconds) * kSlack;
+}
 
 Device& gpu() {
     static Device* d = [] {
@@ -172,8 +191,8 @@ double timeRender(const icf::IconBundle& bundle, std::uint32_t size, std::size_t
 // `what` is named in the failure so a red line says WHICH render blew up without
 // anyone having to read this file to find out.
 void expectUnder(const char* what, double seconds, double releaseBudget,
-                 std::size_t drawn) {
-    const double ceiling = ceilingFor(releaseBudget);
+                 double debugBudget, std::size_t drawn) {
+    const double ceiling = ceilingFor(releaseBudget, debugBudget);
     // PRINTED WHETHER OR NOT IT PASSES. A budget nobody can see is a budget
     // nobody recalibrates: the day the renderer legitimately gets faster or
     // slower, the person editing this file needs the measurement, and going and
@@ -182,9 +201,9 @@ void expectUnder(const char* what, double seconds, double releaseBudget,
     std::printf("  [budget] %-58s %7.3f s  of %7.3f s\n", what, seconds, ceiling);
     if (seconds <= ceiling) return;
     std::printf("  FAIL time budget: %s took %.3f s, ceiling %.3f s (%s: %.2f s "
-                "measured in Release x %.0f slack x %.1f build factor); %zu layer(s) drawn\n",
-                what, seconds, ceiling, kBuildName, releaseBudget, kSlack, kBuildFactor,
-                drawn);
+                "measured in THIS build x %.0f slack); %zu layer(s) drawn\n",
+                what, seconds, ceiling, kBuildName,
+                kIsRelease ? releaseBudget : debugBudget, kSlack, drawn);
     std::printf("    This is a CATASTROPHE ceiling, not a performance one. Being over it\n"
                 "    does not mean the render got a little slower -- it means it got\n"
                 "    slower by a factor the machine cannot explain. See\n"
@@ -331,7 +350,7 @@ TEST_CASE(time_budget_no_glass_512) {
     std::size_t drawn = 0;
     const double s = timeRender(*bundle, renderSize(), drawn, /*warmUp=*/true);
     CHECK_EQ(drawn, static_cast<std::size_t>(kPlainLayers));
-    expectUnder("no glass, 64 layers, 512 px", s, 0.230, drawn);
+    expectUnder("no glass, 64 layers, 512 px", s, 0.230, 0.650, drawn);
 }
 
 // `[INF]` 0.310 s, the worst of six whole-suite runs in Release. Four glass layers with the whole chain on
@@ -344,7 +363,7 @@ TEST_CASE(time_budget_full_glass_chain_512) {
     std::size_t drawn = 0;
     const double s = timeRender(*bundle, renderSize(), drawn, /*warmUp=*/true);
     CHECK_EQ(drawn, static_cast<std::size_t>(kGlassLayers));
-    expectUnder("full glass chain, 4 layers, 512 px", s, 0.310, drawn);
+    expectUnder("full glass chain, 4 layers, 512 px", s, 0.310, 1.950, drawn);
 }
 
 // `[INF]` 2.800 s, the worst of six whole-suite runs in Release, on `Apollo-Reborn__Apollo-Reborn__AppIcon`,
@@ -368,5 +387,5 @@ TEST_CASE(time_budget_corpus_heaviest_512) {
     const double s = timeRender(*bundle, renderSize(), drawn, /*warmUp=*/false);
     const std::string what = "corpus " + p.filename().string() + ", " +
                              std::to_string(glassLayers) + " glass layer(s), 512 px";
-    expectUnder(what.c_str(), s, 2.800, drawn);
+    expectUnder(what.c_str(), s, 2.800, 17.500, drawn);
 }
