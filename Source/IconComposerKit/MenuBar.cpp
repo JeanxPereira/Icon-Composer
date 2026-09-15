@@ -121,11 +121,19 @@ MenuStats drawMenuBar(Session& s, MenuActions& a) {
         if (ImGui::BeginMenu("Zoom")) {
             // Zoom is NOT a render (spec 13/09 §6): it is the same pixels shown
             // larger, so it never reaches the render key.
-            for (float z : {0.5f, 0.75f, 1.0f, 1.5f, 2.0f}) {
+            for (float z : {0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 4.0f}) {
                 char label[16];
-                std::snprintf(label, sizeof label, "%d%%", static_cast<int>(z * 100));
-                if (b.item(label, nullptr, true, nullptr, s.view.zoom == z)) s.view.zoom = z;
+                std::snprintf(label, sizeof label, "%d%%", static_cast<int>(z * 100.0f + 0.5f));
+                // `zoomRequest`, not `zoom`: the canvas eases toward a target
+                // and anchors the change on the viewport centre, and a menu that
+                // wrote the eased value directly would simply be undone by the
+                // next frame's ease (Session.h). The tick reads the target, so
+                // it agrees with the combo and with the wheel.
+                if (b.item(label, nullptr, true, nullptr, s.view.zoomTarget == z)) s.view.zoomRequest = z;
             }
+            ImGui::Separator();
+            if (b.item("Fit", nullptr, true, "Fit the whole icon in the canvas and centre it."))
+                s.view.fitRequest = true;
             ImGui::EndMenu();
         }
         ImGui::EndMenu();

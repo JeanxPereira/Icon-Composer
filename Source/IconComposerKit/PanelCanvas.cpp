@@ -19,6 +19,37 @@
 // ZOOM IS NOT A RENDER (spec 13/09 §6). It is the same pixels drawn over a
 // larger rectangle, so it is applied here and never reaches the render key.
 //
+// THE CANVAS CLIPS, AND THE CANVAS NAVIGATES (reprovado em uso, 15/09)
+// ---------------------------------------------------------------------------
+// Two defects that the headless selftest reported green through, because it
+// counts `imgui errors` and `textured yes` and neither of those is a person
+// trying to work:
+//
+//   1. Nothing clipped. The body filled a rectangle and then called `AddImage`
+//      into the SAME draw list with no `PushClipRect`. A window's draw list is
+//      clipped to the window's inner rect, which starts under the menu bar --
+//      so the icon was free to paint over everything the body had drawn ABOVE
+//      it, which is the row of combos. Past a certain zoom the icon simply ate
+//      the appearance / idiom / size / zoom controls. That is the user's "o
+//      viewport atravessa os botões", exactly.
+//
+//   2. The navigation was a sketch: a file-static `pan`, moved only by a middle
+//      drag, with no wheel, no anchored zoom, no easing, no bounds and no fit.
+//
+// The arithmetic below is transcribed from OnyxSDK's ImageViewer
+// (D:/CodingProjects/OnyxSDK/Source/Viewers/ImageViewer.cpp) -- anchored zoom
+// at :100, the fit/centre pair at :154, the margin clamp at :210, the shared
+// exp-decay ease at :230 -- and NOT taken by linking it. Rule 2 of the
+// architecture spec: only Source/app links Onyx, and IconComposerKit is what
+// `ic_tests` and the headless selftest link (Source/IconComposerKit/
+// CMakeLists.txt:22 names Foundation, CoreSVG, RenderBox and imgui_lib, and
+// nothing else). `Onyx::Viewers::ImageViewer` also owns a `TexturePool` and a
+// `VkContext` (ImageViewer.cpp:52-59) and draws its own toolbar out of
+// `Onyx::Theme` and `SFSymbols`, so the class is a viewer of a file on disk,
+// not a view transform -- of its 268 lines the part this panel needs is about
+// forty, and they are pure. Transcribing them cost nothing and kept the Kit
+// buildable with `-DIC_BUILD_UI=OFF`.
+//
 // THE DIAGNOSTICS PANEL IS WHAT KEEPS THE PICTURE FROM LYING (spec 13/09 §6)
 // --------------------------------------------------------------------------
 // `skipped`, `shapeGaps` and `notes` go to the screen for the same reason
@@ -34,6 +65,8 @@
 
 #include "imgui.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <initializer_list>
@@ -41,6 +74,71 @@
 #include <vector>
 
 namespace ick {
+
+// ─── The geometry, drawing nothing (declared in Panels.h) ────────────────────
+
+float canvasClampZoom(float zoom) {
+    if (!(zoom > 0.0f)) return kCanvasZoomMin;   // also catches NaN
+    return std::clamp(zoom, kCanvasZoomMin, kCanvasZoomMax);
+}
+
+float canvasFitZoom(float availW, float availH, float sidePx) {
+    if (!(sidePx > 0.0f) || !(availW > 0.0f) || !(availH > 0.0f)) return 1.0f;
+    return canvasClampZoom(std::min(availW / sidePx, availH / sidePx));
+}
+
+CanvasVec canvasCentrePan(float availW, float availH, float sidePx, float zoom) {
+    const float side = sidePx * zoom;
+    return CanvasVec{(availW - side) * 0.5f, (availH - side) * 0.5f};
+}
+
+CanvasVec canvasZoomAnchored(CanvasVec pan, float fromZoom, float toZoom, CanvasVec anchor) {
+    if (!(fromZoom > 0.0f)) return pan;
+    // The anchor's position INSIDE the icon, in screen pixels, scales with the
+    // magnification; keeping the anchor still means moving the corner by the
+    // difference. Written against the target zoom, so two wheel clicks inside
+    // one ease compose instead of fighting.
+    const float scale = canvasClampZoom(toZoom) / fromZoom;
+    return CanvasVec{anchor.x - (anchor.x - pan.x) * scale,
+                     anchor.y - (anchor.y - pan.y) * scale};
+}
+
+CanvasVec canvasClampPan(CanvasVec pan, float availW, float availH, float sidePx, float zoom,
+                         float margin) {
+    const float side = sidePx * zoom;
+    auto axis = [&](float v, float avail) {
+        if (side <= avail) {
+            // Smaller than the canvas: it lives centred, and may be nudged off
+            // centre by the margin so a drag still feels like it does something.
+            const float centre = (avail - side) * 0.5f;
+            return std::clamp(v, centre - margin, centre + margin);
+        }
+        // Larger: the far edge may not come further in than the margin, which is
+        // what stops the icon being dragged out of the canvas entirely.
+        return std::clamp(v, avail - side - margin, margin);
+    };
+    return CanvasVec{axis(pan.x, availW), axis(pan.y, availH)};
+}
+
+CanvasRect canvasImageRect(CanvasVec pan, float sidePx, float zoom) {
+    const float side = sidePx * zoom;
+    return CanvasRect{pan.x, pan.y, pan.x + side, pan.y + side};
+}
+
+CanvasRect canvasIntersect(CanvasRect a, CanvasRect b) {
+    CanvasRect r{std::max(a.x0, b.x0), std::max(a.y0, b.y0),
+                 std::min(a.x1, b.x1), std::min(a.y1, b.y1)};
+    if (r.empty()) return CanvasRect{r.x0, r.y0, r.x0, r.y0};
+    return r;
+}
+
+float canvasEase(float deltaSeconds) {
+    // Clamped both ways: a first frame with dt 0 would freeze the ease at zero
+    // and a hitch of half a second would teleport. ~150ms settle either way.
+    const float dt = std::clamp(deltaSeconds, 1.0f / 240.0f, 1.0f / 30.0f);
+    return 1.0f - std::exp(-18.0f * dt);
+}
+
 namespace {
 
 // The four controls the target keeps on the canvas toolbar and footer (spec
@@ -106,19 +204,49 @@ std::size_t contextBar(Session& s) {
 
     ImGui::SameLine();
     ImGui::SetNextItemWidth(80);
+    // TWO CONTROLS THAT DISAGREE ARE WORSE THAN ONE. The combo reads and writes
+    // the SAME number the wheel does, so a wheel zoom to 137% shows "137%" here
+    // rather than leaving a stale "100%" next to an icon that is plainly not at
+    // 100%. It shows the TARGET, not the eased value: mid-ease the number would
+    // otherwise flicker through every intermediate percentage.
     char zoomLabel[16];
-    std::snprintf(zoomLabel, sizeof zoomLabel, "%d%%", static_cast<int>(s.view.zoom * 100));
+    std::snprintf(zoomLabel, sizeof zoomLabel, "%d%%",
+                  static_cast<int>(s.view.zoomTarget * 100.0f + 0.5f));
     if (ImGui::BeginCombo("##zoom", zoomLabel)) {
-        for (float z : {0.5f, 0.75f, 1.0f, 1.5f, 2.0f}) {
+        for (float z : {0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 4.0f}) {
             char l[16];
-            std::snprintf(l, sizeof l, "%d%%", static_cast<int>(z * 100));
-            if (ImGui::Selectable(l, s.view.zoom == z)) s.view.zoom = z;
+            std::snprintf(l, sizeof l, "%d%%", static_cast<int>(z * 100.0f + 0.5f));
+            // The request, not the target: the canvas is the only place that
+            // knows where the viewport centre is, and a zoom that is not
+            // anchored anywhere throws the icon off screen (Session.h).
+            if (ImGui::Selectable(l, s.view.zoomTarget == z)) s.view.zoomRequest = z;
         }
         ImGui::EndCombo();
     }
     ++n;
 
     return n;
+}
+
+// Zoom out / zoom in / 1:1 / Fit -- the four buttons Onyx's viewer carries
+// (ImageViewer.cpp:130-136). They write the same two request fields the combo
+// writes, so there is exactly one path into the view transform.
+std::size_t zoomBar(Session& s) {
+    ImGui::SameLine();
+    if (ImGui::SmallButton("-")) s.view.zoomRequest = s.view.zoomTarget / 1.5f;
+    ImGui::SetItemTooltip("Zoom out. The mouse wheel over the canvas does the same, "
+                          "anchored on the pointer.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+")) s.view.zoomRequest = s.view.zoomTarget * 1.5f;
+    ImGui::SetItemTooltip("Zoom in.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("1:1")) s.view.zoomRequest = 1.0f;
+    ImGui::SetItemTooltip("One texel of the preview to one pixel on screen.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Fit")) s.view.fitRequest = true;
+    ImGui::SetItemTooltip("Fit the whole icon in the canvas and centre it. "
+                          "This is where the canvas opens.");
+    return 4;
 }
 
 // The selection rectangle, on the renderer's own ruler: a square of the whole
@@ -155,35 +283,142 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions)
     }
     st.menu = drawMenuBar(s, actions);
     st.contextControls = contextBar(s);
+    st.zoomControls = zoomBar(s);
     if (view.pending) {
         ImGui::SameLine();
         ImGui::TextDisabled("rendering…");
     }
 
-    // Pan survives the frame; it is a property of looking, like zoom, and is not
-    // worth a field on the Session that nothing else would ever read.
-    static ImVec2 pan(0.0f, 0.0f);
-    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    ViewContext& v = s.view;
+    const ImVec2 availRaw = ImGui::GetContentRegionAvail();
+    const float availW = availRaw.x > 1.0f ? availRaw.x : 1.0f;
+    const float availH = availRaw.y > 1.0f ? availRaw.y : 1.0f;
     const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const ImVec2 corner(origin.x + avail.x, origin.y + avail.y);
+    const ImVec2 corner(origin.x + availW, origin.y + availH);
     ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    // The ruler for every number below. Before the first render lands there is
+    // no texture to measure, and Fit still has to have an answer, so the preview
+    // size stands in -- it is what that render will be, so the fit computed from
+    // it is the fit the picture arrives into.
+    const float sidePx = view.width > 0 ? static_cast<float>(view.width)
+                                        : static_cast<float>(v.size);
+
+    // ── Fit on open ─────────────────────────────────────────────────────────
+    // `fitted` is false in a freshly opened Session and nowhere else, so this is
+    // "when a document opens" without an event to plumb. No ease: there is
+    // nothing on screen yet to ease away from.
+    if (!v.fitted) {
+        v.zoomTarget = canvasFitZoom(availW, availH, sidePx);
+        const CanvasVec c = canvasCentrePan(availW, availH, sidePx, v.zoomTarget);
+        v.panTargetX = c.x;
+        v.panTargetY = c.y;
+        v.zoom = v.zoomTarget;
+        v.panX = c.x;
+        v.panY = c.y;
+        v.fitted = true;
+    }
 
     // Flat colour behind the icon (spec 13/09 §6). Flat and KNOWN: the six
     // `sine-*` backdrops of the target are round 5, and a backdrop taken from
     // the theme could be fully transparent, which would put the icon's own
     // alpha over the window and make transparency unreadable.
     dl->AddRectFilled(origin, corner, IM_COL32(40, 40, 44, 255));
-    ImGui::InvisibleButton("##canvas", ImVec2(avail.x > 1.0f ? avail.x : 1.0f,
-                                              avail.y > 1.0f ? avail.y : 1.0f));
-    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
-        pan.x += ImGui::GetIO().MouseDelta.x;
-        pan.y += ImGui::GetIO().MouseDelta.y;
+
+    // Left OR middle drag pans, which is what Onyx's viewer accepts
+    // (ImageViewer.cpp:199-200). Left as well as middle because a middle button
+    // is the one control a trackpad does not have, and the canvas has no other
+    // use for a left drag -- selection happens in the Layers panel.
+    ImGui::InvisibleButton("##canvas", ImVec2(availW, availH),
+                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
+    const bool hovered = ImGui::IsItemHovered();
+    const bool active = ImGui::IsItemActive();
+    ImGuiIO& io = ImGui::GetIO();
+
+    // One path into the view transform, used by the wheel, the combo and the
+    // three zoom buttons alike.
+    auto zoomTo = [&](float wanted, CanvasVec anchor) {
+        const float target = canvasClampZoom(wanted);
+        if (target == v.zoomTarget) return;
+        const CanvasVec p =
+            canvasZoomAnchored(CanvasVec{v.panTargetX, v.panTargetY}, v.zoomTarget, target, anchor);
+        v.panTargetX = p.x;
+        v.panTargetY = p.y;
+        v.zoomTarget = target;
+    };
+    const CanvasVec centre{availW * 0.5f, availH * 0.5f};
+
+    if (v.fitRequest) {
+        v.fitRequest = false;
+        v.zoomTarget = canvasFitZoom(availW, availH, sidePx);
+        const CanvasVec c = canvasCentrePan(availW, availH, sidePx, v.zoomTarget);
+        v.panTargetX = c.x;
+        v.panTargetY = c.y;
+    }
+    // A control with no pointer of its own zooms about the middle of the canvas,
+    // which is where the icon is when nobody has dragged it.
+    if (v.zoomRequest > 0.0f) {
+        zoomTo(v.zoomRequest, centre);
+        v.zoomRequest = 0.0f;
     }
 
+    // THE WHEEL, ANCHORED ON THE POINTER. 1.15 per notch is Onyx's rate
+    // (ImageViewer.cpp:191) and the anchoring is the whole point: the texel
+    // under the cursor is the one thing that must not move while the rest grows
+    // around it.
+    if (hovered && io.MouseWheel != 0.0f) {
+        zoomTo(v.zoomTarget * std::pow(1.15f, io.MouseWheel),
+               CanvasVec{io.MousePos.x - origin.x, io.MousePos.y - origin.y});
+    }
+
+    if (active && (ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f) ||
+                   ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f))) {
+        v.panTargetX += io.MouseDelta.x;
+        v.panTargetY += io.MouseDelta.y;
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    } else if (hovered) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
+
+    // Bounded against the TARGET, so the target stays somewhere the ease can
+    // actually arrive at; clamping the eased value instead would let the two
+    // disagree forever and the icon would creep.
+    const CanvasVec bounded =
+        canvasClampPan(CanvasVec{v.panTargetX, v.panTargetY}, availW, availH, sidePx, v.zoomTarget);
+    v.panTargetX = bounded.x;
+    v.panTargetY = bounded.y;
+
+    // ── The ease: the "pan suave" that was missing ──────────────────────────
+    // One coefficient for zoom and both pan axes, because the anchored zoom's
+    // arithmetic only holds while they move together -- ease them at different
+    // rates and the anchored point drifts during the settle.
+    const float k = canvasEase(io.DeltaTime);
+    v.zoom += (v.zoomTarget - v.zoom) * k;
+    v.panX += (v.panTargetX - v.panX) * k;
+    v.panY += (v.panTargetY - v.panY) * k;
+    // Snap inside a sub-pixel, or the lerp never ends and the canvas re-draws a
+    // still picture forever.
+    if (std::fabs(v.zoomTarget - v.zoom) < 0.0005f) v.zoom = v.zoomTarget;
+    if (std::fabs(v.panTargetX - v.panX) < 0.25f) v.panX = v.panTargetX;
+    if (std::fabs(v.panTargetY - v.panY) < 0.25f) v.panY = v.panTargetY;
+
+    const ImVec2 tl(origin.x + v.panX, origin.y + v.panY);
+    st.clip = CanvasRect{origin.x, origin.y, corner.x, corner.y};
+    st.image = canvasImageRect(CanvasVec{tl.x, tl.y}, sidePx, v.zoom);
+    st.painted = canvasIntersect(st.image, st.clip);
+    st.zoom = v.zoom;
+
+    // ── THE RECORTE ─────────────────────────────────────────────────────────
+    // Everything from here to PopClipRect is the canvas's own rectangle and
+    // nothing else. The window's draw list is otherwise clipped to the window's
+    // INNER rect, which begins under the menu bar and therefore includes the row
+    // of combos this function drew a few lines ago -- an icon larger than the
+    // canvas painted straight over them. `true` intersects with the current clip
+    // rather than replacing it, so the window's own bounds still apply.
+    dl->PushClipRect(origin, corner, true);
+
     if (view.texture != ImTextureID_Invalid && view.width > 0) {
-        const float side = static_cast<float>(view.width) * s.view.zoom;
-        const ImVec2 tl(origin.x + (avail.x - side) * 0.5f + pan.x,
-                        origin.y + (avail.y - side) * 0.5f + pan.y);
+        const float side = static_cast<float>(view.width) * v.zoom;
         dl->AddImage(view.texture, tl, ImVec2(tl.x + side, tl.y + side));
         st.textured = true;
 
@@ -192,10 +427,13 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions)
 
     // The provisional mark: these pixels are not the answer to what the context
     // bar now says. Small and in the corner, because it is on screen during
-    // every edit and must not compete with the icon.
+    // every edit and must not compete with the icon. Inside the clip, like
+    // everything else the canvas draws.
     if (view.pending) {
         dl->AddCircleFilled(ImVec2(corner.x - 12.0f, origin.y + 12.0f), 4.0f, IM_COL32(230, 180, 60, 255));
     }
+
+    dl->PopClipRect();
 
     ImGui::End();
     return st;

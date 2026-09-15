@@ -36,10 +36,46 @@
 
 namespace ick {
 
+// WHAT A PERSON IS LOOKING THROUGH -- INCLUDING WHERE THEY ARE LOOKING.
+//
+// `zoom` used to be the only thing here and `pan` was a `static ImVec2` inside
+// PanelCanvas.cpp. A file-static is not "no state", it is ONE state shared by
+// every document the process ever opens: closing a document you had dragged to
+// the corner and opening another one put the new one in that same corner, with
+// nothing on screen to explain it. Pan is a property of looking, exactly like
+// zoom, so it lives exactly where zoom lives -- and a new `Session` therefore
+// starts centred and unfitted, which is the whole of the fix.
+//
+// The pair `x`/`xTarget`: a control (wheel, drag, button, combo) writes the
+// TARGET, and the canvas eases the current value toward it once per frame. That
+// is what makes the movement smooth instead of teleporting. Both are kept
+// because the anchored zoom has to do its arithmetic against the target -- two
+// wheel clicks in one ease must compose, not fight.
+//
+// Plain floats rather than `ImVec2`: Session.h is the Kit's model header and
+// nothing else in it needs Dear ImGui.
 struct ViewContext {
     icf::Context context;         // appearance and idiom the canvas renders
     std::uint32_t size = 512;     // the preview size, in pixels
-    float zoom = 1.0f;            // 0.5 .. 2.0
+
+    float zoom = 1.0f;            // the magnification ON SCREEN this frame
+    float zoomTarget = 1.0f;      // where the ease is heading
+    // The icon's top-left corner, in pixels from the canvas's own top-left.
+    float panX = 0.0f, panY = 0.0f;
+    float panTargetX = 0.0f, panTargetY = 0.0f;
+
+    // False until the canvas has laid the document out to Fit. It is false in a
+    // freshly opened Session and nowhere else, so "Fit on open" needs no event.
+    bool fitted = false;
+
+    // A control outside the canvas -- the zoom combo, the View>Zoom menu -- asks
+    // for a magnification by writing this, and the canvas applies it anchored on
+    // the viewport centre and clears it. It cannot write `zoomTarget` itself:
+    // the anchored zoom needs the PREVIOUS target to know how to move the pan,
+    // and a control that overwrote it would zoom about the canvas's top-left
+    // corner, which is not where anybody is looking.
+    float zoomRequest = 0.0f;     // > 0 = pending
+    bool fitRequest = false;
 };
 
 class Session {
