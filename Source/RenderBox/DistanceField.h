@@ -189,6 +189,47 @@ struct FieldOptions {
     // one that matches `Field.frag` on a pixel grid; it is a parameter only so
     // a test can prove the band is where it says it is.
     float aaWidth = 1.0f;
+
+    // `[INF]` THE SUB-TEXEL SEED. OURS. THE TARGET WAS NOT READ HERE.
+    //
+    // Only the grid-borne generators read this -- `generateFieldFromAlpha` and
+    // `generateFieldFromContours`. `generateField`'s brute force already has the
+    // true contour and ignores it.
+    //
+    // WHAT IT CHANGES. Without it the two Euclidean transforms are seeded from a
+    // BINARY mask and the zero of the field is pinned to a texel centre, so the
+    // finest thing the field can say is "half a texel". A specular band one
+    // pixel wide read off such a field switches on and off a whole texel at a
+    // time, and it does that at EVERY resolution, because at 2048 the band is
+    // one texel of THAT grid -- the defect does not shrink with more pixels
+    // because it is not a sampling defect.
+    //
+    // With it on, a texel that the surface actually crosses seeds BOTH
+    // transforms carrying the signed offset `0.5 - coverage`, and the distance
+    // is corrected by the offset of the seed the transform picked. For a
+    // STRAIGHT edge at an arbitrary sub-texel offset the result is EXACT, which
+    // is the property `test_rb_field.cpp` pins; a curved edge keeps the
+    // quantisation of the nearest-centre choice, bounded by half a texel and in
+    // practice far under it.
+    //
+    // WHY THIS IS `[INF]` AND NOT `[BIN]`. Nobody read the target doing this.
+    // The target's own generator is `-[CUINamedLayerImage
+    // sdfTextureWithBufferAllocator:]` (`0x000867F8`), which lives in CoreUI --
+    // in neither slice this project has -- and the ONE argument that crosses
+    // that call (x2, built at `0x000867D8`-`0x000867E8`) is the buffer
+    // allocator. The three `ICRRenderingParameters.SDFGeneration` knobs that
+    // would have settled it (`clampThreshold`, `precisePixelFormatThreshold`,
+    // `maxRelativeSmoothing`, `0xA46E0`) were CHASED and are DEAD in this
+    // binary: their names appear only in `__swift5_reflstr`, in the `__cstring`
+    // CodingKey literals at `0xA6A00`/`0xA6A20`/`0xA6A40`, and in `__LINKEDIT`.
+    // The only two `__text` sites that touch those literals are `0x00061B10`
+    // (`CodingKeys.stringValue`) and `0x000744BC`
+    // (`CodingKeys.init?(stringValue:)`) -- Codable plumbing and nothing else.
+    // `RenderBox.arm64` has no symbol matching `sdf` at all, in 11 996.
+    //
+    // So this is OUR approximation, declared as one. The convention is stated,
+    // not measured, and no reader downstream should take it for the target's.
+    bool subpixelSeed = true;
 };
 
 // What the field holds at one point.

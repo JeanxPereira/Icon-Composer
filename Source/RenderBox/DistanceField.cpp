@@ -423,13 +423,93 @@ namespace {
 // IS the field pixel's centre. With `ss == 1` this is, arithmetic for
 // arithmetic, what `generateFieldFromAlpha` did before it was factored out
 // here -- including the ORDER of the four border tests, which decides ties.
-FieldImage fieldFromInsideMask(const std::vector<char>& inside, int mw, int mh, int ss,
+FieldImage fieldFromInsideMask(const std::vector<char>& inside,
+                               const std::vector<float>& coverage, int mw, int mh, int ss,
                                const FieldOptions& options) {
     FieldImage img;
     const std::size_t texels = static_cast<std::size_t>(mw) * mh;
 
     std::vector<char> outsideSeed(texels, 0);
     for (std::size_t t = 0; t < texels; ++t) outsideSeed[t] = inside[t] ? 0 : 1;
+    std::vector<char> insideSeed(inside);
+
+    // `[INF]` THE SUB-TEXEL SEED. See `FieldOptions::subpixelSeed` for why this
+    // is ours and for the addresses that were chased before it was written.
+    //
+    // `sOff[t]` is the SIGNED distance from texel t's centre to the surface,
+    // positive outside, in texels: the inverse of this tower's own coverage
+    // convention `cov = -d/aaWidth + 0.5` at `aaWidth == 1`, so the seed and
+    // the coverage channel below are two readings of one rule and cannot drift.
+    //
+    // `band[t]` marks a texel the surface actually CROSSES. Two conditions, and
+    // the second is not decoration: a texel must carry partial coverage AND
+    // straddle the class boundary. Partial coverage alone would mark every texel
+    // of a uniformly TRANSLUCENT fill -- a layer painted at alpha 0.5 has
+    // `0.5 - c == 0` everywhere and would collapse the whole field to zero. A
+    // translucent plateau has no opposite-class neighbour, so it is not a band.
+    const bool sub = options.subpixelSeed && coverage.size() == texels;
+    std::vector<float> sOff;
+    std::vector<float> bnx, bny;   // the band's outward unit normal
+    std::vector<char> band;
+    if (sub) {
+        // EVERY texel starts at the binary answer -- half a texel, on the side
+        // its class puts it. A seed that never becomes a band texel therefore
+        // contributes exactly the 0.5 the old code used, which is what makes
+        // this reduce to the old arithmetic instead of merely approximating it.
+        sOff.assign(texels, 0.0f);
+        for (std::size_t t = 0; t < texels; ++t) sOff[t] = inside[t] ? -0.5f : 0.5f;
+        band.assign(texels, 0);
+        bnx.assign(texels, 0.0f);
+        bny.assign(texels, 0.0f);
+        for (int y = 0; y < mh; ++y) {
+            for (int x = 0; x < mw; ++x) {
+                const std::size_t t = static_cast<std::size_t>(y) * mw + x;
+                const float c = coverage[t];
+                if (!(c > 0.0f) || !(c < 1.0f)) continue;   // no sub-texel information
+                const bool in = inside[t] != 0;
+                bool straddles = false;
+                if (x > 0 && ((inside[t - 1] != 0) != in)) straddles = true;
+                if (x + 1 < mw && ((inside[t + 1] != 0) != in)) straddles = true;
+                if (y > 0 && ((inside[t - mw] != 0) != in)) straddles = true;
+                if (y + 1 < mh && ((inside[t + mw] != 0) != in)) straddles = true;
+                if (!straddles) continue;
+
+                // THE NORMAL, from a Sobel of the coverage: LEFT minus RIGHT,
+                // because `d` rises where coverage falls, so this points
+                // OUTWARD. It is what the lattice cannot give -- a vector
+                // between two texel centres one apart has only eight directions
+                // to choose from, 45 degrees apart, and that quantisation lands
+                // on exactly the texels the specular lights.
+                const int xm = x > 0 ? x - 1 : x;
+                const int xp = x + 1 < mw ? x + 1 : x;
+                const int ym = y > 0 ? y - 1 : y;
+                const int yp = y + 1 < mh ? y + 1 : y;
+                const std::size_t r0 = static_cast<std::size_t>(ym) * mw;
+                const std::size_t r1 = static_cast<std::size_t>(y) * mw;
+                const std::size_t r2 = static_cast<std::size_t>(yp) * mw;
+                const double c00 = coverage[r0 + xm], c01 = coverage[r0 + x], c02 = coverage[r0 + xp];
+                const double c10 = coverage[r1 + xm], c12 = coverage[r1 + xp];
+                const double c20 = coverage[r2 + xm], c21 = coverage[r2 + x], c22 = coverage[r2 + xp];
+                const double gx = (c00 + 2.0 * c10 + c20) - (c02 + 2.0 * c12 + c22);
+                const double gy = (c00 + 2.0 * c01 + c02) - (c20 + 2.0 * c21 + c22);
+                const double len = std::sqrt(gx * gx + gy * gy);
+                if (!(len > 0.0)) continue;   // no normal, so no sub-texel answer
+
+                sOff[t] = 0.5f - c;
+                band[t] = 1;
+                bnx[t] = static_cast<float>(gx / len);
+                bny[t] = static_cast<float>(gy / len);
+                // The surface passes THROUGH this texel, so it is a seed for
+                // BOTH transforms whichever side its centre fell on. That is
+                // what lets a band texel answer for itself at distance zero --
+                // and it is what makes a straight edge come back exact, because
+                // the near side no longer has to reach across to a centre of the
+                // opposite class to find out where the surface is.
+                outsideSeed[t] = 1;
+                insideSeed[t] = 1;
+            }
+        }
+    }
 
     // Distance from every texel to the nearest OUTSIDE centre (what an inside
     // texel needs) and to the nearest INSIDE centre (what an outside texel
@@ -438,7 +518,7 @@ FieldImage fieldFromInsideMask(const std::vector<char>& inside, int mw, int mh, 
     std::vector<double> sqOut, sqIn;
     std::vector<int> siteOut, siteIn;
     edt2d(outsideSeed, mw, mh, sqOut, siteOut);
-    edt2d(inside, mw, mh, sqIn, siteIn);
+    edt2d(insideSeed, mw, mh, sqIn, siteIn);
 
     const int W = mw / ss;
     const int H = mh / ss;
@@ -460,33 +540,104 @@ FieldImage fieldFromInsideMask(const std::vector<char>& inside, int mw, int mh, 
             double gy = 0.0;
             double sign = 0.0;
 
-            if (inside[t]) {
-                sign = -1.0;
-                dist = std::sqrt(sqOut[t]);
-                const int s = siteOut[t];
-                if (s >= 0) {
-                    gx = static_cast<double>(s % mw) - mx;
-                    gy = static_cast<double>(s / mw) - my;
+            const int s = inside[t] ? siteOut[t] : siteIn[t];
+            sign = inside[t] ? -1.0 : 1.0;
+            double d = 0.0;
+
+            if (sub && s >= 0 && band[static_cast<std::size_t>(s)]) {
+                // `[INF]` THE SURFACE POINT, and this is the whole correction.
+                //
+                // The naive move is to keep the lattice distance and shorten it
+                // by the seed's offset. That is WRONG and measurably so: the
+                // offset runs along the seed's NORMAL and the lattice distance
+                // runs along the line between two centres, and adding one to the
+                // other as if they were collinear costs up to half a texel in
+                // the worst case -- it made the worst error of a circle go from
+                // 0.49 to 1.02 texels before it was caught.
+                //
+                // What the seed actually knows is a POINT: the surface passes
+                // through `seed - sOff * normal`. Measuring the plain Euclidean
+                // distance from the query texel to THAT point is right whatever
+                // the angle between the two directions, exact for a straight
+                // edge at any sub-texel offset, and it hands back a gradient that
+                // moves continuously with the coverage instead of snapping to
+                // the eight lattice directions.
+                const std::size_t su = static_cast<std::size_t>(s);
+                const double px = static_cast<double>(s % mw) - bnx[su] * sOff[su];
+                const double py = static_cast<double>(s / mw) - bny[su] * sOff[su];
+                const double vx = static_cast<double>(mx) - px;
+                const double vy = static_cast<double>(my) - py;
+                d = std::sqrt(vx * vx + vy * vy) * inv;
+                if (vx != 0.0 || vy != 0.0) {
+                    // The gradient is the direction `d` INCREASES, which is
+                    // outward on both sides: away from the surface point when
+                    // outside, towards it when inside.
+                    gx = inside[t] ? -vx : vx;
+                    gy = inside[t] ? -vy : vy;
+                } else {
+                    // The centre sits exactly ON the surface. The vector has
+                    // nothing to say and the normal has everything.
+                    gx = bnx[su];
+                    gy = bny[su];
+                }
+                // `[INF]` AND THE NEAREST CENTRE IS NOT ALWAYS THE NEAREST
+                // SURFACE. The transform picks the seed whose CENTRE is closest,
+                // which is not the same question once each seed carries its own
+                // surface point half a texel away. Close to the band the two
+                // answers can disagree, and the disagreement is the worst error
+                // this method has. It is also cheap to settle: look at the band
+                // texels in the 3x3 around the query and keep the nearest
+                // surface point among them. Eight reads per texel, no second
+                // transform, and it only does anything within one texel of the
+                // band -- which is exactly where the specular reads.
+                for (int dy = -1; dy <= 1; ++dy) {
+                    const int uy = my + dy;
+                    if (uy < 0 || uy >= mh) continue;
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int ux = mx + dx;
+                        if (ux < 0 || ux >= mw) continue;
+                        const std::size_t u = static_cast<std::size_t>(uy) * mw + ux;
+                        if (!band[u]) continue;
+                        const double qx = static_cast<double>(ux) - bnx[u] * sOff[u];
+                        const double qy = static_cast<double>(uy) - bny[u] * sOff[u];
+                        const double wx = static_cast<double>(mx) - qx;
+                        const double wy = static_cast<double>(my) - qy;
+                        const double cand = std::sqrt(wx * wx + wy * wy) * inv;
+                        if (cand >= d) continue;
+                        d = cand;
+                        if (wx != 0.0 || wy != 0.0) {
+                            gx = inside[t] ? -wx : wx;
+                            gy = inside[t] ? -wy : wy;
+                        } else {
+                            gx = bnx[u];
+                            gy = bny[u];
+                        }
+                    }
                 }
             } else {
-                sign = 1.0;
-                dist = std::sqrt(sqIn[t]);
-                const int s = siteIn[t];
-                if (s >= 0) {
-                    // Outside, `d` grows as the shape recedes, so the gradient
-                    // points AWAY from the nearest inside centre -- the
-                    // opposite sense from the inside branch, which is why the
-                    // two are written out rather than shared.
-                    gx = static_cast<double>(mx) - (s % mw);
-                    gy = static_cast<double>(my) - (s / mw);
+                if (inside[t]) {
+                    dist = std::sqrt(sqOut[t]);
+                    if (s >= 0) {
+                        gx = static_cast<double>(s % mw) - mx;
+                        gy = static_cast<double>(s / mw) - my;
+                    }
+                } else {
+                    dist = std::sqrt(sqIn[t]);
+                    if (s >= 0) {
+                        // Outside, `d` grows as the shape recedes, so the
+                        // gradient points AWAY from the nearest inside centre --
+                        // the opposite sense from the inside branch, which is why
+                        // the two are written out rather than shared.
+                        gx = static_cast<double>(mx) - (s % mw);
+                        gy = static_cast<double>(my) - (s / mw);
+                    }
                 }
+                // Centres to contour: the boundary sits half a mask texel before
+                // the first centre of the opposite class. Then out of mask texels
+                // and into field pixels, which is the only thing `ss` changes
+                // about the arithmetic.
+                d = (dist - 0.5) * inv;
             }
-
-            // Centres to contour: the boundary sits half a mask texel before
-            // the first centre of the opposite class. Then out of mask texels
-            // and into field pixels, which is the only thing `ss` changes about
-            // the arithmetic.
-            double d = (dist - 0.5) * inv;
 
             if (inside[t]) {
                 // The four virtual outside rows one step beyond each edge, at
@@ -597,6 +748,115 @@ void rasteriseContours(const std::vector<FieldContour>& contours, int w, int h, 
     }
 }
 
+// `[INF]` THE COVERAGE OF A CONTOUR, for the sub-texel seed. OURS.
+//
+// `rasteriseContours` above answers a yes/no question at the texel CENTRE and
+// it is left exactly as it was, ties and all -- the class, and therefore the
+// silhouette and the sign, do not move. This answers a different question over
+// the same crossings: how MUCH of the texel the shape covers.
+//
+// Exact in x, because a scanline's inside spans are exact in x and the overlap
+// with a column is a subtraction. Quantised in y to `1 / kCoverageSubRows`,
+// because it samples that many sub-rows per texel row and averages them. Four
+// puts the worst error of the seed offset at an eighth of a texel, well under
+// the half texel the binary seed had, and it costs four cheap sweeps and no
+// second Euclidean transform -- which is the whole point, since the transform
+// is what a supersampled field pays nine times over.
+constexpr int kCoverageSubRows = 16;
+
+void addSpan(std::vector<double>& acc, int w, double a, double b, double wt) {
+    if (a < 0.0) a = 0.0;
+    if (b > static_cast<double>(w)) b = static_cast<double>(w);
+    if (!(b > a)) return;
+    int x0 = static_cast<int>(std::floor(a));
+    int x1 = static_cast<int>(std::ceil(b)) - 1;
+    if (x0 < 0) x0 = 0;
+    if (x1 >= w) x1 = w - 1;
+    for (int x = x0; x <= x1; ++x) {
+        const double l = a > static_cast<double>(x) ? a : static_cast<double>(x);
+        const double r = b < static_cast<double>(x) + 1.0 ? b : static_cast<double>(x) + 1.0;
+        if (r > l) acc[static_cast<std::size_t>(x)] += (r - l) * wt;
+    }
+}
+
+void coverageFromContours(const std::vector<FieldContour>& contours, int w, int h, FieldRule rule,
+                          double scale, std::vector<float>& coverage) {
+    coverage.assign(static_cast<std::size_t>(w) * h, 0.0f);
+    const int n = kCoverageSubRows;
+    const int subRows = h * n;
+
+    std::vector<std::vector<Crossing>> rows(static_cast<std::size_t>(subRows));
+    for (const FieldContour& c : contours) {
+        const std::size_t count = c.xy.size() / 2;
+        if (count < 2) continue;
+        for (std::size_t i = 0; i < count; ++i) {
+            const std::size_t j = (i + 1) % count;
+            const double ax = static_cast<double>(c.xy[i * 2]) * scale;
+            const double ay = static_cast<double>(c.xy[i * 2 + 1]) * scale;
+            const double bx = static_cast<double>(c.xy[j * 2]) * scale;
+            const double by = static_cast<double>(c.xy[j * 2 + 1]) * scale;
+            if (ay == by) continue;
+
+            const int dir = ay < by ? 1 : -1;
+            const double lo = ay < by ? ay : by;
+            const double hi = ay < by ? by : ay;
+            // Sub-row k has its centre at `(k + 0.5) / n`, so the half-open
+            // interval that decides which rows a segment crosses is the same one
+            // `rasteriseContours` uses, measured in sub-rows.
+            int k0 = static_cast<int>(std::ceil(lo * n - 0.5));
+            int k1 = static_cast<int>(std::ceil(hi * n - 0.5));   // exclusive
+            if (k0 < 0) k0 = 0;
+            if (k1 > subRows) k1 = subRows;
+            const double invDy = 1.0 / (by - ay);
+            for (int k = k0; k < k1; ++k) {
+                const double cy = (static_cast<double>(k) + 0.5) / n;
+                const double t = (cy - ay) * invDy;
+                rows[static_cast<std::size_t>(k)].push_back({ax + t * (bx - ax), dir});
+            }
+        }
+    }
+
+    const double wt = 1.0 / n;
+    std::vector<double> acc(static_cast<std::size_t>(w), 0.0);
+    for (int y = 0; y < h; ++y) {
+        bool any = false;
+        for (int s = 0; s < n; ++s) {
+            std::vector<Crossing>& r = rows[static_cast<std::size_t>(y) * n + s];
+            if (r.empty()) continue;
+            std::sort(r.begin(), r.end(),
+                      [](const Crossing& a, const Crossing& b) { return a.x < b.x; });
+            if (!any) {
+                std::fill(acc.begin(), acc.end(), 0.0);
+                any = true;
+            }
+            int winding = 0;
+            bool in = false;
+            double start = 0.0;
+            for (std::size_t i = 0; i < r.size(); ++i) {
+                winding += rule == FieldRule::NonZero ? r[i].dir : 1;
+                const bool now = rule == FieldRule::NonZero ? winding != 0 : (winding & 1) != 0;
+                if (now && !in) {
+                    start = r[i].x;
+                    in = true;
+                } else if (!now && in) {
+                    addSpan(acc, w, start, r[i].x, wt);
+                    in = false;
+                }
+            }
+            // A span still open past the last crossing is art that runs off the
+            // right edge; the sweep in `rasteriseContours` keeps marking inside
+            // there too, so this does.
+            if (in) addSpan(acc, w, start, static_cast<double>(w), wt);
+        }
+        if (!any) continue;
+        float* row = &coverage[static_cast<std::size_t>(y) * w];
+        for (int x = 0; x < w; ++x) {
+            const double v = acc[static_cast<std::size_t>(x)];
+            row[x] = static_cast<float>(v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v));
+        }
+    }
+}
+
 }  // namespace
 
 FieldImage generateFieldFromAlpha(const std::vector<float>& rgba, std::uint32_t width,
@@ -607,8 +867,17 @@ FieldImage generateFieldFromAlpha(const std::vector<float>& rgba, std::uint32_t 
 
     std::vector<char> inside(texels, 0);
     std::size_t insideCount = 0;
+    // `[INF]` The alpha is ALSO the coverage, and that is not an assumption
+    // invented here: it is the same identity `CoveragePass` writes, where the
+    // fragment's output IS the signed area a pixel is covered by. The CLASS
+    // still comes from the raw `alpha >= 0.5` rule and nothing about the
+    // silhouette moves; the coverage only says WHERE inside the texel the
+    // surface runs.
+    std::vector<float> coverage(texels, 0.0f);
     for (std::size_t t = 0; t < texels; ++t) {
-        if (rgba[t * 4 + 3] >= 0.5f) {
+        const float a = rgba[t * 4 + 3];
+        coverage[t] = a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
+        if (a >= 0.5f) {
             inside[t] = 1;
             ++insideCount;
         }
@@ -618,8 +887,8 @@ FieldImage generateFieldFromAlpha(const std::vector<float>& rgba, std::uint32_t 
     // empty, so the caller names a gap instead of drawing nothing quietly.
     if (insideCount == 0) return img;
 
-    return fieldFromInsideMask(inside, static_cast<int>(width), static_cast<int>(height), 1,
-                               options);
+    return fieldFromInsideMask(inside, coverage, static_cast<int>(width),
+                               static_cast<int>(height), 1, options);
 }
 
 FieldImage generateFieldFromContours(const std::vector<FieldContour>& contours,
@@ -647,7 +916,12 @@ FieldImage generateFieldFromContours(const std::vector<FieldContour>& contours,
     // that is everywhere-outside and draws nothing in silence.
     if (insideCount == 0) return img;
 
-    return fieldFromInsideMask(inside, mw, mh, ss, options);
+    std::vector<float> coverage;
+    if (options.subpixelSeed) {
+        coverageFromContours(contours, mw, mh, options.rule, static_cast<double>(ss), coverage);
+    }
+
+    return fieldFromInsideMask(inside, coverage, mw, mh, ss, options);
 }
 
 }  // namespace rb
