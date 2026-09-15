@@ -69,6 +69,29 @@ public:
         return nullptr;
     }
 
+    // ---- mutation ----------------------------------------------------------
+    // Since 2026-09-13 (spec 13/09 §4.1). The lexeme stays the truth: mutating one
+    // member never re-spells a sibling, which is what keeps the 135 byte-exact
+    // documents byte-exact after an edit somewhere else in the tree.
+    std::vector<Value>& elements() { return elements_; }
+    std::vector<Member>& members() { return members_; }
+    Value* find(std::string_view key) {
+        for (auto& m : members_) {
+            if (m.first == key) return &m.second;
+        }
+        return nullptr;
+    }
+    // Replaces the member named `key`, or appends one. `write` sorts keys, so
+    // where it lands does not reach the bytes.
+    void set(std::string key, Value v);
+    bool erase(std::string_view key);
+
+    // `[ART]` The spelling Apple's encoder gives a Double: the shortest string
+    // that round-trips, and no ".0" on an integral value -- 1,361 non-integer
+    // and 1,152 integer tokens over 145 documents, every one (spec 13/09 §2.2).
+    // `std::to_chars` without a format is exactly that.
+    static Value number(double d);
+
 private:
     explicit Value(Kind k) : kind_(k) {}
 

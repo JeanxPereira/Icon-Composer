@@ -79,7 +79,7 @@
   - `bool Value::erase(std::string_view key)` — true se removeu
   - `static Value Value::number(double)` — lexema pelo menor round-trip, inteiro sem `.0`
 
-- [ ] **Step 1: implementar**
+- [x] **Step 1: implementar**
 
 Em `Json.h`, dentro de `class Value`, ao lado dos acessores const:
 
@@ -140,12 +140,12 @@ Value Value::number(double d) {
 
 Acrescentar `#include <charconv>` em `Json.cpp`.
 
-- [ ] **Step 2: conferir que compila**
+- [x] **Step 2: conferir que compila**
 
 Run: `cmake --build --preset mingw`
 Expected: compila limpo, sem warning novo.
 
-- [ ] **Step 3: commitar**
+- [x] **Step 3: commitar**
 
 ```bash
 git add Source/IconComposerFoundation/Json.h Source/IconComposerFoundation/Json.cpp

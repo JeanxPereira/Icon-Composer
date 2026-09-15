@@ -1,5 +1,6 @@
 #include "Source/IconComposerFoundation/Json.h"
 #include <algorithm>
+#include <charconv>
 
 namespace icf::json {
 namespace {
@@ -206,6 +207,32 @@ void writeInto(const Value& v, int depth, std::string& out) {
 }
 
 }  // namespace
+
+void Value::set(std::string key, Value v) {
+    for (auto& m : members_) {
+        if (m.first == key) {
+            m.second = std::move(v);
+            return;
+        }
+    }
+    members_.emplace_back(std::move(key), std::move(v));
+}
+
+bool Value::erase(std::string_view key) {
+    for (auto it = members_.begin(); it != members_.end(); ++it) {
+        if (it->first == key) {
+            members_.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+
+Value Value::number(double d) {
+    char buf[64];
+    auto r = std::to_chars(buf, buf + sizeof buf, d);
+    return Value::number(std::string(buf, r.ptr));
+}
 
 std::optional<Value> parse(std::string_view text) {
     Reader r(text);
