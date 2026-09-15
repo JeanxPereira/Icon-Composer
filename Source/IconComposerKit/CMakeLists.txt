@@ -12,6 +12,7 @@ add_library(IconComposerKit STATIC
     PanelLayers.cpp
     Ports.cpp
     RenderCoordinator.cpp
+    SelfTest.cpp
     Session.cpp
     ViewModel.cpp
 )
