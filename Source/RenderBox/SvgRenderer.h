@@ -68,6 +68,12 @@ struct FillOverride {
     // parameter, which the compositor builds because only it knows the canvas.
     std::vector<RampPoint> stops;
     double m[6]{1, 0, 0, 0, 1, 0};
+    // `[BIN]` A DOCUMENT fill's ramp is not the piecewise-linear one. It is the
+    // monotone cubic of `GradientOracle.h`'s `rampSmoothAtPositions`, because
+    // `IconRendering 0x1BC74` asks for interpolation code 4. An SVG's own
+    // gradient is a different question with a different answer, and nothing here
+    // read it, so this stays false for those.
+    bool smooth = false;
 };
 
 struct RenderOptions {
