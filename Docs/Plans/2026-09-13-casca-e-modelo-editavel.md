@@ -1,6 +1,8 @@
 # A casca do editor e o modelo editável — plano de implementação
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Este plano NÃO é TDD, e isso é deliberado (decidido em 15/09/2026).** Onde a skill de execução mandar escrever o teste que falha antes do código, **as Global Constraints abaixo ganham**: implementa, confere que compila, commita. Os casos que já estavam escritos moram no bloco `Se precisar de rede` no fim de cada task, como consulta.
 
 **Goal:** um `iconcomposer.exe` sobre o Onyx que abre um `.icon`, o desenha com o `rb::renderIcon`, deixa editar as propriedades que o modelo já tipa com undo, e o escreve de volta byte-exato.
 
@@ -14,14 +16,18 @@
 
 - `IconComposerFoundation` não linka GPU nem UI e compila sem Vulkan (spec 31/08, regra 1).
 - Só `Source/app` linka Onyx (regra 2). `ic_tests` nunca linka Onyx.
-- O corpus vem por `IC_CORPUS_DIR`; um teste que precisa dele e não o acha **falha**, não pula.
+- O corpus vem por `IC_CORPUS_DIR`; quando a suíte for rodada, um teste que precisa dele e não o acha **falha**, não pula.
 - Float editado é o menor round-trip (`std::to_chars`), inteiro sem `.0`, componente de cor `%.5f` (spec §2.2).
 - A chave simples e a lista `<prop>-specializations` nunca coexistem; a entrada sem predicado fica no índice 0 (spec §2.3, §4.3).
-- Todo teste novo em `Tests/` usa `check.h` (`TEST_CASE`, `CHECK`, `REQUIRE`, `CHECK_EQ`) e entra em `Tests/CMakeLists.txt`.
-- Comandos de build e teste, sempre da raiz do repo:
+- **Teste não é pré-requisito de nada aqui.** Nenhuma task exige escrever teste antes do código, e a suíte não precisa estar verde para seguir. Escreve-se teste quando algo quebra e a causa não é óbvia — aí o teste é o do bug, e ele fica. Cada task guarda os casos que **já estavam escritos** num bloco `Se precisar de rede` no fim: é consulta, não obrigação.
+- Quando um teste for escrito, ele usa `check.h` (`TEST_CASE`, `CHECK`, `REQUIRE`, `CHECK_EQ`) e entra em `Tests/CMakeLists.txt`.
+- A suíte **não entra no build default** (`EXCLUDE_FROM_ALL`): o loop de edição não paga os 40 MB dela.
+- A varredura de mutação (`scripts/gate-m1.ps1`, ~4 h) **não roda por task**. Ela é de marco, sob pedido.
+- Comandos, sempre da raiz do repo:
   - configurar: `cmake --preset mingw`
-  - construir: `cmake --build --preset mingw`
-  - testar: `IC_CORPUS_DIR=References/corpus build/mingw/Tests/ic_tests.exe <filtro>` (o filtro é um substring do nome do caso; sem filtro roda tudo)
+  - construir: `cmake --build --preset mingw`  *(sem a suíte)*
+  - construir a suíte: `cmake --build --preset mingw --target ic_tests`
+  - rodar a suíte: `IC_CORPUS_DIR=References/corpus build/mingw/Tests/ic_tests.exe <filtro>` (o filtro é um substring do nome do caso; sem filtro roda tudo, ~48 s)
 - Mensagens de commit em português, uma frase que diz o que mudou e por quê, sem atribuição a IA.
 - Nenhum comentário cita este plano; comentários citam a spec e as medições.
 
@@ -49,7 +55,7 @@
 | `Source/IconComposerKit/SelfTest.h/.cpp` | **criar**: o script headless |
 | `Source/app/CMakeLists.txt`, `main.cpp`, `OnyxPorts.h/.cpp`, `Window.cpp` | **criar**: o executável |
 | `CMakeLists.txt` | **modificar**: `IC_BUILD_UI`, FetchContent do Onyx, as duas torres |
-| `Tests/CMakeLists.txt`, `Tests/test_*.cpp` | **modificar/criar** |
+| `Tests/CMakeLists.txt`, `Tests/test_*.cpp` | **opcional** — só quando um bug pedir a rede |
 | `scripts/gate-m1.ps1` | **modificar**: fontes e mutações novas |
 | `Docs/README.md` | **modificar**: a linha "a UI do app" |
 
@@ -62,8 +68,8 @@
 **Files:**
 - Modify: `Source/IconComposerFoundation/Json.h`
 - Modify: `Source/IconComposerFoundation/Json.cpp`
-- Create: `Tests/test_json_mutate.cpp`
-- Modify: `Tests/CMakeLists.txt`
+- Create: `Tests/test_json_mutate.cpp` — **opcional**, só se for escrever a rede
+- Modify: `Tests/CMakeLists.txt` — **opcional**, só se for escrever a rede
 
 **Interfaces:**
 - Produces:
@@ -73,7 +79,85 @@
   - `bool Value::erase(std::string_view key)` — true se removeu
   - `static Value Value::number(double)` — lexema pelo menor round-trip, inteiro sem `.0`
 
-- [ ] **Step 1: escrever os testes que falham**
+- [ ] **Step 1: implementar**
+
+Em `Json.h`, dentro de `class Value`, ao lado dos acessores const:
+
+```cpp
+    // ---- mutation ----------------------------------------------------------
+    // Since 2026-09-13 (spec 13/09 §4.1). The lexeme stays the truth: mutating one
+    // member never re-spells a sibling, which is what keeps the 135 byte-exact
+    // documents byte-exact after an edit somewhere else in the tree.
+    std::vector<Value>& elements() { return elements_; }
+    std::vector<Member>& members() { return members_; }
+    Value* find(std::string_view key) {
+        for (auto& m : members_) {
+            if (m.first == key) return &m.second;
+        }
+        return nullptr;
+    }
+    // Replaces the member named `key`, or appends one. `write` sorts keys, so
+    // where it lands does not reach the bytes.
+    void set(std::string key, Value v);
+    bool erase(std::string_view key);
+
+    // `[ART]` The spelling Apple's encoder gives a Double: the shortest string
+    // that round-trips, and no ".0" on an integral value -- 1,361 non-integer
+    // and 1,152 integer tokens over 145 documents, every one (spec 13/09 §2.2).
+    // `std::to_chars` without a format is exactly that.
+    static Value number(double d);
+```
+
+Em `Json.cpp`, antes de `parse`:
+
+```cpp
+void Value::set(std::string key, Value v) {
+    for (auto& m : members_) {
+        if (m.first == key) {
+            m.second = std::move(v);
+            return;
+        }
+    }
+    members_.emplace_back(std::move(key), std::move(v));
+}
+
+bool Value::erase(std::string_view key) {
+    for (auto it = members_.begin(); it != members_.end(); ++it) {
+        if (it->first == key) {
+            members_.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+
+Value Value::number(double d) {
+    char buf[64];
+    auto r = std::to_chars(buf, buf + sizeof buf, d);
+    return Value::number(std::string(buf, r.ptr));
+}
+```
+
+Acrescentar `#include <charconv>` em `Json.cpp`.
+
+- [ ] **Step 2: conferir que compila**
+
+Run: `cmake --build --preset mingw`
+Expected: compila limpo, sem warning novo.
+
+- [ ] **Step 3: commitar**
+
+```bash
+git add Source/IconComposerFoundation/Json.h Source/IconComposerFoundation/Json.cpp
+git commit -m "o json::Value aceita mutacao sem re-soletrar ninguem, e number(double) soletra como o corpus"
+```
+
+<details>
+<summary><b>Se precisar de rede</b> — os casos desta task, e como rodá-los</summary>
+
+Não é passo obrigatório. O código abaixo é onde o comportamento pretendido está dito com precisão; se algo quebrar e a causa não for óbvia, é daqui que sai o teste do bug.
+
+Construir a suíte: `cmake --build --preset mingw --target ic_tests`
 
 ```cpp
 // Tests/test_json_mutate.cpp
@@ -173,86 +257,13 @@ TEST_CASE(json_number_from_double_reproduces_every_corpus_lexeme) {
 
 Em `Tests/CMakeLists.txt`, acrescentar `test_json_mutate.cpp` depois de `test_json.cpp`.
 
-- [ ] **Step 2: rodar e ver falhar**
 
-Run: `cmake --build --preset mingw`
-Expected: erro de compilação — `set`, `erase`, `number(double)` e o `find` mutável não existem.
-
-- [ ] **Step 3: implementar**
-
-Em `Json.h`, dentro de `class Value`, ao lado dos acessores const:
-
-```cpp
-    // ---- mutation ----------------------------------------------------------
-    // Since 2026-09-13 (spec 13/09 §4.1). The lexeme stays the truth: mutating one
-    // member never re-spells a sibling, which is what keeps the 135 byte-exact
-    // documents byte-exact after an edit somewhere else in the tree.
-    std::vector<Value>& elements() { return elements_; }
-    std::vector<Member>& members() { return members_; }
-    Value* find(std::string_view key) {
-        for (auto& m : members_) {
-            if (m.first == key) return &m.second;
-        }
-        return nullptr;
-    }
-    // Replaces the member named `key`, or appends one. `write` sorts keys, so
-    // where it lands does not reach the bytes.
-    void set(std::string key, Value v);
-    bool erase(std::string_view key);
-
-    // `[ART]` The spelling Apple's encoder gives a Double: the shortest string
-    // that round-trips, and no ".0" on an integral value -- 1,361 non-integer
-    // and 1,152 integer tokens over 145 documents, every one (spec 13/09 §2.2).
-    // `std::to_chars` without a format is exactly that.
-    static Value number(double d);
-```
-
-Em `Json.cpp`, antes de `parse`:
-
-```cpp
-void Value::set(std::string key, Value v) {
-    for (auto& m : members_) {
-        if (m.first == key) {
-            m.second = std::move(v);
-            return;
-        }
-    }
-    members_.emplace_back(std::move(key), std::move(v));
-}
-
-bool Value::erase(std::string_view key) {
-    for (auto it = members_.begin(); it != members_.end(); ++it) {
-        if (it->first == key) {
-            members_.erase(it);
-            return true;
-        }
-    }
-    return false;
-}
-
-Value Value::number(double d) {
-    char buf[64];
-    auto r = std::to_chars(buf, buf + sizeof buf, d);
-    return Value::number(std::string(buf, r.ptr));
-}
-```
-
-Acrescentar `#include <charconv>` em `Json.cpp`.
-
-- [ ] **Step 4: rodar e ver passar**
+**Como rodar e o que esperar:**
 
 Run: `cmake --build --preset mingw && IC_CORPUS_DIR=References/corpus build/mingw/Tests/ic_tests.exe json_`
 Expected: os cinco casos novos passam, e o caso do corpus imprime `... re-spelled identically` com os dois números iguais. Se `firstMiss` aparecer, o lexema listado é um caso que o `to_chars` soletra diferente do `Double.description`, e isso vira uma linha na spec §2.2 antes de qualquer contorno.
 
-- [ ] **Step 5: rodar a suíte inteira e commitar**
-
-Run: `IC_CORPUS_DIR=References/corpus build/mingw/Tests/ic_tests.exe`
-Expected: `0 failure(s)`.
-
-```bash
-git add Source/IconComposerFoundation/Json.h Source/IconComposerFoundation/Json.cpp Tests/test_json_mutate.cpp Tests/CMakeLists.txt
-git commit -m "o json::Value aceita mutacao sem re-soletrar ninguem, e number(double) soletra como o corpus"
-```
+</details>
 
 ---
 
@@ -261,8 +272,8 @@ git commit -m "o json::Value aceita mutacao sem re-soletrar ninguem, e number(do
 **Files:**
 - Modify: `Source/IconComposerFoundation/Values.h`
 - Modify: `Source/IconComposerFoundation/Values.cpp`
-- Create: `Tests/test_values_tojson.cpp`
-- Modify: `Tests/CMakeLists.txt`
+- Create: `Tests/test_values_tojson.cpp` — **opcional**, só se for escrever a rede
+- Modify: `Tests/CMakeLists.txt` — **opcional**, só se for escrever a rede
 
 **Interfaces:**
 - Produces, em `namespace icf`:
@@ -270,143 +281,7 @@ git commit -m "o json::Value aceita mutacao sem re-soletrar ninguem, e number(do
   - `std::string_view blendModeToString(BlendMode)`, `shadowKindToString(ShadowKind)`, `specularHighlightToString(SpecularHighlight)`, `lightingToString(Lighting)`, `fillKindToString(FillKind)`
   - `json::Value fillToJson(const Fill&)`, `shadowToJson(const Shadow&)`, `positionToJson(const Position&)`, `translucencyToJson(const Translucency&)`, `refractivityToJson(const Refractivity&)`
 
-- [ ] **Step 1: escrever os testes que falham**
-
-```cpp
-// Tests/test_values_tojson.cpp
-#include "check.h"
-#include "Source/IconComposerFoundation/IconBundle.h"
-#include "Source/IconComposerFoundation/Values.h"
-
-#include <cstdlib>
-#include <filesystem>
-
-using namespace icf;
-
-TEST_CASE(values_color_to_string_uses_five_fixed_decimals) {
-    // spec §2.2: 1,978 of 1,978 colour components in the corpus are "%.5f".
-    Color c;
-    c.space = ColorSpace::DisplayP3;
-    c.count = 4;
-    c.components[0] = 0.5; c.components[1] = 0; c.components[2] = 1; c.components[3] = 0.00392;
-    CHECK_EQ(colorToString(c), std::string("display-p3:0.50000,0.00000,1.00000,0.00392"));
-    Color g;
-    g.space = ColorSpace::Gray;
-    g.count = 2;
-    g.components[0] = 1; g.components[1] = 1;
-    CHECK_EQ(colorToString(g), std::string("gray:1.00000,1.00000"));
-}
-
-TEST_CASE(values_enum_to_string_inverts_from_string) {
-    for (auto m : {BlendMode::Normal, BlendMode::PlusLighter, BlendMode::PlusDarker, BlendMode::Overlay,
-                   BlendMode::Multiply, BlendMode::SoftLight, BlendMode::HardLight, BlendMode::Darken,
-                   BlendMode::Lighten, BlendMode::Screen}) {
-        auto back = blendModeFromString(blendModeToString(m));
-        REQUIRE(back.has_value());
-        CHECK(*back == m);
-    }
-    for (auto k : {ShadowKind::Automatic, ShadowKind::Neutral, ShadowKind::LayerColor, ShadowKind::None}) {
-        CHECK(*shadowKindFromString(shadowKindToString(k)) == k);
-    }
-    for (auto s : {SpecularHighlight::Off, SpecularHighlight::Automatic, SpecularHighlight::Inside,
-                   SpecularHighlight::Outside}) {
-        CHECK(*specularHighlightFromString(specularHighlightToString(s)) == s);
-    }
-    CHECK(*lightingFromString(lightingToString(Lighting::Combined)) == Lighting::Combined);
-    for (auto f : {FillKind::None, FillKind::Automatic, FillKind::Solid, FillKind::AutomaticGradient,
-                   FillKind::LinearGradient, FillKind::SystemLight, FillKind::SystemDark}) {
-        CHECK(*fillKindFromString(fillKindToString(f)) == f);
-    }
-}
-
-TEST_CASE(values_to_json_writes_the_shape_from_json_reads) {
-    auto solid = json::parse(R"({"solid" : "srgb:0.00000,0.50000,1.00000,1.00000"})");
-    REQUIRE(solid.has_value());
-    auto f = fillFrom(*solid);
-    REQUIRE(f.has_value());
-    CHECK_EQ(json::write(fillToJson(*f)), json::write(*solid));
-
-    auto plain = json::parse(R"("automatic")");
-    CHECK_EQ(json::write(fillToJson(*fillFrom(*plain))), std::string("\"automatic\""));
-
-    auto pos = json::parse(R"({"scale" : 0.5, "translation-in-points" : [ 10, -2.5 ]})");
-    auto p = positionFrom(*pos);
-    REQUIRE(p.has_value());
-    CHECK_EQ(json::write(positionToJson(*p)), json::write(*pos));
-
-    auto sh = json::parse(R"({"kind" : "neutral", "opacity" : 0.5})");
-    CHECK_EQ(json::write(shadowToJson(*shadowFrom(*sh))), json::write(*sh));
-    auto tr = json::parse(R"({"enabled" : true, "value" : 0.2})");
-    CHECK_EQ(json::write(translucencyToJson(*translucencyFrom(*tr))), json::write(*tr));
-    auto rf = json::parse(R"({"depth" : 0.14, "enabled" : true, "strength" : 0.23})");
-    CHECK_EQ(json::write(refractivityToJson(*refractivityFrom(*rf))), json::write(*rf));
-}
-
-namespace {
-constexpr Appearance kA[] = {Appearance::Base, Appearance::Light, Appearance::Dark, Appearance::Tinted};
-constexpr Idiom kI[] = {Idiom::Base, Idiom::Square, Idiom::IOS, Idiom::MacOS, Idiom::WatchOS};
-
-// Every typed value the corpus resolves, re-encoded, must give the bytes it was read from.
-void roundTrip(const json::Value& owner, std::size_t& seen, std::size_t& same, std::string& miss) {
-    auto check = [&](const json::Value* v, const std::optional<json::Value>& back) {
-        if (!v || !back) return;
-        ++seen;
-        if (json::write(*back) == json::write(*v)) ++same;
-        else if (miss.empty()) miss = json::write(*v);
-    };
-    for (auto a : kA) {
-        for (auto i : kI) {
-            const Context ctx{a, i};
-            if (const json::Value* v = resolve(owner, "fill", ctx)) {
-                if (auto f = fillFrom(*v)) check(v, fillToJson(*f));
-            }
-            if (const json::Value* v = resolve(owner, "shadow", ctx)) {
-                if (auto s = shadowFrom(*v)) check(v, shadowToJson(*s));
-            }
-            if (const json::Value* v = resolve(owner, "position", ctx)) {
-                if (auto p = positionFrom(*v)) check(v, positionToJson(*p));
-            }
-            if (const json::Value* v = resolve(owner, "translucency", ctx)) {
-                if (auto t = translucencyFrom(*v)) check(v, translucencyToJson(*t));
-            }
-            if (const json::Value* v = resolve(owner, "refractivity", ctx)) {
-                if (auto r = refractivityFrom(*v)) check(v, refractivityToJson(*r));
-            }
-        }
-    }
-}
-}  // namespace
-
-TEST_CASE(values_to_json_round_trips_every_corpus_value) {
-    const char* dir = std::getenv("IC_CORPUS_DIR");
-    REQUIRE(dir != nullptr);
-    std::size_t seen = 0, same = 0;
-    std::string miss;
-    for (const auto& e : std::filesystem::directory_iterator(dir)) {
-        auto b = IconBundle::open(e.path());
-        if (!b) continue;
-        auto doc = b->document();
-        roundTrip(doc.json(), seen, same, miss);
-        for (const auto& g : doc.groups()) {
-            roundTrip(g.json(), seen, same, miss);
-            for (const auto& l : g.layers()) roundTrip(l.json(), seen, same, miss);
-        }
-    }
-    std::printf("  %zu typed values re-encoded, %zu identical%s%s\n", seen, same,
-                miss.empty() ? "" : "; first miss: ", miss.c_str());
-    CHECK(seen >= 1000);
-    CHECK_EQ(same, seen);
-}
-```
-
-Acrescentar `test_values_tojson.cpp` em `Tests/CMakeLists.txt` depois de `test_values.cpp`.
-
-- [ ] **Step 2: rodar e ver falhar**
-
-Run: `cmake --build --preset mingw`
-Expected: erro de compilação nas funções novas.
-
-- [ ] **Step 3: implementar**
+- [ ] **Step 1: implementar**
 
 Em `Values.h`, depois dos `fromString`:
 
@@ -563,17 +438,161 @@ json::Value refractivityToJson(const Refractivity& r) {
 
 Acrescentar `#include <cstdio>` em `Values.cpp`.
 
-- [ ] **Step 4: rodar e ver passar**
+- [ ] **Step 2: conferir que compila**
+
+Run: `cmake --build --preset mingw`
+Expected: compila limpo, sem warning novo.
+
+- [ ] **Step 3: commitar**
+
+```bash
+git add Source/IconComposerFoundation/Values.h Source/IconComposerFoundation/Values.cpp
+git commit -m "os valores tipados ganham o caminho de volta ao JSON, provado contra cada valor do corpus"
+```
+
+<details>
+<summary><b>Se precisar de rede</b> — os casos desta task, e como rodá-los</summary>
+
+Não é passo obrigatório. O código abaixo é onde o comportamento pretendido está dito com precisão; se algo quebrar e a causa não for óbvia, é daqui que sai o teste do bug.
+
+Construir a suíte: `cmake --build --preset mingw --target ic_tests`
+
+```cpp
+// Tests/test_values_tojson.cpp
+#include "check.h"
+#include "Source/IconComposerFoundation/IconBundle.h"
+#include "Source/IconComposerFoundation/Values.h"
+
+#include <cstdlib>
+#include <filesystem>
+
+using namespace icf;
+
+TEST_CASE(values_color_to_string_uses_five_fixed_decimals) {
+    // spec §2.2: 1,978 of 1,978 colour components in the corpus are "%.5f".
+    Color c;
+    c.space = ColorSpace::DisplayP3;
+    c.count = 4;
+    c.components[0] = 0.5; c.components[1] = 0; c.components[2] = 1; c.components[3] = 0.00392;
+    CHECK_EQ(colorToString(c), std::string("display-p3:0.50000,0.00000,1.00000,0.00392"));
+    Color g;
+    g.space = ColorSpace::Gray;
+    g.count = 2;
+    g.components[0] = 1; g.components[1] = 1;
+    CHECK_EQ(colorToString(g), std::string("gray:1.00000,1.00000"));
+}
+
+TEST_CASE(values_enum_to_string_inverts_from_string) {
+    for (auto m : {BlendMode::Normal, BlendMode::PlusLighter, BlendMode::PlusDarker, BlendMode::Overlay,
+                   BlendMode::Multiply, BlendMode::SoftLight, BlendMode::HardLight, BlendMode::Darken,
+                   BlendMode::Lighten, BlendMode::Screen}) {
+        auto back = blendModeFromString(blendModeToString(m));
+        REQUIRE(back.has_value());
+        CHECK(*back == m);
+    }
+    for (auto k : {ShadowKind::Automatic, ShadowKind::Neutral, ShadowKind::LayerColor, ShadowKind::None}) {
+        CHECK(*shadowKindFromString(shadowKindToString(k)) == k);
+    }
+    for (auto s : {SpecularHighlight::Off, SpecularHighlight::Automatic, SpecularHighlight::Inside,
+                   SpecularHighlight::Outside}) {
+        CHECK(*specularHighlightFromString(specularHighlightToString(s)) == s);
+    }
+    CHECK(*lightingFromString(lightingToString(Lighting::Combined)) == Lighting::Combined);
+    for (auto f : {FillKind::None, FillKind::Automatic, FillKind::Solid, FillKind::AutomaticGradient,
+                   FillKind::LinearGradient, FillKind::SystemLight, FillKind::SystemDark}) {
+        CHECK(*fillKindFromString(fillKindToString(f)) == f);
+    }
+}
+
+TEST_CASE(values_to_json_writes_the_shape_from_json_reads) {
+    auto solid = json::parse(R"({"solid" : "srgb:0.00000,0.50000,1.00000,1.00000"})");
+    REQUIRE(solid.has_value());
+    auto f = fillFrom(*solid);
+    REQUIRE(f.has_value());
+    CHECK_EQ(json::write(fillToJson(*f)), json::write(*solid));
+
+    auto plain = json::parse(R"("automatic")");
+    CHECK_EQ(json::write(fillToJson(*fillFrom(*plain))), std::string("\"automatic\""));
+
+    auto pos = json::parse(R"({"scale" : 0.5, "translation-in-points" : [ 10, -2.5 ]})");
+    auto p = positionFrom(*pos);
+    REQUIRE(p.has_value());
+    CHECK_EQ(json::write(positionToJson(*p)), json::write(*pos));
+
+    auto sh = json::parse(R"({"kind" : "neutral", "opacity" : 0.5})");
+    CHECK_EQ(json::write(shadowToJson(*shadowFrom(*sh))), json::write(*sh));
+    auto tr = json::parse(R"({"enabled" : true, "value" : 0.2})");
+    CHECK_EQ(json::write(translucencyToJson(*translucencyFrom(*tr))), json::write(*tr));
+    auto rf = json::parse(R"({"depth" : 0.14, "enabled" : true, "strength" : 0.23})");
+    CHECK_EQ(json::write(refractivityToJson(*refractivityFrom(*rf))), json::write(*rf));
+}
+
+namespace {
+constexpr Appearance kA[] = {Appearance::Base, Appearance::Light, Appearance::Dark, Appearance::Tinted};
+constexpr Idiom kI[] = {Idiom::Base, Idiom::Square, Idiom::IOS, Idiom::MacOS, Idiom::WatchOS};
+
+// Every typed value the corpus resolves, re-encoded, must give the bytes it was read from.
+void roundTrip(const json::Value& owner, std::size_t& seen, std::size_t& same, std::string& miss) {
+    auto check = [&](const json::Value* v, const std::optional<json::Value>& back) {
+        if (!v || !back) return;
+        ++seen;
+        if (json::write(*back) == json::write(*v)) ++same;
+        else if (miss.empty()) miss = json::write(*v);
+    };
+    for (auto a : kA) {
+        for (auto i : kI) {
+            const Context ctx{a, i};
+            if (const json::Value* v = resolve(owner, "fill", ctx)) {
+                if (auto f = fillFrom(*v)) check(v, fillToJson(*f));
+            }
+            if (const json::Value* v = resolve(owner, "shadow", ctx)) {
+                if (auto s = shadowFrom(*v)) check(v, shadowToJson(*s));
+            }
+            if (const json::Value* v = resolve(owner, "position", ctx)) {
+                if (auto p = positionFrom(*v)) check(v, positionToJson(*p));
+            }
+            if (const json::Value* v = resolve(owner, "translucency", ctx)) {
+                if (auto t = translucencyFrom(*v)) check(v, translucencyToJson(*t));
+            }
+            if (const json::Value* v = resolve(owner, "refractivity", ctx)) {
+                if (auto r = refractivityFrom(*v)) check(v, refractivityToJson(*r));
+            }
+        }
+    }
+}
+}  // namespace
+
+TEST_CASE(values_to_json_round_trips_every_corpus_value) {
+    const char* dir = std::getenv("IC_CORPUS_DIR");
+    REQUIRE(dir != nullptr);
+    std::size_t seen = 0, same = 0;
+    std::string miss;
+    for (const auto& e : std::filesystem::directory_iterator(dir)) {
+        auto b = IconBundle::open(e.path());
+        if (!b) continue;
+        auto doc = b->document();
+        roundTrip(doc.json(), seen, same, miss);
+        for (const auto& g : doc.groups()) {
+            roundTrip(g.json(), seen, same, miss);
+            for (const auto& l : g.layers()) roundTrip(l.json(), seen, same, miss);
+        }
+    }
+    std::printf("  %zu typed values re-encoded, %zu identical%s%s\n", seen, same,
+                miss.empty() ? "" : "; first miss: ", miss.c_str());
+    CHECK(seen >= 1000);
+    CHECK_EQ(same, seen);
+}
+```
+
+Acrescentar `test_values_tojson.cpp` em `Tests/CMakeLists.txt` depois de `test_values.cpp`.
+
+
+**Como rodar e o que esperar:**
 
 Run: `cmake --build --preset mingw && IC_CORPUS_DIR=References/corpus build/mingw/Tests/ic_tests.exe values_`
 Expected: os quatro casos passam; o do corpus imprime `N typed values re-encoded, N identical`. Um `first miss` é um formato que o leitor aceita e o escritor não reproduz: corrige-se o escritor, nunca o teste.
 
-- [ ] **Step 5: commitar**
-
-```bash
-git add Source/IconComposerFoundation/Values.h Source/IconComposerFoundation/Values.cpp Tests/test_values_tojson.cpp Tests/CMakeLists.txt
-git commit -m "os valores tipados ganham o caminho de volta ao JSON, provado contra cada valor do corpus"
-```
+</details>
 
 ---
 
@@ -585,8 +604,8 @@ git commit -m "os valores tipados ganham o caminho de volta ao JSON, provado con
 - Modify: `Source/IconComposerFoundation/IconDocument.h` (duas funções)
 - Modify: `Source/IconComposerFoundation/IconDocument.cpp`
 - Modify: `Source/IconComposerFoundation/CMakeLists.txt` (acrescentar `Edit.cpp`)
-- Create: `Tests/test_document_edit.cpp`
-- Modify: `Tests/CMakeLists.txt`
+- Create: `Tests/test_document_edit.cpp` — **opcional**, só se for escrever a rede
+- Modify: `Tests/CMakeLists.txt` — **opcional**, só se for escrever a rede
 
 **Interfaces:**
 - Produces, em `namespace icf`:
@@ -596,185 +615,7 @@ git commit -m "os valores tipados ganham o caminho de volta ao JSON, provado con
   - `void setProperty(json::Value& owner, std::string_view prop, Context scope, std::optional<json::Value> value)`
   - `bool hasOwnEntry(const json::Value& owner, std::string_view prop, Context scope)` — o escopo tem valor próprio (não herdado)
 
-- [ ] **Step 1: escrever os testes que falham**
-
-```cpp
-// Tests/test_document_edit.cpp
-#include "check.h"
-#include "Source/IconComposerFoundation/Edit.h"
-#include "Source/IconComposerFoundation/IconBundle.h"
-
-#include <cstdlib>
-#include <filesystem>
-
-using namespace icf;
-
-namespace {
-json::Value obj(const char* text) {
-    auto v = json::parse(text);
-    if (!v) std::abort();
-    return *v;
-}
-const Context kBase{Appearance::Base, Idiom::Base};
-const Context kDark{Appearance::Dark, Idiom::Base};
-const Context kDarkWatch{Appearance::Dark, Idiom::WatchOS};
-}  // namespace
-
-TEST_CASE(edit_node_at_walks_groups_and_layers) {
-    json::Value root = obj(R"({"groups" : [ { "name" : "g0", "layers" : [ { "name" : "l0" } ] } ]})");
-    CHECK(nodeAt(root, NodePath{}) == &root);
-    CHECK(nodeAt(root, NodePath{0, std::nullopt})->find("name")->rawString() == "g0");
-    CHECK(nodeAt(root, NodePath{0, 0})->find("name")->rawString() == "l0");
-    CHECK(nodeAt(root, NodePath{1, std::nullopt}) == nullptr);
-    CHECK(nodeAt(root, NodePath{0, 3}) == nullptr);
-}
-
-TEST_CASE(edit_base_scope_without_a_list_writes_the_plain_key) {
-    json::Value layer = obj(R"({"name" : "l"})");
-    setProperty(layer, "glass", kBase, json::Value::boolean(true));
-    CHECK_EQ(json::write(layer), std::string("{\n  \"glass\" : true,\n  \"name\" : \"l\"\n}"));
-    CHECK(hasOwnEntry(layer, "glass", kBase));
-    CHECK(!hasOwnEntry(layer, "glass", kDark));
-    setProperty(layer, "glass", kBase, std::nullopt);
-    CHECK(layer.find("glass") == nullptr);
-}
-
-TEST_CASE(edit_predicated_scope_moves_the_plain_key_into_index_zero) {
-    // spec §4.3 step 2: the plain key becomes the unpredicated entry, and the two
-    // never coexist (890 of 890 lists, spec §2.3).
-    json::Value layer = obj(R"({"glass" : false})");
-    setProperty(layer, "glass", kDark, json::Value::boolean(true));
-    CHECK(layer.find("glass") == nullptr);
-    const json::Value* list = layer.find("glass-specializations");
-    REQUIRE(list != nullptr);
-    REQUIRE(list->elements().size() == 2);
-    CHECK(list->elements()[0].find("appearance") == nullptr);
-    CHECK(list->elements()[0].find("value")->boolean() == false);
-    CHECK(list->elements()[1].find("appearance")->rawString() == "dark");
-    CHECK(list->elements()[1].find("value")->boolean() == true);
-    CHECK(resolve(layer, "glass", kDark)->boolean() == true);
-    CHECK(resolve(layer, "glass", kBase)->boolean() == false);
-}
-
-TEST_CASE(edit_predicated_scope_with_no_plain_key_creates_a_list_without_a_default) {
-    // 274 corpus lists carry no unpredicated entry; writing Dark first must give one of those.
-    json::Value layer = obj(R"({"name" : "l"})");
-    setProperty(layer, "hidden", kDark, json::Value::boolean(true));
-    const json::Value* list = layer.find("hidden-specializations");
-    REQUIRE(list != nullptr);
-    CHECK_EQ(list->elements().size(), std::size_t(1));
-    CHECK(list->elements()[0].find("appearance")->rawString() == "dark");
-    CHECK(!hasOwnEntry(layer, "hidden", kBase));
-    CHECK(hasOwnEntry(layer, "hidden", kDark));
-}
-
-TEST_CASE(edit_base_scope_with_a_list_writes_index_zero) {
-    json::Value layer = obj(R"({"glass-specializations" : [ { "appearance" : "dark", "value" : true } ]})");
-    setProperty(layer, "glass", kBase, json::Value::boolean(false));
-    const json::Value* list = layer.find("glass-specializations");
-    REQUIRE(list->elements().size() == 2);
-    CHECK(list->elements()[0].find("appearance") == nullptr);
-    CHECK(list->elements()[0].find("value")->boolean() == false);
-    CHECK(layer.find("glass") == nullptr);
-}
-
-TEST_CASE(edit_two_predicates_match_only_their_own_entry) {
-    json::Value layer = obj(R"({"name" : "l"})");
-    setProperty(layer, "opacity", kDark, json::Value::number(0.5));
-    setProperty(layer, "opacity", kDarkWatch, json::Value::number(0.25));
-    setProperty(layer, "opacity", kDark, json::Value::number(0.75));  // replaces, not appends
-    const json::Value* list = layer.find("opacity-specializations");
-    REQUIRE(list->elements().size() == 2);
-    CHECK(resolve(layer, "opacity", kDark)->number() == "0.75");
-    CHECK(resolve(layer, "opacity", kDarkWatch)->number() == "0.25");
-    CHECK(list->elements()[1].find("idiom")->rawString() == "watchOS");
-}
-
-TEST_CASE(edit_removing_the_last_override_collapses_back_to_the_plain_key) {
-    json::Value layer = obj(R"({"glass" : false})");
-    setProperty(layer, "glass", kDark, json::Value::boolean(true));
-    setProperty(layer, "glass", kDark, std::nullopt);
-    CHECK(layer.find("glass-specializations") == nullptr);
-    REQUIRE(layer.find("glass") != nullptr);
-    CHECK(layer.find("glass")->boolean() == false);
-    // and removing a list that had no default deletes the list entirely
-    json::Value other = obj(R"({"name" : "l"})");
-    setProperty(other, "hidden", kDark, json::Value::boolean(true));
-    setProperty(other, "hidden", kDark, std::nullopt);
-    CHECK(other.find("hidden-specializations") == nullptr);
-    CHECK(other.find("hidden") == nullptr);
-}
-
-namespace {
-constexpr Appearance kA[] = {Appearance::Base, Appearance::Light, Appearance::Dark, Appearance::Tinted};
-constexpr Idiom kI[] = {Idiom::Base, Idiom::Square, Idiom::IOS, Idiom::MacOS, Idiom::WatchOS};
-const char* kProps[] = {"glass", "hidden", "opacity", "blend-mode", "fill", "shadow", "position",
-                        "translucency", "specular", "image-name", "name"};
-
-bool coexists(const json::Value& owner) {
-    for (const char* p : kProps) {
-        if (owner.find(p) && owner.find(std::string(p) + "-specializations")) return true;
-    }
-    return false;
-}
-}  // namespace
-
-TEST_CASE(edit_every_corpus_node_survives_a_write_under_every_scope) {
-    // For each node and each property that resolves: write the resolved value back
-    // under every one of the 20 scopes, read it back, then remove it, and the
-    // "never coexist" invariant must hold at every step.
-    const char* dir = std::getenv("IC_CORPUS_DIR");
-    REQUIRE(dir != nullptr);
-    std::size_t nodes = 0, writes = 0;
-    for (const auto& e : std::filesystem::directory_iterator(dir)) {
-        auto b = IconBundle::open(e.path());
-        if (!b) continue;
-        json::Value root = b->json();  // a copy to scribble on
-        std::vector<json::Value*> owners{&root};
-        for (auto& g : root.find("groups")->elements()) {
-            owners.push_back(&g);
-            if (json::Value* layers = g.find("layers")) {
-                for (auto& l : layers->elements()) owners.push_back(&l);
-            }
-        }
-        for (json::Value* owner : owners) {
-            ++nodes;
-            for (const char* p : kProps) {
-                for (auto a : kA) {
-                    for (auto i : kI) {
-                        const Context ctx{a, i};
-                        const json::Value* was = resolve(*owner, p, ctx);
-                        if (!was) continue;
-                        const json::Value copy = *was;
-                        const std::string before = json::write(*owner);
-                        setProperty(*owner, p, ctx, copy);
-                        ++writes;
-                        REQUIRE(!coexists(*owner));
-                        REQUIRE(hasOwnEntry(*owner, p, ctx));
-                        REQUIRE(json::write(*resolve(*owner, p, ctx)) == json::write(copy));
-                        setProperty(*owner, p, ctx, std::nullopt);
-                        REQUIRE(!coexists(*owner));
-                        REQUIRE(!hasOwnEntry(*owner, p, ctx));
-                        // put the original back so the next scope sees the corpus, not us
-                        *owner = *json::parse(before);
-                    }
-                }
-            }
-        }
-    }
-    std::printf("  %zu nodes, %zu scoped writes, invariant held\n", nodes, writes);
-    CHECK(nodes >= 700);
-}
-```
-
-Acrescentar `test_document_edit.cpp` em `Tests/CMakeLists.txt` depois de `test_document.cpp`.
-
-- [ ] **Step 2: rodar e ver falhar**
-
-Run: `cmake --build --preset mingw`
-Expected: `Edit.h` não existe.
-
-- [ ] **Step 3: implementar**
+- [ ] **Step 1: implementar**
 
 Em `IconDocument.h`, depois de `idiomFromString`:
 
@@ -1015,17 +856,203 @@ bool hasOwnEntry(const json::Value& owner, std::string_view prop, Context scope)
 
 Em `Source/IconComposerFoundation/CMakeLists.txt`, acrescentar `Edit.cpp` à lista.
 
-- [ ] **Step 4: rodar e ver passar**
+- [ ] **Step 2: conferir que compila**
+
+Run: `cmake --build --preset mingw`
+Expected: compila limpo, sem warning novo.
+
+- [ ] **Step 3: commitar**
+
+```bash
+git add Source/IconComposerFoundation/Edit.h Source/IconComposerFoundation/Edit.cpp Source/IconComposerFoundation/IconDocument.h Source/IconComposerFoundation/IconDocument.cpp Source/IconComposerFoundation/CMakeLists.txt
+git commit -m "escrever sob escopo e uma operacao so, porque a chave simples e a lista nunca coexistem"
+```
+
+<details>
+<summary><b>Se precisar de rede</b> — os casos desta task, e como rodá-los</summary>
+
+Não é passo obrigatório. O código abaixo é onde o comportamento pretendido está dito com precisão; se algo quebrar e a causa não for óbvia, é daqui que sai o teste do bug.
+
+Construir a suíte: `cmake --build --preset mingw --target ic_tests`
+
+```cpp
+// Tests/test_document_edit.cpp
+#include "check.h"
+#include "Source/IconComposerFoundation/Edit.h"
+#include "Source/IconComposerFoundation/IconBundle.h"
+
+#include <cstdlib>
+#include <filesystem>
+
+using namespace icf;
+
+namespace {
+json::Value obj(const char* text) {
+    auto v = json::parse(text);
+    if (!v) std::abort();
+    return *v;
+}
+const Context kBase{Appearance::Base, Idiom::Base};
+const Context kDark{Appearance::Dark, Idiom::Base};
+const Context kDarkWatch{Appearance::Dark, Idiom::WatchOS};
+}  // namespace
+
+TEST_CASE(edit_node_at_walks_groups_and_layers) {
+    json::Value root = obj(R"({"groups" : [ { "name" : "g0", "layers" : [ { "name" : "l0" } ] } ]})");
+    CHECK(nodeAt(root, NodePath{}) == &root);
+    CHECK(nodeAt(root, NodePath{0, std::nullopt})->find("name")->rawString() == "g0");
+    CHECK(nodeAt(root, NodePath{0, 0})->find("name")->rawString() == "l0");
+    CHECK(nodeAt(root, NodePath{1, std::nullopt}) == nullptr);
+    CHECK(nodeAt(root, NodePath{0, 3}) == nullptr);
+}
+
+TEST_CASE(edit_base_scope_without_a_list_writes_the_plain_key) {
+    json::Value layer = obj(R"({"name" : "l"})");
+    setProperty(layer, "glass", kBase, json::Value::boolean(true));
+    CHECK_EQ(json::write(layer), std::string("{\n  \"glass\" : true,\n  \"name\" : \"l\"\n}"));
+    CHECK(hasOwnEntry(layer, "glass", kBase));
+    CHECK(!hasOwnEntry(layer, "glass", kDark));
+    setProperty(layer, "glass", kBase, std::nullopt);
+    CHECK(layer.find("glass") == nullptr);
+}
+
+TEST_CASE(edit_predicated_scope_moves_the_plain_key_into_index_zero) {
+    // spec §4.3 step 2: the plain key becomes the unpredicated entry, and the two
+    // never coexist (890 of 890 lists, spec §2.3).
+    json::Value layer = obj(R"({"glass" : false})");
+    setProperty(layer, "glass", kDark, json::Value::boolean(true));
+    CHECK(layer.find("glass") == nullptr);
+    const json::Value* list = layer.find("glass-specializations");
+    REQUIRE(list != nullptr);
+    REQUIRE(list->elements().size() == 2);
+    CHECK(list->elements()[0].find("appearance") == nullptr);
+    CHECK(list->elements()[0].find("value")->boolean() == false);
+    CHECK(list->elements()[1].find("appearance")->rawString() == "dark");
+    CHECK(list->elements()[1].find("value")->boolean() == true);
+    CHECK(resolve(layer, "glass", kDark)->boolean() == true);
+    CHECK(resolve(layer, "glass", kBase)->boolean() == false);
+}
+
+TEST_CASE(edit_predicated_scope_with_no_plain_key_creates_a_list_without_a_default) {
+    // 274 corpus lists carry no unpredicated entry; writing Dark first must give one of those.
+    json::Value layer = obj(R"({"name" : "l"})");
+    setProperty(layer, "hidden", kDark, json::Value::boolean(true));
+    const json::Value* list = layer.find("hidden-specializations");
+    REQUIRE(list != nullptr);
+    CHECK_EQ(list->elements().size(), std::size_t(1));
+    CHECK(list->elements()[0].find("appearance")->rawString() == "dark");
+    CHECK(!hasOwnEntry(layer, "hidden", kBase));
+    CHECK(hasOwnEntry(layer, "hidden", kDark));
+}
+
+TEST_CASE(edit_base_scope_with_a_list_writes_index_zero) {
+    json::Value layer = obj(R"({"glass-specializations" : [ { "appearance" : "dark", "value" : true } ]})");
+    setProperty(layer, "glass", kBase, json::Value::boolean(false));
+    const json::Value* list = layer.find("glass-specializations");
+    REQUIRE(list->elements().size() == 2);
+    CHECK(list->elements()[0].find("appearance") == nullptr);
+    CHECK(list->elements()[0].find("value")->boolean() == false);
+    CHECK(layer.find("glass") == nullptr);
+}
+
+TEST_CASE(edit_two_predicates_match_only_their_own_entry) {
+    json::Value layer = obj(R"({"name" : "l"})");
+    setProperty(layer, "opacity", kDark, json::Value::number(0.5));
+    setProperty(layer, "opacity", kDarkWatch, json::Value::number(0.25));
+    setProperty(layer, "opacity", kDark, json::Value::number(0.75));  // replaces, not appends
+    const json::Value* list = layer.find("opacity-specializations");
+    REQUIRE(list->elements().size() == 2);
+    CHECK(resolve(layer, "opacity", kDark)->number() == "0.75");
+    CHECK(resolve(layer, "opacity", kDarkWatch)->number() == "0.25");
+    CHECK(list->elements()[1].find("idiom")->rawString() == "watchOS");
+}
+
+TEST_CASE(edit_removing_the_last_override_collapses_back_to_the_plain_key) {
+    json::Value layer = obj(R"({"glass" : false})");
+    setProperty(layer, "glass", kDark, json::Value::boolean(true));
+    setProperty(layer, "glass", kDark, std::nullopt);
+    CHECK(layer.find("glass-specializations") == nullptr);
+    REQUIRE(layer.find("glass") != nullptr);
+    CHECK(layer.find("glass")->boolean() == false);
+    // and removing a list that had no default deletes the list entirely
+    json::Value other = obj(R"({"name" : "l"})");
+    setProperty(other, "hidden", kDark, json::Value::boolean(true));
+    setProperty(other, "hidden", kDark, std::nullopt);
+    CHECK(other.find("hidden-specializations") == nullptr);
+    CHECK(other.find("hidden") == nullptr);
+}
+
+namespace {
+constexpr Appearance kA[] = {Appearance::Base, Appearance::Light, Appearance::Dark, Appearance::Tinted};
+constexpr Idiom kI[] = {Idiom::Base, Idiom::Square, Idiom::IOS, Idiom::MacOS, Idiom::WatchOS};
+const char* kProps[] = {"glass", "hidden", "opacity", "blend-mode", "fill", "shadow", "position",
+                        "translucency", "specular", "image-name", "name"};
+
+bool coexists(const json::Value& owner) {
+    for (const char* p : kProps) {
+        if (owner.find(p) && owner.find(std::string(p) + "-specializations")) return true;
+    }
+    return false;
+}
+}  // namespace
+
+TEST_CASE(edit_every_corpus_node_survives_a_write_under_every_scope) {
+    // For each node and each property that resolves: write the resolved value back
+    // under every one of the 20 scopes, read it back, then remove it, and the
+    // "never coexist" invariant must hold at every step.
+    const char* dir = std::getenv("IC_CORPUS_DIR");
+    REQUIRE(dir != nullptr);
+    std::size_t nodes = 0, writes = 0;
+    for (const auto& e : std::filesystem::directory_iterator(dir)) {
+        auto b = IconBundle::open(e.path());
+        if (!b) continue;
+        json::Value root = b->json();  // a copy to scribble on
+        std::vector<json::Value*> owners{&root};
+        for (auto& g : root.find("groups")->elements()) {
+            owners.push_back(&g);
+            if (json::Value* layers = g.find("layers")) {
+                for (auto& l : layers->elements()) owners.push_back(&l);
+            }
+        }
+        for (json::Value* owner : owners) {
+            ++nodes;
+            for (const char* p : kProps) {
+                for (auto a : kA) {
+                    for (auto i : kI) {
+                        const Context ctx{a, i};
+                        const json::Value* was = resolve(*owner, p, ctx);
+                        if (!was) continue;
+                        const json::Value copy = *was;
+                        const std::string before = json::write(*owner);
+                        setProperty(*owner, p, ctx, copy);
+                        ++writes;
+                        REQUIRE(!coexists(*owner));
+                        REQUIRE(hasOwnEntry(*owner, p, ctx));
+                        REQUIRE(json::write(*resolve(*owner, p, ctx)) == json::write(copy));
+                        setProperty(*owner, p, ctx, std::nullopt);
+                        REQUIRE(!coexists(*owner));
+                        REQUIRE(!hasOwnEntry(*owner, p, ctx));
+                        // put the original back so the next scope sees the corpus, not us
+                        *owner = *json::parse(before);
+                    }
+                }
+            }
+        }
+    }
+    std::printf("  %zu nodes, %zu scoped writes, invariant held\n", nodes, writes);
+    CHECK(nodes >= 700);
+}
+```
+
+Acrescentar `test_document_edit.cpp` em `Tests/CMakeLists.txt` depois de `test_document.cpp`.
+
+
+**Como rodar e o que esperar:**
 
 Run: `cmake --build --preset mingw && IC_CORPUS_DIR=References/corpus build/mingw/Tests/ic_tests.exe edit_`
 Expected: os oito casos passam; o do corpus imprime `N nodes, M scoped writes, invariant held`.
 
-- [ ] **Step 5: commitar**
-
-```bash
-git add Source/IconComposerFoundation/Edit.h Source/IconComposerFoundation/Edit.cpp Source/IconComposerFoundation/IconDocument.h Source/IconComposerFoundation/IconDocument.cpp Source/IconComposerFoundation/CMakeLists.txt Tests/test_document_edit.cpp Tests/CMakeLists.txt
-git commit -m "escrever sob escopo e uma operacao so, porque a chave simples e a lista nunca coexistem"
-```
+</details>
 
 ---
 
@@ -1034,7 +1061,7 @@ git commit -m "escrever sob escopo e uma operacao so, porque a chave simples e a
 **Files:**
 - Modify: `Source/IconComposerFoundation/Edit.h`
 - Modify: `Source/IconComposerFoundation/Edit.cpp`
-- Modify: `Tests/test_document_edit.cpp`
+- Modify: `Tests/test_document_edit.cpp` — **opcional**, só se for escrever a rede
 
 **Interfaces:**
 - Produces, em `namespace icf`:
@@ -1044,53 +1071,7 @@ git commit -m "escrever sob escopo e uma operacao so, porque a chave simples e a
   - `bool moveNode(json::Value& root, NodePath, int delta)` — troca com o vizinho (`-1` sobe, `+1` desce); false quando não há vizinho
   - `bool setName(json::Value& root, NodePath, std::string)` — escreve `name`
 
-- [ ] **Step 1: escrever os testes que falham**
-
-Acrescentar ao fim de `Tests/test_document_edit.cpp`:
-
-```cpp
-TEST_CASE(edit_add_group_and_layer_create_the_minimal_node) {
-    json::Value root = obj(R"({"groups" : [ ]})");
-    CHECK_EQ(addGroup(root, "Back"), std::size_t(0));
-    CHECK_EQ(addGroup(root, "Front"), std::size_t(1));
-    json::Value* front = nodeAt(root, NodePath{1, std::nullopt});
-    REQUIRE(front != nullptr);
-    CHECK_EQ(addLayer(*front, "mark", "mark.svg"), std::size_t(0));
-    CHECK_EQ(json::write(*nodeAt(root, NodePath{1, 0})),
-             std::string("{\n  \"image-name\" : \"mark.svg\",\n  \"name\" : \"mark\"\n}"));
-    CHECK_EQ(json::write(*nodeAt(root, NodePath{0, std::nullopt})),
-             std::string("{\n  \"layers\" : [\n\n  ],\n  \"name\" : \"Back\"\n}"));
-}
-
-TEST_CASE(edit_remove_and_move_act_on_siblings_only) {
-    json::Value root = obj(R"({"groups" : [ { "name" : "g", "layers" : [ { "name" : "a" }, { "name" : "b" }, { "name" : "c" } ] } ]})");
-    CHECK(!removeNode(root, NodePath{}));
-    CHECK(!moveNode(root, NodePath{0, 0}, -1));   // already first
-    CHECK(moveNode(root, NodePath{0, 0}, +1));
-    CHECK(nodeAt(root, NodePath{0, 0})->find("name")->rawString() == "b");
-    CHECK(nodeAt(root, NodePath{0, 1})->find("name")->rawString() == "a");
-    CHECK(!moveNode(root, NodePath{0, 2}, +1));   // already last
-    CHECK(removeNode(root, NodePath{0, 1}));
-    CHECK_EQ(nodeAt(root, NodePath{0, std::nullopt})->find("layers")->elements().size(), std::size_t(2));
-    CHECK(!removeNode(root, NodePath{0, 5}));
-    CHECK(removeNode(root, NodePath{0, std::nullopt}));
-    CHECK_EQ(root.find("groups")->elements().size(), std::size_t(0));
-}
-
-TEST_CASE(edit_set_name_writes_the_name_key) {
-    json::Value root = obj(R"({"groups" : [ { "name" : "g" } ]})");
-    CHECK(setName(root, NodePath{0, std::nullopt}, "renamed"));
-    CHECK(nodeAt(root, NodePath{0, std::nullopt})->find("name")->rawString() == "renamed");
-    CHECK(!setName(root, NodePath{3, std::nullopt}, "x"));
-}
-```
-
-- [ ] **Step 2: rodar e ver falhar**
-
-Run: `cmake --build --preset mingw`
-Expected: erro de compilação — as cinco funções não existem.
-
-- [ ] **Step 3: implementar**
+- [ ] **Step 1: implementar**
 
 Em `Edit.h`, antes do fecho do namespace:
 
@@ -1180,17 +1161,71 @@ bool setName(json::Value& root, NodePath path, std::string name) {
 
 Acrescentar `#include <utility>` em `Edit.cpp`.
 
-- [ ] **Step 4: rodar e ver passar**
+- [ ] **Step 2: conferir que compila**
+
+Run: `cmake --build --preset mingw`
+Expected: compila limpo, sem warning novo.
+
+- [ ] **Step 3: commitar**
+
+```bash
+git add Source/IconComposerFoundation/Edit.h Source/IconComposerFoundation/Edit.cpp
+git commit -m "grupo e camada nascem, somem, sobem e descem, e um no novo carrega so o que o corpus mostra"
+```
+
+<details>
+<summary><b>Se precisar de rede</b> — os casos desta task, e como rodá-los</summary>
+
+Não é passo obrigatório. O código abaixo é onde o comportamento pretendido está dito com precisão; se algo quebrar e a causa não for óbvia, é daqui que sai o teste do bug.
+
+Construir a suíte: `cmake --build --preset mingw --target ic_tests`
+
+Acrescentar ao fim de `Tests/test_document_edit.cpp`:
+
+```cpp
+TEST_CASE(edit_add_group_and_layer_create_the_minimal_node) {
+    json::Value root = obj(R"({"groups" : [ ]})");
+    CHECK_EQ(addGroup(root, "Back"), std::size_t(0));
+    CHECK_EQ(addGroup(root, "Front"), std::size_t(1));
+    json::Value* front = nodeAt(root, NodePath{1, std::nullopt});
+    REQUIRE(front != nullptr);
+    CHECK_EQ(addLayer(*front, "mark", "mark.svg"), std::size_t(0));
+    CHECK_EQ(json::write(*nodeAt(root, NodePath{1, 0})),
+             std::string("{\n  \"image-name\" : \"mark.svg\",\n  \"name\" : \"mark\"\n}"));
+    CHECK_EQ(json::write(*nodeAt(root, NodePath{0, std::nullopt})),
+             std::string("{\n  \"layers\" : [\n\n  ],\n  \"name\" : \"Back\"\n}"));
+}
+
+TEST_CASE(edit_remove_and_move_act_on_siblings_only) {
+    json::Value root = obj(R"({"groups" : [ { "name" : "g", "layers" : [ { "name" : "a" }, { "name" : "b" }, { "name" : "c" } ] } ]})");
+    CHECK(!removeNode(root, NodePath{}));
+    CHECK(!moveNode(root, NodePath{0, 0}, -1));   // already first
+    CHECK(moveNode(root, NodePath{0, 0}, +1));
+    CHECK(nodeAt(root, NodePath{0, 0})->find("name")->rawString() == "b");
+    CHECK(nodeAt(root, NodePath{0, 1})->find("name")->rawString() == "a");
+    CHECK(!moveNode(root, NodePath{0, 2}, +1));   // already last
+    CHECK(removeNode(root, NodePath{0, 1}));
+    CHECK_EQ(nodeAt(root, NodePath{0, std::nullopt})->find("layers")->elements().size(), std::size_t(2));
+    CHECK(!removeNode(root, NodePath{0, 5}));
+    CHECK(removeNode(root, NodePath{0, std::nullopt}));
+    CHECK_EQ(root.find("groups")->elements().size(), std::size_t(0));
+}
+
+TEST_CASE(edit_set_name_writes_the_name_key) {
+    json::Value root = obj(R"({"groups" : [ { "name" : "g" } ]})");
+    CHECK(setName(root, NodePath{0, std::nullopt}, "renamed"));
+    CHECK(nodeAt(root, NodePath{0, std::nullopt})->find("name")->rawString() == "renamed");
+    CHECK(!setName(root, NodePath{3, std::nullopt}, "x"));
+}
+```
+
+
+**Como rodar e o que esperar:**
 
 Run: `cmake --build --preset mingw && IC_CORPUS_DIR=References/corpus build/mingw/Tests/ic_tests.exe edit_`
 Expected: onze casos, zero falhas.
 
-- [ ] **Step 5: commitar**
-
-```bash
-git add Source/IconComposerFoundation/Edit.h Source/IconComposerFoundation/Edit.cpp Tests/test_document_edit.cpp
-git commit -m "grupo e camada nascem, somem, sobem e descem, e um no novo carrega so o que o corpus mostra"
-```
+</details>
 
 ---
 
@@ -1199,8 +1234,8 @@ git commit -m "grupo e camada nascem, somem, sobem e descem, e um no novo carreg
 **Files:**
 - Modify: `Source/IconComposerFoundation/IconBundle.h`
 - Modify: `Source/IconComposerFoundation/IconBundle.cpp`
-- Create: `Tests/test_bundle_save.cpp`
-- Modify: `Tests/CMakeLists.txt`
+- Create: `Tests/test_bundle_save.cpp` — **opcional**, só se for escrever a rede
+- Modify: `Tests/CMakeLists.txt` — **opcional**, só se for escrever a rede
 
 **Interfaces:**
 - Produces, em `class IconBundle`:
@@ -1210,7 +1245,104 @@ git commit -m "grupo e camada nascem, somem, sobem e descem, e um no novo carreg
   - `std::string saveAs(const std::filesystem::path& dir)` — cria `dir/Assets`, copia os assets, escreve, e passa a apontar para `dir`
   - `std::string importAsset(const std::filesystem::path& file)` — copia para `Assets/<nome>` e acrescenta a `assetFiles()`; vazio no sucesso
 
-- [ ] **Step 1: escrever os testes que falham**
+- [ ] **Step 1: implementar**
+
+Em `IconBundle.h`, dentro da classe, depois de `document()`:
+
+```cpp
+    // ---- editing, since 2026-09-13 (spec 13/09 §4.2) ----
+    json::Value& json() { return *tree_; }
+    // A deep copy that shares nothing -- what a render job works on while the
+    // UI keeps editing the original.
+    IconBundle clone() const;
+    // Atomic: written to a sibling temporary and renamed over `icon.json`, so a
+    // crash mid-write leaves the old document, never half of the new one.
+    // Empty on success, otherwise the reason -- this tower reports, it does not throw.
+    std::string save() const;
+    // Creates `dir/Assets`, copies every asset, writes the document, and this
+    // bundle now IS `dir`.
+    std::string saveAs(const std::filesystem::path& dir);
+    // Copies `file` into `Assets/` under its own name and lists it.
+    std::string importAsset(const std::filesystem::path& file);
+```
+
+Em `IconBundle.cpp`, ao fim, antes do fecho do namespace:
+
+```cpp
+namespace {
+std::string writeAtomically(const fs::path& target, const std::string& bytes) {
+    const fs::path tmp = target.string() + ".tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (!f) return "could not open " + tmp.string() + " for writing";
+        f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        if (!f) return "could not write " + tmp.string();
+    }
+    std::error_code ec;
+    fs::rename(tmp, target, ec);
+    if (ec) {
+        fs::remove(tmp, ec);
+        return "could not replace " + target.string() + ": " + ec.message();
+    }
+    return {};
+}
+}  // namespace
+
+IconBundle IconBundle::clone() const {
+    return IconBundle(dir_, std::make_unique<json::Value>(*tree_), assets_);
+}
+
+std::string IconBundle::save() const {
+    return writeAtomically(dir_ / "icon.json", json::write(*tree_));
+}
+
+std::string IconBundle::saveAs(const fs::path& dir) {
+    std::error_code ec;
+    fs::create_directories(dir / "Assets", ec);
+    if (ec) return "could not create " + (dir / "Assets").string() + ": " + ec.message();
+    for (const auto& a : assets_) {
+        fs::copy_file(dir_ / "Assets" / a, dir / "Assets" / a, fs::copy_options::overwrite_existing, ec);
+        if (ec) return "could not copy " + a + ": " + ec.message();
+    }
+    const std::string wrote = writeAtomically(dir / "icon.json", json::write(*tree_));
+    if (!wrote.empty()) return wrote;
+    dir_ = dir;
+    return {};
+}
+
+std::string IconBundle::importAsset(const fs::path& file) {
+    std::error_code ec;
+    if (!fs::is_regular_file(file, ec)) return "not a file: " + file.string();
+    const std::string name = file.filename().string();
+    fs::create_directories(dir_ / "Assets", ec);
+    fs::copy_file(file, dir_ / "Assets" / name, fs::copy_options::overwrite_existing, ec);
+    if (ec) return "could not copy " + name + ": " + ec.message();
+    if (std::find(assets_.begin(), assets_.end(), name) == assets_.end()) {
+        assets_.push_back(name);
+        std::sort(assets_.begin(), assets_.end());
+    }
+    return {};
+}
+```
+
+- [ ] **Step 2: conferir que compila**
+
+Run: `cmake --build --preset mingw`
+Expected: compila limpo, sem warning novo.
+
+- [ ] **Step 3: commitar**
+
+```bash
+git add Source/IconComposerFoundation/IconBundle.h Source/IconComposerFoundation/IconBundle.cpp
+git commit -m "o bundle escreve de volta, atomicamente, e os 135 byte-exatos continuam byte-exatos depois de editar"
+```
+
+<details>
+<summary><b>Se precisar de rede</b> — os casos desta task, e como rodá-los</summary>
+
+Não é passo obrigatório. O código abaixo é onde o comportamento pretendido está dito com precisão; se algo quebrar e a causa não for óbvia, é daqui que sai o teste do bug.
+
+Construir a suíte: `cmake --build --preset mingw --target ic_tests`
 
 ```cpp
 // Tests/test_bundle_save.cpp
@@ -1328,106 +1460,19 @@ TEST_CASE(bundle_save_keeps_every_byte_exact_corpus_document_byte_exact) {
 
 Acrescentar `test_bundle_save.cpp` em `Tests/CMakeLists.txt` depois de `test_bundle.cpp`.
 
-- [ ] **Step 2: rodar e ver falhar**
 
-Run: `cmake --build --preset mingw`
-Expected: erro de compilação.
-
-- [ ] **Step 3: implementar**
-
-Em `IconBundle.h`, dentro da classe, depois de `document()`:
-
-```cpp
-    // ---- editing, since 2026-09-13 (spec 13/09 §4.2) ----
-    json::Value& json() { return *tree_; }
-    // A deep copy that shares nothing -- what a render job works on while the
-    // UI keeps editing the original.
-    IconBundle clone() const;
-    // Atomic: written to a sibling temporary and renamed over `icon.json`, so a
-    // crash mid-write leaves the old document, never half of the new one.
-    // Empty on success, otherwise the reason -- this tower reports, it does not throw.
-    std::string save() const;
-    // Creates `dir/Assets`, copies every asset, writes the document, and this
-    // bundle now IS `dir`.
-    std::string saveAs(const std::filesystem::path& dir);
-    // Copies `file` into `Assets/` under its own name and lists it.
-    std::string importAsset(const std::filesystem::path& file);
-```
-
-Em `IconBundle.cpp`, ao fim, antes do fecho do namespace:
-
-```cpp
-namespace {
-std::string writeAtomically(const fs::path& target, const std::string& bytes) {
-    const fs::path tmp = target.string() + ".tmp";
-    {
-        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-        if (!f) return "could not open " + tmp.string() + " for writing";
-        f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-        if (!f) return "could not write " + tmp.string();
-    }
-    std::error_code ec;
-    fs::rename(tmp, target, ec);
-    if (ec) {
-        fs::remove(tmp, ec);
-        return "could not replace " + target.string() + ": " + ec.message();
-    }
-    return {};
-}
-}  // namespace
-
-IconBundle IconBundle::clone() const {
-    return IconBundle(dir_, std::make_unique<json::Value>(*tree_), assets_);
-}
-
-std::string IconBundle::save() const {
-    return writeAtomically(dir_ / "icon.json", json::write(*tree_));
-}
-
-std::string IconBundle::saveAs(const fs::path& dir) {
-    std::error_code ec;
-    fs::create_directories(dir / "Assets", ec);
-    if (ec) return "could not create " + (dir / "Assets").string() + ": " + ec.message();
-    for (const auto& a : assets_) {
-        fs::copy_file(dir_ / "Assets" / a, dir / "Assets" / a, fs::copy_options::overwrite_existing, ec);
-        if (ec) return "could not copy " + a + ": " + ec.message();
-    }
-    const std::string wrote = writeAtomically(dir / "icon.json", json::write(*tree_));
-    if (!wrote.empty()) return wrote;
-    dir_ = dir;
-    return {};
-}
-
-std::string IconBundle::importAsset(const fs::path& file) {
-    std::error_code ec;
-    if (!fs::is_regular_file(file, ec)) return "not a file: " + file.string();
-    const std::string name = file.filename().string();
-    fs::create_directories(dir_ / "Assets", ec);
-    fs::copy_file(file, dir_ / "Assets" / name, fs::copy_options::overwrite_existing, ec);
-    if (ec) return "could not copy " + name + ": " + ec.message();
-    if (std::find(assets_.begin(), assets_.end(), name) == assets_.end()) {
-        assets_.push_back(name);
-        std::sort(assets_.begin(), assets_.end());
-    }
-    return {};
-}
-```
-
-- [ ] **Step 4: rodar e ver passar**
+**Como rodar e o que esperar:**
 
 Run: `cmake --build --preset mingw && IC_CORPUS_DIR=References/corpus build/mingw/Tests/ic_tests.exe bundle_`
 Expected: os cinco casos passam; o do corpus imprime `135 byte-exact documents saved, 135 still byte-exact` (ou mais, nunca menos).
 
-- [ ] **Step 5: commitar**
-
-```bash
-git add Source/IconComposerFoundation/IconBundle.h Source/IconComposerFoundation/IconBundle.cpp Tests/test_bundle_save.cpp Tests/CMakeLists.txt
-git commit -m "o bundle escreve de volta, atomicamente, e os 135 byte-exatos continuam byte-exatos depois de editar"
-```
+</details>
 
 ---
 
-### Task 6: âncoras do gate para a Foundation editável
+### Task 6 (opcional): âncoras do gate para a Foundation editável
+
+> **Fora do caminho crítico.** A varredura de mutação virou coisa de marco, não de task — esta task só faz sentido no dia em que o gate for rodado de novo. Pule e siga para a Parte B.
 
 **Files:**
 - Modify: `scripts/gate-m1.ps1` (o mapa `$sources` e a lista `$mutations`)
@@ -1506,8 +1551,8 @@ git commit -m "o gate ganha onze mutacoes na Foundation editavel, e cada uma cai
 - Create: `Source/IconComposerKit/CMakeLists.txt`
 - Create: `Source/IconComposerKit/Ports.h`
 - Create: `Source/IconComposerKit/Headless.h`, `Source/IconComposerKit/Headless.cpp`
-- Create: `Tests/test_kit_headless.cpp`
-- Modify: `Tests/CMakeLists.txt`
+- Create: `Tests/test_kit_headless.cpp` — **opcional**, só se for escrever a rede
+- Modify: `Tests/CMakeLists.txt` — **opcional**, só se for escrever a rede
 
 **Interfaces:**
 - Produces:
@@ -1531,46 +1576,7 @@ git commit -m "o gate ganha onze mutacoes na Foundation editavel, e cada uma cai
     ```
   - `Headless.h`: `class HeadlessImGui { public: HeadlessImGui(float w = 1440, float h = 900); ~HeadlessImGui(); void newFrame(); void render(); std::uint64_t errors() const; }` — contexto sem backend, com `io.DisplaySize`, o atlas construído e `SetTexID(1)`, e um error callback que conta
 
-- [ ] **Step 1: o teste que falha**
-
-```cpp
-// Tests/test_kit_headless.cpp
-#include "check.h"
-#include "Source/IconComposerKit/Headless.h"
-#include "Source/IconComposerKit/Ports.h"
-#include "imgui.h"
-
-TEST_CASE(kit_headless_imgui_runs_a_frame_with_no_backend) {
-    ick::HeadlessImGui gui;
-    gui.newFrame();
-    ImGui::Begin("probe");
-    ImGui::Text("hello");
-    ImGui::End();
-    gui.render();
-    CHECK_EQ(gui.errors(), std::uint64_t(0));
-    CHECK(ImGui::GetIO().MetricsRenderWindows >= 1);
-}
-
-TEST_CASE(kit_to_rgba8_clamps_and_rounds) {
-    const std::vector<float> in{0.0f, 0.5f, 1.0f, 1.5f, -0.2f, 0.25f, 0.75f, 1.0f};
-    const auto out = ick::toRgba8(in);
-    REQUIRE(out.size() == 8);
-    CHECK_EQ(int(out[0]), 0);
-    CHECK_EQ(int(out[1]), 128);
-    CHECK_EQ(int(out[2]), 255);
-    CHECK_EQ(int(out[3]), 255);
-    CHECK_EQ(int(out[4]), 0);
-    CHECK_EQ(int(out[5]), 64);
-    CHECK_EQ(int(out[6]), 191);
-}
-```
-
-- [ ] **Step 2: ver falhar**
-
-Run: `cmake --preset mingw && cmake --build --preset mingw`
-Expected: `Headless.h` não existe.
-
-- [ ] **Step 3: implementar**
+- [ ] **Step 1: implementar**
 
 No `CMakeLists.txt` da raiz, depois de `option(IC_SANITIZE ...)`:
 
@@ -1808,17 +1814,64 @@ if(IC_BUILD_UI)
 endif()
 ```
 
-- [ ] **Step 4: ver passar**
+- [ ] **Step 2: conferir que compila**
+
+Run: `cmake --build --preset mingw`
+Expected: compila limpo, sem warning novo.
+
+- [ ] **Step 3: commitar**
+
+```bash
+git add CMakeLists.txt Source/IconComposerKit
+git commit -m "o Kit nasce ImGui puro, com as duas portas que a janela implementa e um ImGui sem backend para os testes"
+```
+
+<details>
+<summary><b>Se precisar de rede</b> — os casos desta task, e como rodá-los</summary>
+
+Não é passo obrigatório. O código abaixo é onde o comportamento pretendido está dito com precisão; se algo quebrar e a causa não for óbvia, é daqui que sai o teste do bug.
+
+Construir a suíte: `cmake --build --preset mingw --target ic_tests`
+
+```cpp
+// Tests/test_kit_headless.cpp
+#include "check.h"
+#include "Source/IconComposerKit/Headless.h"
+#include "Source/IconComposerKit/Ports.h"
+#include "imgui.h"
+
+TEST_CASE(kit_headless_imgui_runs_a_frame_with_no_backend) {
+    ick::HeadlessImGui gui;
+    gui.newFrame();
+    ImGui::Begin("probe");
+    ImGui::Text("hello");
+    ImGui::End();
+    gui.render();
+    CHECK_EQ(gui.errors(), std::uint64_t(0));
+    CHECK(ImGui::GetIO().MetricsRenderWindows >= 1);
+}
+
+TEST_CASE(kit_to_rgba8_clamps_and_rounds) {
+    const std::vector<float> in{0.0f, 0.5f, 1.0f, 1.5f, -0.2f, 0.25f, 0.75f, 1.0f};
+    const auto out = ick::toRgba8(in);
+    REQUIRE(out.size() == 8);
+    CHECK_EQ(int(out[0]), 0);
+    CHECK_EQ(int(out[1]), 128);
+    CHECK_EQ(int(out[2]), 255);
+    CHECK_EQ(int(out[3]), 255);
+    CHECK_EQ(int(out[4]), 0);
+    CHECK_EQ(int(out[5]), 64);
+    CHECK_EQ(int(out[6]), 191);
+}
+```
+
+
+**Como rodar e o que esperar:**
 
 Run: `cmake --preset mingw && cmake --build --preset mingw && IC_CORPUS_DIR=References/corpus build/mingw/Tests/ic_tests.exe kit_`
 Expected: dois casos, zero falhas. A configuração puxa o Onyx e o ImGui; o build do `ic_tests` compila o ImGui e **nenhum** fonte do Onyx (`EXCLUDE_FROM_ALL`).
 
-- [ ] **Step 5: commitar**
-
-```bash
-git add CMakeLists.txt Source/IconComposerKit Tests/test_kit_headless.cpp Tests/CMakeLists.txt
-git commit -m "o Kit nasce ImGui puro, com as duas portas que a janela implementa e um ImGui sem backend para os testes"
-```
+</details>
 
 ---
 
@@ -1827,8 +1880,8 @@ git commit -m "o Kit nasce ImGui puro, com as duas portas que a janela implement
 **Files:**
 - Create: `Source/IconComposerKit/Session.h`, `Source/IconComposerKit/Session.cpp`
 - Modify: `Source/IconComposerKit/CMakeLists.txt` (acrescentar `Session.cpp`)
-- Create: `Tests/test_kit_session.cpp`
-- Modify: `Tests/CMakeLists.txt`
+- Create: `Tests/test_kit_session.cpp` — **opcional**, só se for escrever a rede
+- Modify: `Tests/CMakeLists.txt` — **opcional**, só se for escrever a rede
 
 **Interfaces:**
 - Produces, em `namespace ick`:
@@ -1858,150 +1911,7 @@ git commit -m "o Kit nasce ImGui puro, com as duas portas que a janela implement
   };
   ```
 
-- [ ] **Step 1: os testes que falham**
-
-```cpp
-// Tests/test_kit_session.cpp
-#include "check.h"
-#include "Source/IconComposerKit/Session.h"
-
-#include <filesystem>
-#include <fstream>
-#include <sstream>
-
-using namespace ick;
-namespace fs = std::filesystem;
-
-namespace {
-std::string slurp(const fs::path& p) {
-    std::ifstream f(p, std::ios::binary);
-    std::ostringstream o;
-    o << f.rdbuf();
-    return o.str();
-}
-fs::path scratch(const char* name) {
-    const fs::path dir = fs::temp_directory_path() / (std::string("ic-session-") + name + ".icon");
-    fs::remove_all(dir);
-    fs::create_directories(dir / "Assets");
-    std::ofstream(dir / "icon.json", std::ios::binary)
-        << "{\n  \"fill\" : \"automatic\",\n  \"groups\" : [\n    {\n      \"layers\" : [\n        {\n          \"image-name\" : \"a.svg\",\n          \"name\" : \"a\"\n        },\n        {\n          \"image-name\" : \"b.svg\",\n          \"name\" : \"b\"\n        }\n      ],\n      \"name\" : \"g\"\n    }\n  ]\n}";
-    std::ofstream(dir / "Assets" / "a.svg", std::ios::binary) << "<svg/>";
-    std::ofstream(dir / "Assets" / "b.svg", std::ios::binary) << "<svg/>";
-    return dir;
-}
-const icf::NodePath kLayerA{0, 0};
-}  // namespace
-
-TEST_CASE(session_edit_undo_redo_round_trip_the_bytes) {
-    const fs::path dir = scratch("undo");
-    auto s = Session::open(dir);
-    REQUIRE(s.has_value());
-    const std::string original = icf::json::write(s->root());
-    const std::uint64_t v0 = s->version();
-    CHECK(!s->canUndo());
-    CHECK(!s->isDirty());
-    s->setProperty(kLayerA, "opacity", icf::Context{}, icf::json::Value::number(0.5));
-    CHECK(s->version() != v0);
-    CHECK(s->isDirty());
-    CHECK(icf::json::write(s->root()) != original);
-    CHECK(s->undo());
-    CHECK_EQ(icf::json::write(s->root()), original);
-    CHECK(!s->isDirty());
-    CHECK(s->canRedo());
-    CHECK(s->redo());
-    CHECK(s->isDirty());
-    CHECK(s->undo());
-    CHECK(!s->undo());   // stack empty now
-}
-
-TEST_CASE(session_coalesces_a_drag_into_one_command) {
-    const fs::path dir = scratch("coalesce");
-    auto s = Session::open(dir);
-    REQUIRE(s.has_value());
-    s->setProperty(kLayerA, "opacity", icf::Context{}, icf::json::Value::number(0.9), true);
-    s->setProperty(kLayerA, "opacity", icf::Context{}, icf::json::Value::number(0.8), true);
-    s->setProperty(kLayerA, "opacity", icf::Context{}, icf::json::Value::number(0.7), true);
-    s->endCoalescing();
-    CHECK(icf::nodeAt(s->root(), kLayerA)->find("opacity")->number() == "0.7");
-    CHECK(s->undo());
-    CHECK(icf::nodeAt(s->root(), kLayerA)->find("opacity") == nullptr);   // one undo undid the drag
-    CHECK(!s->canUndo());
-    // a different key never coalesces, even mid-drag
-    s->setProperty(kLayerA, "opacity", icf::Context{}, icf::json::Value::number(0.5), true);
-    s->setProperty(kLayerA, "hidden", icf::Context{}, icf::json::Value::boolean(true), true);
-    s->endCoalescing();
-    CHECK(s->undo());
-    CHECK(icf::nodeAt(s->root(), kLayerA)->find("opacity")->number() == "0.5");
-}
-
-TEST_CASE(session_new_command_after_undo_drops_the_redo_branch) {
-    const fs::path dir = scratch("branch");
-    auto s = Session::open(dir);
-    REQUIRE(s.has_value());
-    s->setProperty(kLayerA, "hidden", icf::Context{}, icf::json::Value::boolean(true));
-    s->undo();
-    CHECK(s->canRedo());
-    s->setProperty(kLayerA, "glass", icf::Context{}, icf::json::Value::boolean(true));
-    CHECK(!s->canRedo());
-}
-
-TEST_CASE(session_structure_commands_are_undoable_and_fix_the_selection) {
-    const fs::path dir = scratch("structure");
-    auto s = Session::open(dir);
-    REQUIRE(s.has_value());
-    s->selection = icf::NodePath{0, 1};
-    CHECK(s->removeNode(icf::NodePath{0, 1}));
-    CHECK(!s->selection.has_value());   // it pointed at what is gone
-    CHECK_EQ(icf::nodeAt(s->root(), icf::NodePath{0, std::nullopt})->find("layers")->elements().size(), std::size_t(1));
-    CHECK(s->undo());
-    CHECK_EQ(icf::nodeAt(s->root(), icf::NodePath{0, std::nullopt})->find("layers")->elements().size(), std::size_t(2));
-    auto g = s->addGroup("Front");
-    REQUIRE(g.has_value());
-    CHECK_EQ(*g, std::size_t(1));
-    auto l = s->addLayer(*g, "mark", "mark.svg");
-    REQUIRE(l.has_value());
-    CHECK(s->moveNode(icf::NodePath{1, std::nullopt}, -1));
-    CHECK(icf::nodeAt(s->root(), icf::NodePath{0, std::nullopt})->find("name")->rawString() == "Front");
-    CHECK(s->rename(icf::NodePath{0, std::nullopt}, "First"));
-    CHECK(s->undo());  // rename
-    CHECK(s->undo());  // move
-    CHECK(s->undo());  // addLayer
-    CHECK(s->undo());  // addGroup
-    CHECK_EQ(s->root().find("groups")->elements().size(), std::size_t(1));
-}
-
-TEST_CASE(session_save_clears_dirty_and_writes_the_document) {
-    const fs::path dir = scratch("save");
-    auto s = Session::open(dir);
-    REQUIRE(s.has_value());
-    s->setProperty(kLayerA, "hidden", icf::Context{}, icf::json::Value::boolean(true));
-    CHECK_EQ(s->save(), std::string(""));
-    CHECK(!s->isDirty());
-    CHECK(slurp(dir / "icon.json").find("\"hidden\" : true") != std::string::npos);
-    CHECK(s->undo());
-    CHECK(s->isDirty());   // the disk has the edit; memory does not
-    CHECK(s->redo());
-    CHECK(!s->isDirty());
-}
-
-TEST_CASE(session_create_writes_the_minimal_document) {
-    const fs::path dir = fs::temp_directory_path() / "ic-session-new.icon";
-    fs::remove_all(dir);
-    auto s = Session::create(dir);
-    REQUIRE(s.has_value());
-    CHECK_EQ(slurp(dir / "icon.json"), std::string("{\n  \"fill\" : \"automatic\",\n  \"groups\" : [\n\n  ]\n}"));
-    CHECK(fs::is_directory(dir / "Assets"));
-}
-```
-
-Acrescentar `test_kit_session.cpp` ao bloco `if(IC_BUILD_UI)` de `Tests/CMakeLists.txt`.
-
-- [ ] **Step 2: ver falhar**
-
-Run: `cmake --build --preset mingw`
-Expected: `Session.h` não existe.
-
-- [ ] **Step 3: implementar**
+- [ ] **Step 1: implementar**
 
 `Session.h`:
 
@@ -2281,17 +2191,168 @@ void Session::dropSelectionIfGone() {
 
 Acrescentar `#include <utility>` e `#include <string>` em `Session.cpp`. Acrescentar `Session.cpp` ao `add_library` do Kit.
 
-- [ ] **Step 4: ver passar**
+- [ ] **Step 2: conferir que compila**
+
+Run: `cmake --build --preset mingw`
+Expected: compila limpo, sem warning novo.
+
+- [ ] **Step 3: commitar**
+
+```bash
+git add Source/IconComposerKit/Session.h Source/IconComposerKit/Session.cpp Source/IconComposerKit/CMakeLists.txt
+git commit -m "a sessao e o documento aberto com undo por snapshot de no, e um arrasto vira um comando so"
+```
+
+<details>
+<summary><b>Se precisar de rede</b> — os casos desta task, e como rodá-los</summary>
+
+Não é passo obrigatório. O código abaixo é onde o comportamento pretendido está dito com precisão; se algo quebrar e a causa não for óbvia, é daqui que sai o teste do bug.
+
+Construir a suíte: `cmake --build --preset mingw --target ic_tests`
+
+```cpp
+// Tests/test_kit_session.cpp
+#include "check.h"
+#include "Source/IconComposerKit/Session.h"
+
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+
+using namespace ick;
+namespace fs = std::filesystem;
+
+namespace {
+std::string slurp(const fs::path& p) {
+    std::ifstream f(p, std::ios::binary);
+    std::ostringstream o;
+    o << f.rdbuf();
+    return o.str();
+}
+fs::path scratch(const char* name) {
+    const fs::path dir = fs::temp_directory_path() / (std::string("ic-session-") + name + ".icon");
+    fs::remove_all(dir);
+    fs::create_directories(dir / "Assets");
+    std::ofstream(dir / "icon.json", std::ios::binary)
+        << "{\n  \"fill\" : \"automatic\",\n  \"groups\" : [\n    {\n      \"layers\" : [\n        {\n          \"image-name\" : \"a.svg\",\n          \"name\" : \"a\"\n        },\n        {\n          \"image-name\" : \"b.svg\",\n          \"name\" : \"b\"\n        }\n      ],\n      \"name\" : \"g\"\n    }\n  ]\n}";
+    std::ofstream(dir / "Assets" / "a.svg", std::ios::binary) << "<svg/>";
+    std::ofstream(dir / "Assets" / "b.svg", std::ios::binary) << "<svg/>";
+    return dir;
+}
+const icf::NodePath kLayerA{0, 0};
+}  // namespace
+
+TEST_CASE(session_edit_undo_redo_round_trip_the_bytes) {
+    const fs::path dir = scratch("undo");
+    auto s = Session::open(dir);
+    REQUIRE(s.has_value());
+    const std::string original = icf::json::write(s->root());
+    const std::uint64_t v0 = s->version();
+    CHECK(!s->canUndo());
+    CHECK(!s->isDirty());
+    s->setProperty(kLayerA, "opacity", icf::Context{}, icf::json::Value::number(0.5));
+    CHECK(s->version() != v0);
+    CHECK(s->isDirty());
+    CHECK(icf::json::write(s->root()) != original);
+    CHECK(s->undo());
+    CHECK_EQ(icf::json::write(s->root()), original);
+    CHECK(!s->isDirty());
+    CHECK(s->canRedo());
+    CHECK(s->redo());
+    CHECK(s->isDirty());
+    CHECK(s->undo());
+    CHECK(!s->undo());   // stack empty now
+}
+
+TEST_CASE(session_coalesces_a_drag_into_one_command) {
+    const fs::path dir = scratch("coalesce");
+    auto s = Session::open(dir);
+    REQUIRE(s.has_value());
+    s->setProperty(kLayerA, "opacity", icf::Context{}, icf::json::Value::number(0.9), true);
+    s->setProperty(kLayerA, "opacity", icf::Context{}, icf::json::Value::number(0.8), true);
+    s->setProperty(kLayerA, "opacity", icf::Context{}, icf::json::Value::number(0.7), true);
+    s->endCoalescing();
+    CHECK(icf::nodeAt(s->root(), kLayerA)->find("opacity")->number() == "0.7");
+    CHECK(s->undo());
+    CHECK(icf::nodeAt(s->root(), kLayerA)->find("opacity") == nullptr);   // one undo undid the drag
+    CHECK(!s->canUndo());
+    // a different key never coalesces, even mid-drag
+    s->setProperty(kLayerA, "opacity", icf::Context{}, icf::json::Value::number(0.5), true);
+    s->setProperty(kLayerA, "hidden", icf::Context{}, icf::json::Value::boolean(true), true);
+    s->endCoalescing();
+    CHECK(s->undo());
+    CHECK(icf::nodeAt(s->root(), kLayerA)->find("opacity")->number() == "0.5");
+}
+
+TEST_CASE(session_new_command_after_undo_drops_the_redo_branch) {
+    const fs::path dir = scratch("branch");
+    auto s = Session::open(dir);
+    REQUIRE(s.has_value());
+    s->setProperty(kLayerA, "hidden", icf::Context{}, icf::json::Value::boolean(true));
+    s->undo();
+    CHECK(s->canRedo());
+    s->setProperty(kLayerA, "glass", icf::Context{}, icf::json::Value::boolean(true));
+    CHECK(!s->canRedo());
+}
+
+TEST_CASE(session_structure_commands_are_undoable_and_fix_the_selection) {
+    const fs::path dir = scratch("structure");
+    auto s = Session::open(dir);
+    REQUIRE(s.has_value());
+    s->selection = icf::NodePath{0, 1};
+    CHECK(s->removeNode(icf::NodePath{0, 1}));
+    CHECK(!s->selection.has_value());   // it pointed at what is gone
+    CHECK_EQ(icf::nodeAt(s->root(), icf::NodePath{0, std::nullopt})->find("layers")->elements().size(), std::size_t(1));
+    CHECK(s->undo());
+    CHECK_EQ(icf::nodeAt(s->root(), icf::NodePath{0, std::nullopt})->find("layers")->elements().size(), std::size_t(2));
+    auto g = s->addGroup("Front");
+    REQUIRE(g.has_value());
+    CHECK_EQ(*g, std::size_t(1));
+    auto l = s->addLayer(*g, "mark", "mark.svg");
+    REQUIRE(l.has_value());
+    CHECK(s->moveNode(icf::NodePath{1, std::nullopt}, -1));
+    CHECK(icf::nodeAt(s->root(), icf::NodePath{0, std::nullopt})->find("name")->rawString() == "Front");
+    CHECK(s->rename(icf::NodePath{0, std::nullopt}, "First"));
+    CHECK(s->undo());  // rename
+    CHECK(s->undo());  // move
+    CHECK(s->undo());  // addLayer
+    CHECK(s->undo());  // addGroup
+    CHECK_EQ(s->root().find("groups")->elements().size(), std::size_t(1));
+}
+
+TEST_CASE(session_save_clears_dirty_and_writes_the_document) {
+    const fs::path dir = scratch("save");
+    auto s = Session::open(dir);
+    REQUIRE(s.has_value());
+    s->setProperty(kLayerA, "hidden", icf::Context{}, icf::json::Value::boolean(true));
+    CHECK_EQ(s->save(), std::string(""));
+    CHECK(!s->isDirty());
+    CHECK(slurp(dir / "icon.json").find("\"hidden\" : true") != std::string::npos);
+    CHECK(s->undo());
+    CHECK(s->isDirty());   // the disk has the edit; memory does not
+    CHECK(s->redo());
+    CHECK(!s->isDirty());
+}
+
+TEST_CASE(session_create_writes_the_minimal_document) {
+    const fs::path dir = fs::temp_directory_path() / "ic-session-new.icon";
+    fs::remove_all(dir);
+    auto s = Session::create(dir);
+    REQUIRE(s.has_value());
+    CHECK_EQ(slurp(dir / "icon.json"), std::string("{\n  \"fill\" : \"automatic\",\n  \"groups\" : [\n\n  ]\n}"));
+    CHECK(fs::is_directory(dir / "Assets"));
+}
+```
+
+Acrescentar `test_kit_session.cpp` ao bloco `if(IC_BUILD_UI)` de `Tests/CMakeLists.txt`.
+
+
+**Como rodar e o que esperar:**
 
 Run: `cmake --build --preset mingw && IC_CORPUS_DIR=References/corpus build/mingw/Tests/ic_tests.exe session_`
 Expected: seis casos, zero falhas.
 
-- [ ] **Step 5: commitar**
-
-```bash
-git add Source/IconComposerKit/Session.h Source/IconComposerKit/Session.cpp Source/IconComposerKit/CMakeLists.txt Tests/test_kit_session.cpp Tests/CMakeLists.txt
-git commit -m "a sessao e o documento aberto com undo por snapshot de no, e um arrasto vira um comando so"
-```
+</details>
 
 ---
 
@@ -2300,8 +2361,8 @@ git commit -m "a sessao e o documento aberto com undo por snapshot de no, e um a
 **Files:**
 - Create: `Source/IconComposerKit/ViewModel.h`, `Source/IconComposerKit/ViewModel.cpp`
 - Modify: `Source/IconComposerKit/CMakeLists.txt`
-- Create: `Tests/test_kit_viewmodel.cpp`
-- Modify: `Tests/CMakeLists.txt`
+- Create: `Tests/test_kit_viewmodel.cpp` — **opcional**, só se for escrever a rede
+- Modify: `Tests/CMakeLists.txt` — **opcional**, só se for escrever a rede
 
 **Interfaces:**
 - Produces, em `namespace ick`:
@@ -2319,83 +2380,7 @@ git commit -m "a sessao e o documento aberto com undo por snapshot de no, e um a
   const char* fillKindLabel(icf::FillKind);
   ```
 
-- [ ] **Step 1: os testes que falham**
-
-```cpp
-// Tests/test_kit_viewmodel.cpp
-#include "check.h"
-#include "Source/IconComposerKit/Session.h"
-#include "Source/IconComposerKit/ViewModel.h"
-
-#include <filesystem>
-#include <fstream>
-
-using namespace ick;
-namespace fs = std::filesystem;
-
-namespace {
-fs::path scratch() {
-    const fs::path dir = fs::temp_directory_path() / "ic-viewmodel.icon";
-    fs::remove_all(dir);
-    fs::create_directories(dir / "Assets");
-    std::ofstream(dir / "icon.json", std::ios::binary)
-        << R"({"fill" : "automatic", "groups" : [ { "name" : "g", "layers" : [ { "name" : "a", "image-name" : "a.svg", "glass" : false, "opacity-specializations" : [ { "value" : 1 }, { "appearance" : "dark", "value" : 0.5 } ] }, { "image-name" : "b.svg" } ] } ]})";
-    return dir;
-}
-}  // namespace
-
-TEST_CASE(viewmodel_property_view_says_own_or_inherited) {
-    auto s = Session::open(scratch());
-    REQUIRE(s.has_value());
-    const icf::NodePath a{0, 0};
-    s->scope = icf::Context{};
-    PropertyView base = viewProperty(*s, a, "opacity");
-    REQUIRE(base.value != nullptr);
-    CHECK(base.value->number() == "1");
-    CHECK(base.own);
-    s->scope = icf::Context{icf::Appearance::Dark, icf::Idiom::Base};
-    PropertyView dark = viewProperty(*s, a, "opacity");
-    CHECK(dark.value->number() == "0.5");
-    CHECK(dark.own);
-    s->scope = icf::Context{icf::Appearance::Tinted, icf::Idiom::Base};
-    PropertyView tinted = viewProperty(*s, a, "opacity");
-    CHECK(tinted.value->number() == "1");   // resolves to the default
-    CHECK(!tinted.own);                     // but has nothing of its own
-    PropertyView glass = viewProperty(*s, a, "glass");
-    CHECK(glass.value != nullptr);
-    CHECK(!glass.own);                      // plain key is Base's own, not Tinted's
-    PropertyView none = viewProperty(*s, a, "shadow");
-    CHECK(none.value == nullptr);
-}
-
-TEST_CASE(viewmodel_titles_and_kinds) {
-    auto s = Session::open(scratch());
-    REQUIRE(s.has_value());
-    CHECK(kindOf(icf::NodePath{}) == NodeKind::Root);
-    CHECK(kindOf(icf::NodePath{0, std::nullopt}) == NodeKind::Group);
-    CHECK(kindOf(icf::NodePath{0, 1}) == NodeKind::Layer);
-    CHECK_EQ(nodeTitle(*s, icf::NodePath{}), std::string("Document"));
-    CHECK_EQ(nodeTitle(*s, icf::NodePath{0, std::nullopt}), std::string("g"));
-    CHECK_EQ(nodeTitle(*s, icf::NodePath{0, 0}), std::string("a"));
-    CHECK_EQ(nodeTitle(*s, icf::NodePath{0, 1}), std::string("Layer 2"));
-}
-
-TEST_CASE(viewmodel_labels_cover_every_case) {
-    CHECK_EQ(std::string(appearanceLabel(icf::Appearance::Base)), std::string("Default"));
-    CHECK_EQ(std::string(idiomLabel(icf::Idiom::Base)), std::string("All"));
-    CHECK_EQ(std::string(blendModeLabel(icf::BlendMode::PlusLighter)), std::string("Plus Lighter"));
-    CHECK_EQ(std::string(shadowKindLabel(icf::ShadowKind::LayerColor)), std::string("Layer Color"));
-    CHECK_EQ(std::string(specularLabel(icf::SpecularHighlight::Outside)), std::string("Outside"));
-    CHECK_EQ(std::string(fillKindLabel(icf::FillKind::AutomaticGradient)), std::string("Automatic Gradient"));
-}
-```
-
-- [ ] **Step 2: ver falhar**
-
-Run: `cmake --build --preset mingw`
-Expected: `ViewModel.h` não existe.
-
-- [ ] **Step 3: implementar**
+- [ ] **Step 1: implementar**
 
 `ViewModel.h`:
 
@@ -2538,17 +2523,101 @@ const char* fillKindLabel(icf::FillKind k) {
 }  // namespace ick
 ```
 
-- [ ] **Step 4: ver passar**
+- [ ] **Step 2: conferir que compila**
+
+Run: `cmake --build --preset mingw`
+Expected: compila limpo, sem warning novo.
+
+- [ ] **Step 3: commitar**
+
+```bash
+git add Source/IconComposerKit/ViewModel.h Source/IconComposerKit/ViewModel.cpp Source/IconComposerKit/CMakeLists.txt
+git commit -m "o view model diz o que cada escopo tem de seu e o que herda, e soletra os vocabularios para a tela"
+```
+
+<details>
+<summary><b>Se precisar de rede</b> — os casos desta task, e como rodá-los</summary>
+
+Não é passo obrigatório. O código abaixo é onde o comportamento pretendido está dito com precisão; se algo quebrar e a causa não for óbvia, é daqui que sai o teste do bug.
+
+Construir a suíte: `cmake --build --preset mingw --target ic_tests`
+
+```cpp
+// Tests/test_kit_viewmodel.cpp
+#include "check.h"
+#include "Source/IconComposerKit/Session.h"
+#include "Source/IconComposerKit/ViewModel.h"
+
+#include <filesystem>
+#include <fstream>
+
+using namespace ick;
+namespace fs = std::filesystem;
+
+namespace {
+fs::path scratch() {
+    const fs::path dir = fs::temp_directory_path() / "ic-viewmodel.icon";
+    fs::remove_all(dir);
+    fs::create_directories(dir / "Assets");
+    std::ofstream(dir / "icon.json", std::ios::binary)
+        << R"({"fill" : "automatic", "groups" : [ { "name" : "g", "layers" : [ { "name" : "a", "image-name" : "a.svg", "glass" : false, "opacity-specializations" : [ { "value" : 1 }, { "appearance" : "dark", "value" : 0.5 } ] }, { "image-name" : "b.svg" } ] } ]})";
+    return dir;
+}
+}  // namespace
+
+TEST_CASE(viewmodel_property_view_says_own_or_inherited) {
+    auto s = Session::open(scratch());
+    REQUIRE(s.has_value());
+    const icf::NodePath a{0, 0};
+    s->scope = icf::Context{};
+    PropertyView base = viewProperty(*s, a, "opacity");
+    REQUIRE(base.value != nullptr);
+    CHECK(base.value->number() == "1");
+    CHECK(base.own);
+    s->scope = icf::Context{icf::Appearance::Dark, icf::Idiom::Base};
+    PropertyView dark = viewProperty(*s, a, "opacity");
+    CHECK(dark.value->number() == "0.5");
+    CHECK(dark.own);
+    s->scope = icf::Context{icf::Appearance::Tinted, icf::Idiom::Base};
+    PropertyView tinted = viewProperty(*s, a, "opacity");
+    CHECK(tinted.value->number() == "1");   // resolves to the default
+    CHECK(!tinted.own);                     // but has nothing of its own
+    PropertyView glass = viewProperty(*s, a, "glass");
+    CHECK(glass.value != nullptr);
+    CHECK(!glass.own);                      // plain key is Base's own, not Tinted's
+    PropertyView none = viewProperty(*s, a, "shadow");
+    CHECK(none.value == nullptr);
+}
+
+TEST_CASE(viewmodel_titles_and_kinds) {
+    auto s = Session::open(scratch());
+    REQUIRE(s.has_value());
+    CHECK(kindOf(icf::NodePath{}) == NodeKind::Root);
+    CHECK(kindOf(icf::NodePath{0, std::nullopt}) == NodeKind::Group);
+    CHECK(kindOf(icf::NodePath{0, 1}) == NodeKind::Layer);
+    CHECK_EQ(nodeTitle(*s, icf::NodePath{}), std::string("Document"));
+    CHECK_EQ(nodeTitle(*s, icf::NodePath{0, std::nullopt}), std::string("g"));
+    CHECK_EQ(nodeTitle(*s, icf::NodePath{0, 0}), std::string("a"));
+    CHECK_EQ(nodeTitle(*s, icf::NodePath{0, 1}), std::string("Layer 2"));
+}
+
+TEST_CASE(viewmodel_labels_cover_every_case) {
+    CHECK_EQ(std::string(appearanceLabel(icf::Appearance::Base)), std::string("Default"));
+    CHECK_EQ(std::string(idiomLabel(icf::Idiom::Base)), std::string("All"));
+    CHECK_EQ(std::string(blendModeLabel(icf::BlendMode::PlusLighter)), std::string("Plus Lighter"));
+    CHECK_EQ(std::string(shadowKindLabel(icf::ShadowKind::LayerColor)), std::string("Layer Color"));
+    CHECK_EQ(std::string(specularLabel(icf::SpecularHighlight::Outside)), std::string("Outside"));
+    CHECK_EQ(std::string(fillKindLabel(icf::FillKind::AutomaticGradient)), std::string("Automatic Gradient"));
+}
+```
+
+
+**Como rodar e o que esperar:**
 
 Run: `cmake --build --preset mingw && IC_CORPUS_DIR=References/corpus build/mingw/Tests/ic_tests.exe viewmodel_`
 Expected: três casos, zero falhas.
 
-- [ ] **Step 5: commitar**
-
-```bash
-git add Source/IconComposerKit/ViewModel.h Source/IconComposerKit/ViewModel.cpp Source/IconComposerKit/CMakeLists.txt Tests/test_kit_viewmodel.cpp Tests/CMakeLists.txt
-git commit -m "o view model diz o que cada escopo tem de seu e o que herda, e soletra os vocabularios para a tela"
-```
+</details>
 
 ---
 
@@ -2558,8 +2627,8 @@ git commit -m "o view model diz o que cada escopo tem de seu e o que herda, e so
 - Create: `Source/IconComposerKit/Panels.h`
 - Create: `Source/IconComposerKit/PanelLayers.cpp`
 - Modify: `Source/IconComposerKit/CMakeLists.txt`
-- Create: `Tests/test_kit_panels.cpp`
-- Modify: `Tests/CMakeLists.txt`
+- Create: `Tests/test_kit_panels.cpp` — **opcional**, só se for escrever a rede
+- Modify: `Tests/CMakeLists.txt` — **opcional**, só se for escrever a rede
 
 **Interfaces:**
 - Produces, em `Panels.h` (`namespace ick`): as janelas chamam-se **`"Layers"`, `"Canvas"`, `"Inspector##ic"`, `"Diagnostics"`** — o `##ic` porque o Onyx registra um painel `"Inspector"` próprio.
@@ -2569,58 +2638,7 @@ git commit -m "o view model diz o que cada escopo tem de seu e o que herda, e so
   ```
   `drawLayers` faz `ImGui::Begin("Layers")` … `End()`. Por grupo: `TreeNodeEx` com a seta, o nome (`Selectable` para selecionar), e no fim da linha dois `Checkbox` — visibilidade (`!hidden`) e vidro (`glass`, só em camadas). Duplo clique num nome abre um `InputText` inline; `Enter` chama `s.rename`. Menu de contexto por linha: Move Up, Move Down, Delete. Rodapé: `+` abre um popup com "Add Group" e "Add Image Layer" (a camada nova vai para o grupo selecionado ou para o último, com `image-name` vazio até a rodada 4 importar), `−` remove a seleção.
 
-- [ ] **Step 1: o teste que falha**
-
-```cpp
-// Tests/test_kit_panels.cpp
-#include "check.h"
-#include "Source/IconComposerKit/Headless.h"
-#include "Source/IconComposerKit/Panels.h"
-#include "Source/IconComposerKit/Session.h"
-#include "imgui.h"
-
-#include <filesystem>
-#include <fstream>
-
-using namespace ick;
-namespace fs = std::filesystem;
-
-namespace {
-fs::path fixture(const char* name) {
-    const fs::path dir = fs::temp_directory_path() / (std::string("ic-panels-") + name + ".icon");
-    fs::remove_all(dir);
-    fs::create_directories(dir / "Assets");
-    std::ofstream(dir / "icon.json", std::ios::binary)
-        << R"({"fill" : "automatic", "groups" : [ { "name" : "Back", "layers" : [ { "name" : "plate", "image-name" : "plate.svg" } ] }, { "name" : "Front", "layers" : [ { "name" : "mark", "image-name" : "mark.svg", "glass" : true, "opacity-specializations" : [ { "value" : 1 }, { "appearance" : "dark", "value" : 0.5 } ] }, { "name" : "badge", "image-name" : "badge.svg", "hidden" : true } ] } ]})";
-    return dir;
-}
-}  // namespace
-
-TEST_CASE(panel_layers_lists_every_group_and_layer) {
-    auto s = Session::open(fixture("layers"));
-    REQUIRE(s.has_value());
-    HeadlessImGui gui;
-    // Two frames: tree nodes report their open state from the frame before.
-    for (int i = 0; i < 2; ++i) {
-        gui.newFrame();
-        ImGui::SetNextWindowSize(ImVec2(300, 600));
-        LayersStats st = drawLayers(*s);
-        gui.render();
-        if (i == 1) {
-            CHECK_EQ(st.groups, std::size_t(2));
-            CHECK_EQ(st.layers, std::size_t(3));
-        }
-    }
-    CHECK_EQ(gui.errors(), std::uint64_t(0));
-}
-```
-
-- [ ] **Step 2: ver falhar**
-
-Run: `cmake --build --preset mingw`
-Expected: `Panels.h` não existe.
-
-- [ ] **Step 3: implementar**
+- [ ] **Step 1: implementar**
 
 `Panels.h`:
 
@@ -2824,17 +2842,76 @@ LayersStats drawLayers(Session& s) {
 
 Acrescentar `PanelLayers.cpp` ao Kit e `test_kit_panels.cpp` ao bloco de testes.
 
-- [ ] **Step 4: ver passar**
+- [ ] **Step 2: conferir que compila**
+
+Run: `cmake --build --preset mingw`
+Expected: compila limpo, sem warning novo.
+
+- [ ] **Step 3: commitar**
+
+```bash
+git add Source/IconComposerKit/Panels.h Source/IconComposerKit/PanelLayers.cpp Source/IconComposerKit/CMakeLists.txt
+git commit -m "a arvore de grupos e camadas, com visibilidade, vidro, renomear e o menu de arranjo"
+```
+
+<details>
+<summary><b>Se precisar de rede</b> — os casos desta task, e como rodá-los</summary>
+
+Não é passo obrigatório. O código abaixo é onde o comportamento pretendido está dito com precisão; se algo quebrar e a causa não for óbvia, é daqui que sai o teste do bug.
+
+Construir a suíte: `cmake --build --preset mingw --target ic_tests`
+
+```cpp
+// Tests/test_kit_panels.cpp
+#include "check.h"
+#include "Source/IconComposerKit/Headless.h"
+#include "Source/IconComposerKit/Panels.h"
+#include "Source/IconComposerKit/Session.h"
+#include "imgui.h"
+
+#include <filesystem>
+#include <fstream>
+
+using namespace ick;
+namespace fs = std::filesystem;
+
+namespace {
+fs::path fixture(const char* name) {
+    const fs::path dir = fs::temp_directory_path() / (std::string("ic-panels-") + name + ".icon");
+    fs::remove_all(dir);
+    fs::create_directories(dir / "Assets");
+    std::ofstream(dir / "icon.json", std::ios::binary)
+        << R"({"fill" : "automatic", "groups" : [ { "name" : "Back", "layers" : [ { "name" : "plate", "image-name" : "plate.svg" } ] }, { "name" : "Front", "layers" : [ { "name" : "mark", "image-name" : "mark.svg", "glass" : true, "opacity-specializations" : [ { "value" : 1 }, { "appearance" : "dark", "value" : 0.5 } ] }, { "name" : "badge", "image-name" : "badge.svg", "hidden" : true } ] } ]})";
+    return dir;
+}
+}  // namespace
+
+TEST_CASE(panel_layers_lists_every_group_and_layer) {
+    auto s = Session::open(fixture("layers"));
+    REQUIRE(s.has_value());
+    HeadlessImGui gui;
+    // Two frames: tree nodes report their open state from the frame before.
+    for (int i = 0; i < 2; ++i) {
+        gui.newFrame();
+        ImGui::SetNextWindowSize(ImVec2(300, 600));
+        LayersStats st = drawLayers(*s);
+        gui.render();
+        if (i == 1) {
+            CHECK_EQ(st.groups, std::size_t(2));
+            CHECK_EQ(st.layers, std::size_t(3));
+        }
+    }
+    CHECK_EQ(gui.errors(), std::uint64_t(0));
+}
+```
+
+
+**Como rodar e o que esperar:**
 
 Run: `cmake --build --preset mingw && IC_CORPUS_DIR=References/corpus build/mingw/Tests/ic_tests.exe panel_layers`
 Expected: passa, zero erros de ImGui.
 
-- [ ] **Step 5: commitar**
-
-```bash
-git add Source/IconComposerKit/Panels.h Source/IconComposerKit/PanelLayers.cpp Source/IconComposerKit/CMakeLists.txt Tests/test_kit_panels.cpp Tests/CMakeLists.txt
-git commit -m "a arvore de grupos e camadas, com visibilidade, vidro, renomear e o menu de arranjo"
-```
+</details>
 
 ---
 
@@ -2843,7 +2920,7 @@ git commit -m "a arvore de grupos e camadas, com visibilidade, vidro, renomear e
 **Files:**
 - Create: `Source/IconComposerKit/PanelInspector.cpp`
 - Modify: `Source/IconComposerKit/CMakeLists.txt`
-- Modify: `Tests/test_kit_panels.cpp`
+- Modify: `Tests/test_kit_panels.cpp` — **opcional**, só se for escrever a rede
 
 **Interfaces:**
 - Consumes: `viewProperty`, `Session::setProperty/endCoalescing`, os `*ToJson`/`*FromString` da Foundation.
@@ -2870,59 +2947,7 @@ Controles:
 - Specular: `Combo` de `SpecularHighlight`.
 - Liquid Glass: `Checkbox` sobre `glass`.
 
-- [ ] **Step 1: o teste que falha**
-
-Acrescentar a `Tests/test_kit_panels.cpp`:
-
-```cpp
-TEST_CASE(panel_inspector_shows_sections_for_the_selection_and_marks_inherited) {
-    auto s = Session::open(fixture("inspector"));
-    REQUIRE(s.has_value());
-    HeadlessImGui gui;
-    auto frame = [&] {
-        gui.newFrame();
-        ImGui::SetNextWindowSize(ImVec2(320, 800));
-        InspectorStats st = drawInspector(*s);
-        gui.render();
-        return st;
-    };
-    InspectorStats none = frame();
-    CHECK_EQ(none.sections, std::size_t(0));
-    CHECK_EQ(none.title, std::string("Nothing selected"));
-
-    s->selection = icf::NodePath{};
-    InspectorStats root = frame();
-    CHECK_EQ(root.title, std::string("Document"));
-    CHECK_EQ(root.sections, std::size_t(1));
-    CHECK_EQ(root.disabled, std::size_t(1));
-
-    s->selection = icf::NodePath{1, 0};   // "mark": opacity has a dark override
-    s->scope = icf::Context{};
-    InspectorStats layerBase = frame();
-    CHECK_EQ(layerBase.title, std::string("mark"));
-    CHECK_EQ(layerBase.sections, std::size_t(6));
-    CHECK_EQ(layerBase.disabled, std::size_t(3));
-    s->scope = icf::Context{icf::Appearance::Tinted, icf::Idiom::Base};
-    InspectorStats layerTinted = frame();
-    CHECK(layerTinted.inherited >= 5);   // everything but nothing is Tinted's own
-    s->scope = icf::Context{icf::Appearance::Dark, icf::Idiom::Base};
-    InspectorStats layerDark = frame();
-    CHECK_EQ(layerDark.inherited, layerTinted.inherited - 1);   // opacity is Dark's own
-
-    s->selection = icf::NodePath{1, std::nullopt};
-    InspectorStats group = frame();
-    CHECK_EQ(group.sections, std::size_t(7));
-    CHECK_EQ(group.disabled, std::size_t(4));
-    CHECK_EQ(gui.errors(), std::uint64_t(0));
-}
-```
-
-- [ ] **Step 2: ver falhar**
-
-Run: `cmake --build --preset mingw`
-Expected: link error — `drawInspector` sem definição.
-
-- [ ] **Step 3: implementar**
+- [ ] **Step 1: implementar**
 
 `PanelInspector.cpp`:
 
@@ -3258,17 +3283,77 @@ InspectorStats drawInspector(Session& s) {
 
 Acrescentar `#include <cstdlib>` (para `std::atof`). Acrescentar `PanelInspector.cpp` ao Kit.
 
-- [ ] **Step 4: ver passar**
+- [ ] **Step 2: conferir que compila**
+
+Run: `cmake --build --preset mingw`
+Expected: compila limpo, sem warning novo.
+
+- [ ] **Step 3: commitar**
+
+```bash
+git add Source/IconComposerKit/PanelInspector.cpp Source/IconComposerKit/CMakeLists.txt
+git commit -m "o inspetor mostra as oito secoes que o modelo tipa, por escopo, e diz o que e herdado"
+```
+
+<details>
+<summary><b>Se precisar de rede</b> — os casos desta task, e como rodá-los</summary>
+
+Não é passo obrigatório. O código abaixo é onde o comportamento pretendido está dito com precisão; se algo quebrar e a causa não for óbvia, é daqui que sai o teste do bug.
+
+Construir a suíte: `cmake --build --preset mingw --target ic_tests`
+
+Acrescentar a `Tests/test_kit_panels.cpp`:
+
+```cpp
+TEST_CASE(panel_inspector_shows_sections_for_the_selection_and_marks_inherited) {
+    auto s = Session::open(fixture("inspector"));
+    REQUIRE(s.has_value());
+    HeadlessImGui gui;
+    auto frame = [&] {
+        gui.newFrame();
+        ImGui::SetNextWindowSize(ImVec2(320, 800));
+        InspectorStats st = drawInspector(*s);
+        gui.render();
+        return st;
+    };
+    InspectorStats none = frame();
+    CHECK_EQ(none.sections, std::size_t(0));
+    CHECK_EQ(none.title, std::string("Nothing selected"));
+
+    s->selection = icf::NodePath{};
+    InspectorStats root = frame();
+    CHECK_EQ(root.title, std::string("Document"));
+    CHECK_EQ(root.sections, std::size_t(1));
+    CHECK_EQ(root.disabled, std::size_t(1));
+
+    s->selection = icf::NodePath{1, 0};   // "mark": opacity has a dark override
+    s->scope = icf::Context{};
+    InspectorStats layerBase = frame();
+    CHECK_EQ(layerBase.title, std::string("mark"));
+    CHECK_EQ(layerBase.sections, std::size_t(6));
+    CHECK_EQ(layerBase.disabled, std::size_t(3));
+    s->scope = icf::Context{icf::Appearance::Tinted, icf::Idiom::Base};
+    InspectorStats layerTinted = frame();
+    CHECK(layerTinted.inherited >= 5);   // everything but nothing is Tinted's own
+    s->scope = icf::Context{icf::Appearance::Dark, icf::Idiom::Base};
+    InspectorStats layerDark = frame();
+    CHECK_EQ(layerDark.inherited, layerTinted.inherited - 1);   // opacity is Dark's own
+
+    s->selection = icf::NodePath{1, std::nullopt};
+    InspectorStats group = frame();
+    CHECK_EQ(group.sections, std::size_t(7));
+    CHECK_EQ(group.disabled, std::size_t(4));
+    CHECK_EQ(gui.errors(), std::uint64_t(0));
+}
+```
+
+
+**Como rodar e o que esperar:**
 
 Run: `cmake --build --preset mingw && IC_CORPUS_DIR=References/corpus build/mingw/Tests/ic_tests.exe panel_inspector`
 Expected: passa. Se `layerTinted.inherited` vier menor que 5, uma seção está reportando `own` para um escopo que não tem entrada: é bug em `hasOwnEntry` ou no `viewProperty`, nunca no teste.
 
-- [ ] **Step 5: commitar**
-
-```bash
-git add Source/IconComposerKit/PanelInspector.cpp Source/IconComposerKit/CMakeLists.txt Tests/test_kit_panels.cpp
-git commit -m "o inspetor mostra as oito secoes que o modelo tipa, por escopo, e diz o que e herdado"
-```
+</details>
 
 ---
 
@@ -3278,7 +3363,7 @@ git commit -m "o inspetor mostra as oito secoes que o modelo tipa, por escopo, e
 - Create: `Source/IconComposerKit/PanelCanvas.cpp`
 - Create: `Source/IconComposerKit/MenuBar.cpp`
 - Modify: `Source/IconComposerKit/CMakeLists.txt`
-- Modify: `Tests/test_kit_panels.cpp`
+- Modify: `Tests/test_kit_panels.cpp` — **opcional**, só se for escrever a rede
 
 **Interfaces:**
 - Produces: `drawCanvas`, `drawDiagnostics`, `drawMenuBar` (declaradas na Task 10).
@@ -3286,68 +3371,7 @@ git commit -m "o inspetor mostra as oito secoes que o modelo tipa, por escopo, e
 - Diagnóstico: uma tabela de duas colunas (origem, texto) com as linhas: `drawn/total` (sempre), cada `skipped`, cada `shapeGaps`, cada `notes` prefixada `[OBS]`, cada `missingAssets` do bundle, cada `unknownKeys` do documento, e `error` quando houver.
 - Menu: `File` (New, Open…, Save, Save As…, Close, Quit), `Edit` (Undo, Redo, Delete), `View` (Appearance ▸ 4 itens, Idiom ▸ 5, Preview Size ▸ 2, Zoom ▸ 5), `Layer` (Add Group, Add Image Layer, Toggle Glass, Toggle Visibility, Move Up, Move Down). Desabilitados com tooltip: `File > Export Icon as Image…` ("Round 5"), `Edit > Copy Properties`/`Paste Properties` ("Round 5"), `Edit > Localization` ("Round 5"). `Save` desabilitado quando `!isDirty()`; `Undo`/`Redo` seguem `canUndo/canRedo`; os de `Layer` seguem a seleção.
 
-- [ ] **Step 1: os testes que falham**
-
-Acrescentar a `Tests/test_kit_panels.cpp`:
-
-```cpp
-TEST_CASE(panel_canvas_draws_the_texture_and_the_context_controls) {
-    auto s = Session::open(fixture("canvas"));
-    REQUIRE(s.has_value());
-    HeadlessImGui gui;
-    RenderView view;
-    MenuActions actions;
-    gui.newFrame();
-    CanvasStats empty = drawCanvas(*s, view, actions);
-    gui.render();
-    CHECK(!empty.textured);
-    CHECK_EQ(empty.contextControls, std::size_t(4));
-    CHECK_EQ(empty.menu.menus, std::size_t(4));
-    view.texture = static_cast<ImTextureID>(7);
-    view.width = view.height = 512;
-    gui.newFrame();
-    CanvasStats shown = drawCanvas(*s, view, actions);
-    gui.render();
-    CHECK(shown.textured);
-    CHECK_EQ(gui.errors(), std::uint64_t(0));
-}
-
-TEST_CASE(panel_diagnostics_lists_every_gap) {
-    auto s = Session::open(fixture("diag"));
-    REQUIRE(s.has_value());
-    HeadlessImGui gui;
-    RenderView view;
-    view.drawn = 2;
-    view.total = 3;
-    view.skipped = {"grupo 1 / badge: no art"};
-    view.notes = {"the glass ruler is a guess"};
-    gui.newFrame();
-    DiagnosticsStats st = drawDiagnostics(*s, view);
-    gui.render();
-    // drawn/total + 1 skipped + 1 note + 3 missing assets (plate, mark, badge are not on disk)
-    CHECK_EQ(st.rows, std::size_t(6));
-}
-
-TEST_CASE(menu_bar_counts_its_items_and_greys_what_it_cannot_do) {
-    auto s = Session::open(fixture("menu"));
-    REQUIRE(s.has_value());
-    HeadlessImGui gui;
-    RenderView view;
-    MenuActions actions;
-    gui.newFrame();
-    CanvasStats st = drawCanvas(*s, view, actions);
-    gui.render();
-    CHECK_EQ(st.menu.menus, std::size_t(4));
-    CHECK(st.menu.items == 0);   // no menu is open on a headless frame; menus counted, items not
-}
-```
-
-- [ ] **Step 2: ver falhar**
-
-Run: `cmake --build --preset mingw`
-Expected: link error nas três funções.
-
-- [ ] **Step 3: implementar**
+- [ ] **Step 1: implementar**
 
 `MenuBar.cpp`:
 
@@ -3618,17 +3642,86 @@ DiagnosticsStats drawDiagnostics(const Session& s, const RenderView& view) {
 
 Acrescentar `PanelCanvas.cpp` e `MenuBar.cpp` ao Kit.
 
-- [ ] **Step 4: ver passar**
+- [ ] **Step 2: conferir que compila**
+
+Run: `cmake --build --preset mingw`
+Expected: compila limpo, sem warning novo.
+
+- [ ] **Step 3: commitar**
+
+```bash
+git add Source/IconComposerKit/PanelCanvas.cpp Source/IconComposerKit/MenuBar.cpp Source/IconComposerKit/CMakeLists.txt
+git commit -m "o canvas mostra o render com contexto e zoom, o diagnostico mostra cada lacuna, e o menu diz o que nao faz"
+```
+
+<details>
+<summary><b>Se precisar de rede</b> — os casos desta task, e como rodá-los</summary>
+
+Não é passo obrigatório. O código abaixo é onde o comportamento pretendido está dito com precisão; se algo quebrar e a causa não for óbvia, é daqui que sai o teste do bug.
+
+Construir a suíte: `cmake --build --preset mingw --target ic_tests`
+
+Acrescentar a `Tests/test_kit_panels.cpp`:
+
+```cpp
+TEST_CASE(panel_canvas_draws_the_texture_and_the_context_controls) {
+    auto s = Session::open(fixture("canvas"));
+    REQUIRE(s.has_value());
+    HeadlessImGui gui;
+    RenderView view;
+    MenuActions actions;
+    gui.newFrame();
+    CanvasStats empty = drawCanvas(*s, view, actions);
+    gui.render();
+    CHECK(!empty.textured);
+    CHECK_EQ(empty.contextControls, std::size_t(4));
+    CHECK_EQ(empty.menu.menus, std::size_t(4));
+    view.texture = static_cast<ImTextureID>(7);
+    view.width = view.height = 512;
+    gui.newFrame();
+    CanvasStats shown = drawCanvas(*s, view, actions);
+    gui.render();
+    CHECK(shown.textured);
+    CHECK_EQ(gui.errors(), std::uint64_t(0));
+}
+
+TEST_CASE(panel_diagnostics_lists_every_gap) {
+    auto s = Session::open(fixture("diag"));
+    REQUIRE(s.has_value());
+    HeadlessImGui gui;
+    RenderView view;
+    view.drawn = 2;
+    view.total = 3;
+    view.skipped = {"grupo 1 / badge: no art"};
+    view.notes = {"the glass ruler is a guess"};
+    gui.newFrame();
+    DiagnosticsStats st = drawDiagnostics(*s, view);
+    gui.render();
+    // drawn/total + 1 skipped + 1 note + 3 missing assets (plate, mark, badge are not on disk)
+    CHECK_EQ(st.rows, std::size_t(6));
+}
+
+TEST_CASE(menu_bar_counts_its_items_and_greys_what_it_cannot_do) {
+    auto s = Session::open(fixture("menu"));
+    REQUIRE(s.has_value());
+    HeadlessImGui gui;
+    RenderView view;
+    MenuActions actions;
+    gui.newFrame();
+    CanvasStats st = drawCanvas(*s, view, actions);
+    gui.render();
+    CHECK_EQ(st.menu.menus, std::size_t(4));
+    CHECK(st.menu.items == 0);   // no menu is open on a headless frame; menus counted, items not
+}
+```
+
+
+**Como rodar e o que esperar:**
 
 Run: `cmake --build --preset mingw && IC_CORPUS_DIR=References/corpus build/mingw/Tests/ic_tests.exe panel_`
 Expected: todos os `panel_*` e `menu_*` passam, zero erros de ImGui. Se `panel_diagnostics` contar 6 linhas e vier outro número, conferir `missingAssets()` do fixture (os três SVGs não estão em disco de propósito).
 
-- [ ] **Step 5: commitar**
-
-```bash
-git add Source/IconComposerKit/PanelCanvas.cpp Source/IconComposerKit/MenuBar.cpp Source/IconComposerKit/CMakeLists.txt Tests/test_kit_panels.cpp
-git commit -m "o canvas mostra o render com contexto e zoom, o diagnostico mostra cada lacuna, e o menu diz o que nao faz"
-```
+</details>
 
 ---
 
@@ -3637,8 +3730,8 @@ git commit -m "o canvas mostra o render com contexto e zoom, o diagnostico mostr
 **Files:**
 - Create: `Source/IconComposerKit/RenderCoordinator.h`, `Source/IconComposerKit/RenderCoordinator.cpp`
 - Modify: `Source/IconComposerKit/CMakeLists.txt`
-- Create: `Tests/test_kit_render_coordinator.cpp`
-- Modify: `Tests/CMakeLists.txt`
+- Create: `Tests/test_kit_render_coordinator.cpp` — **opcional**, só se for escrever a rede
+- Modify: `Tests/CMakeLists.txt` — **opcional**, só se for escrever a rede
 
 **Interfaces:**
 - Produces, em `namespace ick`:
@@ -3655,7 +3748,123 @@ git commit -m "o canvas mostra o render com contexto e zoom, o diagnostico mostr
   ```
   A chave de "mudou" é `(session.version(), view.context, view.size)`; o zoom não re-renderiza. Um resultado cuja `version` é menor que a do último pedido é **descartado** (o último vence). `pending` é verdadeiro entre `request` e o `poll` correspondente.
 
-- [ ] **Step 1: o teste que falha**
+- [ ] **Step 1: implementar**
+
+`RenderCoordinator.h`:
+
+```cpp
+#pragma once
+// From "the document changed" to "the canvas has a texture", once per frame.
+//
+// THE LATEST WINS (spec 13/09 §6). A request carries the Session version it was
+// made from; a result older than the last request is dropped, because the
+// canvas must never step backwards. Zoom is not a render: it is the same pixels
+// shown larger.
+#include "Source/IconComposerKit/Panels.h"
+#include "Source/IconComposerKit/Ports.h"
+#include "Source/IconComposerKit/Session.h"
+
+#include <cstdint>
+
+namespace ick {
+
+class RenderCoordinator {
+public:
+    RenderCoordinator(RenderScheduler& scheduler, TextureSink& sink) : scheduler_(scheduler), sink_(sink) {}
+    ~RenderCoordinator();
+    RenderCoordinator(const RenderCoordinator&) = delete;
+    RenderCoordinator& operator=(const RenderCoordinator&) = delete;
+
+    void tick(Session& s);
+    const RenderView& view() const { return view_; }
+
+private:
+    struct Key {
+        std::uint64_t version = 0;
+        icf::Context context;
+        std::uint32_t size = 0;
+        bool operator==(const Key&) const = default;
+    };
+    RenderScheduler& scheduler_;
+    TextureSink& sink_;
+    RenderView view_;
+    Key requested_;
+    bool everRequested_ = false;
+};
+
+}  // namespace ick
+```
+
+`RenderCoordinator.cpp`:
+
+```cpp
+#include "Source/IconComposerKit/RenderCoordinator.h"
+
+namespace ick {
+
+RenderCoordinator::~RenderCoordinator() {
+    if (view_.texture != 0) sink_.remove(view_.texture);
+}
+
+void RenderCoordinator::tick(Session& s) {
+    const Key now{s.version(), s.view.context, s.view.size};
+    if (!everRequested_ || !(now == requested_)) {
+        RenderRequest r;
+        r.version = now.version;
+        r.bundle = s.bundle().clone();
+        r.context = now.context;
+        r.size = now.size;
+        scheduler_.request(std::move(r));
+        requested_ = now;
+        everRequested_ = true;
+        view_.pending = true;
+    }
+
+    while (auto result = scheduler_.poll()) {
+        if (result->version < requested_.version) continue;   // stale: the latest wins
+        view_.drawn = result->drawn;
+        view_.total = result->total;
+        view_.skipped = result->skipped;
+        view_.shapeGaps = result->shapeGaps;
+        view_.notes = result->notes;
+        view_.error = result->error;
+        if (result->error.empty() && !result->rgba8.empty()) {
+            if (view_.texture != 0 && view_.width == result->width && view_.height == result->height) {
+                sink_.update(view_.texture, result->width, result->height, result->rgba8.data());
+            } else {
+                if (view_.texture != 0) sink_.remove(view_.texture);
+                view_.texture = sink_.create(result->width, result->height, result->rgba8.data());
+                view_.width = result->width;
+                view_.height = result->height;
+            }
+        }
+        if (result->version == requested_.version) view_.pending = false;
+    }
+}
+
+}  // namespace ick
+```
+
+`icf::Context` precisa de `operator==` para a `Key`: acrescentar `bool operator==(const Context&) const = default;` ao `struct Context` em `IconDocument.h`.
+
+- [ ] **Step 2: conferir que compila**
+
+Run: `cmake --build --preset mingw`
+Expected: compila limpo, sem warning novo.
+
+- [ ] **Step 3: commitar**
+
+```bash
+git add Source/IconComposerKit/RenderCoordinator.h Source/IconComposerKit/RenderCoordinator.cpp Source/IconComposerKit/CMakeLists.txt Source/IconComposerFoundation/IconDocument.h
+git commit -m "o coordenador pede um render por mudanca, sobe o que chega, e o ultimo pedido vence"
+```
+
+<details>
+<summary><b>Se precisar de rede</b> — os casos desta task, e como rodá-los</summary>
+
+Não é passo obrigatório. O código abaixo é onde o comportamento pretendido está dito com precisão; se algo quebrar e a causa não for óbvia, é daqui que sai o teste do bug.
+
+Construir a suíte: `cmake --build --preset mingw --target ic_tests`
 
 ```cpp
 // Tests/test_kit_render_coordinator.cpp
@@ -3775,121 +3984,13 @@ TEST_CASE(coordinator_drops_a_result_older_than_the_last_request) {
 }
 ```
 
-- [ ] **Step 2: ver falhar**
 
-Run: `cmake --build --preset mingw`
-Expected: `RenderCoordinator.h` não existe.
-
-- [ ] **Step 3: implementar**
-
-`RenderCoordinator.h`:
-
-```cpp
-#pragma once
-// From "the document changed" to "the canvas has a texture", once per frame.
-//
-// THE LATEST WINS (spec 13/09 §6). A request carries the Session version it was
-// made from; a result older than the last request is dropped, because the
-// canvas must never step backwards. Zoom is not a render: it is the same pixels
-// shown larger.
-#include "Source/IconComposerKit/Panels.h"
-#include "Source/IconComposerKit/Ports.h"
-#include "Source/IconComposerKit/Session.h"
-
-#include <cstdint>
-
-namespace ick {
-
-class RenderCoordinator {
-public:
-    RenderCoordinator(RenderScheduler& scheduler, TextureSink& sink) : scheduler_(scheduler), sink_(sink) {}
-    ~RenderCoordinator();
-    RenderCoordinator(const RenderCoordinator&) = delete;
-    RenderCoordinator& operator=(const RenderCoordinator&) = delete;
-
-    void tick(Session& s);
-    const RenderView& view() const { return view_; }
-
-private:
-    struct Key {
-        std::uint64_t version = 0;
-        icf::Context context;
-        std::uint32_t size = 0;
-        bool operator==(const Key&) const = default;
-    };
-    RenderScheduler& scheduler_;
-    TextureSink& sink_;
-    RenderView view_;
-    Key requested_;
-    bool everRequested_ = false;
-};
-
-}  // namespace ick
-```
-
-`RenderCoordinator.cpp`:
-
-```cpp
-#include "Source/IconComposerKit/RenderCoordinator.h"
-
-namespace ick {
-
-RenderCoordinator::~RenderCoordinator() {
-    if (view_.texture != 0) sink_.remove(view_.texture);
-}
-
-void RenderCoordinator::tick(Session& s) {
-    const Key now{s.version(), s.view.context, s.view.size};
-    if (!everRequested_ || !(now == requested_)) {
-        RenderRequest r;
-        r.version = now.version;
-        r.bundle = s.bundle().clone();
-        r.context = now.context;
-        r.size = now.size;
-        scheduler_.request(std::move(r));
-        requested_ = now;
-        everRequested_ = true;
-        view_.pending = true;
-    }
-
-    while (auto result = scheduler_.poll()) {
-        if (result->version < requested_.version) continue;   // stale: the latest wins
-        view_.drawn = result->drawn;
-        view_.total = result->total;
-        view_.skipped = result->skipped;
-        view_.shapeGaps = result->shapeGaps;
-        view_.notes = result->notes;
-        view_.error = result->error;
-        if (result->error.empty() && !result->rgba8.empty()) {
-            if (view_.texture != 0 && view_.width == result->width && view_.height == result->height) {
-                sink_.update(view_.texture, result->width, result->height, result->rgba8.data());
-            } else {
-                if (view_.texture != 0) sink_.remove(view_.texture);
-                view_.texture = sink_.create(result->width, result->height, result->rgba8.data());
-                view_.width = result->width;
-                view_.height = result->height;
-            }
-        }
-        if (result->version == requested_.version) view_.pending = false;
-    }
-}
-
-}  // namespace ick
-```
-
-`icf::Context` precisa de `operator==` para a `Key`: acrescentar `bool operator==(const Context&) const = default;` ao `struct Context` em `IconDocument.h`.
-
-- [ ] **Step 4: ver passar**
+**Como rodar e o que esperar:**
 
 Run: `cmake --build --preset mingw && IC_CORPUS_DIR=References/corpus build/mingw/Tests/ic_tests.exe coordinator_`
 Expected: dois casos, zero falhas.
 
-- [ ] **Step 5: commitar**
-
-```bash
-git add Source/IconComposerKit/RenderCoordinator.h Source/IconComposerKit/RenderCoordinator.cpp Source/IconComposerKit/CMakeLists.txt Source/IconComposerFoundation/IconDocument.h Tests/test_kit_render_coordinator.cpp Tests/CMakeLists.txt
-git commit -m "o coordenador pede um render por mudanca, sobe o que chega, e o ultimo pedido vence"
-```
+</details>
 
 ---
 
@@ -3898,8 +3999,8 @@ git commit -m "o coordenador pede um render por mudanca, sobe o que chega, e o u
 **Files:**
 - Create: `Source/IconComposerKit/SelfTest.h`, `Source/IconComposerKit/SelfTest.cpp`
 - Modify: `Source/IconComposerKit/CMakeLists.txt`
-- Create: `Tests/test_kit_selftest.cpp`
-- Modify: `Tests/CMakeLists.txt`
+- Create: `Tests/test_kit_selftest.cpp` — **opcional**, só se for escrever a rede
+- Modify: `Tests/CMakeLists.txt` — **opcional**, só se for escrever a rede
 
 **Interfaces:**
 - Produces, em `namespace ick`:
@@ -3915,67 +4016,7 @@ git commit -m "o coordenador pede um render por mudanca, sobe o que chega, e o u
   ```
   O script, com todos os painéis desenhados em cada frame, numa cópia do bundle em temp: (1) abre; (2) seleciona a primeira camada; (3) escreve opacidade 0.5 sob Dark; (4) desfaz; (5) salva; (6) compara os bytes do `icon.json` com o original — `bytesRoundTripped`; (7) roda `frames` frames de settle e reporta `textured` se o coordenador recebeu um render.
 
-- [ ] **Step 1: o teste que falha**
-
-```cpp
-// Tests/test_kit_selftest.cpp
-#include "check.h"
-#include "Source/IconComposerKit/SelfTest.h"
-
-#include <cstdlib>
-#include <filesystem>
-
-using namespace ick;
-
-namespace {
-struct NullScheduler : RenderScheduler {
-    std::optional<RenderRequest> last;
-    void request(RenderRequest r) override { last = std::move(r); }
-    std::optional<RenderResult> poll() override {
-        if (!last) return std::nullopt;
-        RenderResult r;
-        r.version = last->version;
-        r.width = r.height = last->size;
-        r.rgba8.assign(std::size_t(r.width) * r.height * 4, 0);
-        last.reset();
-        return r;
-    }
-};
-struct NullSink : TextureSink {
-    ImTextureID create(std::uint32_t, std::uint32_t, const std::uint8_t*) override { return 1; }
-    bool update(ImTextureID, std::uint32_t, std::uint32_t, const std::uint8_t*) override { return true; }
-    void remove(ImTextureID) override {}
-};
-}  // namespace
-
-TEST_CASE(selftest_runs_the_script_on_a_corpus_bundle_without_a_gpu) {
-    const char* dir = std::getenv("IC_CORPUS_DIR");
-    REQUIRE(dir != nullptr);
-    std::filesystem::path first;
-    for (const auto& e : std::filesystem::directory_iterator(dir)) {
-        if (std::filesystem::exists(e.path() / "icon.json")) { first = e.path(); break; }
-    }
-    REQUIRE(!first.empty());
-    NullScheduler sched;
-    NullSink sink;
-    SelfTestReport r = runSelfTest(first, sched, sink, 5);
-    std::printf("  %s\n", describe(r).c_str());
-    CHECK(r.failure.empty());
-    CHECK(r.groups >= 1);
-    CHECK(r.layers >= 1);
-    CHECK(r.sections >= 6);
-    CHECK(r.bytesRoundTripped);
-    CHECK(r.textured);
-    CHECK_EQ(r.imguiErrors, std::uint64_t(0));
-}
-```
-
-- [ ] **Step 2: ver falhar**
-
-Run: `cmake --build --preset mingw`
-Expected: `SelfTest.h` não existe.
-
-- [ ] **Step 3: implementar**
+- [ ] **Step 1: implementar**
 
 `SelfTest.h`:
 
@@ -4143,17 +4184,85 @@ std::string describe(const SelfTestReport& r) {
 }  // namespace ick
 ```
 
-- [ ] **Step 4: ver passar**
+- [ ] **Step 2: conferir que compila**
+
+Run: `cmake --build --preset mingw`
+Expected: compila limpo, sem warning novo.
+
+- [ ] **Step 3: commitar**
+
+```bash
+git add Source/IconComposerKit/SelfTest.h Source/IconComposerKit/SelfTest.cpp Source/IconComposerKit/CMakeLists.txt
+git commit -m "o selftest abre, edita, desfaz, salva e compara bytes num frame sem janela"
+```
+
+<details>
+<summary><b>Se precisar de rede</b> — os casos desta task, e como rodá-los</summary>
+
+Não é passo obrigatório. O código abaixo é onde o comportamento pretendido está dito com precisão; se algo quebrar e a causa não for óbvia, é daqui que sai o teste do bug.
+
+Construir a suíte: `cmake --build --preset mingw --target ic_tests`
+
+```cpp
+// Tests/test_kit_selftest.cpp
+#include "check.h"
+#include "Source/IconComposerKit/SelfTest.h"
+
+#include <cstdlib>
+#include <filesystem>
+
+using namespace ick;
+
+namespace {
+struct NullScheduler : RenderScheduler {
+    std::optional<RenderRequest> last;
+    void request(RenderRequest r) override { last = std::move(r); }
+    std::optional<RenderResult> poll() override {
+        if (!last) return std::nullopt;
+        RenderResult r;
+        r.version = last->version;
+        r.width = r.height = last->size;
+        r.rgba8.assign(std::size_t(r.width) * r.height * 4, 0);
+        last.reset();
+        return r;
+    }
+};
+struct NullSink : TextureSink {
+    ImTextureID create(std::uint32_t, std::uint32_t, const std::uint8_t*) override { return 1; }
+    bool update(ImTextureID, std::uint32_t, std::uint32_t, const std::uint8_t*) override { return true; }
+    void remove(ImTextureID) override {}
+};
+}  // namespace
+
+TEST_CASE(selftest_runs_the_script_on_a_corpus_bundle_without_a_gpu) {
+    const char* dir = std::getenv("IC_CORPUS_DIR");
+    REQUIRE(dir != nullptr);
+    std::filesystem::path first;
+    for (const auto& e : std::filesystem::directory_iterator(dir)) {
+        if (std::filesystem::exists(e.path() / "icon.json")) { first = e.path(); break; }
+    }
+    REQUIRE(!first.empty());
+    NullScheduler sched;
+    NullSink sink;
+    SelfTestReport r = runSelfTest(first, sched, sink, 5);
+    std::printf("  %s\n", describe(r).c_str());
+    CHECK(r.failure.empty());
+    CHECK(r.groups >= 1);
+    CHECK(r.layers >= 1);
+    CHECK(r.sections >= 6);
+    CHECK(r.bytesRoundTripped);
+    CHECK(r.textured);
+    CHECK_EQ(r.imguiErrors, std::uint64_t(0));
+}
+```
+
+
+**Como rodar e o que esperar:**
 
 Run: `cmake --build --preset mingw && IC_CORPUS_DIR=References/corpus build/mingw/Tests/ic_tests.exe selftest_`
 Expected: passa e imprime a linha do `describe`. `bytes round-tripped NO` num bundle byte-exato é bug no undo ou no `setProperty`, não no script.
 
-- [ ] **Step 5: commitar**
-
-```bash
-git add Source/IconComposerKit/SelfTest.h Source/IconComposerKit/SelfTest.cpp Source/IconComposerKit/CMakeLists.txt Tests/test_kit_selftest.cpp Tests/CMakeLists.txt
-git commit -m "o selftest abre, edita, desfaz, salva e compara bytes num frame sem janela"
-```
+</details>
 
 ---
 
@@ -4181,17 +4290,7 @@ git commit -m "o selftest abre, edita, desfaz, salva e compara bytes num frame s
   ```
   `main`: `iconcomposer [bundle.icon]`, `iconcomposer --selftest <bundle.icon> [--frames N]`. O selftest imprime `describe(...)` e devolve 0 só se `failure` vazio, `bytesRoundTripped` e `textured` verdadeiros e `imguiErrors == 0`.
 
-- [ ] **Step 1: o teste** — este alvo linka Onyx, então não entra em `ic_tests`. O teste é o selftest do próprio binário:
-
-Run (depois do Step 3): `build/mingw/Source/app/iconcomposer.exe --selftest References/corpus/<qualquer>.icon --frames 30`
-Expected: `textured yes`, `bytes round-tripped yes`, `imgui errors 0`, exit 0.
-
-- [ ] **Step 2: ver falhar**
-
-Run: `cmake --preset mingw`
-Expected: `Source/app/CMakeLists.txt` não existe.
-
-- [ ] **Step 3: implementar**
+- [ ] **Step 1: implementar**
 
 `Source/app/CMakeLists.txt`:
 
@@ -4638,14 +4737,15 @@ int main(int argc, char** argv) {
 
 Descomentar `add_subdirectory(Source/app)` no `CMakeLists.txt` da raiz.
 
-- [ ] **Step 4: ver passar**
+
+- [ ] **Step 2: rodar o selftest, e depois abrir a janela** — este alvo linka Onyx, então nunca entrou em `ic_tests`; a conferência aqui é o próprio binário rodando.
 
 Run: `cmake --preset mingw && cmake --build --preset mingw && build/mingw/Source/app/iconcomposer.exe --selftest References/corpus/<um bundle byte-exato>.icon --frames 30`
 Expected: `textured yes; bytes round-tripped yes; imgui errors 0`, exit 0.
 
 Depois, à mão: `build/mingw/Source/app/iconcomposer.exe References/corpus/<o mesmo>.icon` abre a janela com os quatro painéis dockados, o ícone no canvas, e trocar a appearance no combo redesenha. Anotar no commit se o gama do canvas e o do PNG do `icrender` diferem a olho (spec §6 `[OBS]`).
 
-- [ ] **Step 5: commitar**
+- [ ] **Step 3: commitar**
 
 ```bash
 git add CMakeLists.txt Source/app
@@ -4654,7 +4754,9 @@ git commit -m "iconcomposer.exe: o Kit sobre a janela do Onyx, com um rb::Device
 
 ---
 
-### Task 16: o estado no README, e o gate inteiro
+### Task 16: o estado no README (e o gate, se for rodar)
+
+> O **Step 1** (a linha do README) fecha o trabalho e continua valendo. Os **Steps 2 e 3** são do gate, que é opcional — faça-os só se for de fato rodar a varredura.
 
 **Files:**
 - Modify: `Docs/README.md` (a linha `| a UI do app |` na tabela de estado)

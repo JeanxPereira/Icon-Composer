@@ -1,4 +1,7 @@
-add_executable(ic_tests
+# EXCLUDE_FROM_ALL: a suite nao entra no build default -- ela linka 40 MB e o loop
+# de edicao paga isso por nada. Construa sob demanda:
+#   cmake --build --preset mingw --target ic_tests
+add_executable(ic_tests EXCLUDE_FROM_ALL
     main.cpp
     test_json.cpp
     test_corpus.cpp

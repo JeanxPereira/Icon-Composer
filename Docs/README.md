@@ -101,6 +101,12 @@ C++23, CMake, sem terceiros. `IconComposerFoundation` não linka GPU nem UI, e o
 corpus é apontado por variável de ambiente — um teste que precisa dele e não a
 acha **falha**, não pula.
 
+**A suíte não entra no build default.** Desde 15/09/2026 o alvo `ic_tests` é
+`EXCLUDE_FROM_ALL`: `cmake --build --preset mingw` constrói as torres e os dois CLI
+e mais nada, porque linkar os 40 MB da suíte custava 13 s a cada edição de um
+`.cpp` da Foundation, contra 2,8 s agora. A suíte se constrói sob demanda, no
+mesmo diretório de build e sem reconfigurar.
+
 A varredura pode ser rodada em **fatias**, e uma fatia **nunca** imprime
 `gate-m1 passed`:
 
@@ -124,10 +130,12 @@ arquivo é um checkout descartável, e não a árvore em que se trabalha.
 
 ```powershell
 cmake --preset mingw          # ou msvc, mingw-asan, release
-cmake --build --preset mingw
+cmake --build --preset mingw  # as torres e os CLI; SEM a suíte
 
+cmake --build --preset mingw --target ic_tests   # a suíte, sob demanda
 $env:IC_CORPUS_DIR = "D:\CodingProjects\Icon-Composer\References\corpus"
-build\mingw\Tests\ic_tests.exe
+build\mingw\Tests\ic_tests.exe            # 574 casos, ~48 s
+build\mingw\Tests\ic_tests.exe corpus     # filtro: casos cujo nome contém "corpus"
 
 build\mingw\Source\cli\icrender.exe <arquivo.svg> --out saida.png --size 512
 build\mingw\Source\cli\ictool.exe References\corpus\<bundle>
@@ -140,6 +148,12 @@ mesmo que o SF-Symbols registra. Rode do PowerShell.
 
 ### O gate da M1
 
+> **Quando ele roda, desde 15/09/2026:** por **marco**, sob pedido — não por mudança
+> e não por task. Escrever teste antes do código deixou de ser regra do projeto, e a
+> varredura de ~4 h deixou de ser porteira do progresso. O que está descrito abaixo
+> continua valendo **quando o gate é rodado**; o que mudou é a frequência. As
+> execuções registradas aqui são histórico medido e seguem válidas.
+
 `scripts/gate-m1.ps1` é o teste de aceitação do leitor, do escritor e do modelo
 de `.icon`. São três coisas, e a terceira é a que carrega o peso:
 
@@ -151,7 +165,7 @@ de `.icon`. São três coisas, e a terceira é a que carrega o peso:
    que o conteúdo deles atravessa intacto. O do *modelo*: **nenhuma chave** dos
    145 documentos pode ser desconhecida, e **nenhuma das 1.740 especializações**
    pode ser inalcançável pelo resolver.
-3. **Uma varredura de mutação obrigatória.** Duzentas e noventa e duas mutações
+3. **Uma varredura de mutação**, obrigatória *dentro* do gate. Duzentas e noventa e duas mutações
    entram uma a uma, e cada uma TEM que avermelhar a suíte — aplicada em árvore
    limpa e restaurada de um backup conferido por SHA-256, nunca por comando de
    git. Desde 2026-09-03 a varredura roda num **worktree dedicado**
