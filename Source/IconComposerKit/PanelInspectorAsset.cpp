@@ -68,7 +68,7 @@ void imageAsset(Section& x) {
             !name.empty() && std::find(files.begin(), files.end(), name) != files.end();
 
         ImGui::SetNextItemWidth(220.0f);
-        if (ImGui::BeginCombo("##image-name", name.empty() ? "(none)" : name.c_str())) {
+        if (ImGui::BeginCombo("File", name.empty() ? "(none)" : name.c_str())) {
             if (files.empty()) ImGui::TextDisabled("Assets/ is empty");
             for (const std::string& f : files) {
                 if (ImGui::Selectable(f.c_str(), f == name)) {
@@ -110,8 +110,18 @@ void imageAsset(Section& x) {
         // the same lie as a slider that moves no pixel.
         ImGui::TextDisabled("Import into Assets/");
         ImGui::SetNextItemWidth(220.0f);
-        ImGui::InputTextWithHint("##import-path", "full path to an .svg or .png file", g_importPath,
-                                 sizeof g_importPath);
+        // Typing clears the last failure. The buffer and the error are file
+        // statics -- one editor window, one document -- so without this the
+        // message from a path typed against ANOTHER layer stays on screen under
+        // the next one, red and wrong, until an import happens to succeed.
+        if (ImGui::InputTextWithHint("##import-path", "full path to an .svg or .png file",
+                                     g_importPath, sizeof g_importPath)) {
+            g_importError.clear();
+        }
+        ImGui::SetItemTooltip(
+            "The Kit links no toolkit and cannot open a file dialog (Ports.h gives it a texture "
+            "sink and a render scheduler, and nothing else), so the path is typed. A Browse button "
+            "with nothing behind it would be the same lie as a slider that moves no pixel.");
         ImGui::SameLine();
         ImGui::BeginDisabled(g_importPath[0] == '\0');
         if (ImGui::Button("Import")) {

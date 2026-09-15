@@ -59,7 +59,7 @@ target_include_directories(ic_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # so the Kit's cases are added only when the Kit exists, and the count printed at
 # the end of a run is the honest tally for the build that produced it.
 if(TARGET IconComposerKit)
-    target_sources(ic_tests PRIVATE test_kit_idiom.cpp)
+    target_sources(ic_tests PRIVATE test_kit_idiom.cpp test_kit_inspector.cpp)
     target_link_libraries(ic_tests PRIVATE IconComposer::Kit)
 endif()
 

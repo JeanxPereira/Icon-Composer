@@ -73,11 +73,14 @@ void visible(Section& x) {
 void opacity(Section& x) {
     PropertyView v;
     if (x.begin("Opacity", "opacity", v)) {
-        float f = static_cast<float>(numberOr(v.value, 1.0));
-        if (ImGui::SliderFloat("##opacity", &f, 0.0f, 1.0f, "%.2f")) {
-            x.write("opacity", icf::json::Value::number(static_cast<double>(f)), true);
-        }
-        if (ImGui::IsItemDeactivatedAfterEdit()) x.s.endCoalescing();
+        // Labelled, not `##opacity`: the section header is a heading and the
+        // control is a control, and a panel of bare frames is a panel where the
+        // only way to know what a row is, is to remember the order.
+        double f = numberOr(v.value, 1.0);
+        NumberEdit e = sliderNumber("Opacity", &f, 0.0, 1.0, "%.3f",
+                                    "Opacity -- 0 is invisible, 1 is opaque.");
+        if (e.changed) x.write("opacity", icf::json::Value::number(f), true);
+        if (e.released) x.s.endCoalescing();
     }
     x.end();
 }
@@ -95,7 +98,7 @@ void blendMode(Section& x) {
         if (v.value && v.value->kind() == icf::json::Value::Kind::String) {
             if (auto m = icf::blendModeFromString(v.value->rawString())) current = *m;
         }
-        if (ImGui::BeginCombo("##blend", blendModeLabel(current))) {
+        if (ImGui::BeginCombo("Mode", blendModeLabel(current))) {
             for (auto m : kModes) {
                 if (ImGui::Selectable(blendModeLabel(m), m == current)) {
                     x.write("blend-mode", icf::json::Value::string(std::string(icf::blendModeToString(m))), false);
@@ -107,6 +110,42 @@ void blendMode(Section& x) {
     x.end();
 }
 
+// ---- the position is patched IN the node, member by member ------------------
+// The same rule the fill section states at length, and for the same reason: a
+// number nobody touched has to keep the lexeme it arrived with. The old control
+// read the whole `Position` through FLOATS and wrote it back whole, so dragging
+// the scale re-printed both translation coordinates through a float -- and a
+// corpus coordinate spelled `0.5000000000000001` came back `0.5`. Nothing about
+// that is visible on screen; it shows up as a document that no longer matches
+// the bytes it was opened from.
+icf::json::Value positionNode(const PropertyView& v, const icf::Position& p) {
+    if (v.value && v.value->kind() == icf::json::Value::Kind::Object) return *v.value;
+    // No object yet: only then does an edit have to spell a whole position.
+    return icf::positionToJson(p);
+}
+
+void writeScale(Section& x, const PropertyView& v, const icf::Position& p, double scale) {
+    icf::json::Value node = positionNode(v, p);
+    if (node.kind() != icf::json::Value::Kind::Object) return;
+    node.set("scale", icf::json::Value::number(scale));
+    x.write("position", std::move(node), true);
+}
+
+void writeTranslation(Section& x, const PropertyView& v, const icf::Position& p, double tx, double ty) {
+    icf::json::Value node = positionNode(v, p);
+    if (node.kind() != icf::json::Value::Kind::Object) return;
+    icf::json::Value* arr = node.find("translation-in-points");
+    if (arr && arr->kind() == icf::json::Value::Kind::Array && arr->elements().size() == 2) {
+        // Only the coordinate that MOVED, exactly as `writeAxis` does below.
+        if (tx != p.translation.x) arr->elements()[0] = icf::json::Value::number(tx);
+        if (ty != p.translation.y) arr->elements()[1] = icf::json::Value::number(ty);
+    } else {
+        node.set("translation-in-points",
+                 icf::json::Value::array({icf::json::Value::number(tx), icf::json::Value::number(ty)}));
+    }
+    x.write("position", std::move(node), true);
+}
+
 void geometry(Section& x) {
     PropertyView v;
     if (x.begin("Geometry", "position", v)) {
@@ -116,18 +155,27 @@ void geometry(Section& x) {
         }
         // Scale is a factor on disk and a percentage on screen, the way the
         // target shows it.
-        float xy[2] = {static_cast<float>(p.translation.x), static_cast<float>(p.translation.y)};
-        float scale = static_cast<float>(p.scale * 100.0);
-        bool changed = ImGui::DragFloat2("Position (pt)", xy, 1.0f);
-        bool released = ImGui::IsItemDeactivatedAfterEdit();
-        changed |= ImGui::DragFloat("Scale (%)", &scale, 1.0f, 1.0f, 1000.0f);
-        released |= ImGui::IsItemDeactivatedAfterEdit();
-        if (changed) {
-            p.translation = {xy[0], xy[1]};
-            p.scale = scale / 100.0;
-            x.write("position", icf::positionToJson(p), true);
-        }
-        if (released) x.s.endCoalescing();
+        double xy[2] = {p.translation.x, p.translation.y};
+        double scale = p.scale * 100.0;
+        // A QUARTER of a unit per pixel, not a whole one. A drag whose step is
+        // the unit itself cannot STOP on a round number -- it lands wherever the
+        // pixel fell -- and the values a person means here are round ones: 0,
+        // -25, 80%. A finer step lets the drag approach one, and the typed entry
+        // the helper advertises is what actually lands on it.
+        NumberEdit t = dragNumbers("Translation (pt)", xy, 2, 0.25f, nullptr, nullptr, "%.4f",
+                                   "Translation -- points from the canvas centre, +y DOWN "
+                                   "(doc 03 sec. 22). Not clamped: the canvas is 1024 points and "
+                                   "art may legitimately sit outside it.");
+        // 0, not the old 1%: a factor of zero is a value the format can hold and
+        // the floor at one percent was nothing the corpus or the binary asked
+        // for. The ceiling stays where it was.
+        static const double kScaleLo = 0.0, kScaleHi = 1000.0;
+        NumberEdit sc = dragNumbers("Scale (%)", &scale, 1, 0.25f, &kScaleLo, &kScaleHi, "%.4f %%",
+                                    "Scale -- shown as a percentage, stored as a factor "
+                                    "(100 % is 1.0 on disk).");
+        if (t.changed) writeTranslation(x, v, p, xy[0], xy[1]);
+        if (sc.changed) writeScale(x, v, p, scale / 100.0);
+        if (t.released || sc.released) x.s.endCoalescing();
     }
     x.end();
 }
@@ -262,6 +310,20 @@ void setAxisPresence(Section& x, const PropertyView& v, const icf::Fill& f, bool
     x.write("fill", std::move(node), false);
 }
 
+// What the stop's colour space is CALLED on screen. A seventh vocabulary, and
+// as with the other six the screen spelling is not the disk spelling --
+// `colorToString` is what writes the file, and nothing here goes near it.
+const char* colorSpaceLabel(icf::ColorSpace s) {
+    switch (s) {
+        case icf::ColorSpace::DisplayP3: return "Display P3";
+        case icf::ColorSpace::SRGB: return "sRGB";
+        case icf::ColorSpace::ExtendedSRGB: return "Extended sRGB";
+        case icf::ColorSpace::Gray: return "Gray";
+        case icf::ColorSpace::ExtendedGray: return "Extended Gray";
+    }
+    return "colour";
+}
+
 // A colour as the UI can show it. A PREVIEW, not a render: it ignores the
 // stop's colour space, so a display-p3 ramp draws here a little duller than the
 // canvas will draw it.
@@ -306,7 +368,7 @@ void fill(Section& x) {
         if (v.value) {
             if (auto read = icf::fillFrom(*v.value)) f = *read;
         }
-        if (ImGui::BeginCombo("##kind", fillKindLabel(f.kind))) {
+        if (ImGui::BeginCombo("Kind", fillKindLabel(f.kind))) {
             for (auto k : kKinds) {
                 if (ImGui::Selectable(fillKindLabel(k), k == f.kind)) {
                     // A kind change carries over what the new kind can hold and
@@ -351,19 +413,39 @@ void fill(Section& x) {
             if (c.count == 4) {
                 float rgba[4] = {static_cast<float>(c.components[0]), static_cast<float>(c.components[1]),
                                  static_cast<float>(c.components[2]), static_cast<float>(c.components[3])};
-                if (ImGui::ColorEdit4("##colour", rgba, ImGuiColorEditFlags_Float)) {
+                if (ImGui::ColorEdit4(colorSpaceLabel(c.space), rgba, ImGuiColorEditFlags_Float)) {
                     for (int k = 0; k < 4; ++k) c.components[k] = rgba[k];
                     edited = i;
                 }
+                released |= ImGui::IsItemDeactivatedAfterEdit();
+                // THE SPACE IS THE LABEL, and it is not decoration. The picker
+                // and the swatch are sRGB, the stop may be display-p3, and the
+                // same four numbers mean two different colours in the two. The
+                // control cannot convert -- `colorToString` writes the numbers
+                // back under the space they arrived with -- so the least it can
+                // do is name the space it is not honouring.
+                ImGui::SetItemTooltip(
+                    "Components are stored in %s and written back in it. This picker and the "
+                    "swatch beside it are sRGB, so a wide-gamut stop draws here duller than the "
+                    "canvas draws it.",
+                    colorSpaceLabel(c.space));
             } else {
-                float ga[2] = {static_cast<float>(c.components[0]), static_cast<float>(c.components[1])};
-                if (ImGui::DragFloat2("gray, alpha", ga, 0.01f, 0.0f, 1.0f)) {
+                double ga[2] = {c.components[0], c.components[1]};
+                static const double kZero = 0.0, kOne = 1.0;
+                // "%.5f": `[ART]` a colour component is written with five places
+                // in 1,978 of the corpus's 1,978 (spec 13/09 sec. 2.2), so the
+                // control shows exactly the precision the file will keep.
+                NumberEdit e = dragNumbers(colorSpaceLabel(c.space), ga, 2, 0.005f, &kZero, &kOne,
+                                           "%.5f",
+                                           "Luminance and alpha -- the grey spaces carry two "
+                                           "components, not four.");
+                if (e.changed) {
                     c.components[0] = ga[0];
                     c.components[1] = ga[1];
                     edited = i;
                 }
+                released |= e.released;
             }
-            released |= ImGui::IsItemDeactivatedAfterEdit();
             // Two is the floor, not a preference: every one of the corpus's 97
             // ramps carries exactly two, and the target decodes a ramp into
             // `primaryColor` and `secondaryColor`. Shrinking past two would be
@@ -420,12 +502,20 @@ void fill(Section& x) {
                 icf::Orientation want = *f.orientation;
                 double start[2] = {want.start.x, want.start.y};
                 double stop[2] = {want.stop.x, want.stop.y};
-                bool moved = ImGui::DragScalarN("Start (0..1)", ImGuiDataType_Double, start, 2, 0.005f,
-                                                nullptr, nullptr, "%.4f");
-                released |= ImGui::IsItemDeactivatedAfterEdit();
-                moved |= ImGui::DragScalarN("Stop (0..1)", ImGuiDataType_Double, stop, 2, 0.005f,
-                                            nullptr, nullptr, "%.4f");
-                released |= ImGui::IsItemDeactivatedAfterEdit();
+                // The axis is the clearest case in the panel for TYPING: the
+                // values that mean something here are (0,0), (0,1), (0.5,0.5)
+                // and (1,1), and a 0.005-per-pixel drag reaches none of them on
+                // purpose. Unbounded, still: the corpus has a stop.y of 1.029.
+                const char* kAxisHint =
+                    "Normalised over the layer's box, not points: the draw path reads "
+                    "origin + unit * (width, height) (doc 03 sec. 30.7). Deliberately not "
+                    "clamped -- the corpus carries a stop.y of 1.029.";
+                NumberEdit a = dragNumbers("Start (x, y)", start, 2, 0.005f, nullptr, nullptr,
+                                           "%.6f", kAxisHint);
+                NumberEdit b = dragNumbers("Stop (x, y)", stop, 2, 0.005f, nullptr, nullptr, "%.6f",
+                                           kAxisHint);
+                const bool moved = a.changed || b.changed;
+                released |= a.released || b.released;
                 if (moved) {
                     want.start = {start[0], start[1]};
                     want.stop = {stop[0], stop[1]};
@@ -464,7 +554,7 @@ void shadow(Section& x) {
         if (v.value) {
             if (auto read = icf::shadowFrom(*v.value)) sh = *read;
         }
-        if (ImGui::BeginCombo("##kind", shadowKindLabel(sh.kind))) {
+        if (ImGui::BeginCombo("Kind", shadowKindLabel(sh.kind))) {
             for (auto k : kKinds) {
                 if (ImGui::Selectable(shadowKindLabel(k), k == sh.kind)) {
                     icf::Shadow next = sh;
@@ -474,12 +564,14 @@ void shadow(Section& x) {
             }
             ImGui::EndCombo();
         }
-        float op = static_cast<float>(sh.opacity);
-        if (ImGui::SliderFloat("Opacity", &op, 0.0f, 1.0f, "%.2f")) {
+        double op = sh.opacity;
+        NumberEdit e = sliderNumber("Opacity", &op, 0.0, 1.0, "%.3f",
+                                    "Shadow opacity. `none` draws no shadow whatever this says.");
+        if (e.changed) {
             sh.opacity = op;
             x.write("shadow", icf::shadowToJson(sh), true);
         }
-        if (ImGui::IsItemDeactivatedAfterEdit()) x.s.endCoalescing();
+        if (e.released) x.s.endCoalescing();
     }
     x.end();
 }
@@ -492,12 +584,15 @@ void translucency(Section& x) {
             if (auto read = icf::translucencyFrom(*v.value)) t = *read;
         }
         if (ImGui::Checkbox("Enabled", &t.enabled)) x.write("translucency", icf::translucencyToJson(t), false);
-        float val = static_cast<float>(t.value);
-        if (ImGui::SliderFloat("Value", &val, 0.0f, 1.0f, "%.2f")) {
+        double val = t.value;
+        NumberEdit e = sliderNumber("Value", &val, 0.0, 1.0, "%.3f",
+                                    "Translucency amount. The `Enabled` box above and this number "
+                                    "are two members of one value, and both are written together.");
+        if (e.changed) {
             t.value = val;
             x.write("translucency", icf::translucencyToJson(t), true);
         }
-        if (ImGui::IsItemDeactivatedAfterEdit()) x.s.endCoalescing();
+        if (e.released) x.s.endCoalescing();
     }
     x.end();
 }
@@ -511,7 +606,7 @@ void specular(Section& x) {
         if (v.value && v.value->kind() == icf::json::Value::Kind::String) {
             if (auto read = icf::specularHighlightFromString(v.value->rawString())) current = *read;
         }
-        if (ImGui::BeginCombo("##specular", specularLabel(current))) {
+        if (ImGui::BeginCombo("Highlight", specularLabel(current))) {
             for (auto c : kCases) {
                 if (ImGui::Selectable(specularLabel(c), c == current)) {
                     x.write("specular", icf::json::Value::string(std::string(icf::specularHighlightToString(c))),
@@ -536,31 +631,109 @@ void glass(Section& x) {
 // One selector for the whole panel, not one per section: the scope is a property
 // of what is being inspected, and repeating it eight times only multiplies the
 // chance of two sections disagreeing about which scope is being edited.
+//
+// THE SCOPE AND THE VIEW ARE TWO DIFFERENT PAIRS, AND THE PANEL USED TO SHOW ONE
+// -----------------------------------------------------------------------------
+// `Session::view.context` is what the CANVAS renders; `Session::scope` is what
+// this panel WRITES. They are deliberately independent -- a person edits Dark
+// while looking at Light on purpose, and `Session::open` moves the view to the
+// declared idiom while leaving the scope on Base on purpose (ViewModel.h, and
+// the case `kit_canvas_opens_on_the_idiom_the_document_declares` fixes that).
+//
+// The defect was that the panel drew only `scope`, in two unlabelled 100 px
+// combos, and never mentioned `view` at all. On any document that declares
+// `squares` -- `[ART]` 145 of 145 -- the two disagree from the very first frame:
+// the canvas is on `square`, the inspector writes the plain key, and the person
+// is looking at one composition and editing another with nothing on screen
+// saying so. That is exactly the lie this file's own header says the panel
+// exists to prevent, and it was being told by the panel.
+//
+// So the two combos are labelled, the disagreement is stated in words when there
+// is one, and there is one button that ends it.
 void scopeSelector(Session& s) {
     static const icf::Appearance kA[] = {icf::Appearance::Base, icf::Appearance::Light, icf::Appearance::Dark,
                                          icf::Appearance::Tinted};
     static const icf::Idiom kI[] = {icf::Idiom::Base, icf::Idiom::Square, icf::Idiom::IOS, icf::Idiom::MacOS,
                                     icf::Idiom::WatchOS};
-    ImGui::TextUnformatted("Scope");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(100.0f);
-    if (ImGui::BeginCombo("##scope-a", appearanceLabel(s.scope.appearance))) {
+    ImGui::SeparatorText("Editing scope");
+    ImGui::SetNextItemWidth(140.0f);
+    if (ImGui::BeginCombo("Appearance##scope-a", appearanceLabel(s.scope.appearance))) {
         for (auto a : kA) {
             if (ImGui::Selectable(appearanceLabel(a), a == s.scope.appearance)) s.scope.appearance = a;
         }
         ImGui::EndCombo();
     }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(100.0f);
-    if (ImGui::BeginCombo("##scope-i", idiomLabel(s.scope.idiom))) {
+    ImGui::SetItemTooltip(
+        "The appearance every section below reads and WRITES under. Base is the plain key; any "
+        "other value appends to the property's specialization list.");
+    ImGui::SetNextItemWidth(140.0f);
+    if (ImGui::BeginCombo("Idiom##scope-i", idiomLabel(s.scope.idiom))) {
         for (auto i : kI) {
             if (ImGui::Selectable(idiomLabel(i), i == s.scope.idiom)) s.scope.idiom = i;
         }
         ImGui::EndCombo();
     }
+    ImGui::SetItemTooltip(
+        "The idiom every section below reads and WRITES under. This is NOT the idiom the canvas "
+        "draws -- that one is in the canvas's own bar, and the line below says when the two "
+        "disagree.");
+
+    const bool same = s.scope.appearance == s.view.context.appearance &&
+                      s.scope.idiom == s.view.context.idiom;
+    if (same) {
+        ImGui::TextDisabled("The canvas is showing the scope you are editing.");
+        return;
+    }
+    // A warm amber, the colour this editor already uses for "true, and you need
+    // to know it" (PanelInspector's ramp-length note).
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.25f, 1.0f),
+                       "The canvas is showing %s / %s -- you are editing %s / %s.",
+                       appearanceLabel(s.view.context.appearance), idiomLabel(s.view.context.idiom),
+                       appearanceLabel(s.scope.appearance), idiomLabel(s.scope.idiom));
+    ImGui::PopTextWrapPos();
+    ImGui::SetItemTooltip(
+        "Legitimate -- editing one scope while looking at another is a real thing to want. But an "
+        "edit made here may not move a pixel on screen, and that is a different fact from the edit "
+        "not having happened.");
+    if (ImGui::SmallButton("Edit what the canvas shows")) {
+        // Only the SCOPE moves. Pulling the canvas to the scope instead would
+        // drag the view off the idiom the document declares, which is the one
+        // thing `Session::open` went out of its way to get right.
+        s.scope = s.view.context;
+    }
+    ImGui::SetItemTooltip("Sets the editing scope to the appearance and idiom the canvas is drawing.");
 }
 
 }  // namespace
+
+// THE DOCUMENT HAD NO DOOR
+// -----------------------------------------------------------------------------
+// `drawInspector` has always had a `NodeKind::Root` branch -- the background
+// `fill`, and Platforms, SVG Color Space and Features from
+// PanelInspectorDocument.cpp -- and `nodeTitle` has always answered "Document"
+// for a path with no group. Nothing in the running editor could ever produce
+// that path: the Layers tree lists groups and layers and no root row,
+// `Session::selection` starts empty, and no menu item sets it. So four sections
+// of this panel, including the only control over `supported-platforms` -- the
+// key `[ART]` 145 of 145 corpus documents carry, and the one that decides
+// whether the icon is a squircle or a circle -- were unreachable in the built
+// program while being fully written, tested and drawn in the selftest (which
+// selects through `firstSelectable`, a group).
+//
+// The row belongs in the Layers tree, where the rest of the document's structure
+// is; a front is in that file this round, so the door is opened here instead,
+// from the panel the sections are in. It costs one line and stops being dead
+// code the moment it is drawn.
+void documentRow(Session& s) {
+    const bool isRoot = s.selection && !s.selection->group;
+    if (ImGui::RadioButton("Document", isRoot)) s.selection = icf::NodePath{};
+    ImGui::SetItemTooltip(
+        "The root of the .icon: the background fill, the platforms it ships for, the SVG colour "
+        "space and the feature list. Selecting a layer or a group in the Layers panel comes back "
+        "here.");
+    ImGui::Separator();
+}
 
 InspectorStats drawInspector(Session& s) {
     InspectorStats st;
@@ -568,6 +741,7 @@ InspectorStats drawInspector(Session& s) {
         ImGui::End();
         return st;
     }
+    documentRow(s);
     // The selection names a node by index, so a structural edit can leave it
     // pointing past the end; the panel checks the node rather than the index.
     if (!s.selection || !icf::nodeAt(s.root(), *s.selection)) {
