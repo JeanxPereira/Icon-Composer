@@ -35,6 +35,7 @@ private:
     void destroy();
 
     VkDevice device_ = VK_NULL_HANDLE;
+    const DeviceApi* api_ = nullptr;   // this device's dispatch -- see Buffer.h
     VkImage image_ = VK_NULL_HANDLE;
     VkDeviceMemory memory_ = VK_NULL_HANDLE;
     VkImageView view_ = VK_NULL_HANDLE;

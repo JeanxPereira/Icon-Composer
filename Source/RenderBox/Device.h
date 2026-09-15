@@ -28,9 +28,10 @@
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <memory>
 #include <string>
 
-#include <vulkan/vulkan.h>
+#include "Source/RenderBox/VulkanApi.h"
 
 namespace rb {
 
@@ -68,6 +69,15 @@ public:
 
     bool valid() const { return device_ != VK_NULL_HANDLE; }
     VkDevice handle() const { return device_; }
+
+    // The dispatch table of THIS device. Every device-level call in this tower
+    // goes through it -- see VulkanApi.h for why a global one would silently send
+    // our work to Onyx's device. Only valid while `valid()`; the address is
+    // stable across a move of the Device, which is why the table is held behind
+    // a pointer and not by value: a Buffer created from this device keeps the
+    // address, and Device::create returns by value.
+    const DeviceApi& api() const { return *api_; }
+
     VkPhysicalDevice physical() const { return physical_; }
     VkQueue queue() const { return queue_; }
     std::uint32_t queueFamily() const { return queueFamily_; }
@@ -88,6 +98,7 @@ public:
 private:
     void destroy();
 
+    std::unique_ptr<DeviceApi> api_;
     VkInstance instance_ = VK_NULL_HANDLE;
     VkPhysicalDevice physical_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
