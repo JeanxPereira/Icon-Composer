@@ -15,10 +15,12 @@ Cor e comparada NAO-premultiplicada, que e como os dois PNG a guardam.
 Uso:
     python scripts/png-diff.py <a.png> <b.png>
     python scripts/png-diff.py <a.png> <b.png> --map <saida.png> --blocks 12
+    python scripts/png-diff.py apple-512.png ours-412.png --legacy-inset
 """
 from __future__ import annotations
 
 import argparse
+import math
 import struct
 import sys
 import zlib
@@ -98,6 +100,34 @@ def write_png(path: Path, w: int, h: int, rgba: bytes) -> None:
                      + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
 
 
+def place_inset(wa: int, ha: int, wb: int, hb: int, B: bytearray,
+                rel: float) -> tuple[int, int, bytearray]:
+    """Poe um render menor no lugar que o RECUO LEGADO lhe daria dentro do quadro.
+
+    `[BIN]` `IconRendering.arm64` `0x4202C` (`FinalizedIcon.Configuration`), ramo
+    de `useLegacyInsetting`: `lado' = lado - 2 * floor(lado * recuo + 0.5)`, com
+    `recuo = globalConfig.relativeIconInset ?? 0.09765625` -- o imediato
+    `0x3FB9000000000000` de `0x4224C`, que e 100/1024. E o unico 100/1024 do
+    bundle. Nao e coisa deste renderizador: o app nunca liga esse modo (ele so
+    importa o `Configuration(icon:style:parametersOverride:)`, que grava o campo
+    em zero), entao o alinhamento pertence ao COMPARADOR e nao ao desenho.
+
+    Copia pixel a pixel, sem reamostrar: nenhum erro de filtro entra na conta.
+    """
+    inset = int(math.floor(wa * rel + 0.5))
+    want_w, want_h = wa - 2 * inset, ha - 2 * int(math.floor(ha * rel + 0.5))
+    if (wb, hb) != (want_w, want_h):
+        raise SystemExit(f"--legacy-inset: {wa}x{ha} pede um corpo de "
+                         f"{want_w}x{want_h}, e veio {wb}x{hb}")
+    out = bytearray(wa * ha * 4)
+    dy = int(math.floor(ha * rel + 0.5))
+    for y in range(hb):
+        src = y * wb * 4
+        dst = ((y + dy) * wa + inset) * 4
+        out[dst:dst + wb * 4] = B[src:src + wb * 4]
+    return wa, ha, out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -106,10 +136,17 @@ def main() -> int:
     ap.add_argument("--map", type=Path, help="grava um mapa de calor do erro")
     ap.add_argument("--blocks", type=int, default=8, help="lado do bloco (8)")
     ap.add_argument("--top", type=int, default=12, help="quantos blocos piores listar")
+    ap.add_argument("--legacy-inset", action="store_true",
+                    help="poe o B (menor) dentro do quadro do A no recuo do "
+                         "renderizador legado, sem reamostrar")
+    ap.add_argument("--relative-inset", type=float, default=100.0 / 1024.0,
+                    help="a fracao recuada por lado (default 100/1024)")
     args = ap.parse_args()
 
     wa, ha, A = read_png(args.a)
     wb, hb, B = read_png(args.b)
+    if args.legacy_inset and (wa, ha) != (wb, hb):
+        wb, hb, B = place_inset(wa, ha, wb, hb, B, args.relative_inset)
     if (wa, ha) != (wb, hb):
         print(f"erro: {wa}x{ha} contra {wb}x{hb}", file=sys.stderr)
         return 2

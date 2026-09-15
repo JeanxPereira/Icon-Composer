@@ -36,6 +36,38 @@
 //     continuous corner, not the blended one. Reading (1) alone would have given
 //     t = 0.9615 and a visibly different corner; that is the fork this file
 //     stands on the far side of.
+//
+// WHICH OF THE TARGET'S TWO PATHS THIS IS
+// ---------------------------------------
+// `[BIN]` The target draws an icon in one of two framings, and this file is the
+// first one:
+//
+//  * FULL BLEED -- the chiclet fills the canvas square. This is what
+//    `Configuration(icon:style:parametersOverride:)` (`IconRendering 0x19F4C`)
+//    sets up, writing `useLegacyInsetting = 0` at `0x1A844`, and it is the ONLY
+//    one Icon Composer itself ever asks for: `IconComposerKit` imports that init
+//    and not the one that takes the flag.
+//
+//  * LEGACY INSET -- `0x4202C` shrinks the rect to
+//    `side - 2 * floor(side * (relativeIconInset ?? 100/1024))`, the `100/1024`
+//    being the immediate `0x3FB9000000000000` at `0x4224C` (the only one in the
+//    bundle). That is the framing of the rendition Apple shipped inside
+//    `Assets.car`, and of `AppIcon.icns`.
+//
+// So the 824/1024 of the oracle is NOT missing from this file: it belongs to a
+// mode of the target that its own app never turns on, and
+// `scripts/png-diff.py --legacy-inset` aligns the two framings for comparison
+// instead.
+//
+// `[OBS]` In that legacy rendition the corner is the SAME curve with a SMALLER
+// radius: fitted by `scripts/chiclet-profile.py`, Apple's 412 body wants
+// `r = 0.225 * body` (RMS 0.088 px) where `0.26` costs 5.36 px, and our corner
+// therefore starts 4.1 px earlier along the diagonal. No constant in the bundle
+// produces 0.225 -- platform `main` has no radius override (`0x5EB38`), and the
+// one mechanism that can replace the shape is a caller-supplied
+// `GlobalConfiguration.iconShape` (`+0x58`, tested by `cbz` at `0x4296C`).
+// `Docs/Laudos/2026-09-15-chiclet-geometria.md` has the measurement; the radius
+// below stays 0.26 because that is what the reading of THIS path says.
 #include <cstdint>
 #include <vector>
 
