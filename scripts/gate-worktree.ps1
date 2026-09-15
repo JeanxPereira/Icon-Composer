@@ -32,7 +32,13 @@ location (`Split-Path -Parent $PSScriptRoot`) and already takes `-BuildDir` and
 
 SETUP, ONCE
     git worktree add --detach D:/CodingProjects/Icon-Composer-gate main
-    cd D:/CodingProjects/Icon-Composer-gate ; cmake --preset mingw
+    cd D:/CodingProjects/Icon-Composer-gate ; cmake --preset mingw -DIC_BUILD_UI=OFF
+
+`-DIC_BUILD_UI=OFF` E DELIBERADO. Desde 15/09/2026 a opcao nasce `ON` e arrasta o
+OnyxSDK por `FetchContent` -- rede, e um SDK inteiro para compilar. O gate nao
+toca no Kit nem no app: ele constroi `ic_tests`, que linka Foundation, CoreSVG,
+CliLib e RenderBox e mais nada. Configurar com a UI ligada custa o download e a
+arvore do Onyx para nao usar um arquivo dela.
 
 USAGE
     powershell -File scripts/gate-worktree.ps1              # the gate
@@ -80,8 +86,13 @@ $at = (& git -C $Worktree rev-parse --short HEAD).Trim()
 Write-Host "worktree at $at`n"
 
 # Same cap as the sweep's own rebuild, and for the same reason: this is the
-# WIDE build, the one that compiles all 64 targets at once.
-& cmake --build (Join-Path $Worktree "build/mingw") -- -j 4 2>&1 | Select-Object -Last 1
+# WIDE build -- tudo o que a suite precisa, de uma vez.
+#
+# `--target ic_tests` pelo mesmo motivo que em `gate-m1.ps1`: desde 15/09/2026 a
+# suite e `EXCLUDE_FROM_ALL` e `all` nao a contem mais. Sem o alvo, este
+# aquecimento construiria tudo MENOS o executavel que o gate vai rodar. De
+# quebra, nomear o alvo corta da conta o app e o Kit, que o gate nunca exercita.
+& cmake --build (Join-Path $Worktree "build/mingw") --target ic_tests -- -j 4 2>&1 | Select-Object -Last 1
 if ($LASTEXITCODE -ne 0) { Write-Host "FAILED: the worktree does not build"; exit 1 }
 
 $corpus = Join-Path $main "References/corpus"

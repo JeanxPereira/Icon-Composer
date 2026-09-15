@@ -4776,7 +4776,7 @@ git commit -m "iconcomposer.exe: o Kit sobre a janela do Onyx, com um rb::Device
 - Modify: `Docs/README.md` (a linha `| a UI do app |` na tabela de estado)
 - Modify: `scripts/gate-m1.ps1` (uma âncora no Kit)
 
-- [ ] **Step 1: a linha do README**
+- [x] **Step 1: a linha do README**
 
 Trocar a linha `| a UI do app | **não levantada** — e não há nib: o app é SwiftUI |` por:
 
@@ -4786,19 +4786,42 @@ Trocar a linha `| a UI do app | **não levantada** — e não há nib: o app é 
 
 E na tabela de documentos, acrescentar a linha `| [Specs/casca e modelo](Specs/2026-09-13-casca-e-modelo-editavel.md) | ... |` se ainda não estiver (a spec já a acrescentou).
 
-- [ ] **Step 2: uma âncora no Kit**
+- [x] **Step 2: ~~uma âncora no Kit~~ — impossível como redigido, e o gate estava quebrado**
 
-No `$sources` do gate: `session = Join-Path $root "Source/IconComposerKit/Session.cpp"`. Nas mutações:
+**A âncora no Kit não existe, e o motivo é estrutural.** `ic_tests` **não linka o
+Kit**: `Tests/CMakeLists.txt` liga `Foundation`, `CliLib`, `CoreSVG` e `RenderBox`,
+e mais nada. Não há `Tests/test_session.cpp`; nenhum caso da suíte toca
+`Session::undo`. Uma mutação em `Session.cpp` seria, por construção, **uma
+mutação não apanhada** — exatamente o que o gate existe para proibir.
 
-```powershell
-    # ---- the kit ----
-    @{ file = "session"; name = "undo restores the AFTER snapshot"
-       from = 'if (icf::json::Value* node = icf::nodeAt(root(), c.target)) *node = c.before;'
-       to   = 'if (icf::json::Value* node = icf::nodeAt(root(), c.target)) *node = c.after;' },
-    @{ file = "session"; name = "a new command keeps the redo branch"
-       from = '    redo_.clear();' + "`n" + '    if (cleanDepth_ > undo_.size())'
-       to   = '    if (cleanDepth_ > undo_.size())' },
-```
+E linkar o Kit na suíte não é opção barata: o Kit depende de `imgui_lib`, que
+**nenhum `CMakeLists.txt` deste repositório define** — ele vem do OnyxSDK por
+`FetchContent`, sob `IC_BUILD_UI`. Amarrar a suíte ao Kit amarraria a suíte ao
+Onyx, e a regra 2 da spec de arquitetura existe para impedir isso. O Kit continua
+afirmado pelo `--selftest` sobre os 145 bundles, que é outro instrumento.
+
+> A grafia do `from` do rascunho também já não casava: entre `redo_.clear();` e o
+> `if (cleanDepth_ > undo_.size())` há duas linhas de comentário, e a âncora
+> pedia as duas linhas coladas. Uma âncora que não casa é erro duro do script.
+
+**O que o gate precisava de verdade, e ganhou.** Procurar a âncora achou uma
+regressão introduzida nesta mesma data, quando `ic_tests` virou
+`EXCLUDE_FROM_ALL` para tirar 40 MB de link do loop de edição:
+
+- `gate-m1.ps1`, `Invoke-Build`, construa `cmake --build $BuildDir` — **sem
+  alvo**. `[BIN]` `ninja -t query all` no `build/mingw` devolve **zero**
+  referências a `ic_tests`: `all` não contém mais a suíte.
+- O modo de falha é silencioso e caro. Num diretório de build que já tenha um
+  `ic_tests.exe` de antes, cada mutação reconstrói `all` **com sucesso**, o
+  script roda o exe **antigo**, e o exe antigo não tem a mutação dentro. Toda
+  mutação seria reportada como não apanhada — depois de quatro horas.
+- Corrigido nos dois scripts: `--target ic_tests` em `gate-m1.ps1` e no
+  aquecimento de `gate-worktree.ps1`.
+- De carona, o `SETUP` do worktree do gate passou a configurar com
+  `-DIC_BUILD_UI=OFF`: desde esta data `IC_BUILD_UI` nasce `ON` e arrastaria o
+  OnyxSDK inteiro por rede para um gate que nunca toca no Kit nem no app.
+
+O total de mutações segue **328**, sem as duas que este step ia acrescentar.
 
 - [ ] **Step 3: o gate inteiro, no worktree**
 

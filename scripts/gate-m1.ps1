@@ -202,8 +202,19 @@ function Restore-Sources {
 # `-j` goes after `--` because that is ninja's flag, not CMake's.
 $BuildJobs = 4
 
+# `--target ic_tests` NAO E ORNAMENTO. Em 15/09/2026 a suite virou
+# `EXCLUDE_FROM_ALL` (Tests/CMakeLists.txt) porque o loop de edicao pagava 40 MB
+# de link por nada -- e um `cmake --build` sem alvo passou a construir `all`, que
+# desde entao NAO CONTEM `ic_tests`.
+#
+# O modo de falha e o pior que existe: num diretorio de build que ja tenha um
+# `ic_tests.exe` de antes, cada mutacao reconstroi `all` com sucesso, o script
+# roda o exe ANTIGO, e o exe antigo nao tem a mutacao dentro. Toda mutacao passa
+# a ser reportada como NAO APANHADA, depois de quatro horas de varredura, e nada
+# no caminho reclama. Num diretorio limpo e menos ruim: o exe nao existe e o
+# script morre de cara.
 function Invoke-Build {
-    $out = & cmake --build $BuildDir -- -j $BuildJobs 2>&1
+    $out = & cmake --build $BuildDir --target ic_tests -- -j $BuildJobs 2>&1
     return ($LASTEXITCODE -eq 0)
 }
 
