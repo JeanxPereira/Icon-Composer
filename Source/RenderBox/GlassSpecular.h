@@ -83,9 +83,14 @@
 // `0x000495E8`), and zero curvature makes `shade == 1.0` identically. So the
 // outside band is FLAT and the inside band falls off with depth. Two of three
 // cases are not the same case, and the difference is not only where.
+#include <cstddef>
 #include <cstdint>
+#include <vector>
 
+#include "Source/RenderBox/BlendMode.h"
+#include "Source/RenderBox/DistanceField.h"
 #include "Source/RenderBox/GlassMaterial.h"
+#include "Source/RenderBox/GlassTranslucency.h"
 
 namespace rb {
 
@@ -162,11 +167,272 @@ bool specularDrawsInside(SpecularPlacement placement, bool identityRecolour, boo
 bool documentAsksForSpecular(const GlassMaterial& material);
 bool documentAsksForSpecular(const DenormalisedGlass& glass);
 
+// ===========================================================================
+// THE 16113 BYTES, READ -- `Docs/Laudos/2026-09-15-highlights.md`
+// ===========================================================================
+//
+// Everything above this line was written on 2026-09-15 with the numbers still
+// missing. They are not missing any more. `ICRRenderingParameters.Highlights`
+// (`params+0x250`, `0x3EF1` == 16113 bytes, built by `0x00062A78`-`0x00063C1C`)
+// opened, and it opened because its own layout is spelled out in the binary as
+// IMMEDIATES rather than as pool constants.
+//
+// THE LAYOUT, AND WHY IT IS NOT A GUESS
+// -------------------------------------
+// `[BIN]` `Highlights` is a 280-byte preamble and then TEN `HighlightsSet` of
+// `0x630` bytes each (size `0x629`, the last one unpadded):
+//
+//     0x0118 chicletDefault   0x0748 chicletBright   0x0D78 chicletDim
+//     0x13A8 chicletClear     0x19D8 chicletScreened
+//     0x2008 glyphsDefault    0x2638 glyphsBright    0x2C68 glyphsDim
+//     0x3298 glyphsClear      0x38C8 glyphsScreened
+//
+//     0x0118 + 9*0x630 + 0x629 == 0x3EF1.                    <- closes exactly
+//
+// and the SELECTOR AT `0x000627B4` MATERIALISES FIVE OF THOSE OFFSETS AS
+// LITERALS -- `mov w22, #0x3298`, `mov w23, #0x38C8`, `mov w8, #0x2638`,
+// `mov w8, #0x2008`, `mov w8, #0x2C68` -- and then memcpies `mov w2, #0x629`
+// bytes from `x20 + offset`. The arithmetic and the binary agree on the same
+// two numbers, from opposite directions.
+//
+// `[BIN]` A `HighlightsSet` is six `HighlightSettings` at stride `0x108`
+// (`keySharp 0x000, keyDiffuse 0x108, fillSharp 0x210, fillDiffuse 0x318,
+// dark 0x420, rim 0x528`), read straight off the six memcpy destinations of
+// `0x00030EC0`-`0x00030F1C` and off the constructor's own
+// `x19+0x118 … x19+0x640`.
+//
+// `[BIN]` A `HighlightSettings` is `0x101` == 257 bytes, ten fields, in the
+// metadata's declaration order (`fieldmd 0xA33C4`). The offsets are the
+// resolver's own loads at `0x0004BDCC`-`0x0004BE50`:
+//
+//     +0x00  brightness         Double
+//     +0x08  opacity            SizeBasedValue<Double>
+//     +0x28  outsetOpacity      SizeBasedValue<Double>?   tag at +0x48
+//     +0x50  distance           SizeBasedValue<Double>
+//     +0x70  minDistancePixels  SizeBasedValue<Double>    (NOT optional)
+//     +0x90  inset              SizeBasedValue<Double>
+//     +0xB0  minInsetPixels     SizeBasedValue<Double>?   tag at +0xD0
+//     +0xD8  spread             SizeBasedValue<Angle>
+//     +0xF8  bias               Double
+//     +0x100 blendModeOverride  Icon.BlendMode?           (byte 18 == nil)
+//
+// `[BIN]` That last byte is also the discriminator of the two enums wrapped
+// around this struct, which is how the whole thing stays 257 bytes and how a
+// disabled highlight is spelled: `0x00035450` reads `+0x100` and returns
+// `max(0, byte - 18)`, so **19 means `HighlightSettings? == nil`**;
+// `0x00033F04` uses 19 as `FillHighlights.matchKey`; `0x00035470` uses 20 as
+// `FillHighlights? == nil`. Three tag readers, one byte, no extra storage.
+//
+// THE SELECTION RULE, MEASURED
+// ----------------------------
+// `[BIN]` `0x000627B4` is the GLYPH closure (`0x0005E194` installs it as `x1`
+// and tail-calls the blob-copier `0x0005E59C`, which memcpies all `0x3EF1`
+// bytes onto the stack at `0x0005E684`). It picks by TWO things and neither is
+// the size class:
+//
+//     if (fill[+0x90] == 1 && (fill[+0x68]|+0x70|+0x78|+0x80|+0x88) == 0)
+//         // a PLAIN fill: five pointers all null
+//         switch (fill[+0x5B]) { 0 -> glyphsDefault
+//                                1 -> glyphsBright
+//                                _ -> glyphsDim }
+//     else
+//         // a fill that is not plain: two shape comparisons
+//         // (0x00040E60 / 0x0006D6B0) choose
+//         glyphsScreened or glyphsClear
+//
+// `[OBS]` What `fill[+0x5B]` IS was not read. Its three-way shape and the
+// preamble's `maxDimChicletLuminance = 0.2` / `minBrightChicletLuminance = 0.99`
+// (`Highlights+0x98`, `+0xA0`) say luminance class, but the write was not
+// found. IT DOES NOT MATTER FOR THIS VERSION'S PIXELS, and that is `[BIN]`:
+// `0x00063AEC`-`0x00063BF4` builds all five glyph sets by calling the SAME
+// factory `0x00064604` with the SAME three arguments. The five differ by
+// nothing. Measuring the index harder would change no pixel here.
+//
+// THE EXPANSION: ONE SET BECOMES UP TO SEVEN HIGHLIGHTS
+// -----------------------------------------------------
+// `[BIN]` `0x00030E88` turns a `HighlightsSet` into an array of `Highlight`
+// (size `0x131`, stride `0x138`: settings `0x101` padded to `+0x108`, then
+// `angleFromKey` Double, `curvature` SizeBasedValue at `+0x110`, `isDarklight`
+// at `+0x130`). Seven slots, written at `x19+0x20` + i*`0x138`:
+//
+//     i  settings                          angleFromKey  curvature        dark
+//     0  keySharp                          0             glyphHighlight*  no
+//     1  keyDiffuse                        0             1,1,1,1          no
+//     2  fillSharp   (matchKey->keySharp)  +pi           glyphHighlight*  no
+//     3  fillDiffuse (matchKey->keyDiffuse)+pi           1,1,1,1          no
+//     4  dark                              +pi/2         glyphDarklight*  YES
+//     5  dark                              -pi/2         glyphDarklight*  YES
+//     6  rim                               0             glyphHighlight*  no
+//
+// then `0x00031338`-`0x000313EC` drops every slot whose settings were nil.
+// `[BIN]` With this version's glyph defaults `fillDiffuse` and `rim` ARE nil,
+// so **five highlights survive**, and the dark one is drawn twice, mirrored.
+//
+// THE RESOLUTION, FIELD BY FIELD
+// ------------------------------
+// `[BIN]` `0x0004BD90` turns a `Highlight` into the `0x60`-byte
+// `GlassHighlightSettings` the shader gets. Every line of it:
+//
+//     k         = ctx[0x469F]                  the size class, 0..3
+//     v[k]      = SizeBasedValue.slots[3 - k]  0x0004BEB0-0x0004BEF4
+//     height    = max(distance[k], minDistancePixels[k] * pixelUnit)   0x0004BF00
+//     inset     = max(inset[k],    minInsetPixels[k]    * pixelUnit)   0x0004BF2C
+//                 minInsetPixels == nil feeds -INFINITY there          0x0004BF20
+//     theta     = angleFromKey + lightLongitude                        0x0004BEF8
+//     direction = (cos(phi)*sin(theta), cos(phi)*cos(theta), sin(phi)) 0x0004C014
+//     opacity   = ctx[0] * opacity[k]                                  0x0004C0A8
+//     colour    = (brightness, brightness, brightness, 1.0)            0x0004C0AC
+//     blendMode = blendModeOverride ?? (brightness < 0.5 ? 4 : 8)      0x0004C0A0
+//     spread, bias, curvature: carried through
+//
+// `[BIN]` THE SIZE-CLASS INVERSION IS THE SHADOW FRONT'S, CONFIRMED FROM A
+// SECOND SITE. `0x0004BEB0`-`0x0004BEF4` is a four-way `cbz`/`b.eq` ladder that
+// lands `k == 0` on `slots[3]` and `k == 3` on `slots[0]`, exactly the
+// `slots[3 - sizeClass]` of `GlassShadow.h` -- read here out of a different
+// function on a different struct.
+//
+// `[BIN]` AND THE BLEND NUMBERS LAND ON THIS PROJECT'S OWN ENUM. `4` and `8`
+// out of `csel w8, w9, w8, mi` are `BlendMode::PlusDarker` and
+// `BlendMode::PlusLighter` as `BlendMode.h` already numbered them, from the
+// RenderBox side, months before this was read. A dark highlight subtracts and a
+// bright one adds, and nobody had to choose that.
+//
+// THE TWO SHADER-SIDE TRANSFORMS
+// ------------------------------
+// `[BIN]` `bias' = 1/bias - 2`, `0x0000E9DC`-`0x0000E9EC`, as a float. `0.5`
+// is the neutral value: it makes `bias' == 0` and the denominator 1.
+//
+// `[BIN]` `spread' = cos(spread)`, with the sentinel `-1000.0f` when
+// `spread > pi` (`0x0000EE3C`-`0x0000EE54`, `0x0000EF50`-`0x0000EF5C`). This is
+// what makes the cone work at all: `lit = saturate((dot - spread')/max(1 -
+// spread', 2^-10))` with a RADIAN in `spread'` would be zero everywhere, and
+// with its cosine it is a half-angle. `pi/2 -> 0` is a hemisphere; `pi/3 ->
+// 0.5` is a 60-degree cone; `pi -> -1000` is "always lit".
+//
+// `[BIN]` `curvature` is zeroed when `inset < 0` (`0x0000EF60`-`0x0000EF68`),
+// and the direction reaches the shader as the float2 `(x, -y)`
+// (`fneg s6`, `0x0000EF8C`).
+//
+// WHAT IS STILL `[OBS]`, NAMED SO THE PIXEL CAN BE DOUBTED IN THE RIGHT PLACE
+// ---------------------------------------------------------------------------
+//   1. `ctx[0]`, the scalar every opacity is multiplied by (`0x0004C010`), and
+//      `ctx[0x08..0x20]`, the light latitude `phi`. Not read. Taken as `1.0`
+//      and `phi == 0` here -- which is the branch `0x0004BE74` takes when
+//      `ctx[0x20] == 1`, so `phi == 0` is at least a state the target has.
+//   2. `0x00012550`, a 1.5 KB post-pass over the resolved settings (the
+//      `spatialHighlighting` parameters, `params+0x258`). Not followed.
+//   3. `fill[+0x5B]`, above: three-way, source unread, and inert in 2.0-125.
+//   4. The SDF texel encoding, which `GlassTranslucency.h` already carries as
+//      `[OBS]`. Here the `.gb` normal joins it: this file feeds the shader the
+//      field's own gradient, normalised, and the target feeds it `1 - 2*tex.gb`.
+
+// `[BIN]` The `SizeBasedValue<Double>` of `HighlightSettings`, plus the
+// `Optional` tag where the field has one. Four slots in MEMORY order --
+// `display, large, medium, small` -- indexed `slots[3 - sizeClass]`.
+struct HighlightSizeValue {
+    double slots[4] = {0.0, 0.0, 0.0, 0.0};
+    bool present = true;  // the Optional tag; `false` == `nil`
+};
+
+double highlightSizeValue(const HighlightSizeValue& v, IconSizeClass sizeClass);
+
+// `[BIN]` `IconRendering.HighlightSettings`, ten fields, `0x101` bytes.
+struct HighlightSettings {
+    double brightness = 0.0;
+    HighlightSizeValue opacity;
+    HighlightSizeValue outsetOpacity;      // `present == false` in four of five
+    HighlightSizeValue distance;           // -> the shader's `height`
+    HighlightSizeValue minDistancePixels;
+    HighlightSizeValue inset;
+    HighlightSizeValue minInsetPixels;
+    HighlightSizeValue spread;             // radians
+    double bias = 0.5;
+    // `blendModeOverride` is `nil` in every default this version ships, so it
+    // is a `std::optional` and not a raw byte: a reader must not mistake the
+    // sentinel 18 for the mode 18.
+    bool hasBlendModeOverride = false;
+    BlendMode blendModeOverride = BlendMode::Normal;
+};
+
+// `[BIN]` `IconRendering.Highlight` -- one settings block plus the three things
+// `0x00030E88` attaches to it.
+struct HighlightSlot {
+    HighlightSettings settings;
+    double angleFromKey = 0.0;  // radians
+    HighlightSizeValue curvature;
+    bool isDarklight = false;
+};
+
+// `[BIN]` The five that survive for a GLYPH in 2.0-125, in draw order.
+// Identical for all five `glyphs*` sets -- see the note above.
+const HighlightSlot* glyphHighlightSlots(std::size_t& count);
+
+// `[BIN]` `IconRendering.GlassHighlightSettings`, the `0x60`-byte element the
+// shader is handed. `height` and `inset` are already in PIXELS, because that is
+// where the two halves of `max(distance, minDistancePixels * pixelUnit)` can
+// meet: one side is canvas points and the other is device pixels, and the
+// target's `pixelUnit`/`escala` pair cancels to exactly this ratio. `spread` is
+// the raw ANGLE, not its cosine -- the cosine is applied where the target
+// applies it, at the shader boundary.
+struct GlassHighlightSettings {
+    double opacity = 0.0;
+    double directionX = 0.0, directionY = 0.0, directionZ = 0.0;
+    double spread = 0.0;
+    double bias = 0.5;
+    double height = 0.0;
+    double inset = 0.0;
+    double curvature = 0.0;
+    double colour[4] = {0.0, 0.0, 0.0, 1.0};
+    BlendMode blendMode = BlendMode::PlusLighter;
+};
+
+// Everything the resolution needs that is not in the slot.
+struct SpecularArguments {
+    IconSizeClass sizeClass = IconSizeClass::Large;
+    // pixels per canvas point: `size / kCanvasPoints`, the same ratio the
+    // shadow uses.
+    double pixelsPerPoint = 1.0;
+    // `[BIN]` `Highlights.defaultGlyphLight.longitude`, `Highlights+0x08`,
+    // which this version sets to `0.0` (`stp xzr, xzr, [x8]`, `0x00062AB8`).
+    double lightLongitude = 0.0;
+    // `[BIN]` `[descriptor+0x38]`, the same multiplier the shadow front named:
+    // it scales the `alpha:` of the `drawShape:` (`fmul d0, d10, d0`,
+    // `0x000495F0`).
+    double layerOpacity = 1.0;
+    SpecularPlacement placement = SpecularPlacement::Automatic;
+    bool identityRecolour = true;
+};
+
+// `[BIN]` `0x0004BD90`, plus the `inside`/`outside` fold of `0x000495D8`.
+GlassHighlightSettings resolveHighlight(const HighlightSlot& slot, const SpecularArguments& args);
+
+// `_glassHighlight`, `default_mod1.ll:60-116`, one fragment.
+//
+// `sd` is the signed distance in PIXELS, positive inside, BEFORE the `inset`
+// offset (the shader subtracts it). `nx`,`ny` are the outward unit normal in
+// image space (y down). `fwidthSd` is `fwidth(sd)`, which for a field whose
+// slope is 1 per pixel is 1.
+//
+// Returns the scalar the colour is multiplied by -- `band * a / max(...)`.
+double glassHighlightFragment(const GlassHighlightSettings& s, double sd, double nx, double ny,
+                              double fwidthSd);
+
+// Composites the five highlights over `rgba` (premultiplied, `field.width` x
+// `field.height`), each with its own blend mode and its own `alpha`.
+// Returns the number of pixels the composite actually moved.
+std::size_t drawSpecular(std::vector<float>& rgba, const FieldImage& field,
+                         const SpecularArguments& args);
+
 // The sentence `IconRenderer` says when a document asks and nothing comes out.
 //
 // It names the shader and the block that is missing, because "the specular did
 // not draw" without an address is the kind of report this project treats as
-// worse than silence.
+// worse than silence. KEPT for the one case that still cannot draw -- raster
+// art, which has no contour and therefore no distance field.
 const char* specularDoesNotDrawNote();
+
+// The sentence for the case that DOES draw: which five highlights went on, and
+// which two inputs are still `[OBS]` underneath them.
+const char* specularDrawnNote();
 
 }  // namespace rb

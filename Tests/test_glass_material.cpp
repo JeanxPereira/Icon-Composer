@@ -784,10 +784,8 @@ TEST_CASE(glass_material_corpus_gate) {
     CHECK(maxHeight <= 256.0);
 }
 
-// The specular placement fold. Nothing draws from it yet -- the shader it feeds
-// is named and its parameter block is not (`GlassSpecular.h`) -- so what is
-// pinned here is the SHAPE of the decision, which is the part a reader of the
-// enum would get wrong.
+// The specular placement fold. What is pinned here is the SHAPE of the
+// decision, which is the part a reader of the enum would get wrong.
 //
 // A three-case enum that collapses to one bit invites exactly one conclusion:
 // that two of the three cases are the same case. They are not. What is true is
@@ -833,4 +831,113 @@ TEST_CASE(specular_placement_is_a_request_that_two_renderer_conditions_can_refus
     CHECK_EQ(outside.inset + outside.height, 10.0);
     CHECK_EQ(inside.curvature, 0.75);
     CHECK_EQ(outside.curvature, 0.0);
+}
+
+// The 16113 bytes, and what a plausible transcription would get wrong in them.
+// Five answers, five checks:
+//
+//   1. Reading the `SizeBasedValue` forwards. `slots[k]` instead of
+//      `slots[3 - k]` swaps `small` with `display`, and UNLIKE the shadow -- all
+//      of whose defaults are four equal numbers -- the highlights DIFFER
+//      between classes (`distance` is 4 at display and 6 everywhere else), so
+//      the inversion is visible in a pixel here and must be visible in a test.
+//   2. Taking `spread` to the shader as a radian. `lit` would be zero
+//      everywhere and the whole effect would silently vanish; the cosine at
+//      `0x0000EE20` is what makes it a cone.
+//   3. Taking `bias` straight. `0.5` is the NEUTRAL value and `1/bias - 2` is
+//      what makes it so; a reader who passes `0.5` gets a denominator of `1.5`.
+//   4. Expanding the set into one highlight. It expands into seven candidates
+//      and five survivors, and two of the five are the same `dark` settings at
+//      opposite angles.
+//   5. Calling `rim` and `fillDiffuse` present. They are `nil`, spelled in the
+//      SAME byte as `blendModeOverride` (19 and 20 against the mode's own 18).
+TEST_CASE(highlights_defaults_are_the_read_numbers_and_the_size_table_runs_backwards) {
+    std::size_t count = 0;
+    const rb::HighlightSlot* slots = rb::glyphHighlightSlots(count);
+
+    // `[BIN]` `0x00030E88` writes seven slots; `0x00033FA4` and `0x00033DE4`
+    // make two of them nil; `0x00031384` drops those two.
+    CHECK_EQ(count, static_cast<std::size_t>(5));
+
+    // `[BIN]` `0x00064648`: keySharp, and its `distance` is the one place the
+    // size classes disagree. `display` is the FIRST slot in memory and the LAST
+    // enum value.
+    const rb::HighlightSettings& keySharp = slots[0].settings;
+    CHECK_EQ(keySharp.brightness, 1.0);
+    CHECK_EQ(keySharp.bias, 0.5);
+    CHECK_EQ(rb::highlightSizeValue(keySharp.distance, rb::IconSizeClass::Display), 4.0);
+    CHECK_EQ(rb::highlightSizeValue(keySharp.distance, rb::IconSizeClass::Small), 6.0);
+    // `[BIN]` `A = {1.0, 1.0, 1.0, 0.3}`: opacity drops only in the SMALL class.
+    CHECK_EQ(rb::highlightSizeValue(keySharp.opacity, rb::IconSizeClass::Display), 1.0);
+    CHECK_EQ(rb::highlightSizeValue(keySharp.opacity, rb::IconSizeClass::Small), 0.3);
+
+    // `[BIN]` `0x000646FC`: keyDiffuse is the thick, low-bias wash.
+    CHECK_EQ(rb::highlightSizeValue(slots[1].settings.distance, rb::IconSizeClass::Display), 16.0);
+    CHECK_EQ(rb::highlightSizeValue(slots[1].settings.distance, rb::IconSizeClass::Small), 24.0);
+    CHECK_EQ(slots[1].settings.bias, 0.08);
+
+    // `[BIN]` `0x00064888`: the dark one, twice, at opposite angles, and the
+    // ONLY one of the six with an `outsetOpacity` -- which is exactly the
+    // condition `0x000494F8` needs before `outside` is even considered.
+    CHECK_EQ(slots[3].settings.brightness, 0.0);
+    CHECK(slots[3].isDarklight);
+    CHECK(slots[4].isDarklight);
+    CHECK(slots[3].settings.outsetOpacity.present);
+    CHECK(!slots[0].settings.outsetOpacity.present);
+    CHECK(std::abs(slots[3].angleFromKey + slots[4].angleFromKey) < 1e-12);
+    CHECK(slots[3].angleFromKey > 0.0);
+
+    // `[BIN]` `0x0004C0A0`: the mode falls out of `brightness` alone, and the
+    // two numbers it produces are this project's own enum values.
+    rb::SpecularArguments args;
+    args.sizeClass = rb::IconSizeClass::Display;
+    args.pixelsPerPoint = 1.0;
+    const rb::GlassHighlightSettings key = rb::resolveHighlight(slots[0], args);
+    const rb::GlassHighlightSettings dark = rb::resolveHighlight(slots[3], args);
+    CHECK(key.blendMode == rb::BlendMode::PlusLighter);
+    CHECK(dark.blendMode == rb::BlendMode::PlusDarker);
+
+    // `[BIN]` `0x0004BEFC`-`0x0004BF04`: `max(distance * scale, minDistancePixels)`.
+    // At 1 px per point the floor of 1 px loses to the 4 pt band.
+    CHECK_EQ(key.height, 4.0);
+    // At a sixteenth of the canvas the floor wins, and that is the whole point
+    // of the field having a name with `Pixels` in it.
+    args.pixelsPerPoint = 1.0 / 16.0;
+    CHECK_EQ(rb::resolveHighlight(slots[0], args).height, 1.0);
+    args.pixelsPerPoint = 1.0;
+
+    // `[BIN]` `0x0004C014`: theta = angleFromKey + longitude, direction on the
+    // unit circle. The key light points at +y and the fill at -y.
+    CHECK(std::abs(key.directionX) < 1e-12);
+    CHECK(std::abs(key.directionY - 1.0) < 1e-12);
+    const rb::GlassHighlightSettings fill = rb::resolveHighlight(slots[2], args);
+    CHECK(std::abs(fill.directionY + 1.0) < 1e-12);
+
+    // THE CONE. `[BIN]` `spread' = cos(spread)` with `-1000` past pi. A reader
+    // who forgets the cosine gets a highlight that is identically zero, which is
+    // the failure that looks exactly like "not implemented".
+    //
+    // `n` is the outward normal; at the top of a shape it is `(0, -1)` in image
+    // space, and the key direction reaches the shader as `(x, -y) == (0, -1)`,
+    // so the two agree there and disagree at the bottom.
+    const double lit = rb::glassHighlightFragment(key, /*sd=*/2.0, /*nx=*/0.0, /*ny=*/-1.0, 1.0);
+    const double unlit = rb::glassHighlightFragment(key, /*sd=*/2.0, /*nx=*/0.0, /*ny=*/1.0, 1.0);
+    CHECK(lit > 0.5);
+    CHECK_EQ(unlit, 0.0);
+
+    // And the band is a band: nothing outside `[inset, inset + height]`.
+    CHECK_EQ(rb::glassHighlightFragment(key, /*sd=*/-2.0, 0.0, -1.0, 1.0), 0.0);
+    CHECK_EQ(rb::glassHighlightFragment(key, /*sd=*/40.0, 0.0, -1.0, 1.0), 0.0);
+
+    // `[BIN]` `bias' = 1/bias - 2`. At the read `0.5` the denominator is 1, so
+    // a fully lit fragment comes through untouched; a reader who passed `0.5`
+    // straight in would divide by `1.5` and lose a third of the highlight.
+    rb::GlassHighlightSettings flat = key;
+    flat.curvature = 0.0;
+    flat.spread = 3.2;  // > pi: the `-1000` sentinel
+    // `[BIN]` The sentinel is `-1000` and NOT an infinity, so `lit` reaches 1
+    // only where the normal faces the light exactly: `(1 + 1000) / 1001`. One
+    // step off it is `0.998`, and that 0.2% is the sentinel showing through.
+    CHECK(std::abs(rb::glassHighlightFragment(flat, 2.0, 0.0, -1.0, 1.0) - 1.0) < 1e-9);
+    CHECK(std::abs(rb::glassHighlightFragment(flat, 2.0, 0.0, 1.0, 1.0) - 999.0 / 1001.0) < 1e-9);
 }
