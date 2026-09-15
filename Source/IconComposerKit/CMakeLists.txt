@@ -9,6 +9,8 @@ add_library(IconComposerKit STATIC
     Ports.cpp
     PanelLayers.cpp
     RenderCoordinator.cpp
+    MenuBar.cpp
+    PanelCanvas.cpp
     Session.cpp
     ViewModel.cpp
 )
