@@ -1,0 +1,44 @@
+{
+  "file": "Icon_Composer_27.dmg",
+  "size": 19897344,
+  "sha256": "7e7767324826ae18e38aa124aa2d2e6722838ae0c438382029b090ccf7b5b3d1",
+  "recorded": "2026-09-15T20:23:17+00:00",
+  "url": "https://developer.apple.com/download/all/ (Apple Developer, autenticado) - Icon Composer 27",
+  "udif": {
+    "version": 4,
+    "data_fork_length": 19889105,
+    "sector_count": 41632,
+    "blkx": [
+      {
+        "id": "0",
+        "name": "MBR",
+        "crc32": 2151646374
+      },
+      {
+        "id": "1",
+        "name": "Primary GPT Header",
+        "crc32": 89471576
+      },
+      {
+        "id": "2",
+        "name": "Primary GPT Table",
+        "crc32": 2216726209
+      },
+      {
+        "id": "3",
+        "name": "Apple_HFS",
+        "crc32": 1898285342
+      },
+      {
+        "id": "4",
+        "name": "Backup GPT Table",
+        "crc32": 2216726209
+      },
+      {
+        "id": "5",
+        "name": "Backup GPT Header",
+        "crc32": 4140761605
+      }
+    ]
+  }
+}
