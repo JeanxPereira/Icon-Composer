@@ -251,4 +251,93 @@ FieldImage generateField(const FieldShape& shape, std::uint32_t width, std::uint
 FieldImage generateField(const std::vector<FieldContour>& contours, std::uint32_t width,
                          std::uint32_t height, FieldOptions options = FieldOptions{});
 
+// ===========================================================================
+// PART THREE -- the field from a RASTERISED ALPHA
+// ===========================================================================
+//
+// WHY THIS EXISTS, AND WHY IT IS NOT A SECOND GENERATOR.
+//
+// `[BIN]` The target does not build its field from geometry. The field is an
+// `IconRendering.SDF` (`{texture, maxDistance}`, reflection at `0xA2FF4`), and
+// the one call that makes one is `sdfTextureWithBufferAllocator:` at
+// `0x000867F8`, inside `0x0008658C`. Its RECEIVER is the `x20` loaded at
+// `0x00029334` from the frame of `0x0002881C`, and that frame slot is written
+// at `0x00028AF4` with the result of a conditional cast to the class ref at
+// `0x000CC928` -- which the chained-fixup import table binds to
+// `_OBJC_CLASS_$_CUINamedLayerImage`. Two instructions later the code asks that
+// object for `image` (`0x00028AE0`) and BAILS OUT if it is nil
+// (`0x00028AEC cbz x0, #0x291BC`).
+//
+// A `CUINamedLayerImage` carries a bitmap and no path, and the generator
+// refuses to run without one. The target's distance field is therefore
+// computed from the RASTERISED ALPHA of the layer, after the layer has been
+// drawn -- not from its contour. `IconRendering.SDF.SourceLayer` says the same
+// from the reflection side: its two fields are `displayList` and `isOpaque`
+// (`0xA3104`), a DRAWING and not a shape.
+//
+// So vector art and raster art are not two cases on the target. They are one,
+// and the distinction this renderer used to draw -- "a raster has no contour to
+// flatten, so the glass cannot run" -- was an artefact of OUR generator, not of
+// the format.
+//
+// WHAT IS SEALED AND WHAT IS NOT. That the input is the rasterised alpha is
+// `[BIN]`, with the addresses above. The GRID the target rasterises onto, and
+// the exact transform it runs over that grid, are NOT read -- they live in
+// `TXRTexture`, which is in neither `IconRendering.arm64` nor
+// `RenderBox.arm64`. `[OBS]` The three `ICRRenderingParameters.SDFGeneration`
+// knobs that would pin them down (`clampThreshold`, `precisePixelFormatThreshold`,
+// `maxRelativeSmoothing`, reflection at `0xA46E0`) are named and unread. What
+// runs below is this project's transform on the target's input: an EXACT
+// Euclidean distance transform over the `alpha >= 0.5` contour, at the target's
+// own resolution, which is the same rule and the same primitive
+// `shadowRingMask` already uses -- and the shadow front already proved a raster
+// needs no contour.
+
+// The 1D squared Euclidean distance transform of Felzenszwalb and
+// Huttenlocher: the lower envelope of the parabolas `(q - i)^2 + f[i]`, one
+// pass forward and one back. O(n), and EXACT -- no chamfer weights, nothing
+// that would show up as a faceted ring on a circle.
+//
+// `f` is squared distance in; `d` is squared distance out; `arg`, when it is
+// not null, receives the index of the parabola that won at each `q`, which is
+// what lets the two-dimensional caller recover the NEAREST SEED and from it an
+// exact gradient. `v` and `z` are the envelope's vertices and breakpoints,
+// passed in so a caller sweeping a million pixels allocates once. `v` must hold
+// `n + 1` and `z` must hold `n + 2`.
+//
+// This is the single copy in the tower: `shadowRingMask` calls it too.
+void edtSquared1d(std::vector<double>& f, std::vector<double>& d, std::vector<int>& v,
+                  std::vector<double>& z, int n, std::vector<int>* arg = nullptr);
+
+// The field of a BITMAP's alpha, in the same `(d, gx, gy, coverage)` layout and
+// the same sign convention as `generateField` -- negative inside, unit
+// gradient pointing the way `d` increases, coverage from the same
+// `-d/aaWidth + 0.5`. A caller can hand the result to `glassDisplacementMap`,
+// `glassOpacityMask` or `drawSpecular` without knowing which generator made it.
+//
+// `rgba` is four floats per texel, row major, ALPHA IN `[3]`, straight
+// premultiplied or not -- only the alpha is read. It must hold `width * height`
+// texels or the result is empty.
+//
+// THE CONTOUR IS `alpha >= 0.5`, and the distance is measured from pixel
+// CENTRES to that contour: `d = +-(nearestOppositeCentre - 0.5)`. The half
+// pixel is what puts the boundary BETWEEN two centres of opposite class rather
+// than ON one of them, which is where a coverage of exactly 0.5 belongs and
+// what keeps this field in step with `generateField`'s, which samples the true
+// contour at centres.
+//
+// FOUR VIRTUAL OUTSIDE ROWS one step beyond each edge, so art that runs off the
+// canvas has a finite depth instead of an infinite one. `[BIN]` That is not a
+// default: it is the empty one-texel border of the target's own SDF, the same
+// border `0x00011CF8` subtracts (`sdfTexelsW - 2`) and `0x00010F48` puts back.
+// `shadowRingMask` already clamps to it; this does too, and agrees with it
+// pixel for pixel.
+//
+// An input whose alpha never reaches 0.5 has no inside, and therefore no
+// contour to sign. The result is EMPTY (`width == 0`), so the caller reports a
+// gap instead of being handed a field that is everywhere-outside and silently
+// draws nothing.
+FieldImage generateFieldFromAlpha(const std::vector<float>& rgba, std::uint32_t width,
+                                  std::uint32_t height, FieldOptions options = FieldOptions{});
+
 }  // namespace rb

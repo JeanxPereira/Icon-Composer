@@ -1063,3 +1063,152 @@ TEST_CASE(the_generated_image_samples_pixel_centres_in_the_d_gx_gy_coverage_orde
     const FieldImage direct = generateField({rectContour(4.0f, 4.0f, 12.0f, 12.0f)}, 16, 16, o);
     CHECK(direct.rgba == img.rgba);
 }
+
+// ===========================================================================
+// PART THREE -- the field from a rasterised alpha
+// ===========================================================================
+//
+// `[BIN]` This path exists because the target's own field is built from a
+// rasterised alpha and not from geometry: `sdfTextureWithBufferAllocator:`
+// (`0x000867F8`) is sent to a `CUINamedLayerImage` (classref `0x000CC928`)
+// whose `image` is fetched at `0x00028AE0` and whose absence aborts the whole
+// path at `0x00028AEC`. `DistanceField.h` §PART THREE carries the reading.
+//
+// What these cases gate is OURS: that the bitmap field lands in the same
+// convention as the contour field, close enough to it that the glass cannot
+// tell which generator made it.
+
+namespace {
+
+// A filled axis-aligned rectangle as a bitmap, alpha 1 inside and 0 out. The
+// rectangle is the one shape whose exact distance is a closed form, which is
+// what lets the error below be a number rather than an opinion.
+std::vector<float> rectBitmap(std::uint32_t w, std::uint32_t h, int x0, int y0, int x1, int y1) {
+    std::vector<float> rgba(static_cast<std::size_t>(w) * h * 4, 0.0f);
+    for (int y = y0; y < y1; ++y) {
+        for (int x = x0; x < x1; ++x) {
+            rgba[(static_cast<std::size_t>(y) * w + x) * 4 + 3] = 1.0f;
+        }
+    }
+    return rgba;
+}
+
+}  // namespace
+
+// THE HALF PIXEL. The contour of a bitmap sits BETWEEN the last inside centre
+// and the first outside one, so a texel one step inside the edge is at depth
+// 0.5 and its signed distance is -0.5. A generator that measured to the centre
+// itself would say 0 here, and the whole field would ride half a pixel out.
+TEST_CASE(the_alpha_field_puts_the_contour_half_a_pixel_outside_the_last_inside_centre) {
+    const std::vector<float> art = rectBitmap(16, 16, 4, 4, 12, 12);
+    const rb::FieldImage f = rb::generateFieldFromAlpha(art, 16, 16);
+    REQUIRE(f.width == 16);
+    REQUIRE(f.height == 16);
+
+    // Just inside the left edge, and just outside it.
+    CHECK(std::fabs(*f.at(4, 8) - (-0.5f)) < 1e-5f);
+    CHECK(std::fabs(*f.at(3, 8) - (0.5f)) < 1e-5f);
+    // The centre of an 8-wide square is 4 centres from the outside, minus the
+    // half: -3.5, the SAME number the contour generator reports for the same
+    // rectangle in the case above. The two conventions meet.
+    CHECK(std::fabs(*f.at(8, 8) - (-3.5f)) < 1e-5f);
+    // Coverage is `-d + 0.5` clamped, so it saturates one step in and out.
+    CHECK(std::fabs(f.at(4, 8)[3] - 1.0f) < 1e-5f);
+    CHECK(std::fabs(f.at(3, 8)[3] - 0.0f) < 1e-5f);
+}
+
+// THE GRADIENT IS UNIT AND IT POINTS OUT. `glassHighlight` reads it as a
+// surface normal and `glassDisplacementMap` reads it as a direction to push a
+// sample along; a gradient of the wrong length dims the highlight and a
+// gradient of the wrong SIGN bends the refraction inwards.
+TEST_CASE(the_alpha_field_gradient_is_unit_and_points_away_from_the_shape) {
+    const std::vector<float> art = rectBitmap(32, 32, 8, 8, 24, 24);
+    const rb::FieldImage f = rb::generateFieldFromAlpha(art, 32, 32);
+    REQUIRE(f.width == 32);
+
+    int notUnit = 0;
+    for (std::uint32_t y = 0; y < 32; ++y) {
+        for (std::uint32_t x = 0; x < 32; ++x) {
+            const float* p = f.at(x, y);
+            const double len = std::sqrt(static_cast<double>(p[1]) * p[1] +
+                                         static_cast<double>(p[2]) * p[2]);
+            if (std::fabs(len - 1.0) > 1e-5) ++notUnit;
+        }
+    }
+    CHECK_EQ(notUnit, 0);
+
+    // Left of the shape, `d` grows as x falls, so the gradient points -x.
+    CHECK(f.at(4, 16)[1] < -0.99f);
+    // Inside against the left edge, `d` still grows towards -x: the gradient
+    // does NOT flip at the boundary, it is continuous across it.
+    CHECK(f.at(8, 16)[1] < -0.99f);
+    // Above the shape it points -y, below it +y.
+    CHECK(f.at(16, 4)[2] < -0.99f);
+    CHECK(f.at(16, 27)[2] > 0.99f);
+}
+
+// AGAINST THE CLOSED FORM. A bitmap field cannot beat its own grid -- the
+// contour it knows about is a staircase, not a line -- so this asserts the
+// bound rather than exactness, and PRINTS the measured error so a regression
+// shows as a number moving.
+TEST_CASE(the_alpha_field_matches_the_exact_rectangle_distance_within_the_grid) {
+    const std::vector<float> art = rectBitmap(64, 64, 16, 16, 48, 48);
+    const rb::FieldImage f = rb::generateFieldFromAlpha(art, 64, 64);
+    REQUIRE(f.width == 64);
+
+    // The true edges: the contour is half a pixel outside the outermost inside
+    // centre, so the rectangle runs from 16.0 to 48.0 in pixel coordinates.
+    double worst = 0.0;
+    for (std::uint32_t y = 0; y < 64; ++y) {
+        for (std::uint32_t x = 0; x < 64; ++x) {
+            const double px = x + 0.5, py = y + 0.5;
+            const double dx = std::max(16.0 - px, px - 48.0);
+            const double dy = std::max(16.0 - py, py - 48.0);
+            const double exact =
+                (dx <= 0.0 && dy <= 0.0)
+                    ? std::max(dx, dy)
+                    : std::sqrt(std::max(dx, 0.0) * std::max(dx, 0.0) +
+                                std::max(dy, 0.0) * std::max(dy, 0.0));
+            worst = std::max(worst, std::fabs(static_cast<double>(*f.at(x, y)) - exact));
+        }
+    }
+    std::printf("    alpha field vs exact rectangle: max |error| = %.3g px\n", worst);
+    // The staircase costs at most the diagonal of one texel near a corner.
+    CHECK(worst < 0.75);
+}
+
+// NO INSIDE MEANS NO FIELD. An all-transparent bitmap has no contour to sign,
+// and an all-outside field would let the glass draw nothing while reporting
+// success. Empty is the answer that makes the caller say so.
+TEST_CASE(the_alpha_field_is_empty_when_no_texel_reaches_the_threshold) {
+    std::vector<float> faint(16u * 16u * 4u, 0.0f);
+    for (std::size_t t = 0; t < 16u * 16u; ++t) faint[t * 4 + 3] = 0.49f;
+    const rb::FieldImage f = rb::generateFieldFromAlpha(faint, 16, 16);
+    CHECK_EQ(f.width, 0u);
+    CHECK(f.rgba.empty());
+
+    // One texel over the line is enough to have a field again.
+    faint[(8u * 16u + 8u) * 4 + 3] = 0.5f;
+    const rb::FieldImage one = rb::generateFieldFromAlpha(faint, 16, 16);
+    REQUIRE(one.width == 16);
+    CHECK(*one.at(8, 8) < 0.0f);
+}
+
+// THE VIRTUAL BORDER, which is not a default: `[BIN]` the target's SDF carries
+// an empty one-texel ring (`0x00011CF8` subtracts `sdfTexelsW - 2`, `0x00010F48`
+// puts it back), and `shadowRingMask` already clamps to it. Art that fills the
+// whole canvas therefore has a FINITE depth at its centre, not an infinite one.
+TEST_CASE(the_alpha_field_treats_one_step_past_each_edge_as_outside) {
+    std::vector<float> full(16u * 16u * 4u, 0.0f);
+    for (std::size_t t = 0; t < 16u * 16u; ++t) full[t * 4 + 3] = 1.0f;
+    const rb::FieldImage f = rb::generateFieldFromAlpha(full, 16, 16);
+    REQUIRE(f.width == 16);
+
+    // The corner texel is one step from two virtual rows: depth 1, so d = -0.5.
+    CHECK(std::fabs(*f.at(0, 0) - (-0.5f)) < 1e-5f);
+    // The centre is 8 steps from the nearest edge row, minus the half pixel.
+    CHECK(std::fabs(*f.at(7, 7) - (-7.5f)) < 1e-5f);
+    // And it is still a unit gradient, pointing at the border that won.
+    const float* p = f.at(0, 8);
+    CHECK(std::fabs(std::sqrt(p[1] * p[1] + p[2] * p[2]) - 1.0f) < 1e-5f);
+}

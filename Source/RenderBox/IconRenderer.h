@@ -297,10 +297,16 @@ extern const char* const kBackgroundP3Note;
 // end of that rect the ramp starts at.
 extern const char* const kTranslucencyBoundsNote;
 
-// A glass layer whose group asks for translucency but whose art is a raster: the
-// mask is shaped by a distance field and a raster has no contour to build one
-// from. The layer still draws -- opaque, as it did before -- and says so.
-extern const char* const kTranslucencyRasterNote;
+// A glass layer whose art is a RASTER, whose distance field was therefore built
+// from the art's own alpha rather than from a flattened contour.
+//
+// It replaces `kTranslucencyRasterNote`, which said the opposite -- that a
+// raster has no contour and so the mask cannot run. `[BIN]` The target builds
+// its field from a rasterised alpha too (`DistanceField.h` §PART THREE carries
+// the addresses), so refraction, translucency and specular all run here now.
+// The note stays because one thing under it is still unread: the GRID the
+// target rasterises onto before it transforms.
+extern const char* const kGlassRasterFieldNote;
 
 Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                                 IconRenderOptions options = IconRenderOptions{});

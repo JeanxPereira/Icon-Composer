@@ -201,6 +201,29 @@ std::vector<float> placeRaster(const icf::DecodedPng& img, const LayerPlacement&
     return out;
 }
 
+// The box `placeRaster` drops the art into, in target pixels -- the raster's
+// answer to `artPlacementRect`, which does the same for a viewBox.
+//
+// It sits HERE, against `placeRaster`, for the reason `artPlacementRect`'s own
+// comment gives: the art's box and the art's pixels have to agree, and two
+// copies of the same arithmetic in two places is how they stop agreeing. The
+// three lines below are `placeRaster`'s own `w`, `h`, `left`, `top` and `k`,
+// with nothing added.
+//
+// It exists because the translucency's `bounds` is a rect, and until this front
+// the only art that reached the translucency had a viewBox to give it one.
+PlacementRect rasterPlacementRect(std::uint32_t imgW, std::uint32_t imgH,
+                                  const LayerPlacement& p, std::uint32_t size) {
+    const double k = static_cast<double>(size) / kCanvasPoints;
+    const double w = imgW * p.scale, h = imgH * p.scale;
+    PlacementRect r;
+    r.x = ((kCanvasPoints - w) * 0.5 + p.translateX) * k;
+    r.y = ((kCanvasPoints - h) * 0.5 + p.translateY) * k;
+    r.width = w * k;
+    r.height = h * k;
+    return r;
+}
+
 
 // A document colour as four floats. The grey spaces carry two components
 // (luminance, alpha) and the RGB spaces four, and `Values.h` deliberately does
@@ -334,11 +357,17 @@ const char* const kTranslucencyBoundsNote =
     "mesma pergunta em aberto; `[OBS]` e qual ponta do rect recebe upperOpacity depende da "
     "lateralidade de y do display list do RB, que continua nao estabelecida";
 
-const char* const kTranslucencyRasterNote =
-    "vidro sobre arte raster num grupo que pede translucidez: a mascara e recortada por um "
-    "campo de distancia e um raster nao tem contorno para achatar, entao a camada desenha "
-    "OPACA -- o mesmo buraco que o vidro ja nomeia, aqui custando o efeito inteiro e nao "
-    "so a refracao";
+const char* const kGlassRasterFieldNote =
+    "vidro sobre arte raster: o campo de distancia desta camada foi construido a partir do "
+    "ALFA da propria arte (contorno alpha >= 0.5, transformada euclidiana exata), e nao de um "
+    "contorno achatado. E o que o alvo faz: sdfTextureWithBufferAllocator: (0x867F8) e enviado "
+    "a um CUINamedLayerImage (classref 0xCC928), cujo image e pedido em 0x28AE0 e cuja ausencia "
+    "ABORTA o caminho em 0x28AEC -- e IconRendering.SDF.SourceLayer (0xA3104) e "
+    "{displayList, isOpaque}, um desenho e nao uma forma. O que NAO foi lido e a GRADE: o "
+    "TXRTexture que gera a textura nao esta nem no IconRendering nem no RenderBox deste dump, e "
+    "os tres botoes de ICRRenderingParameters.SDFGeneration (clampThreshold, "
+    "precisePixelFormatThreshold, maxRelativeSmoothing, 0xA46E0) estao nomeados e nao lidos. "
+    "Aqui o campo sai na resolucao do alvo.";
 
 PlacementRect artPlacementRect(const icf::svg::ViewBox& box, const LayerPlacement& p,
                                std::uint32_t size) {
@@ -880,6 +909,32 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 }
             }
 
+            // THE RASTER IS DECODED AND PLACED HERE, AND NOT WHERE IT IS DRAWN.
+            //
+            // It moved up one block for one reason: the distance field that the
+            // refraction, the translucency and the specular all eat is built
+            // from this raster's ALPHA, so the pixels have to exist before the
+            // glass block runs. `[BIN]` That is the target's own order --
+            // `0x0002881C` casts the layer to `CUINamedLayerImage` (`0x000CC928`),
+            // asks it for `image` and BAILS if it is nil (`0x00028AEC`), and only
+            // then sends `sdfTextureWithBufferAllocator:` (`0x000867F8`). The
+            // image comes first there too.
+            //
+            // It is decoded ONCE and reused by the draw below, so this is not an
+            // extra read.
+            std::optional<std::vector<float>> rasterPlaced;
+            std::uint32_t rasterW = 0, rasterH = 0;
+            if (!svg && ext == ".png") {
+                const icf::DecodedPng png = icf::readPng(art.string());
+                if (!png.error.empty()) {
+                    skip(*imageName + ": " + png.error);
+                    continue;
+                }
+                rasterW = png.width;
+                rasterH = png.height;
+                rasterPlaced = placeRaster(png, lp, options.size);
+            }
+
             // The paint is built AFTER the art, because a gradient needs the
             // rect it is placed against and that rect is the art's own box.
             FillOverride paint;
@@ -945,30 +1000,47 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             std::optional<FieldImage> specularField;
 
             if (wantsRefraction || wantsTranslucency || wantsHighlight) {
-                // `[ART]` 45 of the corpus's 171 glass layers name `.png` art
-                // and one names `.heic`. A raster has no path to flatten, so
-                // there is no shape to build a field from. This is NOT the same
-                // gap as "the glass is not transcribed" and it does not share
-                // its sentence: the glass IS transcribed, and what is missing
-                // is a field generator that reads a raster's alpha instead of a
-                // contour.
+                // THE RASTER TAKES THE SAME DOOR AS THE VECTOR, AS OF THIS FRONT.
                 //
-                // The two effects answer that gap DIFFERENTLY, and the asymmetry
-                // is deliberate. A refraction that cannot run leaves the layer
-                // showing an unrefracted backdrop through art it was supposed to
-                // bend -- so the layer is skipped and named. A mask that cannot
-                // run leaves the layer OPAQUE, which is exactly what it has been
-                // doing since the day it was written; skipping it now would trade
-                // a known-incomplete pixel for a missing one and would drop the
-                // layer out of `drawn` for a reason that predates this file.
+                // This block used to open with "a raster has no path to flatten,
+                // so there is no shape to build a field from", and it skipped the
+                // refraction, muted the specular and left the translucency opaque
+                // for `[ART]` 45 of the corpus's 171 glass layers. That sentence
+                // was true about OUR generator and false about the format.
+                //
+                // `[BIN]` The target does not build its field from geometry
+                // either. `sdfTextureWithBufferAllocator:` (`0x000867F8`, inside
+                // `0x0008658C`) is sent to the object loaded at `0x00029334` from
+                // the frame slot written at `0x00028AF4` -- the result of a cast
+                // to the class ref at `0x000CC928`, which the chained-fixup
+                // imports bind to `_OBJC_CLASS_$_CUINamedLayerImage`. That object
+                // is asked for `image` at `0x00028AE0` and the whole path BAILS
+                // if it is nil (`0x00028AEC cbz x0, #0x291BC`). A
+                // `CUINamedLayerImage` carries a bitmap and no contour. The
+                // target's field is the RASTERISED ALPHA, and the reflection says
+                // it twice: `IconRendering.SDF.SourceLayer` (`0xA3104`) is
+                // `{displayList, isOpaque}` -- a drawing, not a shape.
+                //
+                // So the distinction this renderer drew here was ours, and it is
+                // gone. A vector still goes through `flattenSvgToContours`,
+                // because when we DO have the contour the exact brute force is a
+                // better answer than a bitmap's quantised one; a raster goes
+                // through `generateFieldFromAlpha`, which is the same exact
+                // transform `shadowRingMask` already ran over the same
+                // `alpha >= 0.5` contour. The shadow front had already proved a
+                // raster needs no contour; this only says so for the other three.
+                //
+                // `[OBS]` What still is NOT read is the GRID: the target's SDF
+                // texture is made inside `TXRTexture`, which is in neither
+                // `IconRendering.arm64` nor `RenderBox.arm64`, and the three
+                // `ICRRenderingParameters.SDFGeneration` knobs that would pin its
+                // resolution and its threshold down (`clampThreshold`,
+                // `precisePixelFormatThreshold`, `maxRelativeSmoothing`, `0xA46E0`)
+                // are named and unread. The field here is built at the target's
+                // own render resolution, which is the same choice `shadowRingMask`
+                // records.
                 const bool haveShape = svg.has_value();
                 std::string fieldGap;
-                if (!haveShape) {
-                    fieldGap =
-                        "vidro sobre arte raster: um raster nao tem contorno para achatar e "
-                        "este projeto nao tem gerador de campo a partir do alfa (" +
-                        *imageName + ")";
-                }
 
                 std::optional<FieldImage> field;
                 if (haveShape) {
@@ -987,6 +1059,24 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                         fo.rule = shape.rule;
                         field = generateField(shape.contours, options.size, options.size, fo);
                     }
+                } else if (rasterPlaced) {
+                    FieldImage fromAlpha =
+                        generateFieldFromAlpha(*rasterPlaced, options.size, options.size);
+                    if (fromAlpha.width == 0) {
+                        // No texel reaches `alpha >= 0.5`: there is no contour to
+                        // sign, so there is no field. A raster that faint has
+                        // nothing for the glass to bend around, and saying so is
+                        // better than handing the effects an all-outside field
+                        // that would draw nothing without a word.
+                        fieldGap = "vidro sobre raster: nenhum texel da arte chega a alpha >= 0.5, "
+                                   "entao nao ha contorno para assinar (" + *imageName + ")";
+                    } else {
+                        field = std::move(fromAlpha);
+                        note(out.notes, kGlassRasterFieldNote);
+                    }
+                } else {
+                    fieldGap = "vidro sobre arte que este leitor nao abre como raster nem como "
+                               "vetor (" + *imageName + ")";
                 }
 
                 if (!field) {
@@ -994,15 +1084,14 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                         skip(fieldGap);
                         continue;
                     }
-                    // A specular with no field is the ONE case left that still
-                    // cannot draw, and it is not this front's gap: a raster has
-                    // no contour to sign, so there is no `sd` and no normal.
+                    // A specular with no field still cannot draw -- but "no
+                    // field" no longer means "raster". It now means the ONE
+                    // remaining shape of failure: art whose contour cannot be
+                    // signed at all (mixed fill rules, nothing painted, an alpha
+                    // that never reaches the threshold). `fieldGap` says which.
                     if (wantsHighlight) note(out.notes, specularDoesNotDrawNote());
                     // Translucency alone: draw opaque, and say so.
-                    if (wantsTranslucency) {
-                        note(out.notes,
-                             haveShape ? fieldGap : std::string(kTranslucencyRasterNote));
-                    }
+                    if (wantsTranslucency) note(out.notes, fieldGap);
                 } else {
                     if (wantsHighlight) specularField = field;
                     if (wantsRefraction) {
@@ -1018,9 +1107,17 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                         // viewBox placed on the canvas, the SAME answer this
                         // file already gives a gradient's placement rect, so the
                         // two do not disagree about one unread thing.
+                        //
+                        // A RASTER'S BOX IS ITS PIXELS, and that is the only
+                        // difference the two art paths make here: a vector's
+                        // rect comes from its viewBox placed on the canvas, a
+                        // raster's from `placeRaster`'s own placement of its
+                        // pixel dimensions. Both are the box the art occupies,
+                        // which is what the ramp is measured against.
                         OpacityMaskArguments args = groupMaskArgs;
                         const PlacementRect r =
-                            artPlacementRect(svg->viewBox, lp, options.size);
+                            svg ? artPlacementRect(svg->viewBox, lp, options.size)
+                                : rasterPlacementRect(rasterW, rasterH, lp, options.size);
                         args.bounds[0] = static_cast<float>(r.x);
                         args.bounds[1] = static_cast<float>(r.y);
                         args.bounds[2] = static_cast<float>(r.width);
@@ -1155,20 +1252,46 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 }
                 blendOver(target, drew->rgba, static_cast<float>(opacity), layerBlend);
                 ++out.drawn;
-            } else if (ext == ".png") {
-                const icf::DecodedPng png = icf::readPng(art.string());
-                if (!png.error.empty()) {
-                    skip(*imageName + ": " + png.error);
-                    continue;
+            } else if (rasterPlaced) {
+                // THE RASTER NOW RUNS THE WHOLE GLASS, in the same order the
+                // vector branch above runs it: mask, then shadow, then
+                // highlight, then composite. The asymmetry this branch used to
+                // carry -- "a raster CAN cast a shadow, where it cannot carry a
+                // translucency mask" -- is gone, because the reason for it was
+                // our missing generator and not the format. `[BIN]`
+                // `DistanceField.h` carries the addresses.
+                //
+                // `[ART]` It is 45 of the corpus's 171 glass layers under the
+                // any-appearance reading of the `glass` key, across 31
+                // documents; 39 of 146 across 29 documents if only a
+                // specialization's BASE entry counts. Both counts were recounted
+                // for this front and both are in the laudo.
+                std::vector<float> placed = std::move(*rasterPlaced);
+                if (mask) {
+                    std::size_t painted = 0;
+                    const std::size_t missed =
+                        opacityMaskMissedPixels(placed, *mask, painted);
+                    if (missed > 0 && painted > 0) {
+                        char buf[420];
+                        std::snprintf(
+                            buf, sizeof(buf),
+                            "translucidez aplicada com buraco: %zu de %zu pixels pintados "
+                            "(%.1f%%) caem FORA do campo de distancia e ficaram opacos -- "
+                            "num raster o campo e assinado pelo contorno alpha >= 0.5, entao "
+                            "todo pixel pintado com alpha ABAIXO do limiar fica de fora.",
+                            missed, painted,
+                            100.0 * static_cast<double>(missed) / static_cast<double>(painted));
+                        out.shapeGaps.push_back(name + " / " + *imageName + ": " + buf);
+                    }
+                    applyOpacityMask(placed, *mask);
+                    ++out.glassTranslucent;
                 }
-                const std::vector<float> placed = placeRaster(png, lp, options.size);
-                // A raster CAN cast a shadow, where it cannot carry a
-                // translucency mask: the shadow is built from the art's own
-                // alpha and needs no contour to flatten. The asymmetry is real,
-                // not an oversight -- `[ART]` 45 of the corpus's 171 glass
-                // layers name `.png` art, and every one of them was losing both
-                // effects for one effect's reason.
                 castShadow(placed);
+                if (specularField) {
+                    const std::size_t moved = drawSpecular(placed, *specularField, specularArgs);
+                    if (moved > 0) ++out.glassSpecular;
+                    note(out.notes, specularDrawnNote());
+                }
                 blendOver(target, placed, static_cast<float>(opacity), layerBlend);
                 ++out.drawn;
             } else {

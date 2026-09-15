@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "Source/RenderBox/BlurKernel.h"
+#include "Source/RenderBox/DistanceField.h"
 
 namespace rb {
 namespace {
@@ -79,44 +80,13 @@ std::vector<float> translate(const std::vector<float>& src, std::uint32_t w, std
     return out;
 }
 
-// The 1D squared Euclidean distance transform of Felzenszwalb and Huttenlocher:
-// the lower envelope of the parabolas `(q - i)^2 + f[i]`, in one pass forward and
-// one back. It is O(n) and it is EXACT -- no chamfer weights, no approximation
-// that would show up as a faceted ring on a circle.
-//
-// `f` is squared distance in, squared distance out; `v` and `z` are the
-// envelope's vertices and their breakpoints, passed in so the two-dimensional
-// caller allocates once instead of per row.
+// The 1D squared Euclidean distance transform this file used to carry its own
+// copy of now lives in `DistanceField.h` as `edtSquared1d`, because the field
+// generator for raster art needs the same primitive and two copies of an exact
+// transform are two things to keep in step. `kEdtInf` is the sentinel that
+// marks a texel with no seed in its line; it has to match the one the shared
+// transform compares against.
 constexpr double kEdtInf = 1e20;
-
-void edt1d(std::vector<double>& f, std::vector<double>& d, std::vector<int>& v,
-           std::vector<double>& z, int n) {
-    int k = 0;
-    v[0] = 0;
-    z[0] = -kEdtInf;
-    z[1] = kEdtInf;
-    for (int q = 1; q < n; ++q) {
-        double s = 0.0;
-        while (true) {
-            const double vk = v[k];
-            s = ((f[static_cast<std::size_t>(q)] + static_cast<double>(q) * q) -
-                 (f[static_cast<std::size_t>(v[k])] + vk * vk)) /
-                (2.0 * q - 2.0 * vk);
-            if (k == 0 || s > z[static_cast<std::size_t>(k)]) break;
-            --k;
-        }
-        ++k;
-        v[static_cast<std::size_t>(k)] = q;
-        z[static_cast<std::size_t>(k)] = s;
-        z[static_cast<std::size_t>(k) + 1] = kEdtInf;
-    }
-    k = 0;
-    for (int q = 0; q < n; ++q) {
-        while (z[static_cast<std::size_t>(k) + 1] < q) ++k;
-        const double dq = static_cast<double>(q) - v[static_cast<std::size_t>(k)];
-        d[static_cast<std::size_t>(q)] = dq * dq + f[static_cast<std::size_t>(v[k])];
-    }
-}
 
 }  // namespace
 
@@ -216,13 +186,13 @@ std::vector<float> shadowRingMask(const std::vector<float>& art, std::uint32_t w
 
     for (int x = 0; x < w; ++x) {
         for (int y = 0; y < h; ++y) f[static_cast<std::size_t>(y)] = sq[static_cast<std::size_t>(y) * w + x];
-        edt1d(f, d, v, z, h);
+        edtSquared1d(f, d, v, z, h);
         for (int y = 0; y < h; ++y) sq[static_cast<std::size_t>(y) * w + x] = d[static_cast<std::size_t>(y)];
     }
     for (int y = 0; y < h; ++y) {
         double* row = &sq[static_cast<std::size_t>(y) * w];
         for (int x = 0; x < w; ++x) f[static_cast<std::size_t>(x)] = row[x];
-        edt1d(f, d, v, z, w);
+        edtSquared1d(f, d, v, z, w);
         for (int x = 0; x < w; ++x) row[x] = d[static_cast<std::size_t>(x)];
     }
 
