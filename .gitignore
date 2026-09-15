@@ -11,3 +11,6 @@ compile_commands.json
 # Python
 __pycache__/
 *.pyc
+
+# Worktrees que o harness cria para agentes paralelos.
+.claude/

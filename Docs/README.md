@@ -178,8 +178,10 @@ valores decodados sem uma falha, 1.100 árvores renderizadas sem cair em JSON
 cru, 149 SVGs lidos em geometria, e **292 de 292 mutações pegas**.
 
 A primeira passagem foi em **2026-09-01, com 119 mutações**. A lista cresceu
-119 → 160 → 209 → 231 → 273 → 292, e cada crescimento é uma frente nova ganhando
-guardas — o raster, o gradiente, o vidro, o `fill`, a mescla, o traço. As
+119 → 160 → 209 → 231 → 273 → 292 → **328**, e cada crescimento é uma frente nova
+ganhando guardas — o raster, o gradiente, o vidro, o `fill`, a mescla, o traço, e agora a camada
+de edição. **O número de 292 é o da execução de 07/09**, não o tamanho da lista hoje:
+o script conta as mutações em tempo de execução, e a lista está em 328. As
 execuções anteriores estão registradas abaixo, com as suas datas, porque um
 número de mutação só quer dizer alguma coisa junto do código que ele mordia.
 

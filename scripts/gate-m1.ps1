@@ -70,6 +70,7 @@ $sources = @{
     coverage = Join-Path $root "Source/IconComposerFoundation/Coverage.cpp"
     values   = Join-Path $root "Source/IconComposerFoundation/Values.cpp"
     bundle   = Join-Path $root "Source/IconComposerFoundation/IconBundle.cpp"
+    edit     = Join-Path $root "Source/IconComposerFoundation/Edit.cpp"
     report   = Join-Path $root "Source/cli/Report.cpp"
     svgpath  = Join-Path $root "Source/CoreSVG/Path.cpp"
     svgxml   = Join-Path $root "Source/CoreSVG/Xml.cpp"
@@ -248,6 +249,43 @@ $mutations = @(
     @{ file = "json"; name = "null misspelled"
        from = 'out += "null";'
        to   = 'out += "nul";' },
+    @{ file = "json"; name = "number(double) spelled with a fixed precision"
+       from = 'auto r = std::to_chars(buf, buf + sizeof buf, d);'
+       to   = 'auto r = std::to_chars(buf, buf + sizeof buf, d, std::chars_format::fixed, 6);' },
+    @{ file = "json"; name = "set appends a duplicate instead of replacing"
+       from = '        if (m.first == key) {'
+       to   = '        if (false) {' },
+    # ---- the editing layer ----
+    @{ file = "edit"; name = "the plain key survives beside its new list"
+       from = '            owner.erase(plainKey);'
+       to   = '' },
+    @{ file = "edit"; name = "a new unpredicated entry lands at the end, not index 0"
+       from = 'list->elements().insert(list->elements().begin(), entryFor(scope, std::move(*value)));'
+       to   = 'list->elements().push_back(entryFor(scope, std::move(*value)));' },
+    @{ file = "edit"; name = "a non-array specialization list is walked anyway"
+       from = 'if (list && list->kind() != json::Value::Kind::Array) {'
+       to   = 'if (false) {' },
+    @{ file = "edit"; name = "predicate equality ignores the idiom"
+       from = 'return named && named->appearance == scope.appearance && named->idiom == scope.idiom;'
+       to   = 'return named && named->appearance == scope.appearance;' },
+    @{ file = "edit"; name = "a list left with only its default is not collapsed"
+       from = 'if (entries.size() == 1 && predicateIs(entries[0], Context{})) {'
+       to   = 'if (false) {' },
+    @{ file = "edit"; name = "hasOwnEntry answers for the resolved value, not the scope's own"
+       from = 'return isBase(scope) && owner.find(prop) != nullptr;'
+       to   = 'return owner.find(prop) != nullptr;' },
+    @{ file = "edit"; name = "moveNode swaps a node with itself"
+       from = 'std::swap(v[index], v[other]);'
+       to   = 'std::swap(v[index], v[index]);' },
+    @{ file = "values"; name = "a colour component written with four decimals"
+       from = 'std::snprintf(buf, sizeof buf, "%.5f", c.components[i]);'
+       to   = 'std::snprintf(buf, sizeof buf, "%.4f", c.components[i]);' },
+    @{ file = "values"; name = "a position swaps x and y on the way out"
+       from = 'json::Value::array({json::Value::number(p.translation.x), json::Value::number(p.translation.y)})'
+       to   = 'json::Value::array({json::Value::number(p.translation.y), json::Value::number(p.translation.x)})' },
+    @{ file = "bundle"; name = "save leaves its temporary behind"
+       from = 'fs::rename(tmp, target, ec);'
+       to   = 'fs::copy_file(tmp, target, fs::copy_options::overwrite_existing, ec);' },
     # ---- the model ----
     @{ file = "document"; name = "appearance vocabulary loses a case"
        from = 'if (s == "tinted") return Appearance::Tinted;'
