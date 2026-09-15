@@ -4024,7 +4024,7 @@ Expected: dois casos, zero falhas.
   ```
   O script, com todos os painéis desenhados em cada frame, numa cópia do bundle em temp: (1) abre; (2) seleciona a primeira camada; (3) escreve opacidade 0.5 sob Dark; (4) desfaz; (5) salva; (6) compara os bytes do `icon.json` com o original — `bytesRoundTripped`; (7) roda `frames` frames de settle e reporta `textured` se o coordenador recebeu um render.
 
-- [ ] **Step 1: implementar**
+- [x] **Step 1: implementar**
 
 `SelfTest.h`:
 
@@ -4192,12 +4192,12 @@ std::string describe(const SelfTestReport& r) {
 }  // namespace ick
 ```
 
-- [ ] **Step 2: conferir que compila**
+- [x] **Step 2: conferir que compila**
 
 Run: `cmake --build --preset mingw`
 Expected: compila limpo, sem warning novo.
 
-- [ ] **Step 3: commitar**
+- [x] **Step 3: commitar**
 
 ```bash
 git add Source/IconComposerKit/SelfTest.h Source/IconComposerKit/SelfTest.cpp Source/IconComposerKit/CMakeLists.txt
