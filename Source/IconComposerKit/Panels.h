@@ -66,6 +66,23 @@ struct RenderView {
     std::size_t drawn = 0, total = 0;
     std::vector<std::string> skipped, shapeGaps, notes;
     std::string error;
+
+    // HOW LONG THE RENDER TOOK, AND HOW LONG THE ONE IN FLIGHT HAS BEEN GOING.
+    //
+    // This is the number whose absence made 2026-09-15 possible. Six fronts
+    // landed in an afternoon and together took a 1024 px glass render from about
+    // a second to eighty-seven; the editor showed an empty canvas and the
+    // Diagnostics panel said `pending`, which is the same thing it says when a
+    // render takes forty milliseconds. There was no failure to report -- nothing
+    // was wrong except that the work does not finish inside a human's patience --
+    // so the only place that could have said so is a clock, and there was none.
+    //
+    // `lastRenderSeconds` is negative until a render has completed, which is not
+    // the same as zero and must not print as `0.00 s`.
+    // `pendingSeconds` is wall time since the request was made, so it counts the
+    // queue as well as the draw: it is what the person is actually waiting for.
+    double lastRenderSeconds = -1.0;
+    double pendingSeconds = 0.0;
 };
 
 // What the menu asked the app to do this frame. The Kit cannot open a file

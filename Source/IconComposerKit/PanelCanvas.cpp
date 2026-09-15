@@ -141,6 +141,17 @@ float canvasEase(float deltaSeconds) {
 
 namespace {
 
+// Seconds, with enough digits at both ends of the range this pipeline actually
+// spans: a no-glass 512 is a few hundredths and a glass 1024 has been eighty-
+// seven. Two decimals, so "0.04 s" and "87.31 s" read the same way. The unit is
+// in the string because a bare number in a table of gap sentences reads as an
+// index, not a duration.
+std::string secondsText(double s) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%.2f s", s);
+    return buf;
+}
+
 // The four controls the target keeps on the canvas toolbar and footer (spec
 // 13/09 §7). Each writes `Session::view` directly: what a person is looking
 // THROUGH is not part of the document, so none of these is a command and none
@@ -461,7 +472,25 @@ DiagnosticsStats drawDiagnostics(const Session& s, const RenderView& view) {
 
         // Always present, even when nothing is wrong: "191 of 194" is the line
         // that makes a missing layer visible at a glance.
-        row("render", std::to_string(view.drawn) + " of " + std::to_string(view.total) + " layer(s) drawn");
+        //
+        // AND HOW LONG IT TOOK, since 2026-09-15. This row used to end at the
+        // layer count, and on the day six fronts turned a 1024 px glass render
+        // into eighty-seven seconds the panel had nothing to say: no layer was
+        // missing, no gap was reported, the arithmetic was right, and the canvas
+        // was empty. `RenderView::lastRenderSeconds` is negative until a render
+        // has finished, which is not zero and must not print as `0.00 s`.
+        std::string what =
+            std::to_string(view.drawn) + " of " + std::to_string(view.total) + " layer(s) drawn";
+        if (view.lastRenderSeconds >= 0.0) what += " in " + secondsText(view.lastRenderSeconds);
+        row("render", what);
+        // THE ONE IN FLIGHT, counted while it is still running. The canvas
+        // already shows a yellow dot for `pending`, and a dot cannot tell forty
+        // milliseconds from a minute and a half -- which is exactly the sentence
+        // the user needed and did not get.
+        if (view.pending) {
+            row("render", "a newer render has been running for " +
+                              secondsText(view.pendingSeconds));
+        }
         if (!view.error.empty()) row("render", view.error);
 
         // WHICH COMPOSITION IS ON SCREEN, ALWAYS, AND WHETHER IT IS THE ONE THE

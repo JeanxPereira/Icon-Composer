@@ -19,6 +19,17 @@ void RenderCoordinator::tick(Session& s) {
         requested_ = now;
         everRequested_ = true;
         view_.pending = true;
+        requestedAt_ = std::chrono::steady_clock::now();
+        view_.pendingSeconds = 0.0;
+    }
+
+    // Ticked every frame while something is in flight, so the panel can say how
+    // long the person has been waiting BEFORE the answer arrives. That is the
+    // whole point: a render that never finishes produces no result to time, and
+    // "pending" alone cannot tell forty milliseconds from eighty-seven seconds.
+    if (view_.pending) {
+        view_.pendingSeconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - requestedAt_).count();
     }
 
     while (auto result = scheduler_.poll()) {
@@ -48,6 +59,9 @@ void RenderCoordinator::tick(Session& s) {
                 view_.height = result->height;
             }
         }
+        view_.lastRenderSeconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - requestedAt_).count();
+        view_.pendingSeconds = 0.0;
         view_.pending = false;   // it matched the whole key, so it IS the answer
     }
 }
