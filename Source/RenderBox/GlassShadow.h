@@ -464,22 +464,21 @@ ShadowGeometry shadowGeometry(std::uint32_t size, IconSizeClass sizeClass,
                               const ShadowParameters& p = kShadow,
                               const GlassRenderingParameters& g = GlassRenderingParameters{});
 
-// `[OBS]` THE KERNEL BEHIND `addBlurFilterWithRadius:` WAS NOT READ, and this is
-// the one number in this file that is a convention rather than a measurement.
-// What is measured is the RADIUS -- the argument, in points, and the arithmetic
-// that produces it. What a RenderBox blur builds from that argument lives in a
-// binary this project has not decoded, exactly as `GlassMaterial.h` already says
-// for the material's own `addBlurFilterWithRadius:opaque:`.
+// `[BIN]` THE KERNEL BEHIND `addBlurFilterWithRadius:` IS NOW READ, and this
+// number stopped being the one convention in the file. **THE RADIUS IS THE
+// SIGMA.** `Source/RenderBox/BlurKernel.h` carries the whole reading -- the GPU
+// chain that stores `radius^2` as the filter's VARIANCE (`0xFED04`) and builds
+// `exp(-x^2 / 2v)` from it (`0xFE378`), the CPU path that hands its radius
+// straight to a textbook Gaussian (`0xBFDC0` -> `0xC35F4`), and the `2.8 * r`
+// that both the bounds (`0xFEB58`) and that kernel's own truncation
+// (`0x15ECF0`) agree on.
 //
-// So the radius is taken as the Gaussian's three-sigma support, `sigma =
-// radius / 3`. That is not a new convention: it is the INVERSE of the one this
-// repository's own separable Gaussian already uses, which truncates its taps at
-// `ceil(3 * sigma)` (`SvgFilter.cpp`). Choosing `sigma = radius` instead would
-// widen the shadow roughly threefold and is just as unread; picking the value
-// that round-trips through a rule already written down is the only thing here
-// that is better than a coin toss, and `kShadowBlurKernelNote` says so on every
-// render that blurs.
-inline constexpr double kShadowBlurSigmaPerRadius = 1.0 / 3.0;
+// Until 2026-09-15 this was `1.0 / 3.0`: the radius taken as a three-sigma
+// support, chosen because it inverted the `ceil(3 * sigma)` truncation this
+// repository's own Gaussian already wrote down. That guess was wrong by a factor
+// of three and it was wrong in the narrow direction -- the very alternative its
+// own comment named as "just as unread" is the one the binary does.
+inline constexpr double kShadowBlurSigmaPerRadius = 1.0;
 
 // STEP 4, as one scalar per texel in `[0, 1]`, to multiply into the art's alpha.
 //
@@ -548,8 +547,12 @@ std::vector<float> shadowImage(const std::vector<float>& art, std::uint32_t widt
 // fires on the same terms -- whenever a ring is actually applied.
 extern const char* const kShadowRingNote;
 
-// The blur radius is measured; the kernel it feeds is not.
-extern const char* const kShadowBlurKernelNote;
+// THERE IS NO NOTE FOR THE BLUR KERNEL EITHER, AND IT IS THE SAME RULE. This
+// file shipped one -- `kShadowBlurKernelNote`, fired on every render that
+// blurred, saying the radius was measured and the kernel it fed was not. The
+// kernel was then read (`Source/RenderBox/BlurKernel.h`), so the note went, by
+// the paragraph above. Deleting it is the point of that paragraph: a list that
+// keeps closed gaps is a list readers stop reading.
 
 // The overdraw pass of §5.3, which is a whole second composite this file does
 // not perform. Said only when the group's `translucency` would actually open it,

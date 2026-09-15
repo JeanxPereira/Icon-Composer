@@ -3,73 +3,26 @@
 #include <algorithm>
 #include <cmath>
 
+#include "Source/RenderBox/BlurKernel.h"
+
 namespace rb {
 namespace {
 
 // A separable Gaussian over PREMULTIPLIED values with CLAMPED edges.
 //
-// This is deliberately a second copy of the one in `SvgFilter.cpp` and not a
-// shared one. That function is an implementation detail of an SVG `<filter>`
-// chain, in that file's anonymous namespace; lifting it into a public header to
-// serve a glass shadow would couple two towers that have nothing to do with each
-// other, and this front's brief is to touch as little as possible. The two are
-// the same arithmetic on purpose -- see `GlassShadow.h` on why the edge rule and
-// the premultiplication are not free choices.
+// This USED to be a deliberate second copy of the one in `SvgFilter.cpp`, on the
+// grounds that lifting an SVG `<filter>` detail into a public header to serve a
+// glass shadow would couple two towers that have nothing to do with each other.
+// That reasoning still holds for `SvgFilter.cpp` and nothing there moved. What
+// changed is that the kernel this shadow needs stopped being a convention: it is
+// now READ, out of `RenderBox.arm64`, and a reading belongs in one place.
+// `BlurKernel.h` is that place, and the difference it makes here is the
+// truncation -- `ceil(2.8 * sigma)` as the binary does it, against the `3.0`
+// this copy used to write. The edge rule and the premultiplication are unchanged
+// and their reasons are in both headers.
 std::vector<float> gaussian(const std::vector<float>& src, std::uint32_t w, std::uint32_t h,
                             double sigma) {
-    if (sigma <= 0.0 || w == 0 || h == 0) return src;
-    const std::size_t texels = static_cast<std::size_t>(w) * h;
-    if (src.size() < texels * 4) return src;
-
-    std::vector<float> pre(texels * 4);
-    for (std::size_t t = 0; t < texels; ++t) {
-        const float a = src[t * 4 + 3];
-        for (int c = 0; c < 3; ++c) pre[t * 4 + c] = src[t * 4 + c] * a;
-        pre[t * 4 + 3] = a;
-    }
-
-    const int radius = static_cast<int>(std::ceil(sigma * 3.0));
-    std::vector<double> kernel(static_cast<std::size_t>(radius) * 2 + 1);
-    double sum = 0.0;
-    for (int i = -radius; i <= radius; ++i) {
-        const double v = std::exp(-(static_cast<double>(i) * i) / (2.0 * sigma * sigma));
-        kernel[static_cast<std::size_t>(i + radius)] = v;
-        sum += v;
-    }
-    for (double& k : kernel) k /= sum;
-
-    std::vector<float> tmp(texels * 4, 0.0f);
-    for (std::uint32_t y = 0; y < h; ++y) {
-        for (std::uint32_t x = 0; x < w; ++x) {
-            double acc[4] = {0, 0, 0, 0};
-            for (int i = -radius; i <= radius; ++i) {
-                const int sx = std::clamp(static_cast<int>(x) + i, 0, static_cast<int>(w) - 1);
-                const double k = kernel[static_cast<std::size_t>(i + radius)];
-                const float* p = &pre[(static_cast<std::size_t>(y) * w + sx) * 4];
-                for (int c = 0; c < 4; ++c) acc[c] += p[c] * k;
-            }
-            float* o = &tmp[(static_cast<std::size_t>(y) * w + x) * 4];
-            for (int c = 0; c < 4; ++c) o[c] = static_cast<float>(acc[c]);
-        }
-    }
-
-    std::vector<float> out(texels * 4, 0.0f);
-    for (std::uint32_t y = 0; y < h; ++y) {
-        for (std::uint32_t x = 0; x < w; ++x) {
-            double acc[4] = {0, 0, 0, 0};
-            for (int i = -radius; i <= radius; ++i) {
-                const int sy = std::clamp(static_cast<int>(y) + i, 0, static_cast<int>(h) - 1);
-                const double k = kernel[static_cast<std::size_t>(i + radius)];
-                const float* p = &tmp[(static_cast<std::size_t>(sy) * w + x) * 4];
-                for (int c = 0; c < 4; ++c) acc[c] += p[c] * k;
-            }
-            float* o = &out[(static_cast<std::size_t>(y) * w + x) * 4];
-            const double a = acc[3];
-            o[3] = static_cast<float>(a);
-            for (int c = 0; c < 3; ++c) o[c] = a > 0.0 ? static_cast<float>(acc[c] / a) : 0.0f;
-        }
-    }
-    return out;
+    return blurPremultipliedRgba(src, w, h, sigma);
 }
 
 // The translation of step 2, by a possibly fractional number of pixels.
@@ -176,13 +129,6 @@ const char* const kShadowRingNote =
     "RenderBox deste dump. Aqui a distancia e uma transformada euclidiana exata sobre o contorno "
     "alpha = 0.5 da propria arte, na resolucao do alvo, e uma eventual saturacao do SDF do alvo "
     "(ringWidth em texels acima do maxDistance dele) nao teria como aparecer.";
-
-const char* const kShadowBlurKernelNote =
-    "sombra: o raio do desfoque e medido (escala x blurStrengthMax x clamp(Shadow.radius[3-c],"
-    " 0, 1), 0x20C38) e o KERNEL que o addBlurFilterWithRadius: constroi a partir dele nao foi "
-    "lido. Aqui o raio e tomado como o suporte de tres sigmas de uma gaussiana separavel "
-    "(sigma = raio/3), que e o inverso da regra que o gaussiano deste repositorio ja usa; "
-    "sigma = raio daria uma sombra cerca de tres vezes mais larga e e igualmente nao lido.";
 
 const char* const kShadowOverdrawNote =
     "sombra: este grupo abriria a passagem de OVERDRAW do alvo (Shadow.drawOverContent e true "
