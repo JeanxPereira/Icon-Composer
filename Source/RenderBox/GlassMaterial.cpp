@@ -140,11 +140,37 @@ GlassMaterial glassMaterialFrom(const GlassMaterialDocument& doc) {
         m.shadowOpacity = doc.shadow->opacity;
     }
 
-    // `[OBS]` The `enabled` bits do not appear on either side of the assignment.
-    // Where they collapse was not read, and the corpus cannot settle it: 42
-    // groups are disabled with a non-zero value, so "zero it" and "ignore the
-    // bit" are distinguishable behaviours and nothing says which one happens.
-    if (doc.translucency) m.translucency = doc.translucency->value;
+    // `[INF]` THE FOLD, AND IT IS AN INFERENCE, NOT A READING.
+    //
+    // `[OBS]` The laudo (2026-09-15-translucencia §4, §7.1) says outright that
+    // the SITE of this fold was not located: `IconComposerKit` imports the
+    // `IconRendering` types by symbolic reference only and the function that
+    // builds an `Icon.GlassMaterial` out of a `Composition.Group` was not found.
+    // So this line is `[INF]` and stays `[INF]`.
+    //
+    // `[BIN]` What IS read is that there is nowhere for the bit to go.
+    // `Icon.GlassMaterial` has exactly one translucency-shaped field,
+    // `translucency: Double` at `+0x10` (descriptor `0xA38FC`, eight fields
+    // checked one by one); `"translucencyEnabled"` and `"isTranslucent"` appear
+    // in ZERO of the eight slices; and the eight fields of
+    // `TranslucencyEffect` contain no enable flag either.
+    //
+    // `[INF]` So the bit has to collapse into the value, and it has to collapse
+    // to ZERO: `f = strength * 0 = 0` makes `eff(x) = 1.0` everywhere, which is
+    // precisely "no translucency". Sending the value through raw would draw the
+    // effect on a group the document switched OFF -- `[ART]` 33 corpus groups
+    // are `(false, 0.5)`, i.e. a remembered value behind a closed switch, and
+    // they are the whole reason the two readings are distinguishable.
+    if (doc.translucency) {
+        m.translucency = doc.translucency->enabled ? doc.translucency->value : 0.0;
+    }
+
+    // `[OBS]` The OTHER two `enabled` bits are left exactly as they were. Their
+    // fold was not read and is not inferable the same way: `refractivity`'s
+    // value is a signed strength whose zero is already a meaningful document
+    // value, and `blur-material` collapses a whole pair into one nullable slot.
+    // Folding them here because a neighbour got folded would be exactly the
+    // plausible-and-wrong this file exists to refuse.
     if (doc.blurMaterial) m.blurStrength = *doc.blurMaterial;
     if (doc.refractivity) {
         m.refractionStrength = doc.refractivity->strength;

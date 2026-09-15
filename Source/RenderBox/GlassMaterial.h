@@ -41,13 +41,22 @@
 //   that arithmetic is INFERENCE by name**, supported by the clamp to [0,1]
 //   before the `pow` and by the output being points on a 1024 canvas.
 //
-//   `[OBS]` `translucency`, `shadowOpacity`, `hasSpecular` and
-//   `specularPlacement` have no known consumer. They cross Swift<->ObjC
-//   verbatim with no arithmetic anywhere on the path, and there is no
-//   `Max`/`Power` partner for any of them in `ICRRenderingParameters`. They are
-//   carried through here as the raw document values and denormalised by
-//   nothing, because inventing a denormalisation for them is exactly the kind
-//   of plausible-and-wrong this project refuses.
+//   `[OBS]` `shadowOpacity`, `hasSpecular` and `specularPlacement` have no known
+//   consumer. They cross Swift<->ObjC verbatim with no arithmetic anywhere on
+//   the path, and there is no `Max`/`Power` partner for any of them in
+//   `ICRRenderingParameters`. They are carried through here as the raw document
+//   values and denormalised by nothing, because inventing a denormalisation for
+//   them is exactly the kind of plausible-and-wrong this project refuses.
+//
+//   `translucency` WAS in that list until 2026-09-15 and is no longer.
+//   `Docs/Laudos/2026-09-15-translucencia.md` found its consumer: it is the
+//   interpolation weight of `ICRRenderingParameters.glyphTranslucency`, read at
+//   `0x0000FDE0` and multiplied at `0x0000FDE4`, and its destination is the
+//   `opacityBounds` of the shader `simplifiedShapeAwareGradientMask`. There is
+//   no `Max`/`Power` partner because there is NO DENORMALISATION -- the
+//   destination is already an opacity. `GlassTranslucency.h` carries the whole
+//   of it. It is still transported raw through this file, which is now a
+//   reading and not a shrug.
 //
 // WHAT THIS FILE DOES NOT DO
 // --------------------------
@@ -179,13 +188,18 @@ std::optional<GlassMaterialDocument> readGlassMaterial(const icf::Group& group,
 //      has exactly one height-shaped field and the format exactly one
 //      depth-shaped key.
 //
-// `[OBS]` THE ENABLED BITS ARE NOT APPLIED. `translucency.enabled`,
-// `refractivity.enabled` and the null-ness of `blur-material` have no
-// counterpart in the eight-field `GlassMaterial`, and where they collapse was
-// not read. This carries the VALUE through and leaves the bit visible on the
-// document struct. It matters: `[ART]` 42 corpus groups are `(enabled: false,
-// value: 0.5)`, so zeroing a disabled value and ignoring the bit give different
-// answers, and nothing read says which the target does.
+// THE ENABLED BITS. `refractivity.enabled` and the null-ness of `blur-material`
+// still have no counterpart in the eight-field `GlassMaterial` and where they
+// collapse was `[OBS]` not read, so this carries their VALUE through and leaves
+// the bit visible on the document struct. It matters: `[ART]` 42 corpus groups
+// are `(enabled: false, value: 0.5)`, so zeroing a disabled value and ignoring
+// the bit give different answers.
+//
+// `translucency.enabled` is the exception since 2026-09-15, and it is marked
+// `[INF]` at the line that does it: the bit is folded as `enabled ? value : 0.0`
+// because `f = 0` is exactly "opaque" and because `[BIN]` there is provably no
+// field anywhere in the render model for the bit to survive in. `[OBS]` WHERE
+// the target performs that fold is still unlocated.
 //
 // `[OBS]` An absent key leaves the corresponding field at its struct default,
 // and only three of those defaults are read (see `GlassMaterial`).
@@ -285,6 +299,12 @@ struct DenormalisedGlass {
     // absence of any `Max`/`Power` partner in `ICRRenderingParameters` is the
     // evidence that there is no arithmetic to find, not merely that it was not
     // found.
+    //
+    // `[BIN]` For `translucency` that suspicion is now settled rather than
+    // merely held: there is no denormalisation because the field is already an
+    // opacity weight. It leaves here raw and `GlassTranslucency.h` multiplies it
+    // by `glyphTranslucency.strength[sizeClass]`, which is the only arithmetic
+    // it ever meets.
     double translucency = 0.0;
     double shadowOpacity = 0.0;
     bool hasSpecular = false;
