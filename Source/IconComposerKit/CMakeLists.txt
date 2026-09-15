@@ -8,6 +8,7 @@ add_library(IconComposerKit STATIC
     Headless.cpp
     Ports.cpp
     Session.cpp
+    ViewModel.cpp
 )
 target_link_libraries(IconComposerKit
     PUBLIC IconComposer::Foundation IconComposer::CoreSVG IconComposer::RenderBox imgui_lib)
