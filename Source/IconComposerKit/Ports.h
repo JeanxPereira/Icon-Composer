@@ -25,6 +25,13 @@ struct RenderRequest {
 
 struct RenderResult {
     std::uint64_t version = 0;
+    // What this result ANSWERS, echoed back from the request that produced it.
+    // The implementor of RenderScheduler must copy it across: the coordinator
+    // decides "is this still the frame I am waiting for?" by comparing version,
+    // context and width against what it last asked for, and a result that does
+    // not carry its context can never be matched -- it would be dropped forever
+    // and the canvas would stay empty.
+    icf::Context context;
     std::uint32_t width = 0, height = 0;
     std::vector<std::uint8_t> rgba8;   // straight alpha, R8G8B8A8, row major
     std::size_t drawn = 0, total = 0;

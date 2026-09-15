@@ -3756,7 +3756,7 @@ Expected: todos os `panel_*` e `menu_*` passam, zero erros de ImGui. Se `panel_d
   ```
   A chave de "mudou" é `(session.version(), view.context, view.size)`; o zoom não re-renderiza. Um resultado cuja `version` é menor que a do último pedido é **descartado** (o último vence). `pending` é verdadeiro entre `request` e o `poll` correspondente.
 
-- [ ] **Step 1: implementar**
+- [x] **Step 1: implementar**
 
 `RenderCoordinator.h`:
 
@@ -3855,12 +3855,12 @@ void RenderCoordinator::tick(Session& s) {
 
 `icf::Context` precisa de `operator==` para a `Key`: acrescentar `bool operator==(const Context&) const = default;` ao `struct Context` em `IconDocument.h`.
 
-- [ ] **Step 2: conferir que compila**
+- [x] **Step 2: conferir que compila**
 
 Run: `cmake --build --preset mingw`
 Expected: compila limpo, sem warning novo.
 
-- [ ] **Step 3: commitar**
+- [x] **Step 3: commitar**
 
 ```bash
 git add Source/IconComposerKit/RenderCoordinator.h Source/IconComposerKit/RenderCoordinator.cpp Source/IconComposerKit/CMakeLists.txt Source/IconComposerFoundation/IconDocument.h
