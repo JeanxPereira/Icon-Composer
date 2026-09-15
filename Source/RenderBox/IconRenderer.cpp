@@ -11,6 +11,7 @@
 #include "Source/CoreSVG/Document.h"
 #include "Source/RenderBox/AutomaticGradient.h"
 #include "Source/RenderBox/BlendFormula.h"
+#include "Source/RenderBox/BlurKernel.h"
 #include "Source/RenderBox/ChicletShape.h"
 #include "Source/RenderBox/FillResolve.h"
 #include "Source/RenderBox/GlassLayer.h"
@@ -617,6 +618,31 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             note(out.notes, specularDoesNotDrawNote());
         }
 
+        // ---- `blur-material`, which is now ONE unread thing and not two -----
+        //
+        // `[BIN]` The radius has been transported since `GlassMaterial.cpp`
+        // existed -- `denormaliseBlurRadius` is `min(b, 1) * 64` and
+        // `DenormalisedGlass::blurRadiusPoints` has carried the answer all along
+        // -- and as of `Source/RenderBox/BlurKernel.h` the KERNEL that radius
+        // feeds is read too: the radius IS the Gaussian's sigma. What is still
+        // unread is the SURFACE: the target wraps the filter in a layer flagged
+        // `needs-background` and clips it with a rect built from a frame this
+        // renderer does not model. `BlurKernel.h` carries the three reasons and
+        // the note carries the short version.
+        //
+        // `[ART]` It fires for real, and for a smaller number than the raw key
+        // count suggests: 123 corpus GROUPS over 73 documents carry
+        // `blur-material`, but 48 of the 123 values are an explicit `null` and a
+        // null asks for no blur at all. What is left is 75 positive numbers --
+        // `0.05` to `1.0`, so `3.2` to `64` points of radius -- in 46 documents.
+        // Gating on a POSITIVE radius is what keeps those 48 out of the
+        // report -- "the author left the blur off" and "the blur is not drawn"
+        // have to stay distinguishable, which is the rule `shadowDraws` already
+        // follows for a zero alpha.
+        if (glassNumbers.blurRadiusPoints > 0.0) {
+            note(out.notes, kBlurMaterialSurfaceNote);
+        }
+
         // `blend-mode` LIVES ON THE GROUP TOO, and the group is where it is
         // actually used: over the 145 documents `plus-lighter` appears **17
         // times on a group against 5 on a layer** (spec 2026-09-03 §2.5).
@@ -1033,7 +1059,6 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                           static_cast<float>(shadowAlpha(shadowIn)),
                           shadowBlendMode(shadowIn.style));
                 if (geometry.ringWidth) note(out.notes, kShadowRingNote);
-                if (geometry.blurRadius > 0.0) note(out.notes, kShadowBlurKernelNote);
                 if (kShadow.drawOverContent &&
                     shadowOverdrawAlpha(groupTranslucency, shadowIn.style,
                                         options.sizeClass) > 0.0) {
