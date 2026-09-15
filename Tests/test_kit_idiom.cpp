@@ -243,3 +243,57 @@ TEST_CASE(kit_corpus_declares_a_platform_in_every_document) {
     CHECK_EQ(chosen["iOS"], 3);
     CHECK_EQ(chosen["watchOS"], 0);
 }
+
+// THE CLOCK THE COORDINATOR KEEPS, AND WHY IT IS HERE AND NOT IN A CANVAS TEST.
+//
+// On 2026-09-15 six fronts turned a 1024 px glass render into eighty-seven
+// seconds and the editor showed an empty canvas with `pending` under it. Nothing
+// failed: the arithmetic was right, no layer was missing, and the Diagnostics
+// panel's only word for "forty milliseconds" and for "a minute and a half" was
+// the same word. The fix is a number, and a number nobody asserts is a number
+// that quietly goes back to zero.
+//
+// Two things are pinned, because they are two different failures:
+//
+//   1. WHILE IT IS IN FLIGHT, `pendingSeconds` moves. This is the one that
+//      matters -- a render that never finishes produces no result to time, so a
+//      clock that only ran on completion would have said nothing on the day this
+//      happened.
+//   2. WHEN IT LANDS, `lastRenderSeconds` stops being negative. Negative and not
+//      zero, because "no render has finished yet" must not print as `0.00 s`.
+//
+// It lives in this file because `Recorder` and `FakeSink` do: the coordinator is
+// the only thing that can be asked this question without a device.
+TEST_CASE(kit_coordinator_times_the_render_it_is_waiting_for) {
+    const auto dir = makeBundle("clock", kSquaresShared);
+    auto s = ick::Session::open(dir);
+    REQUIRE(s.has_value());
+
+    Recorder sched;
+    FakeSink sink;
+    ick::RenderCoordinator coord(sched, sink);
+
+    coord.tick(*s);
+    REQUIRE(sched.asks.size() == 1);
+    CHECK(coord.view().pending);
+    // Nothing has come back, so there is no completed render to report -- and
+    // the sentinel is negative, not zero.
+    CHECK(coord.view().lastRenderSeconds < 0.0);
+
+    // A second frame with the answer still missing: the wait is still being
+    // counted, and it is not standing still.
+    const double first = coord.view().pendingSeconds;
+    coord.tick(*s);
+    const double second = coord.view().pendingSeconds;
+    CHECK(second >= first);
+    CHECK(second > 0.0);
+
+    // The answer lands. The wait becomes a measurement, and the counter of the
+    // render in flight goes back to zero because there is no longer one.
+    sched.answer(sched.asks[0].version, sched.asks[0].context, sched.asks[0].size);
+    coord.tick(*s);
+    CHECK(!coord.view().pending);
+    CHECK(coord.view().lastRenderSeconds >= 0.0);
+    CHECK(coord.view().lastRenderSeconds >= second);
+    CHECK_EQ(coord.view().pendingSeconds, 0.0);
+}
