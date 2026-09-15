@@ -576,8 +576,18 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
         // translucency` has nothing in it that varies between two layers of the
         // same group. What varies per layer is the `bounds` rect the ramp runs
         // in, which is filled in below, once the layer's art has a box.
+        // THE SWITCH IS APPLIED HERE, not in the transport. `glassMaterialFrom`
+        // hands over the value and the bit side by side, because the document
+        // keeps both -- `[ART]` 33 corpus groups are `(false, 0.5)`, a value
+        // remembered behind a closed switch. `[INF]` A closed switch collapses
+        // the value to zero rather than to its default: `f = strength * 0 = 0`
+        // makes `eff(x) = 1.0` everywhere, which is exactly "no translucency".
+        // The SITE of this fold was not found in the target, so it is an
+        // inference about where, not about what.
+        const double groupTranslucency =
+            glassNumbers.translucencyEnabled ? glassNumbers.translucency : 0.0;
         const OpacityMaskArguments groupMaskArgs = opacityMaskArguments(
-            kGlyphTranslucency, options.sizeClass, glassNumbers.translucency);
+            kGlyphTranslucency, options.sizeClass, groupTranslucency);
         const bool groupWantsMask = !opacityMaskIsIdentity(groupMaskArgs);
 
         // `blend-mode` LIVES ON THE GROUP TOO, and the group is where it is

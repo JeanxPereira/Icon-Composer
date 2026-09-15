@@ -162,7 +162,8 @@ GlassMaterial glassMaterialFrom(const GlassMaterialDocument& doc) {
     // are `(false, 0.5)`, i.e. a remembered value behind a closed switch, and
     // they are the whole reason the two readings are distinguishable.
     if (doc.translucency) {
-        m.translucency = doc.translucency->enabled ? doc.translucency->value : 0.0;
+        m.translucency = doc.translucency->value;
+        m.translucencyEnabled = doc.translucency->enabled;
     }
 
     // `[OBS]` The OTHER two `enabled` bits are left exactly as they were. Their
@@ -222,6 +223,7 @@ DenormalisedGlass denormaliseGlass(const GlassMaterial& material,
     out.refractionSupersampling = p.refractionSupersampling;
 
     out.translucency = material.translucency;
+    out.translucencyEnabled = material.translucencyEnabled;
     out.shadowOpacity = material.shadowOpacity;
     out.hasSpecular = material.hasSpecular;
     out.specularPlacement = material.specularPlacement;

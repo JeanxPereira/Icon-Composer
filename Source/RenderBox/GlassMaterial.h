@@ -96,6 +96,14 @@ struct GlassMaterial {
     ShadowStyle shadowStyle = ShadowStyle::Automatic;
     double shadowOpacity = 0.0;
     double translucency = 0.0;
+    // The switch that stands beside the value, carried SEPARATELY. The document
+    // keeps both facts -- `[ART]` 33 corpus groups are `(false, 0.5)`, a value
+    // remembered behind a closed switch -- so this transport keeps both too.
+    // Folding them together here would erase the remembered value, and would
+    // break the rule the rest of this struct follows: the other two `enabled`
+    // bits travel raw as well, and the refraction is stopped by a strength of
+    // zero, never by its bit. The fold happens where the mask is built.
+    bool translucencyEnabled = true;
 
     // `[OBS]` Zero here is NOT a read default. The five-argument convenience
     // init supplies defaults for the three fields below and for nothing else,
@@ -306,6 +314,10 @@ struct DenormalisedGlass {
     // by `glyphTranslucency.strength[sizeClass]`, which is the only arithmetic
     // it ever meets.
     double translucency = 0.0;
+    // Carried through untouched, for the same reason as in GlassMaterial: the
+    // value and its switch are two facts, and the fold belongs to whoever
+    // builds the mask.
+    bool translucencyEnabled = true;
     double shadowOpacity = 0.0;
     bool hasSpecular = false;
     SpecularPlacement specularPlacement = SpecularPlacement::Automatic;
