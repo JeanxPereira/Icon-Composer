@@ -8,6 +8,8 @@ add_library(IconComposerKit STATIC
     Headless.cpp
     Ports.cpp
     RenderCoordinator.cpp
+    MenuBar.cpp
+    PanelCanvas.cpp
     Session.cpp
     ViewModel.cpp
 )
