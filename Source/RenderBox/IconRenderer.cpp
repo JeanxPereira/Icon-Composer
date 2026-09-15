@@ -12,6 +12,7 @@
 #include "Source/RenderBox/AutomaticGradient.h"
 #include "Source/RenderBox/BlendFormula.h"
 #include "Source/RenderBox/BlurKernel.h"
+#include "Source/RenderBox/ChicletHighlights.h"
 #include "Source/RenderBox/ChicletShape.h"
 #include "Source/RenderBox/FillResolve.h"
 #include "Source/RenderBox/GlassLayer.h"
@@ -594,6 +595,37 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 clipToChiclet(acc, options.size);
                 out.backgroundPainted = true;
                 note(out.notes, kBackgroundShapeNote);
+
+                // A UNICA LINHA QUE A FRENTE DOS REALCES DO CHICLET ACRESCENTA
+                // A ESTE ARQUIVO. Ate aqui o fundo era uma rampa chapada: a
+                // cadeia `chiclet*` de `Highlights` estava lida e nada a
+                // consumia (`[OBS] 6` de `Docs/Laudos/2026-09-15-highlights.md`).
+                //
+                // A classe de aparencia sai da LUMINANCIA do proprio fill, que
+                // e o que `0x0001A920` mede e `0x00062744` consome -- ver
+                // `ChicletHighlights.h` §2.1. Um fill de sistema nao expoe as
+                // paradas aqui, e o alvo tambem so classifica um fill SIMPLES,
+                // entao esse caso entra como `simpleFill == false` e cai em
+                // `chicletDefault`, que e o `mov w8, #0` de `0x0001A8C0`.
+                {
+                    const bool simpleFill =
+                        bg.fill.contents != ResolvedFill::Contents::System;
+                    ChicletLuminance lum;
+                    if (paint.kind == FillOverride::Kind::Ramp) {
+                        lum = chicletFillLuminance(paint.stops);
+                    } else if (paint.kind == FillOverride::Kind::Solid) {
+                        lum = chicletFillLuminance(paint.colour);
+                    }
+                    const ChicletAppearance appearance =
+                        classifyChicletAppearance(lum, simpleFill);
+                    SpecularArguments chicletArgs;
+                    chicletArgs.sizeClass = options.sizeClass;
+                    chicletArgs.pixelsPerPoint =
+                        static_cast<double>(options.size) / kCanvasPoints;
+                    if (drawChicletHighlights(acc, options.size, chicletArgs) > 0) {
+                        note(out.notes, chicletHighlightsNote(appearance, lum));
+                    }
+                }
                 if (paint.kind == FillOverride::Kind::Ramp) {
                     note(out.notes, kGradientAxisDirectionNote);
                 }

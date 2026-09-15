@@ -48,6 +48,7 @@ add_executable(ic_tests EXCLUDE_FROM_ALL
     test_stroke_geometry.cpp
     test_stroke_render.cpp
     test_automatic_fill.cpp
+    test_chiclet_highlights.cpp
     test_chiclet_shape.cpp
     test_time_budget.cpp
 )
