@@ -9,6 +9,9 @@ add_library(IconComposerKit STATIC
     MenuBar.cpp
     PanelCanvas.cpp
     PanelInspector.cpp
+    PanelInspectorAsset.cpp
+    PanelInspectorDocument.cpp
+    PanelInspectorEffects.cpp
     PanelLayers.cpp
     Ports.cpp
     RenderCoordinator.cpp

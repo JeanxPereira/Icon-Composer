@@ -24,7 +24,7 @@
 // The seven inspectors this round does not build are drawn disabled with the
 // reason in their tooltip rather than hidden (spec 13/09 §7): a control that is
 // missing teaches nothing, and one that is greyed says what is coming.
-#include "Source/IconComposerKit/Panels.h"
+#include "Source/IconComposerKit/InspectorSection.h"
 
 #include "Source/IconComposerFoundation/Values.h"
 #include "Source/IconComposerKit/ViewModel.h"
@@ -45,62 +45,8 @@ namespace {
 // which is the shortest round-tripping form Apple's encoder writes (spec 13/09
 // §2.2). A property the node does not carry falls back to the renderer's
 // default rather than to zero.
-double numberOr(const icf::json::Value* v, double fallback) {
-    if (!v || v->kind() != icf::json::Value::Kind::Number) return fallback;
-    return std::strtod(v->number().c_str(), nullptr);
-}
 
-bool booleanOr(const icf::json::Value* v, bool fallback) {
-    if (!v || v->kind() != icf::json::Value::Kind::Bool) return fallback;
-    return v->boolean();
-}
 
-struct Section {
-    Session& s;
-    icf::NodePath path;
-    InspectorStats& st;
-
-    // Opens a section for `prop`; returns the view and whether the body draws.
-    bool begin(const char* label, std::string_view prop, PropertyView& view) {
-        view = viewProperty(s, path, prop);
-        ImGui::PushID(label);
-        const bool open = ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen);
-        ++st.sections;
-        if (!view.own) ++st.inherited;
-        if (open) {
-            if (!view.own) {
-                // Two different silences: a value inherited from a more general
-                // scope, and a property nobody has written anywhere.
-                ImGui::TextDisabled(view.value ? "inherited" : "not set");
-            } else if (s.scope.appearance != icf::Appearance::Base || s.scope.idiom != icf::Idiom::Base) {
-                if (ImGui::SmallButton("Remove override")) {
-                    s.setProperty(path, prop, s.scope, std::nullopt);
-                }
-            }
-        }
-        return open;
-    }
-
-    void end() { ImGui::PopID(); }
-
-    void disabled(const char* label, const char* why) {
-        ImGui::BeginDisabled();
-        ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_Leaf);
-        ImGui::EndDisabled();
-        // The default tooltip hover flags carry AllowWhenDisabled, so the reason
-        // still reaches a greyed header.
-        ImGui::SetItemTooltip("%s", why);
-        ++st.disabled;
-    }
-
-    // Every mutation goes through the Session, never through `root()`: that is
-    // what keeps undo honest and the canvas's version moving (Session.h).
-    // Ending a coalesced drag is the caller's, because a section built from
-    // several controls only knows it was released after it has drawn them all.
-    void write(std::string_view prop, icf::json::Value v, bool coalesce) {
-        s.setProperty(path, prop, s.scope, std::move(v), coalesce);
-    }
-};
 
 void visible(Section& x) {
     PropertyView v;
@@ -373,13 +319,12 @@ InspectorStats drawInspector(Session& s) {
     ImGui::Separator();
 
     Section x{s, path, st};
-    const char* kLater = "Round 3: this inspector is not built yet";
     // Only the properties `Values.h` types and the renderer already consumes get
     // a live section (spec 13/09 §7); the rest are named and greyed.
     switch (kindOf(path)) {
         case NodeKind::Root:
             fill(x);
-            x.disabled("Document Settings", kLater);
+            drawDocumentSections(x);
             break;
         case NodeKind::Group:
             visible(x);
@@ -389,10 +334,7 @@ InspectorStats drawInspector(Session& s) {
             shadow(x);
             translucency(x);
             specular(x);
-            x.disabled("Blur Material", kLater);
-            x.disabled("Refractivity", kLater);
-            x.disabled("Lighting", kLater);
-            x.disabled("Group Effects", kLater);
+            drawGroupEffectSections(x);
             break;
         case NodeKind::Layer:
             visible(x);
@@ -401,9 +343,7 @@ InspectorStats drawInspector(Session& s) {
             geometry(x);
             fill(x);
             glass(x);
-            x.disabled("Material", kLater);
-            x.disabled("Image Asset", kLater);
-            x.disabled("Asset Mirroring", kLater);
+            drawLayerAssetSections(x);
             break;
     }
     ImGui::End();
