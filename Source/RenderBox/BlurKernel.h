@@ -144,6 +144,84 @@ int blurKernelHalfWidth(double sigma);
 // `fcmp s0, #0.0 ; b.le` exit at `0xBFDE8`.
 std::vector<double> blurKernel(double sigma);
 
+// ---- THE QUALITY LADDER: how a big sigma is PAID FOR ----------------------
+//
+// A sigma of 64 -- which is what `s * 64 * clamp(radius,0,1)` reaches on a
+// 1024-pixel canvas -- is `ceil(64 * 2.8) = 180` taps each side, 361 per axis.
+// **The target never does that**, and the reading above already said why
+// without anybody transcribing it: `GaussianBlur::render` picks a sigma CEILING
+// from the quality bits, splits the variance across passes that each stay under
+// it, and when even 32 passes would not be enough it RENDERS SMALLER first.
+// This front transcribed that machinery. The two things it adds to the reading
+// in `Docs/Laudos/2026-09-15-desfoque.md` are the THRESHOLD that selects a
+// reduce and the DEFAULT-QUALITY variance it subtracts; both are `[BIN]` and
+// both have addresses.
+//
+// `[BIN]` **The raw pass count is the thing the ladder is keyed on.** At
+// `0xFED5C`-`0xFED74`:
+//
+//     nRaw = ceil(max(rx^2, ry^2) / sigmaMax^2 - 0.001)          ; fcvtps
+//
+// and `0xFED78`-`0xFED8C` stores `clamp(nRaw, 1, 32)` into the renderer's
+// `+0x1c`. But the RESOLUTION decision at `0xFEDF0` and `0xFEE24` tests the
+// UNCLAMPED `w25`, against 7 and against 3:
+//
+//     nRaw >= 7  ->  render at (d + 3) >> 2   , i.e. a 4x reduce   ; 0xFEE04-0xFEE08
+//     nRaw >= 3  ->  render at (d + 1) >> 1   , i.e. a 2x reduce   ; 0xFEE3C-0xFEE50
+//     else       ->  render at full size
+//
+// (For the top quality rung, `w24 == 0x30`, both branches reduce X only; that is
+// the `fcsel` at `0xFEE1C` / `0xFEE5C` and it is not the default rung.)
+//
+// `[BIN]` **And the reduce pays its own way.** `BlurRenderer::render` (`0xFF964`)
+// reads that same `+0x1c`, takes the matching branch, and rewrites the variance
+// at `+0x10` before any kernel is built:
+//
+//     4x, default quality  : v/16 - 0.47265625   ; 0xFFA18-0xFFA30, 0.6875^2
+//     2x, default quality  : v/4  - 0.765625     ; 0xFFB78-0xFFB8C, 0.875^2
+//     2x, quality rung 3   : v/4  - 2.56         ; 0xFFB08-0xFFB20, 1.6^2
+//
+// The `-0.47265625` and `-0.765625` are materialised by `mov w8, #imm` --
+// `#-0x410e0000` is `0xBEF20000` at `0xFFA24` and `#-0x40bc0000` is `0xBF440000`
+// at `0xFFB80` -- so neither is in the constant pool, which is the lesson this
+// repository paid for four times on 2026-09-15 and the reason they were found.
+// The laudo quoted the `2.56`; that one is the `[x20+9]` branch, and `[x20+9]` is
+// written at `0xFECF8`-`0xFED00` as `(flags & 0x30) == 0x30`, i.e. the TOP rung.
+// **The default rung subtracts `0.875^2`, not `1.6^2`.**
+//
+// Variances add, so subtracting what the resampling itself contributes is what
+// keeps the total honest: the shrunken image already carries `0.6875` (resp.
+// `0.875`) sigmas of blur in its own grid, and the kernel is asked for the rest.
+//
+// `[INF]` **What is NOT read is whether the ladder RECURSES.** `GaussianBlur::
+// render` sizes the multipass target once; `BlurRenderer::render` reduces again
+// on its own and writes the variance back; and who recomputes `+0x1c` in between
+// was not followed. This file takes the reading under which both of its branches
+// are reachable and the pass count stays bounded: **reduce, recompute `nRaw` at
+// the smaller size, and reduce again while it is still 3 or more.** It is also
+// the simplest rule that preserves the total variance exactly, which is the test
+// that matters -- every level subtracts precisely what it adds. Under it a
+// 1024-pixel canvas with `sigma = 64` reduces twice (4x, then 4x) and finishes
+// with ONE pass of `sigma = 3.94` on a 64x64 grid, instead of 361 taps per axis
+// on a 1024x1024 one.
+//
+// `[INF]` Two smaller choices, named rather than implied. The reduce is a BOX
+// average of `factor x factor` source texels and the expand is BILINEAR; the
+// target's own resampling filters were not read, and these two contribute about
+// `0.25^2` and `0.29^2` of variance rather than the `0.875^2` / `0.6875^2` being
+// subtracted, so the result is very slightly NARROWER than the transcription
+// asks for -- `0.09%` of the total variance at the 4x rung, `3.9%` at the 2x one.
+// The measured cost of that is in `Docs/Laudos/2026-09-15-desfoque-escada.md`.
+// And a reduce is refused when it would take either side below 8 texels, so a
+// thumbnail does not get blurred on a 2x2 grid.
+//
+// `nRaw` for a variance, unclamped -- the number the ladder branches on.
+int blurPassCountForVariance(double variance);
+
+// `4`, `2` or `1`: what `nRaw` asks the renderer to shrink by, before the size
+// floor is applied.
+int blurReduceFactorForVariance(double variance);
+
 // A separable blur of straight RGBA, run over PREMULTIPLIED values with CLAMPED
 // edges, returning straight RGBA.
 //
@@ -152,6 +230,10 @@ std::vector<double> blurKernel(double sigma);
 // into visible ones, and an edge that read zero from outside would fade a shadow
 // that runs off the canvas. They are restated here because this is now the one
 // place that owns them.
+//
+// It runs the LADDER above rather than one wide kernel, so its cost is bounded
+// by the canvas and not by the radius: `sigma = 64` on a 1024-pixel canvas costs
+// one 25-tap pass on a 64x64 grid, not 361 taps per axis on the full one.
 //
 // `sigma <= 0`, a degenerate size, or a short buffer all return `src` unchanged.
 std::vector<float> blurPremultipliedRgba(const std::vector<float>& src, std::uint32_t width,
