@@ -2962,7 +2962,7 @@ de uma tela de 1024. É `[INF]`, e fica marcado assim.
 | `shadowStyle` | offset `+0x01`, enum denso 0–3; `hasShadow = (≠ none)`, `shadowInfusesGlyphColor = (== vibrant)`, lidos de `0x38F58`/`0x38FB0` | `[BIN]` |
 | `shadowOpacity` | offset `+0x08`; transporte lido; consumo não lido | `[BIN]` layout · `[OBS]` consumo |
 | `translucency` | offset `+0x10`; transporte lido; **não há** `translucencyMax`/`Power` em `ICRRenderingParameters`; consumo não lido | `[BIN]` layout · `[OBS]` consumo |
-| `blurStrength` | offset `+0x18`; `radius = min(b,1) × blurStrengthMax`, `blurStrengthMax = 64.0`; destino `addBlurFilterWithRadius:opaque:` | `[BIN]` aritmética · `[INF]` que o `b` seja este campo |
+| `blurStrength` | offset `+0x18`; `radius = min(b,1) × blurStrengthMax`, `blurStrengthMax = 64.0`; destino `addBlurFilterWithRadius:opaque:`. **O kernel fechou em 15/09/2026** (`Docs/Laudos/2026-09-15-desfoque.md`): é **gaussiana separável truncada**, e **`σ = raio` exatamente** — `0x3E8D4` → `0x3E69C` → `GaussianBlur(float)` guarda o raio intacto, `render` faz `fmul v0.2s,v10.2s,v10.2s` (raio² = **variância**) e `NarrowBlurKernel::construct` calcula `exp(−x²/(2v))`. Três leituras concordam: a tabela assada `narrow_blur_15` dá `w(7)/w(0) = 0,135335282` contra `exp(−2) = 0,135335283`; o caminho de CPU (`0xC35F4`) é `ceil(σ·2,8)` com `exp(−i²/(2σ²))`; e `roi` cresce por `ceil(raio·2,8)`, com o `2,8` **materializado por imediato** (`0xFEBA4`), não pelo pool. `[OBS]` a **superfície** do `blur-material` segue aberta: `0x4A5B4` usa `beginLayerWithFlags:` flag 1, que o serializador XML chama `needs-background` — desfoque de **fundo**, sobre uma extensão de quadro que este renderizador não modela | `[BIN]` aritmética e kernel · `[INF]` que o `b` seja este campo |
 | `refractionHeight` | offset `+0x20`; `min + (max−min)·pow(clamp01(h), p)` com `12.8 / 256.0 / 1.0`; vira `height` do `glass-displacement`, convertido a texels | `[BIN]` aritmética · `[INF]` a entrada |
 | `refractionStrength` | offset `+0x28`; `max · sign(s) · pow(min(\|s\|,1), p)` com `640.0 / 1.0`; vira o **único** argumento do `displacementMap_v1`, **negado** | `[BIN]` aritmética · `[INF]` a entrada |
 | `specularPlacement` | offset `+0x30`, enum denso 0–2; transporte lido; consumo não lido | `[BIN]` layout · `[OBS]` consumo |
@@ -3021,6 +3021,37 @@ de uma tela de 1024. É `[INF]`, e fica marcado assim.
      QuartzCore: o shader é do `IconRendering` e está em `References/`.
      `[ART]` **67 dos 145 documentos** pedem especular (103 valores: 64 `true`,
      36 `false`, 3 `"inside"`, **0 `"outside"`**).
+     **E os 16.113 bytes abriram no mesmo dia** (`Docs/Laudos/2026-09-15-highlights.md`):
+     `Highlights` é preâmbulo de `0x118` + dez `HighlightsSet` de passo `0x630`, e
+     `0x118 + 9×0x630 + 0x629 = 0x3EF1` **fecha na unidade** — com os dez
+     deslocamentos lidos do `__text` como **imediatos** (`0x62588`, `0x627B4`),
+     espaçados exatamente `0x630`. Cada conjunto tem seis `HighlightSettings` de
+     passo `0x108`, e um único byte (`+0x100`) acumula três papéis: `blendModeOverride`
+     e os discriminadores de dois Optionals.
+     **O achado que muda a figura: `hasSpecular` acende CINCO realces, não um.**
+     `0x30E88` expande um conjunto em sete candidatos (`keySharp`, `keyDiffuse`,
+     `fillSharp`, `fillDiffuse`, `dark` espelhado duas vezes, `rim`) e `0x31384`
+     derruba os `nil` — com os padrões de glifo sobram cinco. Isso explica **de
+     dentro** o passo `0x58`/`0x60` que o laudo do especular tinha medido sem saber
+     o que contava. `dark` é o **único** dos seis com `outsetOpacity`, o que fecha
+     pelos números a segunda recusa de `0x494F8`: `isDarklight` e
+     `outsetOpacity != nil` selecionam **o mesmo membro**, não duas condições.
+     Resolução (`0x4BD90`): `height = max(distance[k], minDistancePixels[k]×escala)`,
+     `direction = (cosφ·sinθ, cosφ·cosθ, sinφ)`, `color = (b,b,b,1)`,
+     `blendMode = override ?? (brightness < 0.5 ? 4 : 8)` — e `4`/`8` **são**
+     `PlusDarker`/`PlusLighter` como `BlendMode.h` já os numerava a partir do
+     RenderBox, meses antes: controle cruzado que ninguém escolheu.
+     **A armadilha silenciosa desta família:** `spread' = cos(spread)` com sentinela
+     `−1000` acima de π (`0xEE3C`–`0xEF5C`). Transcrever `spread` em radianos deixa
+     `lit = saturate((dot − spread')/…)` identicamente zero — compila, roda, **não
+     avisa e não desenha**. E aqui a inversão `slots[3−k]`, lida de um **terceiro**
+     sítio (`0x4BEB0`), finalmente **aparece no pixel**: ao contrário da sombra, os
+     quatro números de `distance` diferem (4 em display, 6 nas outras).
+     **O especular desenha.** `[OBS]` o que resta é escalar, não forma: `ctx[0]`
+     (`0x4C010`), tomado como `1.0`, erraria **tudo por um fator só** — visível como
+     "forte demais", nunca como forma errada; e a arte **raster** segue sem brilho,
+     porque não tem contorno e portanto não tem campo de distância, que é a mesma
+     lacuna da refração e não desta família.
    - **A armadilha que isso abre:** o enum de tamanho é `small 0 … display 3` e os
      structs declaram `display, large, medium, small`, então é `valor[3 − classe]`.
      Com os defaults desta versão **os quatro valores são iguais em todas as cinco
