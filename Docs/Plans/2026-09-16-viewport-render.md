@@ -627,7 +627,7 @@ Implementa a spec, "Os sítios" (a extensão de todos), e os dois primeiros grup
 - Modify: `Source/RenderBox/IconRenderer.cpp` (`placeRaster` 154, `rasterPlacementRect` 216, `paintBackground` 278, `artPlacementRect` 473, `placeOnCanvas` 562, `renderIcon` 587-fim)
 - Modify: `Source/RenderBox/ChicletShape.h:115-121`, `ChicletShape.cpp:170-230`
 - Modify: `Source/RenderBox/ChicletHighlights.h:284`, `ChicletHighlights.cpp:208-290`
-- Modify: `Source/RenderBox/DistanceField.h:186-192, 279-287`, `DistanceField.cpp:776-1009` (só o necessário para a pastilha: origem em `FieldOptions`, ver Step 4)
+- Modify: `Source/RenderBox/DistanceField.h` (`struct FieldOptions`, `struct FieldImage`; as linhas andaram com o comentário de `e78eca7`), `DistanceField.cpp` (`rasteriseContours`, `addSpan`, `coverageFromContours`, `generateFieldFromContours`, `generateFieldFromAlpha`) (só o necessário para a pastilha: origem em `FieldOptions`, ver Step 4)
 - Modify: `Tests/test_viewport_render.cpp`
 
 **Interfaces:**

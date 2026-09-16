@@ -186,7 +186,17 @@ do canvas. O que salva é que nenhum consumidor lê o campo além da sua própri
 banda — o especular clampa em `inset + height`, a sombra em `ringWidth`, a
 refração em `refractionHeight` (até 256, por isso ela entra na margem acima), a
 translucidez na própria rampa (a leitura dessa banda está em
-`GlassTranslucency.h:206` e é a primeira coisa a conferir se o gate acusar). O invariante é o que prova isso; se ele acusar
+`GlassTranslucency.h:206` e é a primeira coisa a conferir se o gate acusar).
+
+`[OBS]` **Se o desfoque do gerador for ligado, a margem muda.**
+`Docs/Laudos/2026-09-16-coreui-gerador-de-sdf.md` leu no gerador do alvo um
+desfoque gaussiano do campo, com `σ = min(0,005 × min(W,H), 3,5√2)` px. Ele foi
+medido como neutro e ficou DESLIGADO. Ligado, ele seria mais um passo de
+vizinhança sobre o campo: ~`2,8 × σ` px a mais na banda local, e mais uma
+escada de desfoque cuja origem precisa estar alinhada. A grade do alvo também
+tem uma moldura de um texel (`W+2`, `H+2`). Nada disso muda o desenho, só a
+conta de `documentReach`, e o gate acusa se alguém ligar o desfoque sem ajustar
+a conta. O invariante é o que prova isso; se ele acusar
 diferença longe da borda, esta hipótese caiu e o campo precisa de tratamento
 próprio.
 
