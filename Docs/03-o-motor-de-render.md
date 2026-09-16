@@ -1821,32 +1821,68 @@ geometria, `fold_value` separa por spread, e cada caso cai numa célula só.
 `[BIN]` E dois bits soltos:
 
 ```
-palavra0 bit 25   um caminho alternativo de amostragem no uniforme
+palavra0 bit 25   troca O QUE A RAMPA E: GradientCubicColor em vez de cor plana
 palavra0 bit 26   gama: no caminho de duas cores, `powr(t, arg)`; no de paradas,
                   a entrada passa de 4 para 5 halves e a quinta e o expoente
 ```
 
 `[BIN]` **O layout da parada** sai do `sample_stops_uniform`: um array plano de
-`half4` (RGBA), com stride **4** ou **5** conforme o bit 26.
+`half4` (RGBA), com stride **4** ou **5** conforme o bit 26 — **ou de quatro
+`half4` por registro**, 32 bytes, quando o bit 25 está aceso.
 
-### 23.4. E isto corrobora a medição do formato
+> **O bit 25 foi lido em 15/09/2026, e a leitura anterior estava fraca demais**
+> (`Docs/Laudos/2026-09-15-gradiente-do-fundo.md` §4). "Um caminho alternativo de
+> amostragem" sugere a mesma rampa amostrada de outro jeito. Não é isso: ele
+> **troca o que a rampa é**. Com o bit aceso a entrada deixa de ser uma cor por
+> parada e passa a ser um `GradientCubicColor` — quatro `half4`, 32 bytes por
+> registro —, avaliado por Horner:
+> `c(f) = c0 + f·(c1 + f·(c2 + f·c3))`. Os coeficientes saem de uma função que o
+> binário **nomeia**, `smooth_color_coefficients` (`0x9DEB0`), derivando-os das
+> paradas vizinhas: o resultado é um *smoothstep*, não uma reta. A leitura se
+> confere pelos dois lados — o IR do shader e o caminho de CPU, onde `0x9A8D4`
+> escolhe **16 halves por registro** exatamente quando o código é 4.
+
+### 23.4. E isto NÃO corrobora a medição do formato — a simetria era falsa
 
 `[ART]` O `linear-gradient` do documento tem **sempre exatamente duas paradas** —
 48 de 48 no corpus.
 
-`[INF]` Que é precisamente a rampa **tipo 0** do motor, o caminho de duas cores.
-As duas medições vêm de lados opostos — uma dos documentos, outra do IR — e
-descrevem a mesma coisa.
+> **A `[INF]` que estava escrita aqui foi REFUTADA em 15/09/2026**
+> (`Docs/Laudos/2026-09-15-gradiente-do-fundo.md` §3). Ela dizia: *"que é
+> precisamente a rampa tipo 0 do motor, o caminho de duas cores; as duas medições
+> vêm de lados opostos e descrevem a mesma coisa"*. Sedutora, simétrica, e
+> **errada**.
+>
+> `[BIN]` O teste de "duas cores" está em `0x9B990`–`0x9B9AC`, e ele tem quatro
+> termos, não um:
+>
+> ```
+> tipo != 4  &&  contagem == 2  &&  flags bit15 limpo  &&  (codigo - 2) & ~2 != 0
+> ```
+>
+> O último termo pega **2 E 4**. O fundo do ícone entra com **código 4**, o teste
+> **falha**, e a execução cai em `0x9B9B8`, que escreve `0x180` — **rampa tipo 3**
+> (`sample_stops_uniform`) **mais o bit 25**. Duas paradas no documento não
+> implicam o caminho de duas cores no motor.
+>
+> **Por que isto é a lição pedagógica mais útil do dia.** A `[INF]` não foi um
+> chute: ela juntou duas medições verdadeiras, uma de cada lado, e a coincidência
+> de forma fez o resto. O que faltava era ler o **teste**, que tem um termo a mais
+> do que a hipótese previa. O "gradiente duro" que se via no render era essa
+> `[INF]`, desenhada.
 
 ### 23.5. O que continua fechado
 
-`[OBS]` `sample_stops_binary` foi localizado e **não** foi lido inteiro; o
-caminho do bit 25 no uniforme também não. E `Gradient::color_out` (97 linhas,
-noutro módulo) segue sem leitura.
+`[OBS]` `sample_stops_binary` foi localizado e **não** foi lido inteiro. E
+`Gradient::color_out` (97 linhas, noutro módulo) segue sem leitura. ~~o caminho do
+bit 25 no uniforme também não~~ — **FECHADO em 15/09/2026**, §23.3 acima e §41.
 
-`[OBS]` A regra do `automatic-gradient` — o que os seis números de §19.4 fazem
-com uma cor — **não está aqui**: estas funções recebem uma rampa pronta. Quem a
-deriva é o `IconRendering`, não o `RenderBox`.
+~~`[OBS]` A regra do `automatic-gradient` … não está aqui.~~ **VENCIDO, e há
+tempo.** O §24 deste mesmo documento lê a regra inteira (`IconRendering
+0x5864`). Este `[OBS]` foi respondido por outra seção do próprio documento e
+nunca apagado — o que é exatamente o modo de falha que a rodada de integração de
+16/09/2026 foi feita para corrigir: um `[OBS]` que sobrevive à própria resposta
+custa uma frente inteira a quem lê de cima para baixo.
 
 ## 24. `automatic-gradient` — a regra, lida
 
@@ -2935,9 +2971,19 @@ mesmo `−strength`. São dois sítios, um padrão.
 `glassBackground_v1`. O §28.3 já tinha o inventário de constantes dessa função —
 é essa, e não a de 75 uniforms, que o alvo precisa transcrever primeiro.
 
-### 29.6. O elo que NÃO foi lido, dito como tal
+### 29.6. O elo que NÃO foi lido, dito como tal — e que FECHOU em 15/09/2026
 
-`[OBS]` **O dado que entra em `0x4A708` não foi rastreado até
+> **Esta seção descreve um estado que acabou.** O `[OBS]` abaixo foi fechado no
+> mesmo dia pelo laudo da sombra (`Docs/Laudos/2026-09-15-sombra.md`), de carona:
+> o descritor de `0xC0` bytes começa **no próprio `GlassMaterial`**, e `0x4A30C`
+> lê `[x0+0x18]`/`[x0+0x20]` como os operandos de `0x4A948`/`0x4A708`. O `x` **é**
+> o `refractionHeight`. O §29.8 item 2 já estava riscado como fechado; o corpo
+> desta seção continuou afirmando `[INF]` por um dia inteiro, e essa contradição
+> interna é o motivo de o texto ficar aqui em vez de sumir: **ele mostra o custo
+> de fechar num lugar e não no outro.** O que segue é a leitura de 05/09,
+> preservada, e não o estado de hoje.
+
+~~`[OBS]`~~ **O dado que entra em `0x4A708` não foi rastreado até
 `GlassMaterial.refractionHeight`.** No ramo que se consegue seguir sem
 suposição, o valor normalizado vem de um global protegido por `swift_once`
 (*token* `0xCDE68`, corpo `0xCDE70`) cujo inicializador, `0x3DAA0`, escreve
@@ -2956,16 +3002,25 @@ de uma tela de 1024. É `[INF]`, e fica marcado assim.
 
 ### 29.7. Os oito campos, um a um
 
+> **Esta tabela foi reescrita em 16/09/2026, e o motivo é o pior tipo de dívida
+> que um documento pode ter.** Até então ela dizia `[OBS] consumo` em **quatro**
+> linhas cujo consumo o §29.8, logo abaixo, já lia inteiro — uma delas
+> (`hasSpecular`) com o próprio §29.8 escrevendo a frase *"o que fecha também o
+> `[OBS] consumo` dele no §29.7"* e a linha nunca sendo editada. Um documento
+> desatualizado faz alguém perder tempo; um documento que **mente sobre o próprio
+> estado** faz alguém gastar uma frente inteira numa pergunta já respondida. A
+> tabela é agora derivada do §29.8, e não o contrário.
+
 | campo | o que está estabelecido | selo |
 |---|---|---|
-| `hasSpecular` | offset `+0x00`; trafega literalmente por `ICRIconLayer.hasSpecular`; **nenhuma** aritmética lida; não passa pelo `glass-highlight` do RenderBox | `[BIN]` transporte · `[OBS]` consumo |
-| `shadowStyle` | offset `+0x01`, enum denso 0–3; `hasShadow = (≠ none)`, `shadowInfusesGlyphColor = (== vibrant)`, lidos de `0x38F58`/`0x38FB0` | `[BIN]` |
-| `shadowOpacity` | offset `+0x08`; transporte lido; consumo não lido | `[BIN]` layout · `[OBS]` consumo |
-| `translucency` | offset `+0x10`; transporte lido; **não há** `translucencyMax`/`Power` em `ICRRenderingParameters`; consumo não lido | `[BIN]` layout · `[OBS]` consumo |
-| `blurStrength` | offset `+0x18`; `radius = min(b,1) × blurStrengthMax`, `blurStrengthMax = 64.0`; destino `addBlurFilterWithRadius:opaque:`. **O kernel fechou em 15/09/2026** (`Docs/Laudos/2026-09-15-desfoque.md`): é **gaussiana separável truncada**, e **`σ = raio` exatamente** — `0x3E8D4` → `0x3E69C` → `GaussianBlur(float)` guarda o raio intacto, `render` faz `fmul v0.2s,v10.2s,v10.2s` (raio² = **variância**) e `NarrowBlurKernel::construct` calcula `exp(−x²/(2v))`. Três leituras concordam: a tabela assada `narrow_blur_15` dá `w(7)/w(0) = 0,135335282` contra `exp(−2) = 0,135335283`; o caminho de CPU (`0xC35F4`) é `ceil(σ·2,8)` com `exp(−i²/(2σ²))`; e `roi` cresce por `ceil(raio·2,8)`, com o `2,8` **materializado por imediato** (`0xFEBA4`), não pelo pool. `[OBS]` a **superfície** do `blur-material` segue aberta: `0x4A5B4` usa `beginLayerWithFlags:` flag 1, que o serializador XML chama `needs-background` — desfoque de **fundo**, sobre uma extensão de quadro que este renderizador não modela | `[BIN]` aritmética e kernel · `[INF]` que o `b` seja este campo |
-| `refractionHeight` | offset `+0x20`; `min + (max−min)·pow(clamp01(h), p)` com `12.8 / 256.0 / 1.0`; vira `height` do `glass-displacement`, convertido a texels | `[BIN]` aritmética · `[INF]` a entrada |
-| `refractionStrength` | offset `+0x28`; `max · sign(s) · pow(min(\|s\|,1), p)` com `640.0 / 1.0`; vira o **único** argumento do `displacementMap_v1`, **negado** | `[BIN]` aritmética · `[INF]` a entrada |
-| `specularPlacement` | offset `+0x30`, enum denso 0–2; transporte lido; consumo não lido | `[BIN]` layout · `[OBS]` consumo |
+| `hasSpecular` | offset `+0x00`; trafega literalmente por `ICRIconLayer.hasSpecular`. **Não é "campo sem aritmética": é o portão de uma função inteira**, `0x491C0`–`0x49DBC`, testado na terceira instrução, e o destino é o shader `glassHighlight` do metallib do próprio `IconRendering` — **não** o `glass-highlight` do RenderBox. E ele acende **cinco** realces, não um (§37) | `[BIN]` transporte e consumo |
+| `shadowStyle` | offset `+0x01`, enum denso 0–3; `hasShadow = (≠ none)`, `shadowInfusesGlyphColor = (== vibrant)`, lidos de `0x38F58`/`0x38FB0`. O estilo troca o **consumidor**, não um bit (§35) | `[BIN]` |
+| `shadowOpacity` | offset `+0x08`; atravessa **cru** até o `alpha:` do `drawShape:`: `alpha = shadowOpacity × Shadow.<vibrant\|neutral>Opacity[3−classe] × FinalizedIcon.Layer.opacity`. Não há desnormalização (§35.1) | `[BIN]` transporte e consumo |
+| `translucency` | offset `+0x10`; **não há** `translucencyMax`/`Power` em `ICRRenderingParameters` porque não há desnormalização. `f = glyphTranslucency.strength[classe] × translucency`, `eff(x) = 1 − (1 − x)·f`, consumida pelo shader `simplifiedShapeAwareGradientMask` | `[BIN]` transporte e consumo |
+| `blurStrength` | offset `+0x18`; `radius = min(b,1) × blurStrengthMax`, `blurStrengthMax = 64.0`; destino `addBlurFilterWithRadius:opaque:`. O kernel é **gaussiana separável truncada** com **`σ = raio` exatamente**, e o alvo nunca paga os taps que isso implicaria — ele desce a resolução subtraindo a variância que a descida introduz (§36). O que ele desfoca é o **fundo** (`needs-background`), atrás de um portão que só agora tem nome: a tag de `effectsFrame` (§36.3) | `[BIN]` aritmética, kernel e superfície · `[INF]` que o `b` seja este campo |
+| `refractionHeight` | offset `+0x20`; `min + (max−min)·pow(clamp01(h), p)` com `12.8 / 256.0 / 1.0`; vira `height` do `glass-displacement`, convertido a texels. A entrada deixou de ser `[INF]` em 15/09/2026: `0x4A30C` lê `[x0+0x18]`/`[x0+0x20]` como os operandos de `0x4A948`/`0x4A708` (§29.6) | `[BIN]` aritmética e entrada |
+| `refractionStrength` | offset `+0x28`; `max · sign(s) · pow(min(\|s\|,1), p)` com `640.0 / 1.0`; vira o **único** argumento do `displacementMap_v1`, **negado**. `[ART]` 2 de 271 grupos do corpus refratam, **os dois com força negativa** (§40) | `[BIN]` aritmética · `[BIN]` a entrada, pelo mesmo descritor |
+| `specularPlacement` | offset `+0x30`, enum denso 0–2, e os três valores estão medidos: `inside` e `outside` são **a mesma espessura, a mesma âncora, espelhados**; `automatic` segue o estado identidade **para `outside`**. E o bit é metade da decisão — `0x494E0`–`0x494FC` dá `(outsetOpacity_tag==1) ? 1 : (bit \| ¬isDarklight)` (§37.1) | `[BIN]` transporte e consumo |
 
 ### 29.8. O que um implementador ainda não tem
 
@@ -3047,22 +3102,43 @@ de uma tela de 1024. É `[INF]`, e fica marcado assim.
      avisa e não desenha**. E aqui a inversão `slots[3−k]`, lida de um **terceiro**
      sítio (`0x4BEB0`), finalmente **aparece no pixel**: ao contrário da sombra, os
      quatro números de `distance` diferem (4 em display, 6 nas outras).
-     **O especular desenha.** `[OBS]` o que resta é escalar, não forma: `ctx[0]`
-     (`0x4C010`), tomado como `1.0`, erraria **tudo por um fator só** — visível como
-     "forte demais", nunca como forma errada; e a arte **raster** segue sem brilho,
-     porque não tem contorno e portanto não tem campo de distância, que é a mesma
-     lacuna da refração e não desta família.
+     **O especular desenha.** ~~`[OBS]` o que resta é escalar, não forma: `ctx[0]`
+     (`0x4C010`), tomado como `1.0`, erraria tudo por um fator só; e a arte raster
+     segue sem brilho, porque não tem contorno e portanto não tem campo de
+     distância.~~ **As duas metades fecharam no mesmo dia**, e nenhuma delas do jeito
+     que esta linha esperava. `ctx[0]` é
+     `[BIN]` `GlobalConfiguration.lightIntensity`, campo `+0x00` do quinto argumento
+     de `0x4266C`, copiado para a base do contexto em `0x42884`, lido num **único**
+     sítio (`0x4C010`), e o valor **é** `1.0`, assado como `0x3ff0000000000000` no
+     init `lightAngle:` (`0x35DF0`) — a tomada estava certa e agora é `[BIN]`
+     (`Docs/Laudos/2026-09-15-realce-intensidade.md`, §37.3). E a lacuna do raster
+     não era lacuna: `[BIN]` o alvo tira o campo de distância do **alfa
+     rasterizado** da camada, não do contorno vetorial dela, de modo que raster e
+     vetor **não são dois casos**
+     (`Docs/Laudos/2026-09-15-vidro-sobre-raster.md`, §39.1).
    - **A armadilha que isso abre:** o enum de tamanho é `small 0 … display 3` e os
      structs declaram `display, large, medium, small`, então é `valor[3 − classe]`.
      Com os defaults desta versão **os quatro valores são iguais em todas as cinco
      tabelas**: transcrever `valor[classe]` dá pixel idêntico e não avermelha teste
      nenhum — só acorda num documento que diferencie as classes.
-4. `[OBS]` O `range` do `RBDisplayListGlassDisplacement`: os campos estão
-   nomeados e os offsets lidos, mas o valor `v` que o `IconRendering` escreve
-   como `(v, −v)` não foi atribuído a nenhuma grandeza nomeada.
+4. ~~`[OBS]` O `range` do `RBDisplayListGlassDisplacement`: o valor `v` que o
+   `IconRendering` escreve como `(v, −v)` não foi atribuído a nenhuma grandeza
+   nomeada.~~ **FECHADO em 15/09/2026** (`Docs/Laudos/2026-09-15-refracao.md` §2).
+   `[BIN]` `v` é **`FinalizedIcon.Layer.sdf.maxDistance`** (`layer+0xA8`), passado
+   de `0x4A6F8`/`0x4A8E4` a `0x10C14` — e é **o mesmo escalar** do argumento 7 do
+   especular (`0x49238`). O achado que vale mais que o valor: **o `range` é
+   vocabulário do CAMPO, não do efeito.** Ele é compartilhado com
+   `add_glass_highlight`, e por isso um `range` "da refração" nunca existiu como
+   grandeza separada. Ver §40.
 5. `[OBS]` `useSystemGlass` (`false` por padrão, §19.3) e `useOS26Compositing`:
-   os dois existem e os dois trocam de caminho de composição; qual caminho cada
-   um liga não foi lido.
+   os dois existem e os dois trocam de caminho de composição. **Metade fechou em
+   15/09/2026** (`Docs/Laudos/2026-09-15-translucencia.md` §5.2): `[BIN]`
+   `useOS26Compositing` (`+0x362`, default `false`) acrescenta, **antes** de abrir
+   a camada, um `addContentHeadroom:` e um filtro `ColorClamp` de estilo 9
+   (`0x00043140`–`0x00043180`) — é o caminho **HDR/EDR**, e não uma segunda
+   geração do vidro. `useSystemGlass` continua `[OBS]`, mas estreitado: `[BIN]`
+   ele **não pode** alcançar o `glassBackground_v1` a partir destes binários, o
+   que o desacopla do item 1 desta mesma lista.
 
 > **Por que isto é um resultado e não uma falha.** A hipótese que abriu a
 > investigação — "o `refractionHeight` do documento é desnormalizado por
@@ -3243,7 +3319,7 @@ apareça em vez de ser silenciosamente boa.
 |---|---|
 | **o retângulo do alinhamento ao chiclet** | `[CONTESTADO em 15/09/2026]` A frase anterior dizia que `supportsChicletAlignmentForSystemFills` é `true` por default **e que quando ligado o rect é origem `(0,0)` com um `CGSize` do contexto**. A segunda metade **não foi reproduzida**: o laudo do chiclet mediu que o campo (Swift #32, `+0x360`) **não dirige ramo nenhum** nesta fatia — toda carga dele é cópia, `==` ou *value witness*, com `str` na instrução seguinte. Enquanto ninguém der o endereço de onde a afirmação saiu, ela não vale. O `[OBS]` do tamanho perde a urgência: em iOS/macOS canvas, chiclet e full-bleed são o mesmo `(0,0,1024,1024)`, porque `1088 = 1024 + 2 × chicletOutset(32)`. A implementação segue desenhando sobre o `boundingRect` da própria forma |
 | a lateralidade de y do display list | `[OBS]` na rampa clara (255→245) é quase invisível; **na escura (31→15) não é** |
-| o `Bool` do `.system(_, Double, Bool)` | `[OBS]` os três construtores gravam `1`; nenhum escritor de `0` foi achado |
+| o `Bool` do `.system(_, Double, Bool)` | ~~`[OBS]` os três construtores gravam `1`~~ **FECHADO em 15/09/2026** (`Docs/Laudos/2026-09-15-chiclet.md` §5.3): `[BIN]` é o **`alignsToChiclet`**, typeref `0x9D482`. Que os três construtores gravem `1` deixa de ser um mistério e vira a leitura certa — o alinhamento ao chiclet é ligado por construção, e nenhum escritor de `0` existe porque nenhum caminho o desliga. **Meia-integração é pior que nenhuma:** esta tabela carregava o `[CONTESTADO]` do mesmo laudo duas linhas acima e este `[OBS]`, que o mesmo laudo fechou, por um dia inteiro |
 | o espaço de cor das rampas | `[OBS]` `IconColor` são quatro `Double` sem tag de espaço |
 | `ResolvedFill`, `promoteNoneFillsToEachAppearance` | `[OBS]` localizados, não lidos. São do **editor**, não do caminho de render |
 
@@ -3712,13 +3788,55 @@ mesmo item a ter camada para então filtrá-la. **Nenhum dos dois chama
 `make_backdrop_item`**, e o §34.1 mediu que a rota do fundo existe — ela
 simplesmente não é a que este caminho toma.
 
-> **A resposta ao §8.1.** O vidro refrata **o que ele veste**, não o que está
-> atrás. O dilema do spec pressupunha uma captura do destino que não acontece.
+> ~~**A resposta ao §8.1.** O vidro refrata **o que ele veste**, não o que está
+> atrás. O dilema do spec pressupunha uma captura do destino que não acontece.~~
 
-`[INF]` Para o nosso renderizador: dar ao grupo um alvo próprio **não deixa o
+> ### A frase acima é FALSA, e foi corrigida em 15/09/2026
+>
+> Não o parágrafo `[BIN]` que a precede — esse continua certo, instrução a
+> instrução. **A frase que generaliza a partir dele é que não se sustenta**
+> (`Docs/Laudos/2026-09-15-refracao.md` §3.1).
+>
+> `[BIN]` `GlassDisplacementStyle` é o **gerador do mapa**. O trabalho dele é
+> transformar o campo da forma em vetores de deslocamento, então ele filtra o
+> item que veste — **é o que ele tem de fazer**, e ler isso como "o vidro não
+> olha para trás" é ler o particular como geral. **O deslocamento em si é outro
+> objeto**, instalado logo depois, e a camada dele carrega o **bit de fundo**:
+>
+> ```
+> 0x10C14   fecha a camada do mapa com addFilterLayerWithShader:
+>           (RenderBox 0x40A18 = end_layer + restore + State::add_custom_effect)
+> 0x4A794   beginLayerWithFlags: 1        <- bit 0, o BIT DE FUNDO
+> 0x4AA00   idem, o segundo sitio
+> 0x3BCA0   traduz o argumento publico e passa o bit 0 INTACTO (mascara 0x7B)
+>           -> Builder::begin_layer -> Layer+0x44
+> 0xF4030   CustomEffectStyle::draw
+> 0xCDAA0   Builder::draw  -- tail-call em 0xCDAF4 para null_style_draw
+> 0xCE02C   o teste do bit, que pendura um BackdropFilterItem na camada PAI
+> ```
+>
+> **Então o vidro da Apple lê o destino? Sim.** E o que isso muda neste
+> repositório é menos do que parece, o que é a parte instrutiva: **a premissa
+> corrigida vira a premissa ORIGINAL**. O dilema do §8.1 volta a ser um dilema
+> de verdade, e a razão pela qual o nosso `blendTheGroup` continua valendo passou
+> a ser outra — medida, e não lida (§40).
+>
+> A mesma premissa velha viveu em três lugares. O comentário de
+> `Source/RenderBox/IconRenderer.cpp` foi corrigido pelo próprio laudo; o
+> docstring de `scripts/slice-reach.py`, que é **a régua que imprime o número de
+> alcance do `Docs/README.md`**, só foi corrigido em 16/09/2026, nesta rodada de
+> integração. Um número e a razão dele moravam no mesmo arquivo, e a razão
+> envelheceu primeiro.
+
+~~`[INF]` Para o nosso renderizador: dar ao grupo um alvo próprio **não deixa o
 vidro sem fonte**, porque a fonte do vidro é o item dentro do grupo, e o item vai
-junto. Logo `blendTheGroup` pode valer também quando o grupo tem vidro, e é isso
-que destrava as 9 camadas e os 7 documentos.
+junto.~~ A conclusão — que `blendTheGroup` pode valer também quando o grupo tem
+vidro, destravando as 9 camadas e os 7 documentos — **sobreviveu à correção, por
+outro fundamento**: não porque o vidro do alvo ignore o fundo, mas porque o nosso
+`glassOver` desloca o buffer de acumulação no lugar, o acoplamento só morde
+quando a refração **move** alguma coisa, e `[ART]` nenhum documento bloqueado
+tinha vidro que refrata — são **2 de 271 grupos** no corpus inteiro, os dois com
+força **negativa**. É diferença no nosso modelo, não pergunta não lida.
 
 ### 34.4. O que continua NÃO lido
 
@@ -3729,12 +3847,40 @@ que destrava as 9 camadas e os 7 documentos.
 sítios de `beginLayerWithFlags:` no `IconRendering`, catorze passam `0`, seis
 passam `1` e um passa `0x80`.
 
-`[OBS]` **E uma pista que NÃO fecha, registrada como pista.** O único sítio de
+**Dos três valores que ocorrem, dois ganharam nome em 15/09/2026** — os que
+ocorrem, e não os 21 bits do espaço. A tradução acima continua sem leitura; o
+que fechou é o significado do `1` e do `0x80`, logo abaixo.
+
+~~`[OBS]` **E uma pista que NÃO fecha, registrada como pista.** O único sítio de
 `0x80` (`0x0004A96C`) vem logo depois de um `addBlurFilterWithRadius:opaque:`
 (`0x0004A960`), o que sugeriria "camada que lê o fundo". Mas o §34.1 mediu que
-**não existe `BackdropFilterItem<GaussianBlur>` neste binário**, e um desfoque de
-fundo precisaria dele. As duas medições não se conciliam, então nenhuma
-conclusão é tirada daqui.
+**não existe `BackdropFilterItem<GaussianBlur>` neste binário** … As duas
+medições não se conciliam.~~
+
+> **FECHADO em 15/09/2026, e a irreconciliação era um nome não lido**
+> (`Docs/Laudos/2026-09-15-desfoque.md` §6). Os dois flags têm nome, e o nome sai
+> do **serializador XML do próprio RenderBox**, que é onde este documento devia
+> ter olhado primeiro:
+>
+> | flag | sítio | o que `RB::XML::DisplayList::begin_layer` (`0xE9E78`) emite |
+> |---|---|---|
+> | `1` | `0x4A5B4` (e `0x4A794`, `0x4AA00`) | **`needs-background`** (`0xE9F48`) — camada que precisa do fundo |
+> | `0x80` | `0x0004A96C` | **`ignored-by-needs-background`** (`0xE9F08`) |
+>
+> `0x80` não é "lê o fundo": é **"ignorado por quem lê o fundo"**, que é o
+> **oposto**. A pista apontava para o lado contrário do que se supôs, e foi por
+> isso que ela não conciliava com o §34.1 — que continua certo: `[BIN]`
+> `GenericFilter<GaussianBlur>::make_backdrop_item` (`0x1CBF4`) é literalmente
+> `mov x0, #0 ; ret`, e **não pode** ser o mecanismo de fundo deste desfoque. O
+> mecanismo é o outro, o da flag 1, e `blur-material.md` §2 completa: **o ramo que
+> roda é sempre o de flag 1**, porque a escolha é `refractionStrength` e `[ART]`
+> nenhum dos 145 documentos, nem o gabarito, nem o ícone do usuário tem chave de
+> refração.
+>
+> **A lição, e ela vale para além deste bit:** um flag numérico sem nome convida
+> a inferir pelo contexto — "vem depois de um blur, logo lê o fundo". O binário
+> tinha o nome escrito, num serializador de depuração que ninguém pensou em ler
+> porque não é código de desenho. Ver §36.3 e o §45, o bloco de método.
 
 ### 34.5. Os instrumentos
 
@@ -3750,3 +3896,798 @@ Quatro, em `scripts/macho.py`, cada um com um comando:
 O `IconRendering` **não tem nome de símbolo Swift** na `LC_SYMTAB` — 1.793
 entradas, nenhuma `$s` com endereço —, e é por isso que o `fn` existe: sem ele
 não há como dizer onde uma função começa neste binário.
+
+---
+
+## 35. As 37 frentes de 15–16/09/2026 — o índice, e o que cada classe quer dizer
+
+As seções §36 a §44 integram os **37 laudos** de `Docs/Laudos/` de 15 e 16 de
+setembro. Até 16/09/2026, **seis** deles estavam linkados neste documento e
+**nove** apareciam nomeados na prosa do `Docs/README.md`; os outros vinte e sete
+não existiam em lugar nenhum fora do próprio laudo e da mensagem de commit. Isto
+aqui é a dívida sendo paga.
+
+O índice é por **o que a frente produziu** — não por assunto —, porque o volume
+esconde a diferença que importa.
+
+| classe | n | o que quer dizer |
+|---|---|---|
+| **FECHOU** | 14 | leitura nova que chegou ao pixel |
+| **FECHOU E DECLAROU** | 6 | leitura fechada, transcrita, fixada por teste e **deliberadamente desligada no desenho**; o produto da frente é uma **nota honesta no render**, não um pixel |
+| **ELIMINOU** | 6 | um suspeito morto com medida |
+| **INFRA** | 6 | instrumento, UI, orçamento |
+| *híbridos* | 4 | contados em duas classes |
+
+### 35.1. `FECHOU E DECLAROU` é um resultado, e precisou de nome próprio
+
+Seis laudos de um mesmo dia terminam com o pixel intacto: `chiclet` (a curva não
+fechou), `especular` (as magnitudes não estavam lidas), `realce-vcm` (o grampo
+não é do realce), `chiclet-geometria` (o `0,2250` mede o gabarito, não o
+binário), `realce-forma` (os 7,5 unidades movem o pixel e não têm `[BIN]`),
+`blur-material` (a extensão foi medida e o gabarito a recusou). Lidos de fora,
+parecem seis omissões. **São uma família, e dão a mesma razão com palavras
+diferentes.** `realce-forma.md` a escreve melhor:
+
+> Aplicá-lo seria **escolher número pelo diff, que é exatamente o que destruiria
+> o oráculo**.
+
+O nome existe porque estes são os casos mais fáceis de confundir com fracasso, e
+porque o que eles entregam é verificável: uma transcrição no código, um caso de
+teste que a fixa, e uma nota no render dizendo o que não está sendo desenhado e
+por quê. `Source/RenderBox/BlendFormula.h` é o exemplar que seis laudos citam
+pelo nome.
+
+### 35.2. Onde cada laudo foi parar
+
+| laudo | classe | seção |
+|---|---|---|
+| `sombra`, `sombra-desenho`, `sombra-anel`, `sombra-overdraw` | FECHOU ×3, FECHOU+ELIMINOU | **§36** |
+| `desfoque`, `desfoque-escada`, `blur-material`, `opaque-bit20` | FECHOU ×2, FECHOU E DECLAROU, ELIMINOU | **§37** |
+| `especular`, `highlights`, `realce-intensidade`, `realce-vcm`, `realce-vcm-fechado`, `realce-forma` | mista | **§38** |
+| `chiclet`, `chiclet-curva`, `chiclet-geometria`, `chiclet-realces`, `canto-do-chiclet` | mista | **§39** |
+| `vidro-sobre-raster`, `semente-aa`, `campo-de-distancia`, `supersample-campo`, `sdf-nivel-zero` | mista | **§40** |
+| `refracao` | FECHOU + ELIMINOU | **§41** |
+| `gradiente-do-fundo` | FECHOU + ELIMINOU | **§42** (e §23) |
+| `oraculo-appicon`, `icon-composer-27` | INFRA, ELIMINOU | **§43** |
+| `orcamento-de-tempo` | INFRA + ELIMINOU | **§44** |
+| `svg-definicoes` | FECHOU | `Docs/04-o-svg.md` |
+| `portao-glass` | FECHOU | `Docs/01-o-formato-icon.md` |
+| `idiom-do-canvas`, `canvas-navegacao`, `painel-camadas`, `inspetor-e-auditoria`, `device-do-onyx` | INFRA | `Docs/Specs/2026-09-13-casca-e-modelo-editavel.md` |
+
+E o **§45** é um bloco de método: quatro armadilhas que custaram uma leitura
+errada cada, nestes dois dias, e que não estavam escritas em lugar nenhum.
+
+---
+
+## 36. A sombra, do documento ao pixel
+
+`[BIN]` **A sombra do `GlassMaterial` nunca passa pelo `ShadowStyle` do
+RenderBox.** Ela é um `drawShape:` comum, com a opacidade viajando **crua** no
+argumento `alpha:`, recortada por uma rampa linear que o nome `ringWidth`
+disfarça de anel, e desenhada **duas vezes** — a segunda por cima da arte e
+recortada pela cobertura dela.
+
+Quatro frentes, e a ordem entre elas é a da descoberta: `sombra.md` leu a
+aritmética, `sombra-desenho.md` nomeou o fator que faltava e a fez desenhar,
+`sombra-anel.md` derrubou a própria hipótese que o abriu, e `sombra-overdraw.md`
+desenhou a segunda passagem e **eliminou** o primeiro dos três suspeitos do aro
+escuro do ápice.
+
+### 36.1. A aritmética da alpha — duas multiplicações e nenhum grampo
+
+`[BIN]` `shadowOpacity` é lido **uma vez** em todo o binário, em `0x49F0C`,
+dentro da função `0x49ED4`–`0x4A2D4`:
+
+```
+0x00049F08   ldrb w21, [x0, #0x01]   ; shadowStyle
+0x00049F0C   ldr  d8,  [x0, #0x08]   ; *** shadowOpacity ***
+0x00049F10   ldr  d9,  [x0, #0x38]   ; FinalizedIcon.Layer.opacity
+0x00049FD4   ldr  d10, [x9]          ; Shadow.neutralOpacity[k]   (ramo neutro)
+0x0004A044   ldr  d10, [x9]          ; Shadow.vibrantOpacity[k]   (ramo vibrante)
+0x0004A06C   fmul d0, d8, d10
+0x0004A070   fmul d0, d9, d0
+0x0004A1F8   fcvt s0, d0
+0x0004A20C   bl   #0x8e8c0           ; -[RBDisplayList drawShape:fill:alpha:blendMode:]
+```
+
+```
+alpha = shadowOpacity × Shadow.<vibrant|neutral>Opacity[3 − classe] × Layer.opacity
+```
+
+**Sem grampo, sem `pow`, sem teto.** `shadowOpacity = 2.0` produz `alpha > 1` sem
+uma reclamação, e negativo passa negativo. Varridos os **sete** chamadores de
+`_pow` (`0x8DDF4`) catalogados no §29.4 — `0x125C8`, `0x125EC`, `0x12620`,
+`0x4A728`, `0x4A768`, `0x4A998`, `0x4A9D8` —, **nenhum** está nesta cadeia, e não
+há `fminnm`/`fcsel` de grampo entre `0x49F0C` e `0x4A06C`.
+
+> **A frase do §29.8 estava certa e a conclusão implícita estava errada.** Não há
+> par `Max`/`Power` para `shadowOpacity` porque **não há normalização nenhuma** —
+> a ausência era o sintoma, não a lacuna. `[BIN]` A assimetria é o achado: a
+> Apple normaliza o que vai virar **comprimento em pontos** (o
+> `refractionHeight`, grampeado dos dois lados antes do `pow`) e não normaliza o
+> que **já é uma fração**.
+
+`[ART]` E o corpus corrobora a ausência do grampo por um caminho que ninguém
+escolheu. Das **302** resoluções de `shadow` dos 145 documentos, **três passam de
+1.0** — `Apollo-Reborn/AppIcon` grupos 0 e 2 com `2.4` e `1.6`, e
+`Apollo-Reborn/LG-antenna` com `2.4` — e elas caem em **décimos exatos** contra a
+tabela medida: `2,4 × 0,375 = 0,9` e `1,6 × 0,375 = 0,6`. **O autor estava
+afinando contra a tabela.** Uma transcrição que grampeasse `shadowOpacity` em
+`[0,1]` desenharia a sombra do Apollo em `0,375` no lugar de `0,9` e não teria
+como perceber.
+
+`[ART]` O resto do censo: **271 de 271** grupos carregam `shadow`; 190 resoluções
+`neutral`, 87 `layer-color` (= `vibrant`), 25 `none` e **zero** `automatic`; a
+opacidade mais comum é `0.5`, em **226 das 302**.
+
+### 36.2. A escala que faltava é `ICRRenderingParameters.Shadow`
+
+`[BIN]` O papel de "normalização" é feito por um sub-struct que o §29.3 não tinha
+lido: `Shadow`, **15 campos**, em `params + 0x2B0`, **`0xF8` bytes**. Duas fontes
+independentes concordam campo a campo — a igualdade `Shadow == Shadow` em
+`0x6DFE4` e a cópia de `0x4EABC`–`0x4EBB4` —, e a ordem bate exatamente com as 15
+`CodingKeys` do metadado em `0xA5064`: não sobra nem falta campo.
+
+| desloc. | campo | default | onde o default é assado |
+|---|---|---|---|
+| `+0x00` | `offsetX` | `0.0` | `0x5EC54` |
+| `+0x08` | `offsetY` | `32.0` | `0x5EC54` |
+| `+0x10` | `ringWidth` | `[16,16,16,16]`, tag presente | `0x5EC58` |
+| `+0x38` | `radius` | `[0.3,0.3,0.3,0.3]` | `0x5EC68` |
+| `+0x58` | `vibrantOpacity` | `[0.75,…]` | `0x5EC7C` |
+| `+0x78` | `neutralOpacity` | `[0.375,…]` | `0x5EC88` |
+| `+0x98` | `blendMode` | `2 = multiply` | `0x5EC94` |
+| `+0x99` | `blendModeForVibrantOnDim` | `0 = normal` | `0x5EC94` |
+| `+0x9A` | `overdrawBlendMode` | `2 = multiply` | `0x5EC98` |
+| `+0xA0` | `vibrantBrightness` | `0.75` | `0x5EC9C` |
+| `+0xA8` | `ignoreFillOpacity` | `true` | `0x5ECA4` |
+| `+0xA9` | `drawOverContent` | `true` | `0x5ECA4` |
+| `+0xB0` | `translucencyForMaxOverdraw` | `0.3` | `0x5ECAC` |
+| `+0xB8` | `maxNeutralOverdrawOpacity` | `[0.2,…]` | `0x5ECAC` |
+| `+0xD8` | `maxVibrantOverdrawOpacity` | `[0.5,…]` | `0x5ECC0` |
+
+Os tipos não são inferidos: os acessores trazem a referência simbólica —
+`ringWidthAA14SizeBasedValueVySdGSgv` (`0xE32B7`), com o `Sg` do `Optional` sendo
+exatamente o byte de tag medido em `+0x30`, e `overdrawBlendModeAA0A0V0gH0Ov`
+(`0xE2F53`) confirmando que `+0x98`…`+0x9A` indexam a tabela de **18** do §17.3 e
+não a de **56** do RenderBox.
+
+**O índice é classe de TAMANHO, não de aparência.** `[BIN]` `0x18D70`–`0x18DCC`
+compara `min(largura, altura)/escala` contra três limiares em `params+0x230`,
+`+0x238` e `+0x240`, que o metadado de `0xA5840` nomeia **`minMediumSize`,
+`minLargeSize`, `minDisplaySize`**. Três limiares, quatro classes, e o enum de
+`0xA5800` é `small 0, medium 1, large 2, display 3`.
+
+> ### A armadilha silenciosa desta família inteira
+>
+> `[BIN]` **A tabela é lida ao contrário.** `SizeBasedValue` declara os quatro
+> campos em `0xA5780` na ordem **`display, large, medium, small`**, que é a ordem
+> da memória. Por isso o `csel` triplo de `0x49FA4`–`0x49FD0` resolve
+> `k=3 → +0x00` e `k=0 → +0x18`, isto é **`valor[3 − k]`**.
+>
+> Quem transcrever `valor[k]` troca `small` com `display` e `medium` com `large`.
+> **Com os defaults desta versão os quatro valores são iguais em todas as cinco
+> tabelas do `Shadow`: o pixel sai idêntico e o erro não avermelha teste nenhum.**
+> Ele só acorda num documento que diferencie as classes. A frente irmã da
+> `translucency` tropeçou no mesmo `csel` de quatro vias no
+> `TranslucencyEffect.strength` — é um padrão do `IconRendering`, não um acidente
+> de um campo, e é por isso que a inversão vive num helper só (`sizeBasedValue`,
+> em `GlassTranslucency.h`).
+>
+> **E ela tem fronteira, que é o que impede a lição de virar superstição:**
+> `[BIN]` **não há `SizeBasedValue` no caminho do raio do chiclet** — entre a
+> raiz do raio e o `setRoundedRect:` não existe um único índice por classe de
+> tamanho, e o que parecia tabela de quatro é um `Optional<Double>` num
+> dicionário de *stride* 32 (§39.1). A inversão existe, e existe **em um lugar
+> só**.
+
+### 36.3. `shadowStyle` troca o CONSUMIDOR, não um bit
+
+`[BIN]` O enum denso é `automatic 0, none 1, vibrant 2, neutral 3`, e ele decide
+**quatro** coisas mais um portão:
+
+**(a) se desenha.** `0x49F74`: `cmp w21,#1 / b.eq 0x4A21C` — `none` retorna.
+
+**(b) qual tabela.** O ramo de `0x4A248` manda `vibrant` **e `automatic`** para
+`vibrantOpacity` (`ctx+0x4560`) e `neutral` para `neutralOpacity` (`ctx+0x4580`).
+**`automatic` agrupa com `vibrant`.**
+
+**(c) qual cor.** Cada ramo escolhe um global `swift_once` diferente:
+
+| ramo | token | inicializador | valor |
+|---|---|---|---|
+| vibrante | `0xCDE68` | `0x3DAA0` | **`(1,1,1,1)` — branco opaco** |
+| neutro | `0xCDE90` | `0x3DAD4` | **`(0,0,0,1)` — preto opaco** |
+
+Os quatro `Double` viram `float` em `0x4A15C`–`0x4A16C` e entram como
+`tintColor:` do `setRBImage:…` de `0x4A1F0`. **Tinta branca é identidade**: a
+sombra vibrante mantém as cores do glifo, a neutra tinge tudo de preto. É isto
+que o `shadowInfusesGlyphColor` do §29.2 significa em pixels.
+
+> **Correção ao §29.6 deste documento.** Aquela seção lê o global protegido pelo
+> token `0xCDE68`, inicializador `0x3DAA0` escrevendo "quatro `1.0`", e o trata
+> como o **valor normalizado de entrada da refração**. `[BIN]` **Ele não é isso.**
+> É a **cor da sombra vibrante**, e o irmão `0xCDE98` (preto) é a da neutra — o
+> mesmo par que a sombra do chiclet usa em `0x434E8`–`0x43514`.
+
+**(d) qual byte de mescla**, e **(e) um portão acima de tudo.** `[BIN]`
+`0x49F40`–`0x49F70`: se `[ctx+0x510] != 1`, **ou** se o OR de cinco `Double` em
+`ctx+0x4E8..0x508` não for zero, a sombra é **sempre a neutra** e o `vibrant` do
+documento não chega ao pixel. `[OBS]` Esses cinco `Double` e o byte têm a **mesma
+forma exata** do portão do `specularPlacement` em `0x49280`–`0x492C0`, são
+estados de recoloração do ícone, e **não ganharam nome**. Sei o que eles fazem e
+não sei o que eles são.
+
+### 36.4. O terceiro fator, e o descritor que finalmente tem nome
+
+Este é o achado que fez a sombra desenhar, e ele veio por uma porta que nenhuma
+frente tinha usado: **o metadado de reflexão Swift**, que estava no disco desde
+antes do laudo-mãe.
+
+`[BIN]` O descritor de `0xC0` bytes **é** `IconRendering.FinalizedIcon.Layer`, e
+o terceiro fator da multiplicação é o `opacity` dele. Três leituras independentes
+produzem a mesma tabela, vindas de três lugares diferentes do arquivo:
+
+1. **A reflexão** — `__swift5_fieldmd` em `0xA301C`, nove campos, `opacity`
+   tipado `Sd`.
+2. **O vetor de deslocamentos emitido** — `__swift5_types` em `0xAC614` leva ao
+   descritor nominal `0x9EF30`, e o metadado estático de `0xBD3F0` dá
+   `material@0x00`, `blendMode@0x31`, **`opacity@0x38`**, `knocksOutBorder@0x40`,
+   `image@0x48`, `contentFrame@0x50`, `effectsFrame@0x70`, `sdf@0x98`,
+   `shadowImage@0xB0`. A *value-witness table* de `0xBD388` dá `size`/`stride` =
+   **`0xC0`** — o passo do array confirmado **pelo tipo**, não pelo
+   `add x23,x23,#0xc0`.
+3. **O escritor** — `0x17038`, `str d8,[x8,#0x58]`, com `d8` vindo de
+   `Icon.Layer.opacity`: **cópia verbatim**, nem grampo nem transformação.
+
+`[BIN]` O `+0x31` não é acidente: `Icon.GlassMaterial` tem `size 0x31` com
+`stride 0x38` (metadado `0xBED40`), então `blendMode` empacota no byte que a
+`size` deixou livre e `opacity` cai em `0x38` e não em `0x40`.
+
+> `[BIN]` **`Icon.Layer` NÃO é este struct.** Metadado `0xBE8E8`, `size 0x58`,
+> campos `elements@0x00, opacity@0x08, blendMode@0x10, material@0x18,
+> performsLightingByElement@0x49, appearance@0x50`. São dois tipos com nomes
+> parecidos, e confundi-los é o erro que a aritmética de offsets convidava.
+
+Duas correções de carona ao laudo-mãe, das que só aparecem quando o tipo tem
+nome: `[descritor+0x31]` **não é um `Bool`**, é o `blendMode`; e
+`[descritor+0xB0]` não é "a imagem", é o **`shadowImage`** — a saída da
+preparação realimentada na composição. O ciclo fecha.
+
+E um contra-indício se dissolveu em vez de ser respondido: o laudo-mãe hesitou
+porque `Shadow.ignoreFillOpacity` é `true` por padrão e não é consultado em
+`0x49ED4`. `[BIN]` **Ele não precisa ser** — `ignoreFillOpacity` é campo de
+`ICRRenderingParameters.Shadow`, um struct de **parâmetros**, e o `+0x38` é a
+opacidade de uma **camada**, noutro tipo. A tensão era entre um campo e um
+homônimo. `[OBS]` Quem lê o `ignoreFillOpacity` continua sem resposta, menor do
+que parecia.
+
+### 36.5. A geometria: cinco passos, e a pendência que não existia
+
+O pedido da frente listava a geometria como pendência, apontando um `[OBS]` de
+`inputShadowOffset`. **Ela já estava medida inteira**; o que faltava era
+transcrever. Com `s = min(largura, altura)/1024` (o literal `2^-10` de `0x20B88`):
+
+| passo | operação | endereço | com os defaults, alvo 1024 |
+|---|---|---|---|
+| 1 | cor: `colorMultiply(v,v,v,1)`, `v = vibrantBrightness` | `0x20BB4`, **pulado se `v == 1`** (`0x20BC0`) | `×0,75` no ramo vibrante |
+| 1' | cor: `alphaMultiply(RBColorBlack)` | `0x20BAC`, GOT `0xC5818` | silhueta preta no ramo neutro |
+| 2 | translação `(s·offsetX, s·offsetY)` | `0x20BDC`–`0x20BEC` | `(0, 32)` px |
+| 3 | desfoque `raio = s · blurStrengthMax · clamp(radius[3−k],0,1)` | `0x20C38`, grampo `0x20C14`–`0x20C28` | `0,3 × 64 = 19,2` px |
+| 4 | anel: recorte com `−(s · ringWidth[3−k])` | `0x20C8C`, `0x20CE8` | 16 px |
+| 5 | `drawDisplayList:` | `0x20CF4` | |
+
+O `blurStrengthMax` do passo 3 é lido em `0x20C08` como `[box+0x1F8]` =
+`params+0x1E8`: **o mesmo campo `blurStrengthMax = 64.0` do §29.3**, reusado.
+
+**Os passos 2 e 3 comutam** — uma gaussiana é invariante a translação —, então a
+ordem entre eles não é uma escolha.
+
+`[BIN]` E o grampo do passo 3 é o **terceiro formato** desta família, o que é
+informação e não ruído: `refractionHeight` grampeia dos **dois** lados antes do
+`pow` (`0x4A708`), o `blurStrength` do material só tem **teto** (`0x4A948`), o
+`Shadow.radius` grampeia dos **dois** lados (`0x20C14`) e o `shadowOpacity` **não
+grampeia**. Quatro quantidades da mesma matéria, quatro decisões diferentes.
+
+### 36.6. O anel que é rampa — e a hipótese que o abriu morreu no meio
+
+`[BIN]` **O "anel" não é um anel.** É uma rampa linear de máscara, monótona na
+profundidade, que vale `0` sobre o contorno da camada e sobe até `1` a
+`ringWidth` pontos **para dentro** dele:
+
+```
+mask(p) = clamp( profundidadeDentro(p) / (ringWidth[3−k] × s), 0, 1 )
+```
+
+A hipótese de entrada era razoável — *"largura negativa alimentando um recorte
+tem cara de inset; o anel seria a coroa entre o contorno e o contorno
+encolhido"* — e ela morreu **pela metade**, que é o resultado mais útil que uma
+hipótese pode ter:
+
+- **Confirmada no lado do *inset*.** A banda afetada fica de fato dentro do
+  contorno, e é a negação de `0x20C8C` que a põe lá.
+- **Derrubada no lado da *coroa*.** `[BIN]` `0x11C40` (1.604 bytes, lido inteiro)
+  não constrói forma nenhuma: repassa os quatorze argumentos do helper genérico
+  `0x10E1C` mudando três, e instala entre `save` e `restore` **exatamente dois
+  filtros** — um `addAlphaThresholdFilterWithMinAlpha:maxAlpha:` (`0x11D64`) e um
+  `addColorMatrixFilterWithArray:` (`0x12138`) cujos vinte `Float` são dezenove
+  zeros e um `1.0` no índice 15, isto é `out.rgb = 0, out.a = in.r`. E a
+  implementação do primeiro está no RenderBox, que **mantém os símbolos**:
+  `RB::_GLOBAL__N_1::render_(AlphaThresholdEffect…)` (`0x893A4`) calcula
+  `scale = 1/(maxAlpha − minAlpha)` e `bias = −minAlpha × scale`, e escreve os
+  dois em `+0x44`/`+0x48` dos globais de shader. **Uma escala e um viés é uma
+  função monótona.** Nenhuma escolha de `minAlpha`/`maxAlpha` faz aquilo ser
+  não-nulo numa faixa e nulo dos dois lados dela.
+
+> **Essa distinção não é acadêmica.** Desenhar a coroa plausível apagaria a
+> sombra inteira no miolo do glifo e deixaria só um contorno — **o oposto** do
+> que o binário faz. E o caso de teste que a fixa é o do meio de
+> `Tests/test_glass_shadow.cpp`: uma barra horizontal num campo 41×41 com anel
+> de 8, checando que a máscara sobe e **não volta a descer** até o miolo. Uma
+> coroa falharia nele.
+
+`[BIN]` **E o `maxDistance` se cancela.** A banda que `0x11CF8`–`0x11D3C` monta é
+`minAlpha = 0.5`, `maxAlpha = 0.5 + ringWidthEmTexels/(2·maxDistance)`; o sinal
+vem de `-[RBDisplayList addDistanceFilterWithMaxDistance:scale:flags:]`
+(`RenderBox 0x3F354`), que faz `fneg d2,d0` e grava
+`zeroDistance = +maxDistance`, `oneDistance = −maxDistance` — logo `alpha > 0.5`
+é **interior**. Substituindo, `t = profundidade / ringWidth`: **a máscara não
+depende da resolução nem da faixa do campo de distância, só da largura em
+pontos.**
+
+`[BIN]` E há **duas** guardas, não uma. `0x20C3C`–`0x20C50` pula o anel quando o
+byte baixo do segundo word do `SDF` é `0xFF` — o **caso vazio** dele — e quando
+`ringWidth` é `nil`. **Camada sem campo de distância não ganha anel.** O
+laudo-mãe tinha chamado a primeira de "um flag do chamador"; é mais específica.
+
+E um `[OBS]` vizinho fechou por varredura, com uma lição de método de brinde:
+`[BIN]` `vibrantBrightness` tem **um** consumidor em todo o binário (`0x20BB4`),
+provado varrendo as 142.694 instruções do `__text` atrás de cada
+`ldr dN,[xM,#0xa0]` (dez sítios) e cada `ldr dN,[xM,#0x350]` (seis — o campo tem
+duas grafias porque `Shadow` mora em `params+0x2B0`). **O `0,75` nem chega ao
+*constant pool*:** o ARM64 o materializa com `fmov`, e há **zero** ocorrências do
+padrão `0x3FE8000000000000` no arquivo inteiro. Ver §45.2.
+
+### 36.7. A passagem de overdraw — está desenhada, e NÃO é o aro
+
+`[BIN]` Não é um segundo efeito: é **a mesma função** `0x49ED4`, chamada de novo
+com `w1 = 1`, com o mesmo descritor, a mesma imagem, o mesmo retângulo, a mesma
+tinta e a mesma alpha. Varrendo `0x49ED4`–`0x4A21C`, o `w1` aparece em exatamente
+dois lugares e os dois são o mesmo `csel`: **a única coisa que ele muda lá dentro
+é o byte de mescla** (`overdrawBlendMode` em vez de `blendMode`).
+
+**Então o que faz dela um "overdraw" está FORA da função. É o recorte.**
+
+`[BIN]` `0x45FA8` abre a camada, `0x45FE4` chama `0x4B4EC` e `0x45FF4` recorta
+com `clipLayerWithAlpha:mode: 0`. E `0x4B4EC` **não é construtor de máscara: é o
+desenho do conteúdo** — prova por `xref`, porque um dos quatro chamadores dele é
+`0x4B3EC`, dentro da própria `0x4AF20` que a passagem de conteúdo invoca uma
+instrução antes. **A camada de recorte recebe o mesmo desenho, do mesmo
+descritor, que a passagem de conteúdo acabou de pôr na tela.** Isto é o nome do
+campo virando geometria: `drawOverContent`.
+
+`[BIN]` A ordem, lida do driver por elemento `0x48B74`: vidro (`0x48BD4`) →
+conteúdo e overdraw (`0x48C08`) → **realces** (`0x48DB4`), sendo que `0x48DB4`
+está no ponto de junção para onde todos os `b.eq` intermediários saltam, de modo
+que os realces correm em qualquer ramo.
+
+`[ART]` Dos 271 grupos, **149 abrem a passagem**, em 114 documentos. E o `t`
+satura quase sempre: a alpha do recorte é `0,2` em 105 grupos e `0,5` em 18 —
+**123 dos 149 já estão no teto**.
+
+> ### A medida que importa, e ela é negativa
+>
+> A frente existiu porque o gabarito da Apple tem um **aro escuro de 0–5 unidades
+> de canvas no ápice superior** que nenhum dos cinco realces explica, e o overdraw
+> era **um dos três candidatos**. Medido com o perfil de luma por profundidade, no
+> mesmo lugar em que `realce-forma.md` mediu o dele:
+>
+> | profundidade (un.) | 0,0 | 2,0 | 4,0 | 16,0 | 36,0 | **60,0** | 116,0 |
+> |---|---|---|---|---|---|---|---|
+> | `depois − antes` | **−0,11** | −0,12 | −0,07 | −0,81 | −2,70 | **−4,06** | −3,43 |
+> | `Apple − antes` | −82,76 | −53,64 | +17,37 | +7,39 | +8,81 | +6,19 | +0,45 |
+>
+> `[BIN]` (medida) **A passagem é monótona crescente na profundidade e vale
+> praticamente zero no aro.** O aro do gabarito é o oposto: local, entre 0 e 5
+> unidades, com o brilho voltando logo abaixo. E o motivo é previsível da própria
+> transcrição — a imagem que ela compõe é a silhueta com o anel, borrada com sigma
+> 19,2 e deslocada 32 unidades; perto da borda de cima ela é quase nula **por
+> construção**. Recortá-la à arte não pode produzir um aro no contorno; produz o
+> contrário de um aro.
+>
+> **E o sinal do deslocamento não salva a hipótese.** Num build temporário
+> revertido antes do commit, com `offsetY` negado, o escurecimento fica quase
+> **constante em ~5,5 luma** em toda a profundidade — escurecimento geral, não
+> banda. Isso também tira o `[OBS]` antigo da lateralidade de `y` da lista de
+> explicações do aro, sem fechá-lo: **uma parede a menos para a próxima frente.**
+
+`[BIN]` Contra a média global a passagem **piora** um canal: R vai de 8,95 para
+8,93, G de 10,03 para **10,26**, B não move. **E isso não é motivo para não
+desenhá-la.** A aritmética, a geometria e a ordem estão lidas com endereço, e o
+critério deste repositório é a leitura e não o diff. Desligá-la porque o Δ médio
+subiu 0,23 seria exatamente o *overfitting* que a regra proíbe, com o sinal
+invertido.
+
+### 36.8. O que a sombra deixou aberto
+
+| # | `[OBS]` | onde |
+|---|---|---|
+| 1 | O portão de `[descritor+0x31]` = `blendMode`: `0x45F10` exige o byte **zero** para a passagem abrir. Nenhuma chave de documento escolhe o `blendMode` de uma **camada**, então aqui a passagem abre sempre que a aritmética a abre — **uma camada com mescla não-normal não ganharia overdraw no alvo, e ganha aqui** | `sombra-overdraw` §10.1 |
+| 2 | `[INF]` O que o `float` de `clipLayerWithAlpha:` multiplica: a cobertura, por três indícios e **nenhuma** leitura do rasterizador | `sombra-overdraw` §10.2 |
+| 3 | A ordem interna do recorte contra o filtro de matriz de cor — `0x4AF20` instala um `addColorMatrixFilterWithArray:` antes de `0x4B4EC` no caminho longo, e a camada de recorte do overdraw chama `0x4B4EC` **sem** ele | `sombra-overdraw` §10.3 |
+| 4 | **A luz a mais no miolo.** `Apple − nós` é positivo e cai de +10 a +0,45 entre 20 e 116 unidades de profundidade, e **nada** desta família a explica | `sombra-overdraw` §10.4 |
+| 5 | `Shadow.ignoreFillOpacity` sem consumidor conhecido; as seis palavras do portão `0x49F40`–`0x49F70` sem nome; a escrita de `ctx+0x469F` | `sombra-anel` §10.4/§10.5 |
+| 6 | A ordem entre a máscara de translucidez e a sombra — qual imagem o alvo alimenta ao `shadowImage`. Com máscara identidade as duas leituras dão o mesmo pixel | `sombra-desenho` §6.7 |
+| 7 | O default de `Icon.Layer.opacity`. A cópia é verbatim e o inicializador **não se materializa** neste slice: a varredura dos 117 sítios de `fmov dN,#1.0` do `__text` não acha um `str` num `Layer`. O `1.0` é identidade multiplicativa — regra do documento, não valor lido | `sombra-desenho` §6.4 |
+
+E o pixel, para quem quiser refazer: a sombra passou a desenhar movendo **388.659
+de 1.048.576** no `Apollo-Reborn/AppIcon` (37,07 %, Δ máx 190) e **166.003** no
+`CodeEditApp/CodeEditAlphaIcon`; o `Aeastr/GlowGetter` moveu **zero**, e é o
+**controle negativo** — os três grupos dele têm `glass: false` em todas as cinco
+camadas, então a porta recusa, como deve. **A porta segura nos dois sentidos.**
+
+---
+
+## 37. O desfoque: o kernel, a escada, e a superfície que o gabarito recusou
+
+`[BIN]` **O raio é o sigma.** E o alvo **nunca paga** os taps que isso
+implicaria: ele desce a resolução **subtraindo a variância que a descida
+introduz**. O que ele desfoca é o **fundo**, sobre uma extensão de quadro que só
+o `effectsFrame` do descritor descreveria — e cuja única leitura disponível foi
+desenhada, medida contra o gabarito da Apple e **recusada por ele**.
+
+Quatro frentes, e a sequência é uma cadeia: `desfoque.md` leu o kernel e corrigiu
+um erro de fator 3 nascido horas antes; `desfoque-escada.md` leu a conta que
+evita executá-lo inteiro **e corrigiu uma transcrição do seu antecessor**;
+`blur-material.md` derrubou duas das três paredes da superfície e apanhou do
+gabarito na terceira; `opaque-bit20.md` foi atrás do único candidato que sobrava
+e voltou com **não**.
+
+### 37.1. `σ = raio`, por três leituras que não compartilham caminho
+
+O erro que isto corrigiu tinha nascido no mesmo dia: `GlassShadow.h` usava
+`kShadowBlurSigmaPerRadius = 1/3`, e o próprio arquivo confessava ser *"a única
+escolha deste arquivo que é convenção e não medida"*, listando `sigma = raio`
+como *"igualmente não lida"*. **A convenção estava errada por um fator de três,
+na direção estreita, e a alternativa recusada era a certa.**
+
+**Leitura 1 — a cadeia de GPU, da entrada aos taps.** `[BIN]`
+
+| endereço | símbolo | o que faz com o raio |
+|---|---|---|
+| `0x3E8D4` | `-[RBDisplayList addBlurFilterWithRadius:opaque:]` | põe `opaque` nas flags e cai (*tail call*) no próximo |
+| `0x3E69C` | `_RBDrawingStateAddBlurFilter` | `fcvt s0,d8` (`0x3E728`): estreita para `float` e **passa intacto** |
+| `0xFE598` | `GaussianBlur::GaussianBlur(float, …)` | `dup v0.2s` + `str d0,[x0]` — vira par por eixo. **Nenhuma aritmética** |
+| `0xFEC34` | `GaussianBlur::render` | **`0xFED04 fmul v0.2s, v10.2s, v10.2s`** — o raio **ao quadrado** vira o campo de **variância** |
+| `0xFF964` | `BlurRenderer::render` | `0xFFEF0` entrega **variância / nº de passadas** ao kernel |
+| `0xFE378` | `NarrowBlurKernel::construct(float v)` | `1/(2v)`, e o laço `0xFE3CC`–`0xFE3F0` calcula `exp(−x²/(2v))` |
+
+`w(x) = exp(−x²/(2v))` com `v = raio²` **é** `exp(−x²/(2σ²))` com `σ = raio`.
+
+E a **tabela assada** fecha a conta sem código nenhum: `RB::(anon)::narrow_blur_15`
+(`0x15F9D0`) é um kernel de 15 taps literal em `__const`, e
+`0,015928393 / 0,11769579 = 0,13533528` contra `exp(−7²/(2·12,25)) = exp(−2) =
+0,13533528` **em todos os dígitos impressos**. O `12,25` não é chute: é o imediato
+`0x41440000` = `3,5²` que `NarrowBlurKernel::get` compara antes de devolver essa
+tabela. **Argumento, tabela e limiar concordam que o número que circula é uma
+variância.**
+
+**Leitura 2 — o caminho de CPU.** `[BIN]` `RB::CGContext::apply_blur` (`0xBFDC0`)
+passa o `float` **direto** a `gaussian_kernel_` (`0xC35F4`) — nenhuma instrução
+entre os dois toca `v0` —, e essa função é
+`halfWidth = min(ceil(σ·2,8), 1024)` com `w[i] = exp(−i²/(2σ²))`. Gaussiana de
+livro-texto, sigma = o argumento. Quem a alimenta (`0xFF0D0`) faz
+`σ = 0,5 · escalaCTM · (rx + ry)`. **Um raio que precisasse ser dividido por três
+seria dividido aqui, e não é.**
+
+**Leitura 3 — os bounds.** `[BIN]` `GaussianBlur::roi` (`0xFEB58`) cresce a ROI em
+`max(ceil(raio · 2,8), 0)` por eixo, e o `2,8` **não está no pool**: é
+`mov w8,#0x3333` + `movk w8,#0x4033,lsl #16` em `0xFEBA4`, o mesmo padrão de bits
+que o kernel de CPU carrega de `0x15ECF0`. **Um filtro cujos bounds crescem
+`2,8·r` é um filtro cujos taps morrem em `2,8·r`** — sob `σ = raio/3` o alvo
+estaria reservando **8,4 sigmas** de margem para um kernel que trunca em três.
+
+O repositório já tinha a curva certa e não sabia: o `gaussian` de `SvgFilter.cpp`
+calcula `exp(−i²/(2σ²))` normalizado, truncado em `ceil(3σ)`. **É a mesma curva**,
+e a única diferença — `3,0` contra o medido `2,8` — move cada peso em cerca de
+`0,24 %`, porque uma gaussiana guarda `0,99730` dentro de 3σ e `0,99489` dentro de
+2,8σ. Era metade da resposta, e a metade que já estava certa.
+
+Custo em pixel de consertar o fator 3: **455.043 de 1.048.576 (43,40 %)** no
+Apollo a 1024 px, Δ máx 93 — a sombra daquele ícone passou de `σ = 6,4` para
+`σ = 19,2`. E **duas notas de `RenderedIcon::notes` saíram**, pela regra que o
+próprio `GlassShadow.h` escreve: *uma entrada de `notes` ganha o seu lugar
+nomeando uma lacuna que ainda está aberta.*
+
+### 37.2. A escada de qualidade — o alvo nunca faz 361 taps, ele desenha menor
+
+Corrigir o sigma deixou o render de 1024 px em **37,37 s**. Com
+`halfWidth = ceil(2,8σ)` e σ até 64, são **361 taps por eixo**. `[BIN]` O alvo não
+os executa, e a máquina substituta tem três peças:
+
+**(a) Teto de sigma por passada.** `0xFED34`–`0xFED50` lê dois bits de qualidade
+(`ubfx w9, w8, #4, #2`) e um `fcsel` de três vias escolhe:
+
+| `(flags>>4)&3` | σmax | taps cacheados |
+|---|---|---|
+| `1` | `3,5` | 15 |
+| `3` | `7,0` | 31 |
+| **qualquer outro (default)** | **`5,25`** | 23 |
+
+**(b) Passadas que somam variância.**
+`nRaw = ceil(max(rx²,ry²)/σmax² − 0,001)` (`0xFED5C`–`0xFED74`), grampeado a
+`[1,32]` em `renderer+0x1c`. Variâncias gaussianas **somam**: `n` passadas de
+variância `v/n` compõem `v`, e `0xFFEF0` entrega exatamente `v/n` ao kernel.
+
+**(c) Redução de resolução que subtrai a variância que ela introduz.** `[BIN]`
+`0xFEDF0` e `0xFEE24`:
+
+| condição | alvo de render |
+|---|---|
+| `nRaw >= 7` | `(d + 3) >> 2` — redução **4×** |
+| `nRaw >= 3` | `(d + 1) >> 1` — redução **2×** |
+| senão | tamanho cheio |
+
+E `BlurRenderer::render` **reescreve a variância antes de qualquer kernel ser
+construído**: `v/16 − 0,47265625` (`= 0,6875²`) no 4× e `v/4 − 0,765625`
+(`= 0,875²`) no 2×. **A imagem encolhida já carrega o seu próprio borrão na grade
+dela, e o kernel é pedido para o resto** — a mesma contabilidade da soma de
+passadas, aplicada à reamostragem.
+
+> **Duas armadilhas de leitura nesta seção, e as duas são a mesma armadilha.**
+>
+> `[BIN]` **A decisão de resolução olha o `nRaw` CRU, não o grampeado.** O valor
+> que vai para `renderer+0x1c` é `clamp(nRaw,1,32)`; o que `0xFEDF0` compara é
+> `w25`, o bruto. Ler o grampeado daria a escada certa só até 32 passadas.
+>
+> `[BIN]` **E uma transcrição do laudo anterior estava errada.** `desfoque.md`
+> §1.2 escreveu `v/4 − 2,56` (`= 1,6²`) como a conta do 2×. Ela é o 2× do
+> **degrau de cima**: o discriminante é `ldrb w8,[x20,#9]` em `0xFFA4C`, e
+> `[x20+9]` é escrito em `0xFECF8`–`0xFED00` como `(flags & 0x30) == 0x30`, isto
+> é qualidade **3**. O 2× default subtrai `0,875²`. **Nenhuma das duas constantes
+> está no pool** — `−0,47265625` é `mov w8,#-0x410e0000` e `−0,765625` é
+> `mov w8,#-0x40bc0000` —, e é exatamente por varrer o imediato que elas
+> apareceram (§45.2).
+
+**O tempo, em Release, uma execução por medida** (`Apollo-Reborn/AppIcon`,
+`--idiom square`): 1024 px **37,37 s → 10,30 s**; 512 px **3,44 s → 2,68 s**; a
+sombra sozinha **27,6 s → 1,2 s**.
+
+**A meta de 1 s a 1024 px NÃO foi alcançada**, e isso está escrito com a culpa
+realocada por medida em vez de estimada — ver §44.
+
+`[INF]` Três escolhas desta transcrição são declaradas e não lidas: **se a escada
+recorre** no alvo (fica atrás de `RenderGroup::add_multipass_renderer`,
+`0x105E3C`); **os filtros de reamostragem** (aqui, caixa na descida e bilinear na
+subida, o que deixa o resultado `0,09 %` estreito no 4× e `3,9 %` no 2×); e um
+**piso de 8 texels** para a redução, que o alvo não tem lido. `[OBS]` E a largura
+do kernel por passada no caminho de GPU é `2,0σ`–`2,14σ`, mais estreita que os
+`2,8σ` do `roi` e do caminho de CPU; **por que a GPU se permite isso não foi
+lido**.
+
+`[BIN]` O pixel que a escada mudou, de propósito: **43.014 de 1.048.576 (4,10 %)**
+a 1024 px, com Δ máx entre pixels **visíveis** de 2/5/8/1 e `p99 = 2`. E a
+ressalva que o laudo publicou sem ser obrigado: contando **todos** os pixels o Δ
+máx é **25** no azul, em **35** pixels — **todos com `alpha == 0` nos dois
+quadros**, lixo de `acc[c]/a` invisível em qualquer composite. *"As duas estão
+aqui porque publicar só a primeira seria escolher o número que agrada."*
+
+### 37.3. A superfície: duas paredes caíram, a terceira era nossa, e a quarta doeu
+
+`[BIN]` `0x4A2D4`–`0x4AC84` é **uma** função, e os dois sítios de desfoque moram
+dentro dela. Ela ramifica em dois escalares e em mais nada:
+
+```
+0x4A404  fcmp d13, #0.0 ; b.le 0x4A5DC      ; blurStrength <= 0 ?
+0x4A40C  fcmp d1,  #0.0 ; b.ne 0x4A82C      ; refractionStrength != 0 ?
+```
+
+| `blurStrength` | `refractionStrength` | destino | camada |
+|---|---|---|---|
+| `> 0` | `== 0` | **`0x4A418`** | `beginLayerWithFlags:` **1**, corpo **vazio** |
+| `> 0` | `!= 0` | `0x4A82C` | flag **`0x80`** em volta do corpo da refração |
+| `== 0` | `!= 0` | `0x4A5DC` | flag 1, sem desfoque |
+| `== 0` | `== 0` | `0x4A34C` | desenho simples, sem camada |
+
+**Parede (1) — qual ramo roda. CAIU, e a resposta veio do corpus.** `[ART]`
+`refractionStrength` **não é chave de `.icon`**: o default da constante de oito
+campos (`0x93B30`) é `0.0`, e um `grep -rl refraction` sobre os 145 documentos
+devolve **zero arquivos** — idem o gabarito 27.0-129 e o ícone do usuário. **Todo
+documento toma o primeiro ramo**, `0x4A5B4`, flag 1 `needs-background`, corpo
+vazio. E de carona cai a ordem, que é o formato inteiro do efeito: `[BIN]` o
+conteúdo do grupo é desenhado **antes** da camada (`bl 0x49ED4` em `0x4A488`
+precede o `0x4A48C` que abre o `save`), logo **o fundo que a camada precisa
+inclui a arte do próprio grupo** — o grupo é desfocado junto com tudo o que está
+embaixo dele, não meramente por cima.
+
+**Parede (2) — o recorte. CAIU, e virou aritmética.** `[BIN]` Com os seis stubs
+de `CGRect` resolvidos pela **tabela de símbolos indiretos** (§45.3):
+
+```
+frame  = CGRect em descritor +0x70 .. +0x88
+canvas = CGRect em ctx       +0x558 .. +0x570
+r = CGRectMake(MinX(frame)*W(canvas), MinY(frame)*H(canvas),
+               W(frame)*W(canvas),    H(frame)*H(canvas))
+r = CGRectOffset(r, MinX(canvas), MinY(canvas))
+r = CGRectInset (r, -[ctx+0x46A8], -[ctx+0x46A8])
+```
+
+**Um frame multiplicado pelo TAMANHO do canvas e deslocado pela ORIGEM dele é um
+frame em coordenadas unitárias** — é o que a multiplicação significa. O canvas é
+`(0,0,1024,1024)` para um ícone quadrado (`0x4291C`–`0x42968`, com o `1024.0`
+materializado por imediato em `0x42940`), e `[ctx+0x46A8]` é **unidade de canvas
+por pixel** — o mesmo campo que `realce-forma.md` §4.1 leu, confirmado por três
+verificações independentes. Um `CGRectInset` pelo **negativo** dele é um
+**afastamento de exatamente um pixel de dispositivo em cada lado**: guarda de
+sangramento, não corte.
+
+**Parede (3) — onde o composite de baixo está pronto. Não era do alvo.** Era
+arquitetura nossa, e a resposta é o fim do laço de camadas do grupo, logo antes
+do `blendPremulOver`. Um grupo com `blend-mode` não-normal desenha num alvo
+próprio e por isso é **recusado por nome** (`kBlurMaterialBlendedGroupNote`).
+
+**Parede (4) — o frame. Foi desenhada, medida, e o gabarito a recusou.** Sobrava
+**uma** incógnita e **uma** leitura disponível: o frame é o retângulo unitário, o
+canvas inteiro. Ela foi implementada e renderizada:
+
+| | R | G | B | A | pixels diferentes |
+|---|---|---|---|---|---|
+| **controle (não desenha)** | **8,95** | **10,03** | **9,89** | **4,95** | 160.327 |
+| desfoque, frame unitário | 15,58 | 20,09 | 22,49 | 7,09 | 189.731 |
+| diagnóstico: só a cor, alpha preservado | 14,35 | 18,90 | 21,33 | 4,95 | 187.732 |
+
+**Piorou em todos os canais**, e a terceira linha mostra que **não é o alpha**. O
+perfil de luma diz a mesma coisa em forma: o gabarito cai `157 → 49` em nove
+linhas e **segura um 49 chapado**; nós sem desfoque caímos `202 → 49` em quinze e
+seguramos o mesmo 49; **nós com desfoque somos chapados em 84 e nunca chegamos a
+49**. Um desfoque de fundo do tamanho do canvas com `σ = 35,84` unidades **apaga
+estrutura que o alvo guarda**.
+
+> **O gabarito tem direito de desempatar entre duas leituras, e desempatou:** o
+> frame **não** é o retângulo unitário. Qual é, a frente não sabe, e aplicar
+> qualquer outro seria escolher extensão pelo diff em 46 documentos. A
+> transcrição entra **ligada aos testes e desligada no desenho**, exatamente como
+> `BlendFormula.h` faz com o grampo de `plusLighter`. Zero pixel mudou nesse
+> commit, com SHA-256 idêntico e tempo idêntico — **como tem de ser quando nada
+> desenha.**
+
+`[ART]` O censo, recontado três vezes e batendo dígito por dígito: **123** chaves
+`blur-material` em **123 grupos** sobre **73 documentos**; **75** são números,
+todos positivos, de `0,05` a `1,0` (isto é, `3,2` a `64` unidades de raio), em
+**46 documentos**; **48** são `null` explícito. A nota é fechada em raio
+**positivo**, porque *"o autor deixou desligado" tem de continuar distinguível de
+"não está desenhado"*.
+
+### 37.4. O `opaque:` e o bit 20 — a pergunta barata foi feita, e a resposta é NÃO
+
+O laudo da superfície fechou apontando **um** candidato com endereço: o
+`opaque:1` dos dois sítios acende o **bit 20** do estado de render da última
+passada, e *"é a única coisa em toda a cadeia que poderia impedir um desfoque de
+amolecer uma silhueta"*. Foi seguido, e **a hipótese está refutada**.
+
+`[BIN]` **O bit 20 é o bit 4 de `fill_state`, e os campos têm nome no próprio
+binário.** `RB::FormattedRenderState::description()` (`RenderBox 0x13365C`) monta
+um dicionário cujas chaves `CFString` nomeiam os campos: `function` nos bits 0..5
+(`0x1336E8`), `coverage_state` em 6..15 (`0x1337DC`) e `fill_state` em 16..31
+(`0x13380C`). E `RenderState::name()` (`0x1328B0`) indexa a tabela de 39 nomes de
+`0x1900D8` com os bits 0..5, o que faz da constante `0x03C0001E` de `0x100004` a
+função `0x1E` = **`filter_blur`**.
+
+`[BIN]` **E ninguém lê esse bit na CPU, para esta função.** Auditados todos os
+acessores: `dest_write_mask` (`0x132DA8`) lê 22..25; `reads_destination` e
+`reads_coverage` (`0x132AD0`/`0x132B80`) testam `fill_state & 0xF == 9`;
+`reads_noise` (`0x132BBC`) lê o bit 21 pelo caso 15 de `0x16266C`; `reads_tables`
+é constante 0 no caso 27; `uses_shader_blending` retorna antes de olhar bit
+algum. E a varredura do `__text` inteiro **não acha um único `tbz`/`tbnz #20`** —
+o único `ubfx #20,#1` é o `reads_noise` do caso 7, que é
+`filter_color`/`filter_custom`. **O destino do bit é a GPU:**
+`make_render_pipeline_descriptor` (`0xD8560`) empacota os 64 bits mais a palavra
+derivada e chama `setConstantValue:type:atIndex:` com `MTLDataTypeUInt4` no
+índice 0 (`0xD86E8`–`0xD870C`), **selecionando uma variante compilada do shader**.
+`[OBS]` Esse metallib não está em corte nenhum do dump.
+
+`[BIN]` **Mas o `opaque:` tem um SEGUNDO caminho, e esse é legível — e decide.**
+O mesmo bit vira o `OptionSet<Filter::Flag>` final de
+`RenderGroup::add_multipass_renderer` (`0xFEE60`), é gravado em
+`MultipassInfo+0x85` (`0x105EE0`, **o único escritor daquele deslocamento em todo
+o `__text`**) e lido por `resolve_unary_subgroup` em exatamente **duas** formas,
+as duas sobre **alfa**: pula `resolve_srgb_alpha()` (`0x107974`) e passa
+`!opaque` ao `bool` final de `color_convert(…)` (`0x10756C`). E **não encosta em
+geometria em lugar nenhum**: `adjust_roi` (`0xFEB04`), `roi`/`dod` (`0xFEB58`) e
+`layer_scale` (`0xFE6E4`) não leem o bit 0 de `+0x18`.
+
+> `[BIN]` **`opaque:1` quer dizer "este conteúdo não tem alfa que valha
+> resolver".** Ele não restringe a região amostrada, não deixa o compositor pular
+> a leitura do que está atrás, e **não pode** ser o que faz um desfoque de fundo
+> conviver com uma silhueta nítida. A hipótese que a missão mandou testar — e
+> explicitamente **não** confirmar — está refutada.
+
+**E o frame caiu junto, por uma porta que ninguém tinha usado.** A frente da
+superfície tentou seguir o `descritor+0x70` pelo **código**; o caminho que
+funciona é o **metadado de reflexão**, o mesmo que nomeou o descritor no §36.4.
+`[BIN]` **`descritor+0x70` é `FinalizedIcon.Layer.effectsFrame`, um `CGRect?`** —
+e a tag dele em `+0x90` é **o portão de todo o efeito**:
+
+```
+0x4A31C  ldrb w25, [x0, #0x90]      ; a TAG de effectsFrame
+0x4A338  tbz  w21, #9,  0x4A34C     ; flag limpa -> desenho simples
+0x4A344  ccmp w25, #1, #4, ne
+0x4A348  b.ne 0x4A3F0               ; efeitos SO se tag != 1
+```
+
+e `0x4A3F0` é onde os quatro `double` do retângulo entram em `d12/d11/d10/d9` —
+**os mesmos registradores** que a aritmética de recorte da parede (2) entrega a
+`CGRectGetMinX/MinY/Width/Height`. A ramificação em
+`blurStrength`/`refractionStrength` mora **abaixo** desse desvio.
+
+> `[BIN]` **Com `effectsFrame == nil` o alvo cai em `0x4A3AC`, desenha o conteúdo
+> do grupo e retorna SEM ABRIR CAMADA NENHUMA.** O `blur-material` inteiro está
+> atrás desse portão.
+>
+> **O que isso muda é o default honesto, e é a entrega desta leitura.** A frente
+> da superfície supôs que o frame ausente valia "o canvas inteiro" e desenhou. O
+> alvo, sem frame, **não desenha**. **O retângulo unitário não era a leitura
+> conservadora do frame — era a leitura errada de um ramo que nem roda.** O
+> gabarito tinha recusado o número certo pela razão errada.
+
+`[OBS]` Quem calcula o `effectsFrame` continua sem leitura, e **não é chave de
+documento**: `[ART]` uma varredura dos **146** bundles acha **zero** ocorrências
+de `effects-frame`/`effectsFrame` e exatamente **uma** chave `"frame"` em tudo.
+Ele é produzido pelo finalizador, em Swift, sem símbolo.
+
+### 37.5. E o `blur-material` morre como suspeito do aro, pelo mesmo instrumento
+
+Os outros dois candidatos do aro escuro do ápice tinham sido eliminados pelo
+**perfil de luma por profundidade**; o `blur-material` tinha sido eliminado pelo
+**erro médio de canal na imagem inteira**. Instrumentos diferentes, e o segundo é
+o que responde a pergunta do aro. Ele foi rodado — com o efeito atrás de uma
+variável de ambiente, revertida antes do commit.
+
+Aferição primeiro: com o render de controle o instrumento devolve, para
+`Apple − nós`, `−63,99 / −47,06 / +0,29 / +47,16 / +43,66 / +35,52 / +27,54 /
++15,85` contra os `−60,5 / −62,0 / −7,3 / +46,0 / +44,4 / +35,8 / +28,0 / +16,9`
+do laudo da refração. **De 5 unidades em diante as duas séries batem dentro de 1
+luma**; as duas primeiras divergem porque ali o perfil é dominado pelo degrau da
+borda e o render mudou desde então. **O instrumento está reproduzido.**
+
+| profundidade (un.) | 0,0 | 2,5 | 5,0 | 7,5 | 9,9 | 12,4 | 14,9 | 17,4 |
+|---|---|---|---|---|---|---|---|---|
+| **o que o gabarito pede** | **−63,99** | **−47,06** | +0,29 | **+47,16** | +43,66 | +35,52 | +27,54 | +15,85 |
+| `blur-material` desenhado | −86,97 | −90,23 | −68,98 | −52,19 | −47,17 | −43,08 | −39,44 | −35,97 |
+
+`[BIN]` (medida) **Morre com sobra, por três razões independentes, cada uma
+bastando sozinha:**
+
+1. **A forma está errada.** O gabarito pede uma feição **local** — escuro nas duas
+   primeiras profundidades, cruzando o zero em ~5 unidades, e então **claro** e
+   decaindo. O desfoque escurece em **todas** as profundidades, monotonicamente
+   em módulo, e **nunca vira**. Logo é *blanket*, não aro.
+2. **O sinal está errado onde mais importa.** De 5 unidades em diante o gabarito
+   nos quer mais claros (+47 a +16) e o desfoque nos deixa mais escuros (−52 a
+   −36): errado por **83 a 52 luma em mais da metade do perfil**.
+3. **A amplitude está errada mesmo onde o sinal acerta.** No aro ele dá `−87,0` e
+   `−90,2` onde se pede `−64,0` e `−47,1`.
+
+E **os dois extremos do espaço de frames fecham também**, sem inventar número: um
+frame que **exclui** o ápice não move o perfil ali (delta zero, nenhum aro); um
+frame que **inclui** o ápice reproduz a forma da tabela, porque um recorte só
+restringe **onde** o passa-baixa age, não o que ele faz onde age. `[OBS]` Frames
+intermediários, cuja borda cai dentro da faixa de 0 a 17 unidades, não foram
+medidos — mas são justamente os que `effectsFrame` **não pode ser** sem que a
+borda do recorte apareça como artefato.
+
+> **Dos três suspeitos do aro, os três estão agora mortos pelo mesmo instrumento,
+> e o aro segue SEM DONO.** Nenhuma destas frentes inventou um quarto candidato,
+> e essa contenção é deliberada: um quarto nome sem medida transformaria uma
+> pergunta aberta num palpite documentado.
+
+### 37.6. O que o desfoque deixou aberto
+
+| `[OBS]` | onde |
+|---|---|
+| **Quem escreve o `effectsFrame`.** Não é chave de documento (`[ART]` zero nos 146 bundles); o finalizador o calcula em Swift, sem símbolo | `opaque-bit20` §2.4 |
+| **O metallib do `IconRendering` não está em corte nenhum do dump**, o que impede ver a variante de shader que o bit 20 seleciona | `opaque-bit20` §5 |
+| Os **dois bits de qualidade** de `GaussianBlur` (`flags >> 4 & 3`): o que cada valor faz está lido (σmax `3,5`/`5,25`/`7,0`, default `5,25`); **quem os escreve** não foi seguido | `desfoque` §7.2 |
+| Se a escada **recorre** no alvo; os filtros de reamostragem; `2,1σ` contra `2,8σ` por passada no caminho de GPU | `desfoque-escada` §6.1–§6.3 |
+| `render_variable` (`0xFEEB0`) e `addVariableBlurFilterWithRadius:mask:` (`0x3EB74`) não lidos — **nenhum caminho do `IconRendering` deste corpus os alcança** | `desfoque` §7.4 |
+| Os `465 ms` que sobram no desfoque já **não são o kernel**: são as passadas de resolução cheia que a escada ainda paga, sobre 4 M de floats por sombra | `desfoque-escada` §5 |
