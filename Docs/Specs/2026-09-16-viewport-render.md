@@ -63,9 +63,32 @@ errado aparece como diferença contra o render cheio. A pergunta "a margem é
 suficiente?" deixa de ser uma aposta e vira uma medição.
 
 O gate é um caso de teste que renderiza o mesmo documento duas vezes — cheio a
-`size`, e em quatro viewports que cobrem quadrantes sobrepostos — e compara. A
-tolerância é ZERO em aritmética de ponto flutuante determinística; se não for
-zero, o desenho está errado e não a tolerância.
+`size`, e em viewports que cobrem quadrantes sobrepostos — e compara
+`RenderedIcon::rgba` float a float. A tolerância é ZERO.
+
+Os viewports não são escolhidos a esmo; cada um existe para derrubar uma
+hipótese específica:
+
+- um que cruza a borda da forma (campo, especular, translucidez);
+- um encostado na borda do canvas (a interseção com o canvas, abaixo);
+- um com origem que NÃO é múltipla de 4 (o alinhamento da escada do desfoque,
+  abaixo);
+- um logo abaixo da forma, onde só a sombra deslocada chega.
+
+Os documentos saem do corpus pelos contadores que o próprio render já devolve
+(`glassShadowed`, `glassRefracted`, `glassTranslucent`, `glassSpecular`,
+`backgroundPainted`, e um com arte raster), numa `size` em que a escada do
+desfoque reduz de verdade.
+
+**Quando o diferencial não for zero, o relatório diz de que tipo ele é.** A
+arte vetor passa pela GPU (`Device.h`), e uma coordenada transladada não tem
+garantia de arredondar igual à original. Então o gate imprime o `max |Δ|` e a
+distância do pior pixel até a borda do buffer. Uma margem curta aparece com Δ
+grande e colada na borda. Resíduo de aritmética aparece com Δ na ordem de ULP,
+espalhado pelas bordas antialiasadas. Só o primeiro caso é o desenho errado. O
+segundo pede que a translação seja feita de outro jeito (subtração inteira
+depois da colocação, e não dobrada dentro da matriz), e a tolerância continua
+sendo zero.
 
 ## A margem, e de onde vem o número
 
@@ -73,24 +96,64 @@ Um pixel dentro do viewport pode depender de geometria fora dele. Os alcances
 são conhecidos e medidos, em unidades de canvas (o canvas tem 1024 —
 `IconRenderer.h`):
 
-| efeito | alcance | sítio |
-| --- | --- | --- |
-| desfoque do material | `min(b,1) × blurStrengthMax`, máx **64** | `GlassMaterial.h:237` |
-| sombra: deslocamento | **32** para baixo | `GlassShadow.h:274` |
-| sombra: desfoque | mesmo `blurStrengthMax × clamp(radius)`, máx **64** | `GlassShadow.h:123` |
-| sombra: anel | **16** | `GlassShadow.h:126` |
-| campo de distância | o que a banda do especular lê, ~**24** | `GlassSpecular.h` |
+> **Correção de 16/09 (revisão).** A primeira versão desta tabela dava 64 para
+> os desfoques e fechava a margem em 128. As duas coisas estavam erradas. O
+> "raio" é o **sigma** da gaussiana (`BlurKernel.h`), e o kernel vai até
+> `ceil(2,8 × sigma)` (`blurKernelHalfWidth`, `BlurKernel.cpp:44`). Além disso,
+> a refração lê o backdrop em coordenada deslocada, e ela nem aparecia na
+> tabela. As linhas abaixo são as corrigidas.
 
-O pior caso empilha sombra deslocada e desfocada: 32 + 64. A margem inicial é
-**128 pontos de canvas** em cada lado, convertida em pixels pela escala do
-render, e o invariante acima é que decide se ela basta — cresce até o
-diferencial zerar, e o número final entra aqui como medida.
+| efeito | alcance em pontos de canvas | sítio |
+| --- | --- | --- |
+| sombra: desfoque | `2,8 × 64 × clamp(radius)`, máx **179,2** | `GlassShadow.cpp:164`, `BlurKernel.cpp:44` |
+| sombra: deslocamento | **32** para baixo, somado ao de cima | `GlassShadow.h:274`, `GlassShadow.cpp:277` |
+| sombra: anel | **16** | `GlassShadow.h` (`Shadow.ringWidth`) |
+| refração: deslocamento | `|refractionStrength|`, teto **640** | `GlassMaterial.h` (`refractionStrengthMax`), `GlassLayer.cpp:146` |
+| refração: banda do campo | `refractionHeight`, teto **256** | `GlassMaterial.h` (`refractionHeightMax`) |
+| especular: banda do campo | `inset + height`, ~**24** | `GlassSpecular.h` |
+| desfoque do material (desenho DESLIGADO hoje) | `2,8 × min(b,1) × 64`, máx **179,2**, +1 px de outset | `BlurKernel.h`, `IconRenderer.cpp:828` |
+
+**A margem é calculada por documento, não é uma constante.** O pior caso
+teórico é 640 pontos, mais de meio canvas. Com uma constante desse tamanho, o
+viewport vira o render cheio em todo ícone. A margem então sai dos parâmetros
+já denormalizados dos grupos que de fato desenham cada efeito. É o máximo, por
+lado, entre:
+
+- sombra: `2,8 × σ + deslocamento`;
+- refração: `max(|strength|, height)`;
+- especular: a banda dele.
+
+Esse máximo é convertido em pixels pela escala e arredondado para cima.
+`[OBS]` O máximo real de `refractionStrength` no corpus não foi medido. É ele
+que diz se a refração torna o viewport inútil na prática, e a medida entra aqui.
+
+**O buffer é `(viewport ⊕ margem) ∩ canvas`.** Não basta estender o viewport. O
+desfoque (`blurPass`), o `reduceBox`, o `expandBilinear` e a amostragem da
+refração (`DisplacementOracle.cpp:162`) **grampeiam na borda do buffer**. No
+render cheio, essa borda é a borda do canvas. Um buffer que passe do canvas
+grampeia num lugar em que o render cheio não grampeia. Por isso as duas bordas
+precisam coincidir sempre que o viewport encosta no canvas. A interseção tem
+mais uma vantagem: ela mantém a origem do buffer ≥ 0, e isso deixa a subtração
+da origem exata em ponto flutuante.
+
+**A origem do buffer é alinhada à escada do desfoque.** Um sigma grande não é
+pago com um kernel largo. `blurLadder` (`BlurKernel.cpp:200`) reduz a imagem por
+2 ou 4, recursivamente, com caixas que começam na origem do BUFFER. Com uma
+origem fora da grade, as caixas são outras e o resultado muda em todo pixel, não
+só na borda. A origem então é arredondada para baixo até um múltiplo do produto
+dos fatores de redução que a escada vai usar para o maior sigma do documento.
+Esse produto sai de `blurReduceFactorForVariance`, aplicado nível a nível, e não
+de uma estimativa. A condição `kBlurMinReducedSide` também depende das
+dimensões do buffer. Com o lado mínimo de 8, ela não muda nada em buffers reais,
+mas fica anotada aqui.
 
 `[OBS]` O campo de distância é o único passo cujo alcance não é uma constante: a
 distância de um pixel fundo dentro da forma pode medir até a borda mais distante
 do canvas. O que salva é que nenhum consumidor lê o campo além da sua própria
 banda — o especular clampa em `inset + height`, a sombra em `ringWidth`, a
-translucidez na própria rampa. O invariante é o que prova isso; se ele acusar
+refração em `refractionHeight` (até 256, por isso ela entra na margem acima), a
+translucidez na própria rampa (a leitura dessa banda está em
+`GlassTranslucency.h:206` e é a primeira coisa a conferir se o gate acusar). O invariante é o que prova isso; se ele acusar
 diferença longe da borda, esta hipótese caiu e o campo precisa de tratamento
 próprio.
 
@@ -101,9 +164,12 @@ resolução base e amostrado para dentro. Em troca existe um teto: se
 `(viewport + margem)` passar de **16 Mpx**, o refino não acontece e o canvas
 volta a esticar a textura da resolução base.
 
-O teto é explícito porque a margem escala com o zoom enquanto o retângulo
-visível não: em 1600% os 64 pontos do desfoque viram 1024 pixels por lado. O
-ladrilho é constante; a margem não é.
+O teto é explícito porque a margem escala com o zoom e o retângulo visível não.
+Com o canvas de 512 em 1600% (`size = 8192`, 8 px por ponto), os 211 pontos da
+sombra viram ~1690 pixels por lado, e o buffer ainda é cortado pelo canvas. O
+ladrilho é constante; a margem não é. Consequência: o teto dispara justamente
+nos zooms mais altos e nos documentos com refração forte, e é lá que o canvas
+volta a esticar. Isso está aceito, e o motivo é este.
 
 ## O que o Kit faz
 
@@ -116,25 +182,69 @@ defeito: **cada pan e cada zoom tem um intervalo sem imagem nítida**, e em um
 `pendingSeconds`, e o painel já os mostra; é por ali que o intervalo se explica
 ao usuário.
 
-O retângulo visível sai do que `PanelCanvas` já calcula: `canvasImageRect(pan,
-sidePx, zoom)` interseptado com a área disponível do painel, levado de volta ao
-espaço da imagem.
+O retângulo visível sai do que `PanelCanvas` já calcula: `st.painted =
+canvasIntersect(st.image, st.clip)` (`PanelCanvas.cpp:419`), levado de volta ao
+espaço da imagem. A `size` pedida é `round(view.size × zoom)`, e o renderizador
+aceita qualquer valor diferente de zero (`IconRenderer.cpp:589`). A restrição a
+512/1024 é só dos seletores de UI. Com zoom ≤ 1 nada muda: vale o caminho de
+hoje.
+
+Três coisas que a primeira versão deixava implícitas:
+
+- **O desenho usa o retângulo do ladrilho, e não `view.width × zoom`.** O
+  `AddImage` de `PanelCanvas.cpp:433` assume que a textura é o canvas inteiro.
+  Com o ladrilho, o `RenderedIcon` precisa trazer a origem, a extensão e a
+  `size` com que foi pedido, e o painel posiciona a textura por esses números.
+- **O que aparece durante a espera.** O ladrilho velho continua sendo desenhado
+  no retângulo que é dele, no espaço da imagem. Por estar ancorado na imagem,
+  ele acompanha o pan corretamente. Fora dele fica o fundo do painel. Um zoom
+  estica o ladrilho velho até o novo chegar.
+- **Não há pedido por quadro.** Durante um arrasto, a chave mudaria a cada
+  quadro. O pedido sai quando o pan e o zoom ficam parados por um intervalo
+  curto. Sem isso, o agendador só descarta trabalho, e o intervalo sem imagem
+  nítida vira o arrasto inteiro.
 
 ## Os sítios
 
-`options.size` aparece 32 vezes em `IconRenderer.cpp`. Os que carregam origem
-ou extensão, e portanto mudam:
+> **Correção de 16/09 (revisão).** A lista original tinha 15 sítios e errava
+> para os dois lados. Incluía `glassRefractionFor` (745) e `shadowGeometry`
+> (1428), que usam `size` só como escala (`GlassLayer.cpp:143`,
+> `GlassShadow.cpp:152`) e não mudam. E deixava de fora quatro que mudam. A
+> lista abaixo é a corrigida, contada contra o HEAD `fa21d98`.
 
-`paintBackground` (633), `clipToChiclet` (639), `drawChicletHighlights` (669),
-`glassRefractionFor` (745), o raio do desfoque (829), `placeRaster` (1160),
-`artPlacementRect` (1170, 1372), `placeOnCanvas` (1273, 1468),
-`generateFieldFromAlpha` (1317), `generateFieldFromContours` (1301),
-`glassOver` (1351), `rasterPlacementRect` (1373), `shadowGeometry` (1428) e
-`shadowImage` (1429).
+`options.size` aparece 32 vezes em `IconRenderer.cpp`. Os que carregam extensão
+ou origem, e portanto mudam:
 
-Os demais usam `size` como escala pura — esses não mudam, e o fato de serem
-distinguíveis é o argumento de que a separação dos três significados é a
-refatoração certa e não uma varredura cega.
+- a extensão do próprio buffer (592-593);
+- o retângulo do canvas que o gradiente do fundo mede (626-627, origem);
+- `paintBackground` (633), `clipToChiclet` (639) e `drawChicletHighlights`
+  (669);
+- `placeRaster` (1160);
+- `artPlacementRect` (1170, 1372) e `rasterPlacementRect` (1373);
+- `placeOnCanvas` (1273, 1468) e `ro.width/height` (1464);
+- `generateFieldFromContours` (1301) e `generateFieldFromAlpha` (1317);
+- `glassOver` (1351);
+- `shadowImage` (1429) e `shadowOverdrawImage` (1437-1438).
+
+**Uma armadilha que mistura os dois papéis.** Em `blurMaterialSurface` (829), a
+extensão entra e a escala é tirada dela: `min(w,h) / 1024`
+(`BlurKernel.cpp:279`). Hoje isso está certo porque a extensão é igual a
+`size`. Um buffer de viewport, passado ali, muda a escala sem dar nenhum erro.
+
+**Sítios que ficam FORA deste arquivo e também mudam:**
+
+- o grampo UV de `glassOver`, que é o buffer e precisa ser o canvas
+  (`GlassLayer.cpp:222-235`);
+- o grampo de `sampleBilinear` (`DisplacementOracle.cpp:162`);
+- o alinhamento da escada do desfoque (acima).
+
+**A lista é conferida pelo compilador, e não por número de linha.** Número de
+linha escorrega no primeiro commit. As funções que hoje recebem
+`(size, size)` passam a receber uma única struct de grade, com escala, origem e
+extensão. Cada chamada antiga deixa de compilar, e é o compilador que enumera
+os sítios. Os que usam `size` só como escala continuam recebendo o escalar.
+Conseguir separar os dois grupos continua sendo o argumento de que isto é
+refatoração dirigida, e não varredura cega.
 
 ## O que isto NÃO compra
 
@@ -153,10 +263,14 @@ overdraw da sombra. Um viewport não toca em nenhum dos três.
 ## Ordem de execução
 
 1. `IconViewport` no contrato, com o padrão que reduz à aritmética de hoje, e o
-   gate do invariante escrito ANTES de qualquer sítio mudar — ele tem que passar
-   trivialmente no padrão e falhar em qualquer viewport não trivial.
-2. Os sítios, em grupos que o gate consegue julgar um a um: fundo e chiclet;
+   gate do invariante escrito ANTES de qualquer sítio mudar. Ele tem que passar
+   trivialmente no padrão e falhar em qualquer viewport não trivial, e o motivo
+   da falha precisa ser o recorte, não uma dimensão de buffer que não bate.
+2. A struct de grade, com o compilador enumerando os sítios.
+3. Os sítios, em grupos que o gate consegue julgar um a um: fundo e chiclet;
    colocação de arte; campo e vidro; sombra.
-3. A margem, crescida até o diferencial zerar, com o número medido escrito aqui.
-4. O teto de área.
-5. O Kit: chave, ladrilho, e o estado de espera já existente.
+4. A margem por documento, a interseção com o canvas e o alinhamento da escada.
+   Antes disso, medir o máximo de `refractionStrength` no corpus.
+5. O teto de área.
+6. O Kit: chave, retângulo do ladrilho, pedido só com o pan parado, e o estado
+   de espera que já existe.
