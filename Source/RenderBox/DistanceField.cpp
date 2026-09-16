@@ -528,6 +528,9 @@ FieldImage fieldFromInsideMask(const std::vector<char>& inside,
 
     const double aa = options.aaWidth > 0.0f ? static_cast<double>(options.aaWidth) : 1.0;
     const double inv = 1.0 / ss;
+    // The half-width of the window swept around the foot point, in mask texels.
+    // See the refinement below for why the centre is the foot and not the query.
+    constexpr int kFootSearch = 2;
     const int half = ss / 2;
 
     for (int y = 0; y < H; ++y) {
@@ -567,7 +570,13 @@ FieldImage fieldFromInsideMask(const std::vector<char>& inside,
                 const double py = static_cast<double>(s / mw) - bny[su] * sOff[su];
                 const double vx = static_cast<double>(mx) - px;
                 const double vy = static_cast<double>(my) - py;
-                d = std::sqrt(vx * vx + vy * vy) * inv;
+                // SQUARED, in mask texels, for the whole of the search below: the
+                // window centred on the foot lands on the band almost every time,
+                // so its inner statement runs for real rather than falling out on
+                // `!band[u]`, and a root per candidate was measured at three
+                // quarters of a second on a 412 px render. Monotone, so the
+                // comparison is the same one; the root is taken once, after.
+                double best2 = vx * vx + vy * vy;
                 if (vx != 0.0 || vy != 0.0) {
                     // The gradient is the direction `d` INCREASES, which is
                     // outward on both sides: away from the surface point when
@@ -590,11 +599,23 @@ FieldImage fieldFromInsideMask(const std::vector<char>& inside,
                 // surface point among them. Eight reads per texel, no second
                 // transform, and it only does anything within one texel of the
                 // band -- which is exactly where the specular reads.
-                for (int dy = -1; dy <= 1; ++dy) {
-                    const int uy = my + dy;
+                //
+                // `[INF]` AND THE NEIGHBOURHOOD IS THE FOOT'S, NOT THE QUERY'S.
+                // The competitors of a query at depth r are not around the
+                // query -- they are around the point on the surface it is
+                // measuring to. Searching the query's own 3x3 therefore stops
+                // helping one texel from the band, which is where this refinement
+                // used to end; centring the same search on the foot of the
+                // current best keeps it working at every depth the specular
+                // reads. The window stays small because the foot is already
+                // within a texel of the true one.
+                const int fx = static_cast<int>(std::lround(px));
+                const int fy = static_cast<int>(std::lround(py));
+                for (int dy = -kFootSearch; dy <= kFootSearch; ++dy) {
+                    const int uy = fy + dy;
                     if (uy < 0 || uy >= mh) continue;
-                    for (int dx = -1; dx <= 1; ++dx) {
-                        const int ux = mx + dx;
+                    for (int dx = -kFootSearch; dx <= kFootSearch; ++dx) {
+                        const int ux = fx + dx;
                         if (ux < 0 || ux >= mw) continue;
                         const std::size_t u = static_cast<std::size_t>(uy) * mw + ux;
                         if (!band[u]) continue;
@@ -602,9 +623,9 @@ FieldImage fieldFromInsideMask(const std::vector<char>& inside,
                         const double qy = static_cast<double>(uy) - bny[u] * sOff[u];
                         const double wx = static_cast<double>(mx) - qx;
                         const double wy = static_cast<double>(my) - qy;
-                        const double cand = std::sqrt(wx * wx + wy * wy) * inv;
-                        if (cand >= d) continue;
-                        d = cand;
+                        const double cand2 = wx * wx + wy * wy;
+                        if (cand2 >= best2) continue;
+                        best2 = cand2;
                         if (wx != 0.0 || wy != 0.0) {
                             gx = inside[t] ? -wx : wx;
                             gy = inside[t] ? -wy : wy;
@@ -614,6 +635,7 @@ FieldImage fieldFromInsideMask(const std::vector<char>& inside,
                         }
                     }
                 }
+                d = std::sqrt(best2) * inv;
             } else {
                 if (inside[t]) {
                     dist = std::sqrt(sqOut[t]);

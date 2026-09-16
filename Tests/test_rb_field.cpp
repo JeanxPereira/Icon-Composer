@@ -1254,8 +1254,12 @@ TEST_CASE(the_grid_fields_normal_follows_the_curve_and_not_the_lattice) {
     REQUIRE(n > 1000);
     std::printf("    normal vs the circle: mean %.2f deg, worst %.2f deg over %ld texels\n",
                 sum / n, worst, n);
-    CHECK(sum / n < 3.0);
-    CHECK(worst < 15.0);
+    // Measured 1.31 / 10.48 with the foot-point refinement in place, 2.58 /
+    // 10.48 with the query's own 3x3 instead, and 7.81 / 33.85 with the normal
+    // taken off the lattice. The bound sits between the first two, so BOTH of
+    // those regressions are visible here and not only the loud one.
+    CHECK(sum / n < 2.0);
+    CHECK(worst < 12.0);
 }
 
 // THE ONE PLACE THE DIFFERENCE MUST NOT WIN: the medial axis of a thin shape.
