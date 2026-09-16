@@ -422,6 +422,25 @@ bool documentAsksForSpecular(const DenormalisedGlass& glass);
 // zero hits for CoreUI, dyld or shared_cache). Reaching it needs a
 // `dyld_shared_cache` extraction that this repository does not have.
 //
+// `[BIN]` **16/09/2026: O GERADOR FOI LIDO, E ELE NÃO TEM O RECUO.** O
+// parágrafo acima presumia o gerador no CoreUI; ele está no IconRendering
+// (`0x1CB90`) e no RenderBox 8.0.84 (`RB::Filter::Distance`). Os dois bytes
+// que faltavam:
+//
+//   * `maxDistance = 0.2 * min(W, H)` em pixels do `bakedSize`, imediato
+//     `0x3FC999999999999A` materializado por `movk` no ESCRITOR (`0x1D234`) e
+//     no LEITOR (`0x294B0`), igual em 2.0-125 e 27.0-129. Ele se CANCELA:
+//     `u = 0.5 + d/(2M)` na escrita e `sd = (2u - 1)*M` na leitura dão `sd = d`.
+//   * `tex.r` no contorno `alpha = 0.5` é `0.5` EXATO: `b = zero/(zero - one)`
+//     com `(zero, one) = (+M, -M)`, lido duas vezes (`DistanceRenderer::render`
+//     `0x937A4` e o gêmeo de CPU `0xC25F8`), e o sinal do shader é
+//     `alpha < 0.5` -> negativo (`default_mod74.ll`).
+//
+// O único termo do gerador em unidades de CANVAS é o desfoque do campo
+// (sigma = `min(0.005*min(W,H), 3.5*sqrt(2))` px = 5,12 unidades até 990 px), e
+// ele foi APLICADO E MEDIDO: banda 22,62 -> 22,61 a 412 e 24,64 -> 24,69 a 206.
+// Não move a banda, não foi ligado. `[OBS]` Os 7,5 não estão no gerador.
+//
 // `[BIN]`+oracle **THE GRADIENT'S SIGN IS SETTLED.** The laudo of the
 // highlights carried it as ARGUED ("outward, because that is what makes
 // `angleFromKey = 0` light the top"). All eight symmetries of `(nx, ny)` were

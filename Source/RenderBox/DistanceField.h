@@ -212,6 +212,19 @@ struct FieldOptions {
     // quantisation of the nearest-centre choice, bounded by half a texel and in
     // practice far under it.
     //
+    // `[BIN]` SUPERADO EM 16/09/2026 -- o parágrafo abaixo é de 15/09 e é
+    // guardado porque as duas afirmações dele caíram por leitura, não por
+    // opinião (`Docs/Laudos/2026-09-16-coreui-gerador-de-sdf.md`). O gerador
+    // do alvo NÃO está no CoreUI: `sdfTextureWithBufferAllocator:` (CoreUI
+    // 1010, `0x18B4B3044`) só BUSCA uma textura já gravada no catálogo. Quem a
+    // faz é o IconRendering, `0x1CB90`, pelo `RB::Filter::Distance` do
+    // RenderBox 8.0.84 -- semente edtaa (Sobel + tabela `edgedf`, zero no
+    // `alpha = 0.5`), jump flooding e refinamento sub-texel. E os botões de
+    // `SDFGeneration` NÃO estão mortos: `0x1D1F8`-`0x1D204` lê os quatro
+    // (`box+0x1D8` = `params+0x1C8`). A semente que este código usa é,
+    // portanto, a mesma CLASSE de coisa que o alvo faz; o método (EDT exata em
+    // vez de JFA) segue sendo nosso.
+    //
     // WHY THIS IS `[INF]` AND NOT `[BIN]`. Nobody read the target doing this.
     // The target's own generator is `-[CUINamedLayerImage
     // sdfTextureWithBufferAllocator:]` (`0x000867F8`), which lives in CoreUI --
@@ -320,6 +333,15 @@ FieldImage generateField(const std::vector<FieldContour>& contours, std::uint32_
 // and the distinction this renderer used to draw -- "a raster has no contour to
 // flatten, so the glass cannot run" -- was an artefact of OUR generator, not of
 // the format.
+//
+// `[BIN]` ATUALIZAÇÃO DE 16/09/2026, e ela derruba o `[OBS]` do parágrafo
+// seguinte: a grade e a transformada FORAM lidas. A grade é o `bakedSize` do
+// ícone mais uma moldura de um texel (`setSize:(W+2, H+2)` em `0x1D354`,
+// `translateByX:1 Y:1` em `0x1D7F4`), e `bakedSize` acompanha o tamanho
+// pedido (`0x159C0`). A transformada é `RB::Filter::Distance`; os quatro botões
+// valem `clampThreshold = 0.002`, `useAdvancedStacking = true`,
+// `precisePixelFormatThreshold = 256` e `maxRelativeSmoothing = 0.005`
+// (`0x5EAAC`-`0x5EAC8`). Laudo: `2026-09-16-coreui-gerador-de-sdf.md`.
 //
 // WHAT IS SEALED AND WHAT IS NOT. That the input is the rasterised alpha is
 // `[BIN]`, with the addresses above. The GRID the target rasterises onto, and
