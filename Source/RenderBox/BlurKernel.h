@@ -239,54 +239,242 @@ int blurReduceFactorForVariance(double variance);
 std::vector<float> blurPremultipliedRgba(const std::vector<float>& src, std::uint32_t width,
                                          std::uint32_t height, double sigma);
 
-// ---- the group's `blur-material`, which this renderer still does not draw ---
+// ---- the group's `blur-material`: the SURFACE ------------------------------
 //
 // `[ART]` The corpus carries 123 `blur-material` keys -- **123 GROUPS over 73
-// documents**, not 123 documents, and the difference matters to anyone sizing
-// the prize. 75 of the 123 are numbers and 48 are an explicit `null`
-// (`Docs/01-o-formato-icon.md`, re-counted for this front); all 75 numbers are
-// POSITIVE, spread from `0.05` to `1.0`, which is `3.2` to `64` points of
-// radius, and they sit in 46 documents. The inspector edits the key, and
-// `GlassMaterial.cpp` already turns it into `DenormalisedGlass::
+// documents**, not 123 documents. 75 of the 123 are numbers and 48 are an
+// explicit `null`; all 75 numbers are POSITIVE, from `0.05` to `1.0`, which is
+// `3.2` to `64` canvas units of radius, and they sit in 46 documents. (Counted
+// a third time for this front, straight off `IC_CORPUS_DIR`; the three counts
+// agree.) `GlassMaterial.cpp` already turns the key into `DenormalisedGlass::
 // blurRadiusPoints` through `denormaliseBlurRadius`. `[BIN]` The arithmetic is
 // `radius = min(b, 1.0) * blurStrengthMax` with `blurStrengthMax = 64.0`
 // (`IconRendering` `0x4A948` and `0x4A598`), and the destination is
-// `addBlurFilterWithRadius:opaque:` -- so as of this file the RADIUS, the
-// DESTINATION and the KERNEL are all read.
+// `addBlurFilterWithRadius:opaque:`.
 //
-// WHAT IS STILL NOT READ IS THE SURFACE, and it is one question rather than the
-// two it used to be. `[BIN]` Both call sites wrap the filter around a LAYER, and
-// the layer flag is the thing that decides what gets blurred:
+// Until 2026-09-15 the RADIUS, the DESTINATION and the KERNEL were read and the
+// SURFACE was three open questions. Two of the three are now closed by reading
+// and the third was ours to answer. What follows is the call site, transcribed,
+// because everything below is arithmetic on it.
 //
-//   * `IconRendering` `0x4A5B4`: `clipShape:alpha:mode:` (`0x4A580`), then
-//     `addBlurFilterWithRadius:opaque:`, then `beginLayerWithFlags:` with
-//     **flag 1**, then an IMMEDIATE `drawLayerWithAlpha:blendMode:` with nothing
-//     drawn inside. Flag 1 is named by RenderBox's own XML serialiser:
-//     `RB::XML::DisplayList::begin_layer` (`0xE9E78`) tests bit 0 and emits the
-//     attribute **`needs-background`** (`0xE9F48`). A layer that needs the
-//     background, contains nothing, and carries a blur IS a backdrop blur.
-//     (It cannot be RenderBox's other backdrop mechanism:
-//     `GenericFilter<GaussianBlur>::make_backdrop_item` (`0x1CBF4`) is
-//     `mov x0, #0 ; ret`, so a Gaussian has no `BackdropFilterItem` the way
-//     `LuminanceCurve` (`0x44DA4`) and `ColorClamp` (`0x454C4`) do.)
+// THE FUNCTION. `[BIN]` `IconRendering` `0x4A2D4`-`0x4AC84`, one function, both
+// blur sites inside it. It is called from five places (`0x43A84`, `0x44028`,
+// `0x45DDC`, `0x48BD4`, `0x48F30`) with `x0` = one `0xC0`-byte group descriptor
+// copied out of the Swift array behind `ctx+0x400` (`0x4397C`-`0x4398C`; the
+// element stride is the literal `add x23, x23, #0xc0` at `0x439C8`) and `x20` =
+// the renderer context. The descriptor's first `0x38` bytes are the eight-field
+// glass material of doc 03 §29.2, so `+0x18` is `blurStrength`, `+0x20`
+// `refractionHeight` and `+0x28` `refractionStrength` -- the same three offsets
+// §29.7 lists, and `0x4A598` proves `+0x18` by using it as the blur's `b`.
 //
-//   * `IconRendering` `0x4A960`: the same radius, but `beginLayerWithFlags:`
-//     with **flag 0x80**, which the same serialiser calls
-//     `ignored-by-needs-background` (`0xE9F08`), around a body of `save` /
-//     `drawLayerWithAlpha:` / `restore`.
+// -------------------------------------------------------------------------
+// WALL 1, WHICH BRANCH RUNS: `refractionStrength`, and it is ALWAYS the first
+// -------------------------------------------------------------------------
 //
-// `[OBS]` Three things block the pixel. (1) WHICH of the two branches runs for a
-// document is not read. (2) The clip is a RECT built at `0x4A4A4`-`0x4A56C` from
-// the layer's own frame, mapped by the renderer's canvas offset and scale
-// (`self+0x558..0x570`) and then inset by `-[self+0x46A8]` -- a field whose
-// value was not read, around a frame this renderer does not model. (3) A
-// backdrop blur needs the composite BENEATH the group, and where in this
-// renderer's group loop that composite is complete was not read either.
+// `[BIN]` The function loads `d13 = [x0+0x18]` (blur) and `d1 = [x0+0x28]`
+// (refraction strength) at `0x4A30C`-`0x4A310` and branches on those two and
+// nothing else:
 //
-// Drawing it anyway would mean inventing the extent of a blur over 123
-// documents, which is exactly the plausible-and-wrong this tower refuses. The
-// note below says so, with the radius the document asked for, so a reader sees a
-// stated gap instead of a silent one.
-extern const char* const kBlurMaterialSurfaceNote;
+//     0x4A404  fcmp d13, #0.0 ; b.le 0x4A5DC      ; blur <= 0 ?
+//     0x4A40C  fcmp d1,  #0.0 ; b.ne 0x4A82C      ; refraction != 0 ?
+//
+//   blur > 0, refraction == 0  -> `0x4A418`: the group's content is drawn
+//        (`bl 0x49ED4` at `0x4A488`), then `save`, `clipShape:alpha:mode:`
+//        (`0x4A580`), `addBlurFilterWithRadius:opaque:` (`0x4A5B4`),
+//        `beginLayerWithFlags:` **1** (`0x4A5C0`), an IMMEDIATE
+//        `drawLayerWithAlpha:1.0 blendMode:0` (`0x4A5D0`), `restore`. Nothing
+//        is drawn inside the layer.
+//   blur > 0, refraction != 0  -> `0x4A82C`: the same rect and clip, the same
+//        radius at `0x4A960`, but `beginLayerWithFlags:` **0x80** wrapped round
+//        the refraction body.
+//   blur == 0, refraction != 0 -> `0x4A5DC`: no blur; flag 1 round the body.
+//   both zero                  -> `0x4A34C`: plain draw, no layer at all.
+//
+// Flag 1 is bit 0, which RenderBox's own XML serialiser calls
+// **`needs-background`** (`RB::XML::DisplayList::begin_layer` `0xE9E78`, the
+// attribute emitted at `0xE9F48`), and which
+// `Docs/Laudos/2026-09-15-realce-vcm-fechado.md` read a second, independent
+// way: `Builder::null_style_draw` (`0xCDD80`, `tbz` at `0xCE02C`) allocates a
+// `BackdropFilterItem` on the PARENT layer for it. A layer that needs the
+// background, contains nothing and carries a blur is a backdrop blur, by two
+// readings that share no path. `0x80` is `ignored-by-needs-background`
+// (`0xE9F08`).
+//
+// `[ART]` **And `refractionStrength` is zero for every document there is.** It
+// is not a `.icon` key: the eight-field material's default constant (`0x93B30`,
+// doc 03 §29.2) sets `refractionStrength = 0.0`, and a grep for `refraction`
+// over all 145 corpus documents returns ZERO files -- so does the 27.0-129
+// gabarito, and so does the user's `GoWToolkit.icon`. Every document this
+// renderer will be handed takes the FIRST branch. Wall 1 is down, and the answer
+// is the pure backdrop blur.
+//
+// `[BIN]` One consequence of the ORDER, and it is the shape of the whole effect:
+// the content is drawn BEFORE the layer (`0x4A488` precedes `0x4A48C`), so the
+// background the layer needs INCLUDES the group's own art. The group is blurred
+// together with everything beneath it, not merely over it.
+//
+// -------------------------------------------------------------------------
+// WALL 2, THE CLIP: six CGRect calls, and `[ctx+0x46A8]` is exactly ONE PIXEL
+// -------------------------------------------------------------------------
+//
+// `[BIN]` `0x4A4A4`-`0x4A56C`, with every stub resolved through the INDIRECT
+// SYMBOL TABLE and not by guessing a neighbour (the lesson that nearly cost this
+// project a false fix on 2026-09-15): `0x8DA10` `_CGRectGetMinX`, `0x8DA1C`
+// `_CGRectGetMinY`, `0x8DA28` `_CGRectGetWidth`, `0x8D9D4` `_CGRectGetHeight`,
+// `0x8DA58` `_CGRectOffset`, `0x8DA34` `_CGRectInset`. Six doubles into each of
+// the last two is what makes `CGRectOffset(r,dx,dy)` and `CGRectInset(r,dx,dy)`
+// line up with the argument registers. Transcribed:
+//
+//     frame  = CGRect at descriptor +0x70 .. +0x88
+//     canvas = CGRect at ctx       +0x558 .. +0x570
+//     r = CGRectMake(MinX(frame)*Width(canvas),  MinY(frame)*Height(canvas),
+//                    Width(frame)*Width(canvas), Height(frame)*Height(canvas))
+//     r = CGRectOffset(r, MinX(canvas), MinY(canvas))
+//     r = CGRectInset (r, -[ctx+0x46A8], -[ctx+0x46A8])      ; 0x4A558-0x4A564
+//     [shape setRect:r] ; [list clipShape:shape alpha:1 mode:0]
+//
+// A frame multiplied by the canvas's size and offset by its origin is a frame in
+// UNIT coordinates. That is what the multiplication means, and it is why the
+// canvas rect is in the expression at all.
+//
+// `[BIN]` **The canvas rect is `(0, 0, 1024, 1024)` for a square icon**, built
+// at `0x4291C`-`0x42968` inside the same context constructor the highlight front
+// read: the origin is `movi v0.2d, #0` stored to `ctx+0x558`
+// (`0x4295C`-`0x42960`) and the size is
+//
+//     canvasW = 1024 * (w/s) / min(w/s, h/s)   ;   canvasH likewise
+//
+// with `1024.0` materialised as the immediate `0x4090000000000000` at `0x42940`
+// -- the `s` cancels, so it is `1024 * w / min(w, h)`.
+//
+// `[BIN]` **`[ctx+0x46A8]` is the SAME field the highlight front read**, and so
+// this is the same `self`. `Docs/Laudos/2026-09-15-realce-forma.md` §4.1 read
+// `0x42D3C`-`0x42D50` as `ctx+0x46A0 = 1/escala` and
+// `ctx+0x46A8 = (1/escala)/contentsScale`, with
+// `escala = min(rectW/canvasW, rectH/canvasH)`. Three checks that it is one
+// object, none of them the fit itself: the constructor takes the address of its
+// own frame into **`x20`** at `0x42F40` (`add x20, sp, #0x480`) and writes
+// `sp+0x9A0`, `sp+0x9E8` and `sp+0x9F0` -- which are `ctx+0x520`, `+0x568` and
+// `+0x570`, exactly the display list and the canvas size THIS call site loads
+// off `x20`; a scan of every unsigned-offset load or store of `#0x46A8` in
+// `__text` finds eleven, ten on that same register convention and one
+// (`0x4EC38`-`0x4EC3C`) a field-for-field copy between two of the same type; and
+// `0x4BEAC` is the highlight pass's own use, four instructions from the
+// `0x4BF00` that laudo names.
+//
+// So `[ctx+0x46A8]` is canvas units per PIXEL, and `CGRectInset` by its NEGATIVE
+// is an OUTSET of **exactly one device pixel** on every side. It is a bleed
+// guard, not a crop. Wall 2 is down: the clip is arithmetic, and in this
+// renderer's units it is `frame x size`, grown by one pixel.
+//
+// `[OBS]` **What is still not read is the FRAME itself** -- descriptor `+0x70`.
+// It is unit-coordinate by the arithmetic above, it is copied wholesale by the
+// group-merging pass at `0x48724`, and the array it lives in hangs off
+// `ctx+0x400`; who first writes those four doubles was not followed.
+// `blurMaterialSurface` takes the frame as an ARGUMENT for exactly that reason:
+// the caller states which reading it is using, in one visible place, instead of
+// the choice being baked into the blur.
+//
+// AND THE GABARITO REFUSED THE ONLY READING THIS FRONT HAD FOR IT. With the
+// frame at the unit rect -- the whole canvas -- `AppIcon-27` was rendered at
+// `--size 412`, placed at the legacy inset in the 512 frame and compared with
+// `References/27.0-129/out/apple-512.png`:
+//
+//     mean channel error   R      G      B      A
+//     blur NOT drawn      8.95  10.03   9.89   4.95
+//     blur, unit frame   15.58  20.09  22.49   7.09
+//
+// and the four corners of the squircle are the worst 8x8 blocks in the frame. A
+// second diagnostic -- compositing only the colour and keeping the destination's
+// alpha, so the blur cannot move the silhouette -- lands at `14.35 / 18.90 /
+// 21.33`, still far above the control, so it is not the alpha alone. The luma
+// profile says it in the shape `Docs/Laudos/2026-09-15-realce-forma.md` taught:
+// down the centre column of the 512 frame the gabarito falls `157 -> 49` over
+// nine rows and then holds a FLAT `49`; the blur-off render falls `202 -> 49`
+// over fifteen and holds the same `49`; the blurred render is flat at `84` and
+// never reaches `49` anywhere. A canvas-wide backdrop blur at
+// `sigma = 0.56 * 64 = 35.84` canvas units erases structure the target keeps.
+//
+// So the frame is NOT the unit rect, and this front does not know what it is.
+// `blurMaterialSurface` and `drawBlurMaterial` below are the transcription and
+// they are SWITCHED OFF at the one call site -- the same thing `BlendFormula.h`
+// does with `shouldClampPlusLBlending`, and for the same reason: turning it on
+// without the reading would move pixels on the measurer's authority instead of
+// the target's.
+//
+// `[OBS]` THE ONE CANDIDATE THIS FRONT FOUND AND DID NOT CLOSE is the `opaque:`
+// argument, which is `mov w2, #1` at BOTH sites (`0x4A5B0`, `0x4A95C`). It
+// enters the filter flags at `0x3E8D4`, sits in bit 0 of `GaussianBlur+0x18`
+// (`0xFE5C0`), is copied to `renderer+8` at `0xFECE8`-`0xFECEC`, and
+// `BlurRenderer::render` reads it exactly once, at `0xFFF98`: if it is `1` AND
+// this is the LAST pass (`[x20+0x1c]` has just been decremented to zero,
+// `0xFFF8C`-`0xFFFB0`) it sets `w23 = 0x10`, which `0xFFFF8`-`0x100004` folds
+// into the packed render state as bit 20. What bit 20 of an `RB::RenderState`
+// does was not followed, and it is the only thing in the chain that could stop a
+// blur from softening a silhouette.
+//
+// -------------------------------------------------------------------------
+// WALL 3, WHERE THE BACKDROP IS COMPLETE -- ours to answer, and answered
+// -------------------------------------------------------------------------
+//
+// This one was never a reading of the target; it is a question about OUR group
+// loop, and the loop already had the answer. `IconRenderer.cpp` composites
+// groups back-to-front into a single premultiplied accumulator `acc`, so at the
+// END of a group's layer loop `acc` holds precisely "everything beneath this
+// group, plus this group" -- which, by the order read above, is precisely the
+// background the target's layer needs. The call goes there.
+//
+// The one case where that does NOT hold is a group with a non-normal
+// `blend-mode`: it draws into a target of its own and the accumulator is not
+// underneath it. Blurring an empty group target would be the silent-wrong this
+// file refuses, so that case is REFUSED by name -- the same shape of refusal
+// `groupWouldRefract` already uses, and for the same reason. It is a refusal
+// that would survive the frame being read, which is why it is written down now
+// rather than when the rest of it turns on.
+//
+// -------------------------------------------------------------------------
+
+// The surface of one group's `blur-material`, in PIXELS.
+//
+// `frame*` is the group's frame in UNIT coordinates -- the `[OBS]` above. The
+// canvas is `1024 * w / min(w,h)` by `1024 * h / min(w,h)` with its origin at
+// zero, so a square icon maps one canvas unit to `size/1024` pixels and the
+// outset of `[ctx+0x46A8]` canvas units becomes one pixel flat.
+//
+// `blurRadiusCanvasUnits` is `DenormalisedGlass::blurRadiusPoints`, which is
+// `min(b,1) * 64` and lives in the display list's own coordinates -- the same
+// 1024-canvas units the clip rect is built in. `sigmaPixels` is therefore
+// `radius * min(w,h) / 1024`, and it is a SIGMA because the radius is the sigma.
+// `[BIN]` The `1024.0` of `canvasW = 1024 * w / min(w,h)`, materialised as the
+// immediate `0x4090000000000000` at `IconRendering` `0x42940` -- not in the
+// constant pool, which is why it is quoted as an immediate.
+inline constexpr double kBlurMaterialCanvasUnits = 1024.0;
+
+struct BlurMaterialSurface {
+    bool draws = false;
+    double sigmaPixels = 0.0;
+    // Half-open, already clamped to the canvas.
+    std::uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+};
+
+BlurMaterialSurface blurMaterialSurface(double blurRadiusCanvasUnits, double frameX,
+                                        double frameY, double frameWidth, double frameHeight,
+                                        std::uint32_t width, std::uint32_t height);
+
+// The target's `beginLayerWithFlags:1` + `drawLayerWithAlpha:1.0 blendMode:0`
+// on a PREMULTIPLIED accumulator: blur what is already there and composite the
+// blurred copy back over it, source-over, inside the clip. Returns how many
+// texels the composite actually moved, so a caller can tell "drawn" from "drawn
+// and changed nothing".
+std::size_t drawBlurMaterial(std::vector<float>& acc, std::uint32_t width, std::uint32_t height,
+                             const BlurMaterialSurface& surface);
+
+// Said once per document that asks, because the frame above is still `[OBS]`.
+extern const char* const kBlurMaterialFrameNote;
+
+// A group carrying both a non-normal `blend-mode` and a positive
+// `blur-material`: the backdrop this renderer would hand the blur is the group's
+// own empty target and not the canvas, so the blur is refused by name.
+extern const char* const kBlurMaterialBlendedGroupNote;
 
 }  // namespace rb

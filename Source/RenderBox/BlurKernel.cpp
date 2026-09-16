@@ -5,14 +5,27 @@
 
 namespace rb {
 
-const char* const kBlurMaterialSurfaceNote =
-    "blur-material: o raio esta medido (min(b,1) x blurStrengthMax=64, 0x4A948) e o KERNEL que "
-    "o addBlurFilterWithRadius: constroi a partir dele tambem esta (sigma = raio, "
-    "BlurKernel.h) -- o que falta e a SUPERFICIE. O alvo envolve o filtro numa camada com "
-    "needs-background (flag 1, nomeada em 0xE9F48) e a recorta com um retangulo construido em "
-    "0x4A4A4-0x4A56C a partir do frame da propria camada, afastado por -[self+0x46A8]; nem o "
-    "ramo que roda, nem esse valor, nem o frame estao lidos. Desenhar um desfoque de fundo "
-    "sobre uma extensao inventada seria pior do que nao desenhar, entao o grupo sai sem ele.";
+const char* const kBlurMaterialFrameNote =
+    "blur-material desenhado como desfoque de FUNDO: 0x4A2D4 ramifica so em blurStrength "
+    "(descritor+0x18) e refractionStrength (+0x28), e com refracao zero -- o default de 0x93B30, "
+    "e nenhum dos 145 documentos do corpus, do gabarito ou do icone do usuario traz chave de "
+    "refracao -- o ramo e o de 0x4A5B4: conteudo desenhado (0x4A488), depois clipShape, "
+    "addBlurFilterWithRadius:, beginLayerWithFlags:1 (needs-background, 0xE9F48) e um "
+    "drawLayerWithAlpha:1 blendMode:0 imediato, sem nada dentro. O recorte e aritmetica lida "
+    "(0x4A4A4-0x4A56C, seis stubs de CGRect resolvidos pela tabela de simbolos indiretos): frame "
+    "x canvas, com canvas = (0,0,1024,1024) em 0x4291C-0x42968, afastado por -[ctx+0x46A8] = "
+    "(1/escala)/contentsScale = UM pixel. [OBS] o FRAME da camada (descritor+0x70) continua sem "
+    "leitura, e o gabarito RECUSOU a unica leitura que esta frente tinha para ele: com o "
+    "retangulo unitario -- o canvas inteiro -- o erro medio de canal contra apple-512.png sobe "
+    "de 8,95/10,03/9,89 para 15,58/20,09/22,49 e o de alpha de 4,95 para 7,09, com os quatro "
+    "cantos do squircle nos piores blocos. Entao a superficie esta transcrita em "
+    "BlurKernel.h (blurMaterialSurface/drawBlurMaterial) e DESLIGADA aqui, como o grampo de "
+    "plusLighter em BlendFormula.h: o grupo sai sem o desfoque.";
+
+const char* const kBlurMaterialBlendedGroupNote =
+    "blur-material NAO desenhado num grupo com blend-mode nao-normal: o alvo desfoca o fundo "
+    "(needs-background, flag 1 em 0x4A5C0) e aqui um grupo mesclado desenha num alvo proprio, "
+    "que chega vazio -- desfocar esse alvo seria desenhar silenciosamente errado.";
 
 int blurKernelHalfWidth(double sigma) {
     if (!(sigma > 0.0)) return 0;
@@ -237,6 +250,90 @@ std::vector<float> blurPremultipliedRgba(const std::vector<float>& src, std::uin
         }
     }
     return out;
+}
+
+BlurMaterialSurface blurMaterialSurface(double blurRadiusCanvasUnits, double frameX,
+                                        double frameY, double frameWidth, double frameHeight,
+                                        std::uint32_t width, std::uint32_t height) {
+    BlurMaterialSurface s;
+    if (!(blurRadiusCanvasUnits > 0.0) || width == 0 || height == 0) return s;
+
+    // `[BIN]` `canvasW = 1024 * w / min(w, h)` (`0x42940`-`0x42954`), origin at
+    // zero (`0x4295C`-`0x42960`). One canvas unit is therefore `min(w,h)/1024`
+    // pixels on either axis, which is what makes the rect below collapse to a
+    // plain multiplication by `width` / `height`.
+    const double shorter = static_cast<double>(std::min(width, height));
+    const double pixelsPerCanvasUnit = shorter / kBlurMaterialCanvasUnits;
+    if (!(pixelsPerCanvasUnit > 0.0)) return s;
+
+    s.sigmaPixels = blurRadiusCanvasUnits * pixelsPerCanvasUnit;
+    if (!(s.sigmaPixels > 0.0)) return s;
+
+    // `CGRectMake(MinX(frame)*W, ...)` then `CGRectOffset` by the canvas origin
+    // -- which is zero -- then `CGRectInset(-u, -u)` with `u` one pixel. The
+    // standardisation `CGRectGetMinX`/`Width` performs on a negative size is
+    // reproduced here rather than assumed away.
+    const double fx0 = std::min(frameX, frameX + frameWidth);
+    const double fy0 = std::min(frameY, frameY + frameHeight);
+    const double fw = std::abs(frameWidth);
+    const double fh = std::abs(frameHeight);
+
+    const double px0 = fx0 * static_cast<double>(width) - 1.0;
+    const double py0 = fy0 * static_cast<double>(height) - 1.0;
+    const double px1 = px0 + fw * static_cast<double>(width) + 2.0;
+    const double py1 = py0 + fh * static_cast<double>(height) + 2.0;
+
+    const double cx0 = std::clamp(std::floor(px0), 0.0, static_cast<double>(width));
+    const double cy0 = std::clamp(std::floor(py0), 0.0, static_cast<double>(height));
+    const double cx1 = std::clamp(std::ceil(px1), 0.0, static_cast<double>(width));
+    const double cy1 = std::clamp(std::ceil(py1), 0.0, static_cast<double>(height));
+    if (!(cx1 > cx0) || !(cy1 > cy0)) return s;
+
+    s.x0 = static_cast<std::uint32_t>(cx0);
+    s.y0 = static_cast<std::uint32_t>(cy0);
+    s.x1 = static_cast<std::uint32_t>(cx1);
+    s.y1 = static_cast<std::uint32_t>(cy1);
+    s.draws = true;
+    return s;
+}
+
+std::size_t drawBlurMaterial(std::vector<float>& acc, std::uint32_t width, std::uint32_t height,
+                             const BlurMaterialSurface& surface) {
+    if (!surface.draws || width == 0 || height == 0) return 0;
+    const std::size_t texels = static_cast<std::size_t>(width) * height;
+    if (acc.size() < texels * 4) return 0;
+    if (blurKernelHalfWidth(surface.sigmaPixels) <= 0) return 0;
+
+    // `acc` is ALREADY premultiplied, which is the convention the ladder wants,
+    // so this does not go through `blurPremultipliedRgba` -- that entry point
+    // premultiplies and un-premultiplies around the same ladder and would cost a
+    // round trip through straight colour for nothing.
+    std::vector<float> blurred = acc;
+    blurLadder(blurred, width, height, surface.sigmaPixels * surface.sigmaPixels);
+
+    // `drawLayerWithAlpha:1.0 blendMode:0`: source-over, both sides
+    // premultiplied, restricted to the clip. The blurred copy is what the
+    // `needs-background` layer resolves to, so the source is the destination's
+    // own blurred self and the composite is not the identity wherever the blur
+    // moved anything.
+    std::size_t moved = 0;
+    for (std::uint32_t y = surface.y0; y < surface.y1; ++y) {
+        for (std::uint32_t x = surface.x0; x < surface.x1; ++x) {
+            const std::size_t i = (static_cast<std::size_t>(y) * width + x) * 4;
+            const float sa = blurred[i + 3];
+            if (sa <= 0.0f) continue;
+            const float inv = 1.0f - sa;
+            bool changed = false;
+            for (int c = 0; c < 4; ++c) {
+                const float before = acc[i + c];
+                const float after = blurred[i + c] + before * inv;
+                if (after != before) changed = true;
+                acc[i + c] = after;
+            }
+            if (changed) ++moved;
+        }
+    }
+    return moved;
 }
 
 }  // namespace rb
