@@ -124,8 +124,21 @@ lado, entre:
 - especular: a banda dele.
 
 Esse máximo é convertido em pixels pela escala e arredondado para cima.
-`[OBS]` O máximo real de `refractionStrength` no corpus não foi medido. É ele
-que diz se a refração torna o viewport inútil na prática, e a medida entra aqui.
+`[ART]` **Medido em 16/09.** Só 3 dos 146 documentos do corpus têm
+`refractivity`, e só **2** deles com força diferente de zero:
+
+| documento | força | alcance em pontos |
+| --- | --- | --- |
+| `CamilleScholtz__swmpc__swmpc` | −0,527 | **337,3** |
+| `StikDebug__StikPair__StikPair` | −0,359 | 229,9 |
+
+Nos dois, a altura denormalizada (134,5 e 105,3) fica abaixo da força. O
+terceiro, `videolan__vlc-ios__VLC26`, tem `enabled: false` e força 0, ou seja,
+identidade. Então, em 144 dos 146 documentos, quem manda na margem é a sombra
+(≤ 211 pontos). Nos dois que refratam, a margem chega a um terço do canvas por
+lado. O viewport ainda ganha área, só que menos. A varredura é um passeio
+Python pelas chaves `refractivity` de `References/corpus/*/icon.json`, com a
+mesma denormalização de `GlassMaterial.cpp:208-234`.
 
 **O buffer é `(viewport ⊕ margem) ∩ canvas`.** Não basta estender o viewport. O
 desfoque (`blurPass`), o `reduceBox`, o `expandBilinear` e a amostragem da
@@ -270,7 +283,6 @@ overdraw da sombra. Um viewport não toca em nenhum dos três.
 3. Os sítios, em grupos que o gate consegue julgar um a um: fundo e chiclet;
    colocação de arte; campo e vidro; sombra.
 4. A margem por documento, a interseção com o canvas e o alinhamento da escada.
-   Antes disso, medir o máximo de `refractionStrength` no corpus.
 5. O teto de área.
 6. O Kit: chave, retângulo do ladrilho, pedido só com o pan parado, e o estado
    de espera que já existe.
