@@ -228,6 +228,22 @@ int run(const fs::path& initial) {
     // Validation off: nobody here is checking the driver, and the tower's
     // default (on) costs every frame (spec 13/09 §6). Two VkInstances in one
     // process -- Onyx's and RenderBox's -- is that section's decision too.
+    //
+    // AND WHAT MAKES THAT SAFE IS NOT THIS LINE. It is that RenderBox reaches
+    // every device-level entry point through a table loaded from ITS OWN device
+    // (`volkLoadDeviceTable`, Source/RenderBox/VulkanApi.h). Onyx calls
+    // `volkLoadDevice` (VkContext.cpp:362), which owns volk's GLOBAL table for
+    // the rest of the process; a second device that read that table would post
+    // this render to ONYX's device, and post it without crashing. So the
+    // condition is exact and it is checkable: this second device is legal only
+    // while `IC_RB_DEVICE_FUNCTIONS` names every device-level function the tower
+    // calls. Writing a bare `vkFoo(device, ...)` anywhere in RenderBox -- rather
+    // than `api().vkFoo(...)` -- compiles in both builds and re-opens the hole in
+    // the UI build alone, where nothing would report it.
+    //
+    // This was challenged on 15/09 by a branch that adopted Onyx's device
+    // instead, on the premise that one dispatch table per process leaves no
+    // choice. Measured and rejected: laudo 2026-09-15-device-do-onyx.md.
     auto device = rb::Device::create(rb::DeviceOptions{.validation = false});
     if (!device) {
         std::fprintf(stderr, "iconcomposer: no Vulkan device: %s\n", device.error().c_str());

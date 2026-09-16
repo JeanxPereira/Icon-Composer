@@ -209,6 +209,22 @@ o entrega ao `RenderScheduler`. Dois `VkInstance` no mesmo processo (o do Onyx
 e o do RenderBox) é a decisão desta rodada; adotar o `VkContext` do Onyx na
 torre fica para quando latência pedir (§9).
 
+**15/09 — a decisão foi desafiada e ficou em pé.** A branch
+`alt/device-adotado-do-onyx` (`014c0ec`, hoje apagada e preservada na tag
+`rejeitado/device-adotado-do-onyx`) propunha o contrário, e a premissa dela era
+que *o volk guarda uma tabela de dispatch só, com escopo de processo*. A
+premissa é **verdadeira da tabela global e falsa como impedimento**: o volk
+expõe `volkLoadDeviceTable`, que preenche uma tabela **por device** e não toca
+em símbolo global nenhum (`volk.c:189` → `volkGenLoadDeviceTable`, que só
+escreve em `table->`). É essa a porta que `Source/RenderBox/VulkanApi.h` usa
+desde `6ffa00a`, e por isso os dois `VkInstance` convivem **medidos, não
+supostos**: com `VK_LAYER_KHRONOS_validation` ligada nos dois instances e sete
+renders na janela real, as camadas não disseram uma palavra além do banner de
+ativação, e o PNG de 412 px sai **byte a byte igual** pelo caminho com volk e
+pelo caminho sem. O que a decisão custa e o que a torna segura estão escritos em
+`Docs/Laudos/2026-09-15-device-do-onyx.md` e no comentário de
+`Source/app/Window.cpp`.
+
 Cada mudança no documento ou no contexto de visualização (appearance, idiom,
 tamanho) gera um `RenderRequest`. O scheduler guarda **só o último** pendente e
 submete numa lane única do `JobQueue` do Onyx, então nunca há dois renders em
