@@ -1332,22 +1332,46 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             const ShadowInputs shadowIn{glassNumbers.shadowStyle, glassNumbers.shadowOpacity,
                                         opacity, options.sizeClass};
             const bool castsShadow = isGlass && shadowDraws(shadowIn);
+            // THE OVERDRAW PASS IS A SECOND COMPOSITE OF THE SAME IMAGE, so the
+            // image is kept between the two draws instead of being rebuilt: the
+            // blur behind it is the most expensive thing this loop does.
+            // `GlassShadow.h` carries the addresses for all of it.
+            std::vector<float> shadowOverdraw;
             auto castShadow = [&](const std::vector<float>& artRgba) {
                 if (!castsShadow) return;
                 const ShadowGeometry geometry =
                     shadowGeometry(options.size, options.sizeClass);
-                blendOver(target,
-                          shadowImage(artRgba, options.size, options.size,
-                                      shadowIn.style, geometry),
-                          static_cast<float>(shadowAlpha(shadowIn)),
+                std::vector<float> img = shadowImage(artRgba, options.size, options.size,
+                                                     shadowIn.style, geometry);
+                const double overdraw =
+                    kShadow.drawOverContent
+                        ? shadowOverdrawAlpha(groupTranslucency, shadowIn.style,
+                                              options.sizeClass)
+                        : 0.0;
+                if (overdraw > 0.0) {
+                    shadowOverdraw = shadowOverdrawImage(img, artRgba, options.size,
+                                                         options.size, overdraw);
+                }
+                blendOver(target, img, static_cast<float>(shadowAlpha(shadowIn)),
                           shadowBlendMode(shadowIn.style));
                 if (geometry.ringWidth) note(out.notes, kShadowRingNote);
-                if (kShadow.drawOverContent &&
-                    shadowOverdrawAlpha(groupTranslucency, shadowIn.style,
-                                        options.sizeClass) > 0.0) {
-                    note(out.notes, kShadowOverdrawNote);
-                }
                 ++out.glassShadowed;
+            };
+            // `[BIN]` AFTER THE CONTENT AND BEFORE THE HIGHLIGHTS, which is the
+            // order of `0x48B74`: `0x4A2D4` (the glass pass, where the main
+            // shadow lives) at `0x48BD4`, then `0x4AC84` at `0x48C08` -- whose
+            // body is the content draw (`0x4ADA4`) followed by this pass
+            // (`0x4ADBC`-`0x4AEB4`) -- then `0x491C0`, the highlights, at
+            // `0x48DB4`, on the path every branch merges into (`0x48DAC`). The
+            // per-element loop at `0x48E20` runs the same three in the same
+            // order (`0x48F30`, `0x48F5C`, `0x48EAC`).
+            auto castShadowOverdraw = [&]() {
+                if (shadowOverdraw.empty()) return;
+                blendOver(target, shadowOverdraw, static_cast<float>(shadowAlpha(shadowIn)),
+                          kShadow.overdrawBlendMode);
+                shadowOverdraw.clear();
+                note(out.notes, kShadowOverdrawNote);
+                ++out.glassShadowOverdrawn;
             };
 
             if (svg) {
@@ -1404,6 +1428,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 // `hasSpecular` at `0x00049200`, and the shadow is a different
                 // `drawShape:` in a different function.
                 blendOver(target, drew->rgba, static_cast<float>(opacity), layerBlend);
+                castShadowOverdraw();
                 // THE HIGHLIGHT FILTERS THE BACKDROP, SO IT GOES ON AFTER THE
                 // LAYER IS IN IT. `[BIN]` `beginLayerWithFlags:1` sets bit 0 of
                 // `RB::DisplayList::Layer::Flag`, and `Builder::null_style_draw`
@@ -1457,6 +1482,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 }
                 castShadow(placed);
                 blendOver(target, placed, static_cast<float>(opacity), layerBlend);
+                castShadowOverdraw();
                 if (specularField) {
                     // The same backdrop reading as the vector branch above.
                     SpecularArguments layerSpecular = specularArgs;

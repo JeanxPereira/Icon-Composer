@@ -557,17 +557,95 @@ extern const char* const kShadowRingNote;
 // the paragraph above. Deleting it is the point of that paragraph: a list that
 // keeps closed gaps is a list readers stop reading.
 
-// The overdraw pass of §5.3, which is a whole second composite this file does
-// not perform. Said only when the group's `translucency` would actually open it,
-// so it reports a gap in THIS document rather than restating the rule.
+// The overdraw pass IS NOW DRAWN, and this note no longer says it is missing.
+// What it says is the one gate under it that is still unread: the byte at
+// `[descriptor+0x31]`, which `0x45F10` (`ldrb w8, [x24, #0xf1]`, descriptor base
+// `x24+0xC0`) requires to be ZERO before the pass opens at all, and which
+// `0x4B4EC` itself switches on at `0x4B518` (`cmp w24, #8`). It is a kind tag
+// with at least nine values and no name in the reflection metadata. This
+// renderer has no way to compute it, so it draws the pass unconditionally when
+// the arithmetic opens it -- which is the reading that matches every corpus
+// document, since `[ART]` nothing in a `.icon` selects it.
+//
+// It fires only when the pass actually runs, for the same reason
+// `kShadowRingNote` does.
 extern const char* const kShadowOverdrawNote;
 
-// `[BIN]` The overdraw clip's alpha, transcribed so the note above can say
-// whether this document would have opened it: `t = clamp01(translucency /
+// `[BIN]` The overdraw clip's alpha: `t = clamp01(translucency /
 // translucencyForMaxOverdraw)`, `alpha = t * max<...>OverdrawOpacity[3-c]`,
 // `0x45F18`-`0x45F94` and identically `0x4ADD0`-`0x4AE44`. Returns `0` when
 // nothing would be drawn, which is the binary's own `alpha <= 0` exit.
+//
+// `[BIN]` THE TWO TABLES, RE-READ FOR THIS FRONT out of the same constructor as
+// the rest of the block: `ldr q0, [0x98630]` at `0x5ECAC` is the pair
+// `(0.3, 0.2)` -- `translucencyForMaxOverdraw` and the FIRST slot of
+// `maxNeutralOverdrawOpacity` -- the `dup v1.2d` of `0x5ECB0`-`0x5ECBC` spells
+// `0.2` by `mov`+`movk` (`0x3FC999999999999A`, which is why it is NOT in the
+// pool) into slots 1 and 2, and `ldr q1, [0x98640]` at `0x5ECC8` carries slot 3
+// (`0.2`) and the first slot of `maxVibrantOverdrawOpacity` (`0.5`); the middle
+// pair of the vibrant table is the `fmov v3.2d, #0.5` of `0x5E928` parked at
+// `[sp,#0x20]` by `0x5E938`, and the fourth is the `mov x9, #0x3FE0...` of
+// `0x5ECD4`. So both tables are FLAT -- `[0.2 x4]` and `[0.5 x4]` -- which is
+// exactly why the `[3 - c]` inversion is silent here and has to be routed
+// through `sizeBasedValue` on principle rather than on evidence.
 double shadowOverdrawAlpha(double translucency, ShadowStyle style, IconSizeClass sizeClass,
                            const ShadowParameters& p = kShadow);
+
+// THE OVERDRAW PASS ITSELF -- the second composite, as one image ready to be
+// blended with `overdrawBlendMode` and the SAME `shadowAlpha` as the first.
+//
+// `[BIN]` WHAT IT DRAWS IS THE SAME SHADOW, NOT A SECOND EFFECT. The pass is a
+// second call to the very function that composites the main shadow -- `0x49ED4`,
+// at `0x46034` and `0x4AEB4` -- with the same descriptor, so the same image
+// (`[descriptor+0xB0]`, fetched through `0x85ED8` at `0x4A18C`), the same rect
+// (`setRect:` at `0x4A1AC`), the same tint and the same three-factor alpha
+// (`0x4A06C`/`0x4A070`). The ONLY thing the second call changes inside that
+// function is `w1`: `tst w1, #1` at `0x49F94` and `0x4A004` substitutes
+// `Shadow.overdrawBlendMode` for the blend byte the first call used. Everything
+// that makes it an "overdraw" is OUTSIDE the function, in the clip.
+//
+// `[BIN]` AND THE CLIP IS THE ELEMENT'S OWN CONTENT. Around the second call the
+// target does `beginLayer` (`0x45FA8` / `0x4AE90`), draws `0x4B4EC` into that
+// layer (`0x45FE4` / `0x4AE98`), and closes it with
+// `clipLayerWithAlpha: alpha mode: 0` (`0x45FF4` / `0x4AEA8`). `0x4B4EC` is not
+// a mask-builder: it is THE CONTENT DRAW. The content pass one statement earlier
+// (`0x4ADA4` -> `0x4AF20`) ends by tail-calling the same `0x4B4EC` with the same
+// descriptor (`0x4B3EC`, `mov x0, x22`), having only optionally installed a
+// colour-matrix filter first (`0x4B3E4`, and `0x4AF78` jumps straight past it).
+// So the clip's coverage is the glyph's own, at the constant `clipAlpha`.
+//
+// That is why `drawOverContent` is the field's name and why the pass cannot be
+// folded into the main one: the main shadow draws UNDER the art, unclipped; this
+// one draws the identical image again, ON TOP of the art and clipped to it.
+//
+// `[BIN]` `mode: 0` IS `ClipMode::normal`, AND THE OLD READING OF IT IS WRONG.
+// `_RBDrawingStateClipLayer` (`RenderBox.arm64` `0x3BB64`) passes that argument
+// through the function at `0x8B624` before handing it to
+// `DisplayList::Builder::clip_layer(Layer*, State&, float, ClipMode)`
+// (`0xC9EFC`). `0x8B624` carries TWO mangled names -- `RB::aliasing_mode(RB::RenderingMode)`
+// and `rb_clip_mode(RBClipMode)` -- because identical-code folding merged them:
+// the body is three instructions, `cset w0, (w0 == 1)`. The parameter type at
+// the call site is `ClipMode`, so the second name is the one that applies, and
+// `RB::XML::Value::ClipMode::to_string` (`0x130BB0`) bounds that enum at TWO
+// values and names them from the table at `0x18F8A8`: **`normal`** and
+// **`inverse`**. `mode: 0` therefore means "clip normally", not "clip by alpha"
+// (the `[INF]` the VCM laudo carried) and not "antialiased" (the `[INF]`
+// `kShadowRingNote`'s laudo carried, which this DERRUBA). Both earlier readings
+// happened to reach the right pixel; the reason they gave was not the binary's.
+//
+// `[INF]` That the float multiplies the clip's COVERAGE is still inference, from
+// three sides: the selector is spelled `clipLayerWithAlpha:`; `clip_layer` frees
+// the layer outright when the float is `0` and the layer is non-trivial
+// (`0xC9F44`-`0xC9F50`); and every `make_clip` overload in `RenderBox.arm64`
+// takes `(Builder&, float, ClipMode, vector<Clip*>&)` in that order, i.e. the
+// float travels with the coverage and not with the fill.
+//
+// `shadow` is the image `shadowImage` already produced; `content` is the art as
+// it was composited, STRAIGHT RGBA. The result is `shadow` with its alpha
+// multiplied by `content`'s alpha and by `clipAlpha`.
+std::vector<float> shadowOverdrawImage(const std::vector<float>& shadow,
+                                       const std::vector<float>& content,
+                                       std::uint32_t width, std::uint32_t height,
+                                       double clipAlpha);
 
 }  // namespace rb

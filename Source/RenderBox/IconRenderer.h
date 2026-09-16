@@ -191,6 +191,15 @@ struct RenderedIcon {
     // the renderer has none" -- which is what every render of this project said,
     // silently, until 2026-09-15.
     std::size_t glassShadowed = 0;
+
+    // Layers whose shadow was composited a SECOND time, over the art, by the
+    // overdraw pass (`GlassShadow.h`). Counted apart from `glassShadowed`
+    // because the two gates are different: the first asks whether the document
+    // wants a shadow, the second whether its `translucency` opens
+    // `clamp01(translucency / translucencyForMaxOverdraw)` above zero. A group
+    // with a shadow and no translucency draws one pass and not two, and that is
+    // the document's answer rather than a missing renderer.
+    std::size_t glassShadowOverdrawn = 0;
 };
 
 // The placement of one layer's art on the canvas, in the target's own terms.

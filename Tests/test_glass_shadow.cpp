@@ -241,7 +241,7 @@ TEST_CASE(glass_shadow_ring_of_zero_width_is_the_identity) {
     CHECK(near(img[3], 1.0, 1e-6));
 }
 
-// `[BIN]` §5.3, the overdraw pass this file transcribes and does NOT draw:
+// `[BIN]` §5.3, the overdraw pass:
 // `t = clamp01(translucency / translucencyForMaxOverdraw)` and
 // `alpha = t * max<...>OverdrawOpacity[3-c]`. Pinned because the note that
 // reports the gap asks this function whether the gap is real for the document in
@@ -276,4 +276,42 @@ TEST_CASE(glass_shadow_recolouring_forces_neutral_and_picks_the_blend_byte) {
     CHECK(rb::shadowBlendMode(ShadowStyle::Vibrant, true) == rb::BlendMode::Normal);
     // The dim branch is the VIBRANT one only.
     CHECK(rb::shadowBlendMode(ShadowStyle::Neutral, true) == rb::BlendMode::Multiply);
+}
+
+// The overdraw clip, which is the element's OWN coverage and nothing else.
+//
+// Worth a case because the two wrong transcriptions both look right in a
+// thumbnail: clipping by the SHADOW's coverage instead of the content's (which
+// would put the second composite outside the glyph, where a "draw over content"
+// pass has no business) and letting the content's COLOUR through (which would
+// tint the shadow with the art instead of masking it). The first is caught by
+// the texel where the shadow is opaque and the art is not; the second by the one
+// where the art is a saturated colour.
+TEST_CASE(glass_shadow_overdraw_clips_by_the_contents_alpha_only) {
+    // Four texels of shadow: black, fully opaque everywhere.
+    std::vector<float> shadow(16, 0.0f);
+    for (int t = 0; t < 4; ++t) shadow[t * 4 + 3] = 1.0f;
+
+    // The content: opaque red, half-covered green, empty, and a quarter cover.
+    std::vector<float> content = {1.0f, 0.0f, 0.0f, 1.0f,
+                                  0.0f, 1.0f, 0.0f, 0.5f,
+                                  0.0f, 0.0f, 1.0f, 0.0f,
+                                  1.0f, 1.0f, 1.0f, 0.25f};
+
+    const std::vector<float> out = rb::shadowOverdrawImage(shadow, content, 2, 2, 0.2);
+    REQUIRE(out.size() == 16);
+    // Alpha is `shadow.a * content.a * clipAlpha`, texel by texel.
+    CHECK(near(out[3], 0.2, 1e-6));
+    CHECK(near(out[7], 0.1, 1e-6));
+    CHECK(near(out[11], 0.0, 1e-6));    // no content, no overdraw
+    CHECK(near(out[15], 0.05, 1e-6));
+    // And the colour is the SHADOW's, untouched by the content's.
+    for (int t = 0; t < 4; ++t) {
+        for (int c = 0; c < 3; ++c) CHECK(near(out[t * 4 + c], shadow[t * 4 + c], 1e-6));
+    }
+
+    // A zero clip alpha is the binary's `alpha <= 0` exit at `0x45F9C`: nothing
+    // is composited, and the caller distinguishes that from a black pass by the
+    // image being empty rather than by it being transparent.
+    CHECK(rb::shadowOverdrawImage(shadow, content, 2, 2, 0.0).empty());
 }

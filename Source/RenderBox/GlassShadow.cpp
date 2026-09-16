@@ -101,11 +101,17 @@ const char* const kShadowRingNote =
     "(ringWidth em texels acima do maxDistance dele) nao teria como aparecer.";
 
 const char* const kShadowOverdrawNote =
-    "sombra: este grupo abriria a passagem de OVERDRAW do alvo (Shadow.drawOverContent e true "
-    "por padrao e a translucency do grupo e nao nula), que e um segundo composite recortado por "
-    "clipLayerWithAlpha: com alpha = clamp01(translucency / 0.3) x max<Neutral|Vibrant>"
-    "OverdrawOpacity[3-c] (0x45F18-0x45F94). Ela NAO esta desenhada aqui -- so a passagem "
-    "principal de 0x49ED4 esta.";
+    "sombra: a passagem de OVERDRAW E desenhada -- a MESMA imagem de sombra composta uma "
+    "segunda vez (0x49ED4 com w1=1, de 0x46034 e 0x4AEB4), agora SOBRE a arte, com "
+    "Shadow.overdrawBlendMode no lugar do byte de mescla (o tst w1,#1 de 0x49F94/0x4A004 e a "
+    "unica coisa que w1 muda la dentro) e recortada pela cobertura da PROPRIA arte, que o alvo "
+    "desenha na camada de recorte com 0x4B4EC -- a mesma funcao que a passagem de conteudo "
+    "termina chamando (0x4AF20 -> 0x4B3EC) -- fechada por clipLayerWithAlpha:mode:0 em "
+    "0x45FF4/0x4AEA8 com alpha = clamp01(translucency/0.3) x max<Neutral|Vibrant>"
+    "OverdrawOpacity[3-c] (0x45F18-0x45F94). O que NAO foi lido e o PORTAO: 0x45F10 exige que o "
+    "byte [descritor+0x31] (FinalizedIcon.Layer.blendMode) seja ZERO, e 0x4B518 despacha esse "
+    "mesmo byte contra #8; aqui a passagem abre sempre que a aritmetica a abre, porque nenhuma "
+    "chave de documento escolhe esse byte.";
 
 bool shadowUsesVibrantTable(ShadowStyle style) {
     // `automatic` and `vibrant` both fall into `w8 = 0` at `0x4A254`/`0x4A260`.
@@ -282,6 +288,26 @@ double shadowOverdrawAlpha(double translucency, ShadowStyle style, IconSizeClass
         shadowUsesVibrantTable(style) ? p.maxVibrantOverdrawOpacity : p.maxNeutralOverdrawOpacity;
     const double a = t * sizeBasedValue(quad, sizeClass);
     return a > 0.0 ? a : 0.0;   // the binary's own `alpha <= 0` exit
+}
+
+std::vector<float> shadowOverdrawImage(const std::vector<float>& shadow,
+                                       const std::vector<float>& content,
+                                       std::uint32_t width, std::uint32_t height,
+                                       double clipAlpha) {
+    const std::size_t texels = static_cast<std::size_t>(width) * height;
+    if (shadow.size() < texels * 4 || content.size() < texels * 4) return {};
+    if (!(clipAlpha > 0.0)) return {};
+
+    std::vector<float> out(shadow.begin(),
+                           shadow.begin() + static_cast<std::ptrdiff_t>(texels * 4));
+    const float k = static_cast<float>(clipAlpha);
+    for (std::size_t t = 0; t < texels; ++t) {
+        // The clip multiplies COVERAGE, so it lands on alpha alone -- the same
+        // rule `shadowImage` already follows for the ring. The content's own
+        // colour never enters: `clipLayerWithAlpha:` clips, it does not tint.
+        out[t * 4 + 3] *= content[t * 4 + 3] * k;
+    }
+    return out;
 }
 
 }  // namespace rb
