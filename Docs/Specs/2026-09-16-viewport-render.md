@@ -80,9 +80,19 @@ Os documentos saem do corpus pelos contadores que o próprio render já devolve
 `backgroundPainted`, e um com arte raster), numa `size` em que a escada do
 desfoque reduz de verdade.
 
+**A exatidão vem de amostrar em coordenada ABSOLUTA.** Todo passo de CPU
+(fundo, pastilha, raster, campo, máscara de translucidez, refração) continua
+avaliando no ponto `(x + origem) + 0,5` da grade de `size`, com a geometria
+intocada. Só o ÍNDICE no buffer é deslocado, por um inteiro. Transladar a
+geometria arredondaria diferente, e o gate acusaria. Os passos que só olham
+vizinhança (desfoque, translação da sombra, especular) são invariantes por
+construção, desde que a escada esteja alinhada.
+
 **Quando o diferencial não for zero, o relatório diz de que tipo ele é.** A
-arte vetor passa pela GPU (`Device.h`), e uma coordenada transladada não tem
-garantia de arredondar igual à original. Então o gate imprime o `max |Δ|` e a
+arte vetor passa pela GPU (`Device.h`). Lá a translação é inevitável: o
+`PathGlobals` recebe a origem subtraída em `m2`, e `twoOverSize` passa a usar a
+extensão do buffer. Uma coordenada transladada não tem garantia de arredondar
+igual à original, e este é o único sítio onde o risco existe. Então o gate imprime o `max |Δ|` e a
 distância do pior pixel até a borda do buffer. Uma margem curta aparece com Δ
 grande e colada na borda. Resíduo de aritmética aparece com Δ na ordem de ULP,
 espalhado pelas bordas antialiasadas. Só o primeiro caso é o desenho errado. O
@@ -116,14 +126,22 @@ são conhecidos e medidos, em unidades de canvas (o canvas tem 1024 —
 **A margem é calculada por documento, não é uma constante.** O pior caso
 teórico é 640 pontos, mais de meio canvas. Com uma constante desse tamanho, o
 viewport vira o render cheio em todo ícone. A margem então sai dos parâmetros
-já denormalizados dos grupos que de fato desenham cada efeito. É o máximo, por
-lado, entre:
+já denormalizados dos grupos que de fato desenham cada efeito.
 
-- sombra: `2,8 × σ + deslocamento`;
-- refração: `max(|strength|, height)`;
-- especular: a banda dele.
+**Os alcances se SOMAM ao longo da cadeia.** Um passo só lê pixels certos se o
+passo anterior os deixou certos. A sombra de um grupo é exata até
+`2,8 × σ + deslocamento` da borda do buffer. A refração de um grupo seguinte lê
+esse backdrop até `|strength|` de distância. Então um pixel do recorte só sai
+exato com margem ≥ os dois somados. Por lado, a margem é:
 
-Esse máximo é convertido em pixels pela escala e arredondado para cima.
+- a maior banda local (sombra `2,8 × σ + deslocamento`, especular e
+  translucidez), **mais**
+- a SOMA de `max(|strength|, height)` sobre os grupos que refratam, porque cada
+  refração lê o resultado da anterior.
+
+O arredondamento vai para cima, em pixels, com uma folga de duas vezes o
+alinhamento da escada (abaixo): a redução e a expansão bilinear alcançam alguns
+pixels além do kernel.
 `[ART]` **Medido em 16/09.** Só 3 dos 146 documentos do corpus têm
 `refractivity`, e só **2** deles com força diferente de zero:
 
@@ -135,8 +153,10 @@ Esse máximo é convertido em pixels pela escala e arredondado para cima.
 Nos dois, a altura denormalizada (134,5 e 105,3) fica abaixo da força. O
 terceiro, `videolan__vlc-ios__VLC26`, tem `enabled: false` e força 0, ou seja,
 identidade. Então, em 144 dos 146 documentos, quem manda na margem é a sombra
-(≤ 211 pontos). Nos dois que refratam, a margem chega a um terço do canvas por
-lado. O viewport ainda ganha área, só que menos. A varredura é um passeio
+(≤ 211 pontos). Nos dois que refratam, a soma leva a margem a até
+337 + 211 ≈ 548 pontos por lado, mais de meio canvas. Nesses dois o viewport
+praticamente vira o render cheio até zooms altos, onde o teto de área assume.
+Isso está aceito: são 2 documentos, e o resultado continua exato. A varredura é um passeio
 Python pelas chaves `refractivity` de `References/corpus/*/icon.json`, com a
 mesma denormalização de `GlassMaterial.cpp:208-234`.
 
@@ -229,7 +249,9 @@ Três coisas que a primeira versão deixava implícitas:
 ou origem, e portanto mudam:
 
 - a extensão do próprio buffer (592-593);
-- o retângulo do canvas que o gradiente do fundo mede (626-627, origem);
+- o retângulo do canvas que o gradiente do fundo mede (626-627). Esse fica
+  COMO ESTÁ: o fundo é pintado na CPU em coordenada absoluta, então o retângulo
+  absoluto é o certo. Está na lista para que ninguém o "corrija";
 - `paintBackground` (633), `clipToChiclet` (639) e `drawChicletHighlights`
   (669);
 - `placeRaster` (1160);
@@ -246,9 +268,16 @@ extensão entra e a escala é tirada dela: `min(w,h) / 1024`
 
 **Sítios que ficam FORA deste arquivo e também mudam:**
 
-- o grampo UV de `glassOver`, que é o buffer e precisa ser o canvas
-  (`GlassLayer.cpp:222-235`);
-- o grampo de `sampleBilinear` (`DisplacementOracle.cpp:162`);
+- `glassOver` (`GlassLayer.cpp:206`) passa a avaliar em coordenada absoluta,
+  com UV sobre o canvas;
+- o `SampledImage` de `sampleBilinear` (`DisplacementOracle.cpp:152`) ganha a
+  origem e a extensão do buffer. O grampo continua sendo o do canvas, e a
+  leitura é deslocada por um inteiro;
+- `rasteriseContours` e `coverageFromContours` (`DistanceField.cpp:778, 867`)
+  passam a amostrar linhas absolutas, via uma origem em `FieldOptions`, e
+  `FieldImage` passa a carregar essa origem;
+- `glassOpacityMask` (`GlassTranslucency.cpp:96`) passa a medir `py` absoluto;
+- `chicletCoverage` e `drawChicletHighlights` passam a varrer só o buffer;
 - o alinhamento da escada do desfoque (acima).
 
 **A lista é conferida pelo compilador, e não por número de linha.** Número de
