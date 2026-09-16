@@ -339,3 +339,272 @@ do Onyx no `rb::Device`; ler `WindowLayoutConstants`.
 | `[OBS]` | o gama entre o canvas e o PNG não foi medido | §6 |
 | decisão | dois `VkInstance` no processo | §6 |
 | decisão | seleção simples; sem drag-and-drop | §7 |
+
+---
+
+## 11. O que 15/09/2026 fez com esta spec
+
+Cinco frentes daquele dia mexeram na casca, e três delas **derrubaram itens desta
+própria spec**. Integrado em 16/09/2026.
+
+### 11.1. O canvas abria numa plataforma que documento nenhum declara
+
+`[BIN]` O canvas abria em `Idiom::Base`, e **`Base` não é uma plataforma**: é a
+entrada de *fallback* do formato, que casa apenas com as entradas que **não**
+nomeiam idiom nenhum. `[ART]` **145 de 145** documentos declaram
+`supported-platforms` e **145 de 145** declaram `squares`; sob `Base`, **nenhuma**
+das **84 entradas de especialização predicadas por idiom** do corpus resolve.
+
+> **`0 de 84` é o número que condena o padrão antigo.** Abrir em `Base` mostra uma
+> composição que **documento nenhum declara suportar** — e, no caso do usuário,
+> não aplicava o `scale: 0.8` que ele tinha desenhado.
+
+**O combo nunca esteve quebrado.** O caminho do idiom até o render foi seguido
+arquivo por arquivo e está fixado por um caso que dirige o `RenderCoordinator` de
+verdade — inclusive a parte que importa e que um teste ingênuo não pega: **uma
+resposta que ecoa o contexto ERRADO não apaga o `pending`**.
+
+A regra nova (`ick::declaredIdiom`) foi **lida dos autores**, não inventada:
+`[ART]` dos sete documentos que declaram `squares: ["macOS"]` **e** especializam
+por idiom, **os sete escrevem `idiom: macOS`**; nenhum escreve `square` sozinho. E
+o alcance dela foi medido contra as três alternativas:
+
+| padrão | alcança |
+|---|---|
+| `base` (o antigo) | **0 de 84**, em 0 documentos |
+| sempre `square` | 57 de 84, em 15 documentos |
+| **a declaração do documento** | **71 de 84**, em 21 documentos |
+
+`[BIN]` **E o alvo separa `Idiom` de `Platform`** — dois enums distintos, com
+mensagens de erro próprias (`"Unknown idiom name: "` em `0x1264A0`,
+`"Unknown platform name: "` em `0x126590`), e o seletor da UI do alvo é um
+`SwiftUI.State<Platform?>` (`IconComposerKit 0x18DAF2`), **não sobre `Idiom`**.
+`[INF]` No alvo, `Idiom` é o vocabulário **do arquivo** e `Platform` o da
+**pré-visualização**, validado contra o `supportedPlatforms` do documento (daí o
+tipo `ConstrainedPlatform`). **Marcado como inferência, e o modelo não foi
+mudado por causa disso** — vira `[OBS]`, não refatoração especulativa.
+
+Rendimento imediato da medição, e vale por si: `idiomLabel(Base)` devolvia
+**`"All"`**, que lê como "todas as plataformas" — **o oposto do que o caso faz**.
+O alvo chama esse caso de `unspecified`. **A etiqueta agora é "Unspecified".**
+
+**Só a vista se move:** `scope` continua em `Base`, o documento não é tocado,
+`version()` não anda, a sessão **não nasce suja**.
+
+### 11.2. O canvas: não havia recorte, e o pan era um `static`
+
+**Isto derruba dois itens do §9** — "clique e arrasto no canvas" e "zoom/pan".
+
+`[BIN]` **Não havia `PushClipRect` em lugar nenhum.** Uma `ImDrawList` de janela
+já vem recortada, mas **no *inner rect***, que **inclui a fileira de combos** que
+o próprio painel desenhou dois passos antes. Como o ícone é desenhado depois, na
+mesma lista, **ele pinta por cima dos controles** assim que `side > avail.y`.
+
+O caso que prende isso afirma **as duas metades**, e é a segunda que o torna
+honesto: que o ícone **realmente quer** sair dos quatro lados — *sem isso o caso
+passaria em qualquer canvas* — e que o que chega à tela não sai, lido da **draw
+data terminada do ImGui**, no `ClipRect` do `ImDrawCmd` cuja textura é a do ícone.
+**Controle negativo rodado:** comentando o `PushClipRect` o caso vai a **cinco
+falhas**. *"O teste não passa por vacuidade."*
+
+**E o pan era `static ImVec2`.** O comentário acima dele dizia que pan *"não vale
+um campo na Session que nada mais leria"* — mas **um estático de arquivo não é
+ausência de estado: é UM estado compartilhado por todo documento que o processo
+abrir.** Fechar um documento arrastado para o canto e abrir outro punha o novo no
+mesmo canto. *"Era bug por si só, e o comentário o descrevia como economia."*
+
+A referência é o `ImageViewer.cpp` do Onyx, e **a decisão foi transcrever a
+matemática, não usar a classe**, por três motivos com endereço: a regra 2 da
+arquitetura (o Kit liga `Foundation`, `CoreSVG`, `RenderBox` e `imgui_lib` e nada
+mais — usar a classe do Onyx aqui **mata o `-DIC_BUILD_UI=OFF`**); a classe **não
+é uma transformação de vista, é um visualizador de arquivo** (possui um
+`TexturePool`, exige `VkContext` vivo, faz `UploadToGPU`, desenha a própria
+toolbar a partir do `Theme` do Onyx); e **das 268 linhas, o que serve são umas
+quarenta — e essas quarenta são puras**, portanto testáveis.
+
+**Uma mudança de convenção deliberada:** o `pan` antigo era *deslocamento a partir
+do centro*; o novo é o **canto superior esquerdo do ícone em pixels do canvas**,
+a convenção do Onyx — *"o zoom ancorado é uma conta de duas linhas nessa convenção
+e uma bagunça na outra"*.
+
+E `ViewContext` ganhou os pares `x`/`xTarget`, que são o que torna o movimento
+suave. **Os dois precisam existir porque o zoom ancorado faz a conta contra o
+alvo:** dois entalhes de roda dentro de um mesmo *easing* **têm de compor, não
+brigar**. É a mesma razão pela qual os controles escrevem `zoomRequest` e **não**
+`zoomTarget` — um controle que sobrescrevesse o alvo estaria ampliando em torno do
+canto superior esquerdo.
+
+### 11.3. O painel de camadas, reescrito contra o `LayerOutlineView`
+
+`[BIN]` O painel do alvo é um `NSOutlineView` **por item, não por índice**, e a
+metadata nomeia o que ele tem: um tipo inteiro só para desenhar o indicador de
+drop, a área de clique da linha como assunto declarado
+(`LargeHitAreaButtonStyle`), seleção múltipla com modificadores, *arrange* em duas
+subseções, copiar/colar **lembrando o grupo de origem**, e **diagnóstico dentro da
+lista**.
+
+Três dos nove defeitos medidos eram bugs que ninguém tinha visto porque **o gate
+headless passava verde por cima deles**:
+
+- **O aberto/fechado do grupo era guardado pela POSIÇÃO.** `PushID((int)g)` põe o
+  *disclosure* sob o índice; mover o grupo 0 para baixo **trocava o estado dele
+  com o do vizinho**. O alvo endereça por item (`expandItem:`). `[BIN]` E o
+  formato **não dá id a um nó** — nenhum documento do corpus carrega chave de
+  identidade —, então o estado continua posicional; **o que mudou é que agora o
+  dono dele é quem move as posições.**
+- **A linha tinha dois itens sobrepostos e um buraco morto:** o espaço à direita
+  do nome pertencia ao `TreeNodeEx`, que era `OpenOnArrow` — **clicar ali não
+  fazia nada.**
+- **Renomear e clicar fora jogava o que foi digitado no lixo.** Só o Enter
+  comitava.
+
+**A única mudança fora do painel foi `Session::moveNode(path, delta, coalesce)`.**
+Um drop de três linhas são três `moveNode`, e três entradas na pilha para **um
+gesto** são três `Ctrl+Z` para desfazer um arrasto — *"exatamente a raiva que este
+round existe para tirar"*. O mecanismo já estava documentado em `Session.h`;
+**faltava usá-lo para estrutura**. E a chave nomeia **o pai**, não o nó, porque o
+índice do nó é justamente o que cada troca muda.
+
+**O que ficou de fora é tão informativo quanto o que entrou**, e cada recusa tem
+razão: **seleção múltipla** alargaria `Session::selection`, que é *um round do
+Session* e não do painel; **duplicar/colar** poria um gesto na pilha como uma dúzia
+de comandos, o oposto do parágrafo acima, e **precisa de `Session::duplicate`**; e
+**reparent por arrasto** seria add+remove, dois comandos e um nó novo — então
+**soltar fora do pai da linha arrastada é RECUSADO, com nenhum indicador aparecendo,
+em vez de feito pela metade.**
+
+### 11.4. O inspetor, e a auditoria do "nem citei tudo"
+
+Esta frente abre com a frase que devia estar no topo de qualquer spec de UI deste
+projeto:
+
+> **O que o verde não vê.** O selftest headless imprime `imgui errors 0`,
+> `textured yes` e `bytes round-tripped yes`. **Ele imprimiria exatamente isso com
+> todos os sliders do painel quebrados**, porque ele não move nenhum, não aperta
+> nenhuma tecla e não olha para nada. **Foi acreditar nesse verde que produziu a
+> situação atual, e nada neste laudo é justificado por ele.**
+
+**Quatro achados que valem além do conserto:**
+
+**(a) Os atalhos de teclado eram desenho.** `ImGui::MenuItem(label, shortcut, …)`
+**desenha** o terceiro argumento e **não liga nada**: a string é uma *foto* de uma
+tecla. A barra anunciava **nove acordes**, e uma varredura por `ImGuiKey`,
+`IsKeyPressed` ou `Shortcut` em todo o Kit e no `app/` voltava **vazia**. **Nenhum
+deles fazia nada — inclusive o `Ctrl+Z`, que é o desfazer para o qual toda a
+coalescência do inspetor existe.**
+
+`[OBS]` E ligá-los **aumentou** um risco que já existia: `Ctrl+W` e `Ctrl+Q` agora
+funcionam, e `Window.cpp:102-103` fecha e sai **sem checar `isDirty()` e sem
+perguntar nada**. O item de menu era igualmente desprotegido; a tecla só torna o
+acidente muito mais fácil. **É o A1 da lista abaixo, e o primeiro conserto da
+próxima rodada.**
+
+**(b) O escopo editado não era o que a canvas mostrava, e nada dizia.**
+`Session::view.context` é o que a canvas renderiza; `Session::scope` é o que o
+inspetor escreve; são independentes **de propósito**, e §11.1 acabou de mover a
+*view* deixando o *scope* em `Base` **de propósito**. `[ART]` Como 145 de 145
+documentos declaram plataforma, **em praticamente todo documento real os dois
+discordam desde o primeiro quadro** — e o painel desenhava só o `scope`, em dois
+combos de 100 px sem rótulo. *"É literalmente a mentira que o cabeçalho deste
+arquivo diz que o painel existe para impedir, e o painel a estava contando."*
+
+**(c) Um bug de BYTES no inspetor de geometria.** A seção lia o `position` inteiro
+em `float` e **reescrevia o objeto todo a cada quadro de arrasto** — ou seja,
+**arrastar a escala reimprimia as duas coordenadas da translação em precisão de
+float**. `[ART]` O corpus escreve coordenadas como `0.5000000000000001`, e um
+float não segura esse número. **Nada disso aparece na tela**; aparece como
+documento que não bate mais com os bytes de onde foi aberto — a mesma coisa que o
+`writeAxis` do fill, dez linhas abaixo, tem um parágrafo inteiro explicando que
+não se faz.
+
+**(d) Quatro seções do painel eram inalcançáveis no programa construído.**
+`drawInspector` sempre teve ramo `NodeKind::Root`, e `nodeTitle` sempre respondeu
+`"Document"` — mas **nada no editor rodando conseguia produzir esse path**.
+Estavam plenamente escritas, testadas e desenhadas **no selftest**, que seleciona
+por `firstSelectable`. Entre elas, **o único controle sobre `supported-platforms`**
+— a chave que 145 de 145 documentos carregam e que decide se o ícone é squircle ou
+círculo.
+
+**E uma suspeita do briefing foi DERRUBADA por medida:** a coalescência de arrasto
+já funcionava — os oito controles contínuos já passavam `coalesce=true` e fechavam
+no `IsItemDeactivatedAfterEdit`. Virou teste porque é regressão fácil de causar. E
+o teste achou um detalhe de contagem que vale registrar: **`Session::apply` não
+registra comando quando a edição não muda byte nenhum**, então a contagem é **213
+e não 214** se o arrasto começar no valor de abertura.
+
+### 11.5. A auditoria priorizada — a coisa mais próxima de um roadmap de UI
+
+Três listas. **(a) quebrado**, **(b) hostil**, **(c) ausente com âncora `[BIN]` no
+slice**. A lista (c) é o que o alvo tem e nós não, cada linha com o **nome do tipo
+e a contagem de ocorrências** no `IconComposerKit.arm64` — e é por isso que ela
+vale como plano: **ela não é uma lista de desejos, é um inventário medido.**
+
+**(a) Quebrado — 7 itens, 3 consertados naquele dia:**
+
+| # | o quê | estado |
+|---|---|---|
+| **A1** | `close()` e `quit` **sem checar `isDirty()` e sem perguntar**. Perde trabalho sem aviso; o `*` no título é a única pista e não impede nada | **aberto — #1 da próxima rodada** |
+| A2 | nove atalhos anunciados, nenhum ligado | consertado |
+| A3 | `position` inteiro por `float`; arrastar a escala reescrevia as coordenadas | consertado |
+| A4 | a raiz do documento não era selecionável; 4 seções inalcançáveis | consertado (porta provisória; a linha definitiva é na árvore) |
+| A5 | sob `Base`, uma propriedade opcional escrita **não tem como ser removida** — `Section::begin` só desenha `Remove override` fora de `Base` | **aberto** — muda o contrato compartilhado de `Section`; é decisão de design |
+| A6 | um comentário diz **o contrário** do código na frase seguinte. *"É o tipo de comentário que faz o próximo 'consertar' código correto."* | aberto |
+| A7 | o botão `-` está **sempre habilitado**; sem seleção não faz nada e não diz nada | aberto |
+
+**(b) Hostil — 14 itens, 8 consertados.** Os seis abertos: `Delete` de um grupo
+com camadas **sem confirmação** (B9); o painel é **uma coluna só** com até 8 seções
+abertas, enquanto o alvo tem `InspectorScrollView` **e** `InspectorPane`, isto é
+abas (B10); renomear **só** por duplo-clique, sem item de menu nem atalho (B11); a
+tabela de Diagnósticos sem cabeçalho, ordenação ou copiar (B12); caminho de import
+**digitado**, sem `Browse` (B13); `Preview Size` só 512 e 1024, sem valor livre
+(B14).
+
+**(c) Ausente — 15 itens, cada um com âncora `[BIN]`:**
+
+| # | âncora no slice | o quê |
+|---|---|---|
+| **C1** | `PasteboardPropertySet` (27), `InspectorCopyablePropertyTypeKey` (3), `PasteboardLayer` (14) | **Copiar/colar propriedades e camadas.** *"A maquinaria do alvo é grande e nomeada; é o maior buraco funcional."* |
+| **C2** | `LayerOutlineView` (35), `PasteboardMemberItemDragSource` (8), `ConstrainedDragGesture` (11) | **Arrastar camada para reordenar e para REPARENTAR.** O reordenar entrou em §11.3; **mover camada entre grupos continua impossível** |
+| **C3** | `AxisChoice` (29), `Axis2D` (4), `GradientPlacementView` (7) | **O eixo do gradiente como escolha e como desenho.** Nós temos quatro números |
+| C4 | — (o Onyx já tem `SystemOpenFileDialog`) | **Botão `Browse` no import.** Falta **um bool** no `MenuActions` e uma linha no `app/` |
+| C5 | `LayerSpecularInspector` (3) ao lado de `GroupSpecularInspector` (3) | **Especular na CAMADA** além do no grupo. **Conflito de evidência declarado:** `[ART]` as 103 ocorrências de `specular` do corpus estão todas dentro de `groups[]`. **Precisa de um censo que separe grupo de camada antes de virar controle** — a regra da casa é não escrever chave não observada |
+| C6 | `ExportSheet` (7), `ExportOptions` (13), `ExportableImage` (11) | **Exportar imagem** |
+| C7 | `LocalizationMenu` (12), `DisplayableLanguage` (30), `AddLanguageSheet` | **Localização** |
+| C8 | `RulerTicks` (17), `LayoutGuide` (22), `Checkerboard` (14) | **Réguas, guias e xadrez de transparência.** O xadrez importa: **sem ele o alpha do ícone é ilegível sobre cor chapada** |
+| C9 | `ZoomableView` (30), `Zoomable` (9) | zoom/pan como componente — **entrou em §11.2** |
+| C10 | `ArrangeCommandHandler` (12) | **Arrange** como comandos de menu |
+| C11 | `BackgroundChooser` (5), `BackgroundImageManager` (17) | **Escolher o fundo da pré-visualização**, inclusive imagem. Hoje é uma cor fixa |
+| C12 | `EffectsRenderModePicker` (7) | um seletor de **modo de render dos efeitos**. Sem contrapartida nossa |
+| C13 | `StateSavingView` (28), `LazyKeyValueStore` (30), `WindowLayoutConstants` | **O editor não lembra nada entre execuções** — nem escopo, nem zoom, nem qual documento estava aberto, nem o layout. É o `[OBS]` das constantes de janela do `Docs/README.md`, agora **com o custo dito** |
+| C14 | `RefractivityGrid` (3), `RefractivityGridView` (4) | a refratividade do alvo tem uma **grade** além dos dois números |
+| C15 | `GlowPopoverIndicator` (5), `PopupIndicator` (8), `SelectionIndicatorRectangle` (4) | afordâncias de seleção e de "há mais aqui" |
+
+### 11.6. O que muda no §9 e no §10 desta spec
+
+**Saem do §9** (foram feitos): drag-and-drop na árvore **para reordenar** (não
+para reparentar — C2 continua aberto) e zoom/pan.
+
+**O item "adotar o `VkContext` do Onyx no `rb::Device`" saiu do §9 por
+DECISÃO, e não por implementação** — ver §6, que foi reescrita pela frente do
+device em 15/09/2026. Em resumo: a branch que o propunha está **apagada**,
+preservada na tag `rejeitado/device-adotado-do-onyx`, e o `[BIN]` que a derruba é
+que o volk expõe **duas** portas — `volkLoadDevice`, que escreve num estado
+**global de processo**, e `volkLoadDeviceTable` (`volk.c:189`), que preenche uma
+tabela **por device** e **não toca em símbolo global nenhum**. O `main` já passava
+pela segunda. A prova mais forte é de pixel: **render byte-idêntico nos dois
+despachos** (`9776C1F6…`), com `IC_BUILD_UI` ligado e desligado.
+
+**"Ler `WindowLayoutConstants`" continua no §9**, e agora tem custo escrito: é o
+C13, e o que ele custa é **o editor não lembrar nada entre execuções**.
+
+**Entram no §10, como suposições novas:**
+
+| marca | o quê | onde |
+|---|---|---|
+| `[INF]` | `Idiom` é vocabulário do arquivo e `Platform` o da pré-visualização; `fullySpecialize` **não foi desmontado** | §11.1 |
+| `[INF]` | `1,15` por entalhe de roda, `exp(−18·dt)` e margem de 80 px são **constantes de sensação** do Onyx, não medidas do alvo | §11.2 |
+| `[INF]` | renomear comitar ao sair do campo é convenção do AppKit — **âncora fraca, e está dita** | §11.3 |
+| `[INF]` | **F2 para renomear é SEM ÂNCORA**: é a grafia desta plataforma do Return que o alvo usa | §11.3 |
+| `[INF]` | o texto e o formato do aviso âmbar de escopo **são nossos, sem âncora no alvo** | §11.4 |
+| `[OBS]` | o aberto/fechado de um grupo **não sobrevive a um undo** — corrigir exige identidade de nó, **que o formato não tem** | §11.3 |
+| `[OBS]` | `1:1` significa "um texel do preview para um pixel de tela". Se a expectativa for "tamanho real do ícone", a definição está errada **e nenhum teste diz isso** | §11.2 |
