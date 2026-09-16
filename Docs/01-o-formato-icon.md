@@ -366,3 +366,175 @@ pela linha de comando, e o prefixo é o nome interno do projeto (`IconStudio`).
 `is-hidden`**. O documento escreve `glass` e `hidden` (§1), e estas duas grafias
 existem no binário mesmo assim. Onde elas são usadas é **pergunta aberta** — o
 candidato é a exportação para asset catalog, que tem chaves próprias (§9).
+
+`[OBS]` E há mais sobre o `is-glass` desde 15/09/2026: ele tem **oito sítios** no
+`__text` do `IconComposerFoundation`, e acompanha o `specular` no mesmo conjunto
+de funções, com cara de **nome de propriedade da UI** e não de grafia de
+documento. **Não é a chave do JSON** — a do JSON é a do `CodingKeys` (§12.1).
+Fica registrado porque quem varrer os literais vai achá-lo.
+
+---
+
+## 12. Uma chave AUSENTE não vale o zero do tipo
+
+`[BIN]` **Ausente é `true`.** E ausente em `specular` é **`automatic`, não
+`off`.** Esta é regra do **formato**, não do motor, e ela foi lida em 15/09/2026
+(`Docs/Laudos/2026-09-15-portao-glass.md`) depois de o renderizador passar semanas
+lendo os dois ao contrário — com o efeito de que **mais da metade dos efeitos
+autorados do corpus nunca desenhava**.
+
+### 12.1. O campo é `Optional`, e o default mora no modelo vivo
+
+`[BIN]` No `Layer.Snapshot` — o tipo que o JSON decodifica — **toda** propriedade
+é opcional. O descritor de campos (`0x12D2E4`) traz `isGlass` como
+`SpecializableProperty.Snapshot<Bool>` **com `Sg` no fim**, e a distinção é
+legível no mesmo despejo: `AssetMirroring.mirrorable` aparece como `SbSg`
+(`Bool?`) três linhas adiante, enquanto `Icon.Element.participatesInGlass`, do
+`IconRendering`, aparece como **`Sb` puro**. *"Quando a fatia quer dizer opcional,
+ela diz."*
+
+`[BIN]` **O modelo vivo não é opcional:** a classe `Layer` (`0x12C604`) dá
+`_isGlass` como `SpecializableProperty<Swift.Bool>`, **sem `Sg`**. Logo um
+snapshot `nil` **deixa de pé o que o inicializador instalou** — e o inicializador
+(`0x95C10`) escreve, na ordem de declaração:
+
+```
+0x95CDC  mov  w8, #1
+0x95CE0  strb w8, [x20, #0x118]      ; _isGlass.defaultValue = TRUE
+```
+
+O offset não é chute: os vizinhos se identificam sozinhos e batem com o formato já
+conhecido — `_blendMode == .normal`, `_opacity == 1.0`, `_isHidden == false`,
+`_position == (0,0) × 1.0`. *"Um mapa de layout que acerta quatro âncoras não erra
+o campo entre a quinta e a sexta."* E o mapa fecha: da borda do cabeçalho até o
+registrar da observação **não sobra byte inexplicado**.
+
+`[BIN]` **E não existe um `?? false` em lugar nenhum.** O decodificador
+(`0xC0544`) testa a tag do `Optional` de cada campo e **desvia por cima da escrita
+inteira** quando ela é `nil`:
+
+```
+0xC0660  ldrb w26, [x23, #0x28]     ; a tag do Optional do campo
+0xC0664  cmp  w26, #0xff            ; 0xff == nil
+0xC0668  b.eq #0xC0760              ; nil -> PULA a aplicacao
+```
+
+**Um campo `nil` não escreve nada.** Ausente não cai num default escrito em algum
+lugar; há um salto por cima.
+
+`[BIN]` No grupo, `Group.init` (`0x9090C`) faz o mesmo para onze propriedades, e
+`_specular.defaultValue` recebe **`1`** (`0x909D4`). O enum
+`SpecularHighlight` lista `off, automatic, inside, outside` — **o `1` é
+`automatic`**.
+
+> ### A conferência que fecha sem deixar sobra
+>
+> `[BIN]` Os **thunks `vpfi`** — funções autônomas de inicialização de
+> propriedade, todas juntas entre `0x1B78` e `0x1C30` — dão os mesmos defaults por
+> outro caminho, e **nenhum sobra nem falta**: os dez cobrem exatamente os
+> dezenove `SpecializableProperty` das duas classes.
+>
+> E o *identical code folding* vira **prova** aqui, em vez de armadilha (doc 03
+> §45.1): `_isGlass` e `_specular` caem no **mesmo** thunk `0x1BF8` porque os dois
+> defaults são o byte `1`. **Se `glass` fosse `false`, ele teria fundido com
+> `0x1B78` e o `0x1BF8` teria um dono a menos — e `0x1BF8` existe.**
+>
+> Âncora de brinde que fecha o layout do grupo: `+0xB8 = 1` com `+0xC0 = 0,5` é
+> `_shadow == Shadow(.neutral, 0.5)`, e `[ART]` **`neutral/0,5` é a sombra
+> dominante do corpus, 146 dos 271 grupos**.
+
+### 12.2. O que o corpus diz — e por que ele não decidia sozinho
+
+`[ART]` Nos 145 documentos, 271 grupos e 437 camadas:
+
+| | |
+|---|---|
+| `"glass": true` | 135 camadas |
+| **`"glass": false`, explícito** | **90 camadas** |
+| chave ausente | 212 camadas |
+| `glass-specializations` | 55 camadas |
+| `"specular": true` / `false` / `"inside"` | 64 / **36** / 3 grupos |
+| `specular` ausente | 168 grupos |
+
+Dois achados estruturais, que o binário depois explicou:
+
+1. `[ART]` **`glass` e `glass-specializations` são perfeitamente disjuntos** — as
+   55 ocorrências estão todas em camadas sem `glass`, e nenhuma camada tem as
+   duas. É a mesma forma de `fill-specializations` (§5): quando há
+   especialização, a entrada **sem qualificador** carrega o valor base e a chave
+   simples some.
+2. `[ART]` **A omissão é local, não é marca de documento legado** — **46
+   documentos** misturam camadas com e sem a chave, e **115 das 212** ausências
+   convivem com uma camada que escreve `glass` no mesmo arquivo.
+
+Sob a leitura antiga, os 90 e os 36 `false` **explícitos não compravam nada**;
+sob esta, são o único jeito de desligar. **Mas o corpus não decidiu: quem decidiu
+foram `0x95CE0` e `0x909D4`.**
+
+`[ART]` O efeito no pixel: **33 documentos mudaram**, e os 33 caem **todos** dentro
+dos **55** que têm pasta `Assets` não-vazia — **nenhum documento sem arte mudou**,
+que é a checagem de sanidade. *"A conta que importa é 33 de 55 — 60 % dos
+documentos do corpus que têm arte para desenhar."* E os **três** documentos
+previstos de antemão pelo JSON como "grupo com efeito autorado e nenhuma camada
+com `glass`" estão os três na lista. **A previsão foi feita antes de qualquer
+render.**
+
+### 12.3. Dívida datada: dois defaults LIDOS e NÃO aplicados
+
+`[BIN]` O mesmo `Group.init` entrega mais dois defaults que o renderizador
+**continua não honrando**, e eles estão aqui em vez de num `TODO` porque quem os
+mudar precisa medir o próprio antes-e-depois:
+
+| chave ausente | deveria valer | vale hoje | `[ART]` grupos sem a chave |
+|---|---|---|---|
+| `shadow` | **`(neutral, 0.5)`** | `(Automatic, 0.0)` | **31 de 271** |
+| `translucency` | **`(enabled true, 0.3)`** | `(false, 0.0)` | **68 de 271** |
+
+**Aplicar os quatro defaults de uma vez tornaria as contagens de pixel daquele
+laudo ilegíveis**, e é por isso que os dois ficaram para depois. A dívida tem
+data, número e o motivo de existir.
+
+### 12.4. E a UI discorda do renderizador, em três sítios
+
+`[OBS]` `PanelLayers.cpp`, `PanelInspector.cpp` e `MenuBar.cpp` leem `glass` por
+**`booleanUnderBase`, que devolve `false` para chave ausente** — então **a
+caixinha "Glass" aparece desmarcada numa camada que o renderizador agora desenha
+como vidro**. É a mesma correção de uma linha em três lugares.
+
+### 12.5. A ponte para o motor monta POSICIONALMENTE
+
+`[INF]` A ligação `glass` → `Icon.Element.participatesInGlass` **continua
+inferência**. O que subiu de nível foi outra coisa, mais estreita e suficiente: o
+default do **próprio documento** para uma chave que falta.
+
+`[BIN]` Duas leituras a mais estreitaram a busca de quem for fechá-la:
+
+- **`participatesInGlass` é `Sb` — `Bool` puro, não `Bool?`** (descritor
+  `0xA3790`), **o que derruba a hipótese de o consumidor testar `!= nil`**.
+- **O nome existe em UMA fatia só**, como string de reflexão em `0xA10F0` do
+  `IconRendering.arm64` — não aparece no `IconComposerKit`, no `IconComposer`, no
+  `ictool` nem no `icrtool`. **Logo a ponte não monta o elemento por nome: monta
+  posicionalmente.** E o `IconComposerKit` **é** o lado que importa esses tipos,
+  com typerefs simbólicos nomeando `Icon.Element`, `Icon.Layer`,
+  `Icon.GlassMaterial`, `GlassMaterial.SpecularPlacement`,
+  `GlassMaterial.ShadowStyle` e `ICRRenderingParameters`. **A ponte está ali
+  dentro**, e achá-la é a mesma técnica de sempre — o acessor de metadados e quem
+  o chama — só que sobre um `struct`, **sem a âncora do `swift_allocObject`**.
+
+### 12.6. A lição de método que veio de brinde
+
+`[BIN]` Varrer o `__cstring` atrás de `"glass"` acha o literal em `0x127977` e
+**nenhum xref** — ninguém aponta para ele. O `CodingKey` que vale é uma ***small
+string* de Swift materializada por imediatos**:
+
+```
+0xBF84C  mov  x1, #-0x1b00000000000000   ; 0xE5 << 56 -> small string, contagem 5
+0xBF850  mov  x0, #0x6c67                ; 'g','l'
+0xBF854  movk x0, #0x7361, lsl #16       ; 'a','s'
+0xBF858  movk x0, #0x73,   lsl #32       ; 's'
+```
+
+Das três chaves procuradas — `glass`, `is-glass`, `glass-specializations` — **só a
+longa tinha ponteiro**, porque 21 caracteres não cabem numa *small string*. É a
+mesma armadilha do doc 03 §45.2, aqui escondendo a **grafia de uma chave de
+formato**.

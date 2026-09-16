@@ -28,14 +28,26 @@ delivered them alone.
 THAT REFUSAL WAS READ ON 2026-09-04 AND NARROWED ON 2026-09-05. It used to
 cover every group that blends AND carries glass, and it cost exactly the
 difference between the spec's promise (178 layers, 47 documents) and the
-number here (169 and 40). Apple's glass does not sample the destination at all
--- `GlassDisplacementStyle::draw` filters the ITEM it is applied to (doc 03
-§34.3) -- but OUR `glassOver` displaces the accumulation buffer in place, so a
-group's fresh target really does starve it. What closed the gap was narrowing
-rather than lifting: the coupling only bites when the refraction MOVES
-something, and no blocked document had a refracting glass. The refusal that
-survives is that one, and it is a difference in our model rather than an
-unread question.
+number here (169 and 40). The reason written here used to be "Apple's glass
+does not sample the destination at all", and ON 2026-09-15 THAT REASON WAS
+CORRECTED WHILE THE NUMBER STAYED PUT (`Docs/Laudos/2026-09-15-refracao.md`
+§3.1, doc 03 §40). It was half a reading. `GlassDisplacementStyle::draw` does
+filter the ITEM it is applied to, and that is right -- but that function is the
+MAP GENERATOR, and turning a shape's own field into a displacement map is
+exactly the job that has to read its own item. THE DISPLACEMENT IS A DIFFERENT
+OBJECT, installed right after, and its layer opens with `beginLayerWithFlags: 1`
+-- bit 0, the background bit. Apple's glass DOES read the destination.
+
+None of that moves this ruler, and saying so is the point. What closed the gap
+was narrowing rather than lifting: OUR `glassOver` displaces the accumulation
+buffer in place, so a group's fresh target really does starve it, and the
+coupling only bites when the refraction MOVES something -- no blocked document
+had a refracting glass (`[ART]` 2 of 271 groups refract at all, both with
+NEGATIVE strength). The refusal that survives is that one, and it is a
+difference in our model rather than an unread question. The old sentence is
+kept here in the negative because this docstring is the ruler that prints the
+reach number in `Docs/README.md`: a number and the reason for it live in the
+same file, and the reason went stale first.
 
 WHAT COUNTS AS "IN THE SLICE"
 -----------------------------
