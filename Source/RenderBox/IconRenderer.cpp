@@ -407,7 +407,51 @@ const char* const kGlassRasterFieldNote =
 // done here.
 //
 // If it is ever raised it must be ODD (`DistanceField.h` says why: only an odd
-// factor has a sub-texel whose centre IS the pixel centre).
+// factor has a sub-texel whose centre IS the pixel centre). E `2` NAO e um meio
+// termo: o gerador arredonda par para o impar ABAIXO, entao `ss = 2` E `ss = 1`,
+// bit a bit -- medido, as quatro faixas de angulo saem identicas.
+//
+// FECHANDO O `[OBS]` DO NORMAL (799411c), E A RESPOSTA E NAO LIGAR.
+//
+// O commit do Sobel deixou aberto que `ss = 3` levaria o erro angular do normal
+// a "<=1 grau (max 7)" e que o tempo disso em 1024 nunca fora medido. As duas
+// metades foram medidas agora (laudo `2026-09-15-supersample-campo.md`).
+//
+// A QUALIDADE DO ANGULO: o `[OBS]` estava certo, e por baixo. Circulo r=180 num
+// campo de 512 contra o normal radial em forma fechada, mean/pior em graus:
+//
+//   faixa (px)   ss=1          ss=3         residuo |d| medio: ss=1 -> ss=3
+//   0,5-1        0,96 / 4,13   0,54 / 2,02      0,069 -> 0,027
+//   2-4          2,51 / 15,74  0,66 / 4,83      0,086 -> 0,022
+//   4-8          2,77 / 19,86  0,64 / 5,76      0,074 -> 0,020
+//   8-16         2,38 / 13,11  0,62 / 5,15      0,061 -> 0,019
+//
+// O PIXEL: nao mexe. Erro medio por canal contra `apple-512.png`, 412 em 512,
+// quatro casas porque em duas os tres numeros sao os MESMOS:
+//
+//   ss=1 (base)       R 8,8416  G 10,1735  B 9,8461  A 4,9520
+//   ss=3 so na arte   R 8,8411  G 10,1738  B 9,8484  A 4,9520
+//   ss=3 so no chiclet R 8,8468 G 10,1786  B 9,8513  A 4,9560
+//
+// A arte move 5,00 % dos pixels (pior delta de canal 13) e paga 2,4x-2,6x o
+// render -- AppIcon-27 de 0,269 s para 0,653 s em 412 e de 1,669 s para 4,401 s
+// em 1024, Release -- para andar 0,0005 na direcao certa em R e 0,0023 na
+// ERRADA em B. O chiclet custa um campo fixo por render (+0,09 s em 412,
+// +0,59 s em 1024, o mesmo nos dois documentos) e piora os QUATRO canais.
+//
+// POR QUE quatro vezes menos erro de angulo nao vale um nivel de cor: o resto
+// contra a Apple e ~10 niveis por canal e ele nao vem daqui. Vem do
+// blur-material desligado, do grampo `plusLighter` desligado e do overdraw da
+// sombra -- todos anotados como `[OBS]` nos seus proprios sitios. Um residuo de
+// 0,06 px no campo esta tres ordens de grandeza abaixo disso, e o cone do
+// especular e um cosseno largo demais para revelar dois graus de normal. O
+// gabarito ARBITROU: a leitura mais precisa do campo nao e a mais parecida com
+// o alvo, entao o knob fica onde estava.
+//
+// `[OBS]` O QUE CONTINUA ABERTO e a GRADE do alvo -- `ICRRenderingParameters`
+// `.SDFGeneration` (0xA46E0) tem tres botoes que ninguem leu, e um deles pode
+// ser justamente este fator. Uma amostra por pixel segue sendo escolha MEDIDA
+// deste projeto, nao leitura do binario.
 constexpr std::uint32_t kFieldSuperSample = 1;
 
 const char* const kGlassVectorFieldNote =

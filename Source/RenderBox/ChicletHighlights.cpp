@@ -212,6 +212,26 @@ std::size_t drawChicletHighlights(std::vector<float>& rgba, std::uint32_t size,
 
     const std::vector<FieldContour> contours = chicletContours(size);
     if (contours.empty()) return 0;
+    // UMA AMOSTRA POR PIXEL, e aqui a escolha foi medida contra o gabarito e nao
+    // herdada. Este campo e o unico do render cujo custo NAO cresce com o
+    // documento -- a pastilha e a mesma forma em todo render, e ele e gerado uma
+    // vez por render, nao uma por camada. Isso o tornava o candidato obvio a
+    // `superSample = 3`: o custo e fixo e cacheavel.
+    //
+    // Medido mesmo assim, porque candidato obvio nao e numero. Com `ss = 3` o
+    // erro medio por canal contra `apple-512.png` PIORA nos quatro canais --
+    // R 8,8416 -> 8,8468, G 10,1735 -> 10,1786, B 9,8461 -> 9,8513,
+    // A 4,9520 -> 4,9560 -- movendo 2,92 % dos pixels com pior delta de canal
+    // 29, e cobra +0,09 s em 412 e +0,59 s em 1024 (Release, os mesmos valores
+    // no AppIcon-27 e no GoWToolkit, que e o que se espera de um campo por
+    // render). Um realce mais bem orientado sobre uma pastilha que o alvo
+    // desenha com um GRADIENTE CONICO numa camada recortada (`[INF]` 0x0000D904,
+    // ver a nota do realce) nao se aproxima do alvo por ficar mais exato.
+    //
+    // `[OBS]` Que este campo seja recalculado a cada render de uma forma FIXA
+    // continua sendo desperdicio mesmo em `ss = 1`; nao existe cache hoje e o
+    // custo do campo em `ss = 1` nao foi isolado. Cachear por `size` e a
+    // economia obvia, e e independente desta decisao.
     const FieldImage field = generateFieldFromContours(contours, size, size);
     if (field.width == 0) return 0;
 
