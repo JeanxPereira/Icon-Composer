@@ -27,6 +27,59 @@
 //     component . gradient . range(float2) . offset . height . curvature .
 //     angle . mask-offset
 //
+// THE TWO NAMES THAT ARE NOT THE EFFECT'S -- `component` AND `range` -- BELONG
+// TO THE FIELD, AND THEY WERE READ ON 2026-09-15
+// ---------------------------------------------------------------------------
+// `Docs/Laudos/2026-09-15-refracao.md` has the whole of it. In short:
+//
+// `[BIN]` `DistanceGradient` is a five-case dense enum, read from the XML
+// serialiser's own string table at `0x18D978` (`0xEDBD0`-`0xEDC20`, with the
+// out-of-range fallback at `0x16F735` naming the default the serialiser SKIPS,
+// exactly as `component`'s fallback `red` doubles its default case 3):
+//
+//     0 sampled . 1 stored . 2 stored-inverse . 3 stored-float .
+//     4 stored-float-inverse
+//
+// and `IconRendering` writes **1 = `stored`** (`0x10CC4` `mov w8, #0x100`, a
+// halfword store putting `component = 0` and `gradient = 1`).
+//
+// `[BIN]` `range` is that stored field's DECODE INTERVAL and nothing else:
+// `RB::CGContext::apply_glass_displacement` (`0xC1324`) reads it ONLY on the
+// `gradient != 0` side of `0xC14A8 cbz` -- the `sampled` side derives the
+// gradient by a 15-tap separable convolution instead (`0xC1534`) and never
+// touches it. On the stored side it folds to a scale and a bias,
+//
+//     0xC14B0  ldr   d0, [x21]          ; (range.x, range.y)
+//     0xC14B8  dup   v1.2s, v0.s[0]
+//     0xC14BC  ld1   {v1.s}[0], [x9]    ; x9 = effect+8 = `offset`
+//     0xC14C0  fsub  v0.2s, v1.2s, v0.2s ; (offset - range.x, range.x - range.y)
+//     0xC15EC  rev64 v0.2s, v0.2s
+//
+// paired with a per-case unorm->signed `(scale, bias)` constant chosen by the
+// same enum: `stored` (2, -1) `0x15F868`, `stored-inverse` (-2, 1) `0x15F860`,
+// `stored-float` (1, 0) `0x15C760`, `stored-float-inverse` (-1, 0) `0x15F168`.
+// A float2 that is one endpoint per channel extreme is a decode interval.
+//
+// `[BIN]` AND THE `v` OF `(v, -v)` HAS A NAME. The blob's `range` is written at
+// `0x10CCC` (`stp s0, s1` after `fneg s1, s0`) from the third floating-point
+// argument of `0x10C14`; both call sites pass the same thing --
+// `0x4A6F8`/`0x4A8E4` load it from `[sp,#0x40]`, stored at `0x4A658`/`0x4A410`
+// from `d14`, which `0x4A3F0` moved out of `x24 = [x0, #0xA8]` (`0x4A324`).
+// `x0` is the `0xC0`-byte `IconRendering.FinalizedIcon.Layer`, whose reflection
+// (`0xA301C`) puts `sdf: IconRendering.SDF` at `+0x98` and `shadowImage` at
+// `+0xB0`; `IconRendering.SDF` is the two-field struct at `0xA2FF4`,
+// `{texture, maxDistance: Swift.Double}` -- the ONLY `maxDistance` in the whole
+// reflection -- so `+0xA8` is its trailing `Double`:
+//
+//     range = (sdf.maxDistance, -sdf.maxDistance)
+//
+// `[BIN]` The cross-check is a second, independent consumer of the same field:
+// the glyph specular loads `[descriptor+0xA8]` into shader argument 7 beside a
+// literal `0.5` at argument 8 (`0x49238`, `0xEAA8`) and decodes
+// `sd = (0.5 - tex.r) * (-2 * maxDist)` -- which is `2*M*u - M`, the same
+// symmetric interval this `range` spells, with the same magnitude. Two paths,
+// one scalar, one name. This closes `[OBS]` 4 of doc 03 §29.8.
+//
 // `[INF]` Four of those names -- `angle`, `curvature`, `height`, `mask-offset`
 // -- match `CASDFGlassDisplacementEffect`'s four properties 4 of 4. That effect
 // is QuartzCore's, not RenderBox's: RenderBox's shader library contains no

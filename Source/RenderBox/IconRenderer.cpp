@@ -816,6 +816,31 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
         // neither reaches `make_backdrop_item` -- a route that exists for this
         // effect and is not the one this path takes.
         //
+        // THAT PARAGRAPH IS NOW KNOWN TO BE HALF A READING, and the correction
+        // runs the other way -- `Docs/Laudos/2026-09-15-refracao.md`. It is
+        // right about `GlassDisplacementStyle::draw`, and that function is the
+        // MAP GENERATOR: style 3 turns the shape's field into a displacement
+        // map, so of course it filters the item it wears. The DISPLACEMENT is a
+        // different object, installed right after it, and it does read the
+        // backdrop. `[BIN]` `0x10C14` closes the map layer with
+        // `addFilterLayerWithShader:` (`RenderBox 0x40A18` = `end_layer` +
+        // `restore` + `State::add_custom_effect`), and then `IconRendering`
+        // begins the layer that wears the shader with `beginLayerWithFlags: 1`
+        // -- `0x4A794` and `0x4AA00`, both immediately on return. Bit 0 is the
+        // background bit the VCM front read (`0x3BCA0` keeps it through the
+        // `0x7B` mask; `null_style_draw` tests it at `0xCE02C` and hangs a
+        // `BackdropFilterItem` on the PARENT layer), and `CustomEffectStyle::draw`
+        // (`0xF4030`) ends in `Builder::draw` (`0xCDAA0`), which tail-calls
+        // exactly that `null_style_draw` at `0xCDAF4`.
+        //
+        // So the target's refraction displaces what is already underneath, which
+        // is what `glassOver` does. The refusal below still stands -- but its
+        // reason is the FIRST one again, not the corrected one: a group drawn
+        // into a target of its own really would refract an empty backdrop, for
+        // Apple as much as for us. Making the glass filter the item it wears
+        // would NOT dissolve the coupling, because that is not what the target
+        // does either.
+        //
         // BUT OUR GLASS IS NOT APPLE'S, and a test caught the difference.
         // `glassOver` displaces the accumulation buffer IN PLACE -- it snapshots
         // whatever has been drawn so far and refracts that. Point it at a
