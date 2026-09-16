@@ -155,6 +155,13 @@ def main() -> int:
     visible = diff_px = 0
     max_ch = [0, 0, 0, 0]
     sum_ch = [0, 0, 0, 0]
+    # A banda de SILHUETA: onde um lado e opaco e o outro nao existe, os quatro
+    # canais saturam de uma vez. Ela domina o ranking de blocos sem ter peso na
+    # media -- no gabarito da Apple sao 1,33 % dos visiveis carregando os doze
+    # piores blocos 8x8. Separa-la e o que impede ler "os piores blocos sao os
+    # quatro cantos" como "o maior erro do projeto sao os cantos".
+    band_n = 0
+    band_ch = [0, 0, 0, 0]
     nbx, nby = (w + bs - 1) // bs, (h + bs - 1) // bs
     blocks = [[0.0, 0] for _ in range(nbx * nby)]
     heat = bytearray(w * h * 4)
@@ -170,6 +177,10 @@ def main() -> int:
             visible += 1
             d = [abs(A[o + k] - B[o + k]) for k in range(4)]
             worst = max(d)
+            if d[3] > 128:
+                band_n += 1
+                for k in range(4):
+                    band_ch[k] += d[k]
             if worst:
                 diff_px += 1
                 for k in range(4):
@@ -196,6 +207,14 @@ def main() -> int:
     print("  delta por canal   R     G     B     A")
     print("    maximo       " + "".join(f"{v:>6}" for v in max_ch))
     print("    medio(vis)   " + "".join(f"{v/visible:>6.2f}" for v in sum_ch))
+    if band_n:
+        resto = visible - band_n
+        print(f"  banda de silhueta (|dAlpha| > 128): {band_n} px "
+              f"({100.0*band_n/visible:.2f} % dos visiveis)")
+        print("    medio na banda" + "".join(f"{v/band_n:>6.1f}" for v in band_ch))
+        if resto:
+            print("    medio SEM ela "
+                  + "".join(f"{(s-b)/resto:>6.2f}" for s, b in zip(sum_ch, band_ch)))
 
     scored = sorted(((s / n if n else 0.0, i) for i, (s, n) in enumerate(blocks)),
                     reverse=True)
