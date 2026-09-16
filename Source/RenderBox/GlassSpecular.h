@@ -377,6 +377,51 @@ bool documentAsksForSpecular(const DenormalisedGlass& glass);
 // `sdfTextureWithBufferAllocator:`, in neither slice) and `[descriptor+0xA8]`,
 // the `maxDistance` that `0x00049238` loads for `sdfScale`.
 //
+// `[BIN]` **BOTH OF THOSE TWO ARE NOW CLOSED, AND THE 7.5 IS STILL OPEN.**
+// `[descriptor+0xA8]` fell to the refraction front (`2026-09-15-refracao.md`):
+// it is `sdf.maxDistance`, and the `range` it feeds is `(v, -v)` by a literal
+// `fneg` -- a SCALE, never an origin. The texture's zero level fell to
+// `2026-09-15-sdf-nivel-zero.md`, by arithmetic that needs no CoreUI:
+//
+//   * `[BIN]` The whole decode is `sd = (2*tex.r - 1)*maxDistance - inset`,
+//     read three independent ways -- the Metal shader
+//     (`metallib-iconrendering/default_mod0.ll`, `default_mod1.ll`), the
+//     `setArgumentBytes:atIndex:` ladder of `0x0000E834` (index 8 = `0.5f` at
+//     `0x0000EAA8`, index 7 = `-2*maxDistance` at `0x0000EA7C`, index 1 =
+//     `inset` at `0x0000E994`), and the CPU twin
+//     `RB::CGContext::apply_glass_highlight` (`RenderBox 0x000C0E64`) through
+//     the same `apply_distance_effect` helper that `apply_glass_displacement`
+//     uses. THERE IS EXACTLY ONE ORIGIN TERM IN THE CHAIN -- `inset` -- and it
+//     is zero (`0x00064604`). No second `0.5`, no half-texel, no hidden
+//     `fmsub`.
+//
+//   * `[BIN]` The texel is one of FOUR formats, and the loader ABORTS on any
+//     other (`0x00086A70` compares `[texture pixelFormat]` against the table
+//     built by `0x00085654` at `0xE2B80`; `0x00086AB0` raises code 4):
+//     `BGRA8Unorm(80)`, `RGB10A2Unorm(90)`, `RGBA16Float(115)`, `R8Unorm(10)`
+//     -- cross-checked by the bytes-per-pixel field `4, 4, 8, 1`.
+//
+//   * With `D` = `maxDistance` in CANVAS units, a zero-level error `du` shifts
+//     `sd` by `2*D*du`, so 7.5 units needs `du = 3.75/D`. Half an LSB of the
+//     coarsest of those formats is `1/510`, which needs `D >= 1912` -- 1.32x
+//     the canvas DIAGONAL. A whole LSB still needs `D >= 956`, 93 % of the
+//     canvas side. THE CONVENTION IS TOO SMALL BY ORDERS OF MAGNITUDE.
+//
+//   * And any GRID term (half a texel, the one-texel border that the ratio
+//     `(texture.width - 2)/rect.width` of `0x0000E8CC`-`0x0000E8F4` implies)
+//     would be constant in PIXELS. The measurement above is constant in CANVAS
+//     units -- 3.0-3.5 px at 412 AND 1.5 px at 206. A half-texel would have to
+//     be the same pixel count at both.
+//
+// `[OBS]` So what is left is a GEOMETRIC term of ~7.5 canvas units inside the
+// generator, and the two bytes that would settle it are `maxDistance` itself
+// and the value of `tex.r` on the art's `alpha = 0.5` contour. Both are written
+// by `-[CUINamedLayerImage sdfTextureWithBufferAllocator:]` in
+// `/System/Library/PrivateFrameworks/CoreUI.framework/Versions/A/CoreUI`,
+// reached through `LC_LOAD_WEAK_DYLIB` and NOT shipped in the DMG (`tree.txt`:
+// zero hits for CoreUI, dyld or shared_cache). Reaching it needs a
+// `dyld_shared_cache` extraction that this repository does not have.
+//
 // `[BIN]`+oracle **THE GRADIENT'S SIGN IS SETTLED.** The laudo of the
 // highlights carried it as ARGUED ("outward, because that is what makes
 // `angleFromKey = 0` light the top"). All eight symmetries of `(nx, ny)` were
