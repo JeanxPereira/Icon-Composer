@@ -212,8 +212,22 @@ previu dois arcos em dois lugares; implementá-los ganharia um path em 373.
 elemento a elemento com a sonda independente em Python que produziu a tabela do
 §2. Duas implementações concordando.
 
-**O documento.** 149 de 149 lidos em geometria, zero recusados, **477 formas e
-6.384 segmentos**.
+**O documento.** 149 de 149 lidos em geometria, zero recusados, **445 formas e
+6.242 segmentos** *(`ic_tests.exe corpus_svg`; o `printf` de
+`Tests/test_svg_corpus.cpp:163` é a **única** fonte destes números, reconferido
+em 16/09/2026)*.
+
+> **Este documento carregava DUAS contagens divergentes de si mesmo**, e o
+> `Docs/README.md` uma terceira: aqui dizia `477 formas / 6.384 segmentos`, o §7
+> dizia `477 / 6.564`, e o README dizia `139 compreendidos / 477 / 6.564`. Quatro
+> versões dos mesmos quatro números em três documentos, **nenhuma medida no mesmo
+> dia**. Daqui em diante cada agregado traz, entre parênteses, o comando que o
+> produz.
+>
+> **E as formas CAÍRAM de 477 para 445, o que não é regressão:** a frente das
+> definições (`Docs/Laudos/2026-09-15-svg-definicoes.md`, §8 abaixo) parou de
+> contar como forma desenhável o que é **definição**. O número menor é o mais
+> honesto.
 
 ### O relatório de cobertura, e a vez em que ele me pegou
 
@@ -265,11 +279,13 @@ pseudo-classe, nenhuma at-rule, nenhum comentário.
 
 ## 7. Onde o leitor está
 
+Medido em 16/09/2026 *(`ic_tests.exe corpus_svg`, com `IC_CORPUS_DIR` posto)*:
+
 | | |
 |---|---|
 | lidos | **149 de 149**, zero recusados |
-| totalmente compreendidos | **128 de 149** |
-| geometria | **477 formas, 6.564 segmentos** |
+| totalmente compreendidos | **140 de 149** |
+| geometria | **445 formas, 6.242 segmentos** |
 | paths | 372 de 373, um `A` recusado |
 
 Lê: `svg`/`g`/`defs`, `path`, `rect` (com cantos arredondados), `circle`,
@@ -307,3 +323,111 @@ primeiros pinta 35 arquivos com a cor da qual eles foram sobrescritos.
 nenhum** — as classes dele são órfãs no próprio arquivo. O relatório achou uma
 anomalia real, que é exatamente o que um relatório de cobertura serve para
 achar quando não está mentindo.
+
+---
+
+## 8. O parser despacha pelo ÁTOMO, não pelo pai
+
+`[BIN]` **Uma definição vale onde ela está, não só dentro de `<defs>`.**
+`SVGReader::parseXMLNode` (`CoreSVG 0x677C`) despacha pelo **átomo do próprio
+elemento**, num switch de `0x6968`–`0x6CC0`, **antes de perguntar onde ele
+está** — e todo coletor termina em `SVGNode::addDefinitionNode` (`0x2D648`), que
+arquiva o nó pelo `id` num **único mapa na raiz** (`+0xA0`), compartilhado por
+gradiente, `clipPath`, máscara, `pattern` e filtro.
+
+| átomo | elemento | destino |
+|---|---|---|
+| `0x21` / `0x30` | `linearGradient` / `radialGradient` | `parseXMLNodeGradient` `0x21C5C` |
+| `0x05` | `clipPath` | `parseXMLNodeClipPath` `0x2232C` |
+| `0x4A` | `mask` | `parseXMLNodeMask` `0x22424` |
+| `0x4F` | `pattern` | `parseXMLNodePattern` `0x2251C` |
+| `0x54` | `filter` | `parseXMLNodeFilter` `0x22610` |
+| `0x3C` | `style` | `parseXMLNodeStyle` `0x2208C` |
+| `0x3E` | `symbol` | `0x6AEC` — **construído como um `g`** (`mov w1, #0x1d`) |
+
+`[BIN]` E **são duas passadas**: o construtor chama `parseXMLNode` em `0x5910` e
+só então `resolveDefinitions` em `0x5924`. **Uma referência antes da definição
+resolve como qualquer outra.**
+
+`[BIN]` **Mas o alcance é mais estreito que o documento.** O parser só **desce**
+em `svg`, `g`, `symbol`, `defs` e no conteúdo de `clipPath`, `mask` e `pattern`.
+Uma primitiva de forma e **todo o resto** viram nó **sem que os filhos sejam
+lidos** — e `a` e `switch` **nem são átomos** da tabela, então caem no ramo final:
+no alvo, **nada dentro de um `<a>` é lido**, nem definição nem forma.
+
+`[BIN]` **Id repetido: ganha o ÚLTIMO.** `addDefinitionNode` procura no mapa e, se
+já houver um nó com aquele id, **solta o antigo e apaga a entrada** antes de
+inserir o novo. **A norma diz "o primeiro"; o alvo diz o último, e este projeto
+segue o alvo.**
+
+### 8.1. Por que 145 documentos nunca expuseram o defeito
+
+Este leitor só chamava `collectGradient` no ramo `else if (e.name == "defs")`, e
+`[ART]` **os 161 gradientes do corpus são filhos diretos de `<defs>`, todos
+eles**:
+
+| definição | dentro de `<defs>` | fora |
+|---|---|---|
+| `linearGradient` | 155 | **0** |
+| `radialGradient` | 6 | **0** |
+| `pattern` | 11 | 0 |
+| `clipPath` | 1 | 0 |
+| `mask` | 1 | **2** |
+| `filter` | 26 | 0 |
+
+**Os seis SVG do `AppIcon-27` são o contrário: 6 gradientes, 6 fora de `<defs>`,
+em 6 arquivos** — porque o Illustrator exporta o `<linearGradient>` dentro do
+`<g>` da camada, logo antes do `<path>`.
+
+> **E o sintoma era a variante mais cara do "verde vazio".** O `icrender` dizia
+> **`6 of 6 layer(s) drawn`** e, no stderr, seis vezes
+> `url(#SVGID_1_) não resolve`. **A arte desenhava sem cor nenhuma e o relatório
+> dizia que tudo tinha desenhado.** Foi o gabarito de pixel que pegou (doc 03
+> §43.3), não a contagem de camadas — e é por isso que o caso de teste que fixa o
+> conserto **compara pixel**, e não conta camadas.
+
+**A prova:** o render do bundle **sem içar** passou de `79.214` pixels diferentes
+(49,52 %) para **zero**, com o mesmo SHA-256 do bundle içado. E contra o gabarito
+da Apple o diff do bundle sem içar passou a ser **idêntico** ao do içado —
+`8,95 / 10,03 / 9,89` nos dois. A contagem de pixels diferentes **sobe 1.003
+enquanto o erro médio cai por 4×**: antes, o que "acertava" era pixel sem cor
+nenhuma coincidindo com o fundo.
+
+### 8.2. O que fica aberto
+
+Quatro divergências **medidas e NÃO consertadas**, cada uma com a razão de não
+ter sido:
+
+1. `[BIN]` **A folha de estilo do alvo só vale para quem vem depois dela.**
+   `applyStyleToAttributes` (`0x21898`) lê `reader+0x10` **no instante em que cada
+   nó é lido**, então um elemento anterior à `<style>` não recebe regra nenhuma.
+   Este leitor coleta as folhas numa passada e aplica a todos. `[ART]` **0 dos 149
+   arquivos** põem um usuário de `class` antes da `<style>`. Não mexido: **é regra
+   de CSS, não de alcance.**
+2. `[BIN]` **`<a>`: o alvo não lê os filhos** (`0x6CE4`); este leitor desenha-os
+   como um grupo. `[ART]` **0 arquivos.** Mudar isso é decisão de **desenho**.
+3. `[BIN]` **`<symbol>` é construído como um `g` e anexado ao pai** (`0x6AEC`,
+   `0x6D18`); aqui ele continua **nomeado e não desenhado**. `[OBS]` Se o
+   renderizador do alvo pinta esse `g` no lugar em que ele está, ou se algo mais
+   adiante o pula, **não foi lido**. `[ART]` 0 símbolos no corpus.
+4. `[OBS]` **A CTM de uma definição.** Este leitor assa a transformada do lugar
+   onde a definição está; em SVG o conteúdo de um `clipPath` com `userSpaceOnUse`
+   vive no espaço de quem o **referencia**. As duas respostas coincidem quando
+   definição e referenciador compartilham a CTM, que é o corpus inteiro. **E há
+   uma inconsistência interna anterior a esta frente: o ramo do `walk` inclui o
+   `transform` do próprio `clipPath` e o ramo do `<defs>` não.**
+
+E uma dívida de instrumento, **datada e nomeada**: `[OBS]` a frente **não
+acrescentou entradas ao `scripts/gate-m1.ps1`**, porque o arquivo é compartilhado
+com as frentes irmãs, e deixou **três mutações escritas no laudo** para quem
+integrasse:
+
+```
+b.collectGradients(xml->root);                        ->  void(0);
+if (!targetDescendsInto(e.name)) return;              ->  return;      (em collectGradients)
+clipPaths.erase(*id);                                 ->  (void)0;
+```
+
+Elas **continuam no laudo e não na lista** — a rodada de integração de 16/09/2026
+não as aplicou, porque escrever mutação sem rodar a varredura de ~4 h que a julga
+seria acrescentar um teste que ninguém viu falhar.
