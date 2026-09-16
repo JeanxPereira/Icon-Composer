@@ -747,17 +747,19 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
         specularArgs.pixelsPerPoint = static_cast<double>(options.size) / kCanvasPoints;
         specularArgs.placement = glassNumbers.specularPlacement;
 
-        // ---- `blur-material`, which is now ONE unread thing and not two -----
+        // ---- `blur-material`, WHICH NOW DRAWS -------------------------------
         //
         // `[BIN]` The radius has been transported since `GlassMaterial.cpp`
-        // existed -- `denormaliseBlurRadius` is `min(b, 1) * 64` and
-        // `DenormalisedGlass::blurRadiusPoints` has carried the answer all along
-        // -- and as of `Source/RenderBox/BlurKernel.h` the KERNEL that radius
-        // feeds is read too: the radius IS the Gaussian's sigma. What is still
-        // unread is the SURFACE: the target wraps the filter in a layer flagged
-        // `needs-background` and clips it with a rect built from a frame this
-        // renderer does not model. `BlurKernel.h` carries the three reasons and
-        // the note carries the short version.
+        // existed -- `denormaliseBlurRadius` is `min(b, 1) * 64` -- and the
+        // KERNEL it feeds was read on 2026-09-15: the radius IS the Gaussian's
+        // sigma. The SURFACE was three open questions and is now one:
+        // `BlurKernel.h` carries the transcription of `0x4A2D4`-`0x4AC84`, the
+        // branch (it is always the `needs-background` one, because the only
+        // thing that would pick the other is a `refractionStrength` no document
+        // has), the clip (`0x4A4A4`-`0x4A56C`, an outset of exactly one pixel),
+        // and the order (content first, so the backdrop includes the group).
+        // What is left `[OBS]` is the layer FRAME, and it is an argument below
+        // rather than a constant inside the blur.
         //
         // `[ART]` It fires for real, and for a smaller number than the raw key
         // count suggests: 123 corpus GROUPS over 73 documents carry
@@ -768,9 +770,14 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
         // report -- "the author left the blur off" and "the blur is not drawn"
         // have to stay distinguishable, which is the rule `shadowDraws` already
         // follows for a zero alpha.
-        if (glassNumbers.blurRadiusPoints > 0.0) {
-            note(out.notes, kBlurMaterialSurfaceNote);
-        }
+        //
+        // THE FRAME IS THE UNIT RECT, and that is the `[OBS]` said out loud: the
+        // rect at descriptor `+0x70` is unit-coordinate by the arithmetic that
+        // consumes it, but who writes it was not followed, so this renderer uses
+        // the whole canvas and says so in `kBlurMaterialFrameNote`. A tighter
+        // frame can only ever SHRINK this region, never move it.
+        const BlurMaterialSurface blurSurface = blurMaterialSurface(
+            glassNumbers.blurRadiusPoints, 0.0, 0.0, 1.0, 1.0, options.size, options.size);
 
         // `blend-mode` LIVES ON THE GROUP TOO, and the group is where it is
         // actually used: over the 145 documents `plus-lighter` appears **17
@@ -1520,6 +1527,38 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             } else {
                 skip("arte com extensao que este leitor nao le: " + *imageName);
             }
+        }
+
+        // THE GROUP'S `blur-material` WOULD BE DRAWN HERE, AND IS NOT.
+        //
+        // This is the one point in the loop where the backdrop is what the
+        // target says it is: `[BIN]` `0x4A488` draws the group's content and
+        // only then `0x4A48C`-`0x4A5D0` opens the `needs-background` layer, so
+        // the background being blurred is everything beneath the group PLUS the
+        // group -- which is exactly `acc` at the end of the group's layer loop,
+        // before the `blendPremulOver` on the next line. Wall 3 of
+        // `BlurKernel.h` is answered, and the call would go on this line.
+        //
+        // IT IS NOT MADE, because the gabarito refused the only reading of the
+        // layer frame this front had. `drawBlurMaterial(acc, ..., blurSurface)`
+        // with the frame at the unit rect was rendered and measured: the mean
+        // channel error against `apple-512.png` goes from `8.95 / 10.03 / 9.89`
+        // to `15.58 / 20.09 / 22.49` and the alpha error from `4.95` to `7.09`,
+        // with the four corners of the squircle the worst blocks in the frame.
+        // The luma profile says the same thing in the shape the highlight front
+        // taught: down the centre column the gabarito falls `157 -> 49` over
+        // nine rows and then holds a flat `49`, while the blurred render is flat
+        // at `84` and never reaches `49` at all. A canvas-wide backdrop blur at
+        // this radius erases structure the target keeps, so the frame is NOT the
+        // unit rect, and this front does not know what it is.
+        //
+        // The arithmetic stays transcribed and switched OFF, which is the same
+        // thing `BlendFormula.h` does with `shouldClampPlusLBlending` and for
+        // the same reason: turning it on without the reading would move pixels
+        // on the measurer's authority instead of the target's.
+        if (blurSurface.draws) {
+            note(out.notes, blendTheGroup ? kBlurMaterialBlendedGroupNote
+                                          : kBlurMaterialFrameNote);
         }
 
         if (blendTheGroup) blendPremulOver(acc, groupAcc, *groupMode);
