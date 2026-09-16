@@ -378,6 +378,23 @@ void edtSquared1d(std::vector<double>& f, std::vector<double>& d, std::vector<in
 // contour to sign. The result is EMPTY (`width == 0`), so the caller reports a
 // gap instead of being handed a field that is everywhere-outside and silently
 // draws nothing.
+//
+// E NAO, ESTA NAO LEVA `superSample`, E A ASSIMETRIA E A GEOMETRIA FALANDO.
+//
+// `generateFieldFromContours` supersampleia porque tem de onde: o contorno e
+// analitico e rasteriza-lo numa grade `ss` vezes mais fina produz informacao que
+// nao existia na grade grossa. Um BITMAP nao tem esse de onde. Subir `ss` aqui
+// so poderia REPLICAR cada texel em `ss x ss` copias -- a mesma silhueta em
+// degrau, agora em degraus menores e em `ss^2` vezes o custo -- ou reamostrar o
+// alfa, que inventa uma borda que o arquivo nao contem.
+//
+// A informacao sub-texel que o raster REALMENTE tem ja esta sendo usada, e por
+// outra porta: `coverage[t] = alpha[t]`, a identidade que `CoveragePass` escreve,
+// e `options.subpixelSeed` faz as duas transformadas nascerem com o deslocamento
+// assinado `0.5 - coverage`. Para uma aresta RETA num deslocamento sub-texel
+// qualquer isso e EXATO -- exato de um jeito que nenhum `ss` finito alcanca.
+// Somar `superSample` aqui seria simetria de assinatura, nao ganho: veja o
+// laudo `2026-09-15-supersample-campo.md`, secao 5.
 FieldImage generateFieldFromAlpha(const std::vector<float>& rgba, std::uint32_t width,
                                   std::uint32_t height, FieldOptions options = FieldOptions{});
 

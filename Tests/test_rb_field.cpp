@@ -1308,3 +1308,75 @@ TEST_CASE(the_medial_axis_of_a_thin_bar_keeps_the_seed_vector_not_a_cancelled_di
     // a cancelled difference would produce.
     CHECK_EQ(sideways, 0);
 }
+
+// THE SUB-TEXEL SEED KNOB, PINNED WHILE IT IS SWITCHED OFF.
+//
+// `kFieldSuperSample` is 1 at both call sites and the comment above it carries
+// the measurement that decided it: `ss = 3` quarters the angular error of the
+// normal and does NOT move the render any closer to `apple-512.png`, so it is
+// not worth 2.4x-2.6x the render. See `Docs/Laudos/2026-09-15-supersample-campo.md`.
+//
+// A knob nobody turns is a knob that rots. Nothing in the suite would notice if
+// a rewrite of the transform quietly stopped honouring `superSample`, because no
+// render passes anything but 1 -- and the day somebody revisits the decision the
+// first thing they need is for the knob to still work. So the two claims the
+// decision RESTS on are gated here, at 128 px where they cost nothing:
+//
+//   1. `ss = 3` really does sharpen the normal (the reason to want it), and
+//   2. `ss = 2` is NOT a middle ground -- it is `ss = 1` bit for bit, because
+//      the generator rounds an even factor down to the odd below. That trap is
+//      worth a case of its own: the next reader's first instinct is to try 2,
+//      and it would look like "supersampling does nothing" rather than like
+//      "2 means 1".
+TEST_CASE(the_supersample_knob_sharpens_the_normal_and_2_still_means_1) {
+    const double cx = 64.0, cy = 64.0, r = 44.0;
+    const std::vector<FieldContour> cs = {circleContour(static_cast<float>(cx),
+                                                        static_cast<float>(cy),
+                                                        static_cast<float>(r), 2048)};
+    // mean and worst angle against the radial closed form, over the band the
+    // specular actually reads.
+    auto measure = [&](std::uint32_t ss, double& mean, double& worst) {
+        const FieldImage f = generateFieldFromContours(cs, 128, 128, FieldOptions{}, ss);
+        REQUIRE(f.width == 128);
+        double sum = 0.0;
+        long n = 0;
+        worst = 0.0;
+        for (std::uint32_t y = 0; y < f.height; ++y) {
+            for (std::uint32_t x = 0; x < f.width; ++x) {
+                const double dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+                const double rad = std::sqrt(dx * dx + dy * dy);
+                const double depth = r - rad;
+                if (depth <= 1.0 || depth >= 16.0) continue;
+                const float* p = f.at(x, y);
+                double dot = (p[1] * dx + p[2] * dy) / rad;
+                dot = dot > 1.0 ? 1.0 : (dot < -1.0 ? -1.0 : dot);
+                sum += std::acos(dot) * 180.0 / 3.14159265358979323846;
+                if (std::acos(dot) * 180.0 / 3.14159265358979323846 > worst)
+                    worst = std::acos(dot) * 180.0 / 3.14159265358979323846;
+                ++n;
+            }
+        }
+        REQUIRE(n > 1000);
+        mean = sum / n;
+    };
+
+    double m1 = 0.0, w1 = 0.0, m2 = 0.0, w2 = 0.0, m3 = 0.0, w3 = 0.0;
+    measure(1, m1, w1);
+    measure(2, m2, w2);
+    measure(3, m3, w3);
+    std::printf("    supersample: ss=1 %.2f/%.2f  ss=2 %.2f/%.2f  ss=3 %.2f/%.2f deg\n",
+                m1, w1, m2, w2, m3, w3);
+
+    // An even factor is rounded down to the odd below, so 2 IS 1 -- exactly,
+    // not approximately. Written as `==` on purpose: anything else would mean
+    // the rounding changed and the header's promise about the pixel centre no
+    // longer holds.
+    CHECK(m2 == m1);
+    CHECK(w2 == w1);
+
+    // And the knob does what the decision says it does. The bound is loose
+    // because the point is that it WORKS, not what the fourth digit is; the
+    // measured pair at 512 px is in the laudo.
+    CHECK(m3 < m1 * 0.6);
+    CHECK(w3 < w1 * 0.6);
+}
