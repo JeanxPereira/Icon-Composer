@@ -1212,3 +1212,95 @@ TEST_CASE(the_alpha_field_treats_one_step_past_each_edge_as_outside) {
     const float* p = f.at(0, 8);
     CHECK(std::fabs(std::sqrt(p[1] * p[1] + p[2] * p[2]) - 1.0f) < 1e-5f);
 }
+
+// THE NORMAL THE SPECULAR ACTUALLY READS, against the curve it came from.
+//
+// `drawSpecular` feeds `p[1]`,`p[2]` straight into
+// `lit = saturate((dot(direction, normal) - spread) / max(1 - spread, 2^-10))`,
+// so an error in the stored direction is an error in how lit the pixel is. The
+// cone is a cosine: at `spread' = 0.5` a ten-degree wobble in the normal moves
+// `lit` by about a sixth of its range, and it moves it DIFFERENTLY from one
+// texel to the next.
+//
+// That is what this case exists to stop. A circle's normal is radial and known
+// in closed form, so the error is measurable rather than a matter of taste, and
+// the bound is stated in degrees because degrees are what the shader consumes.
+TEST_CASE(the_grid_fields_normal_follows_the_curve_and_not_the_lattice) {
+    const double cx = 64.0, cy = 64.0, r = 44.0;
+    const std::vector<FieldContour> cs = {circleContour(static_cast<float>(cx),
+                                                        static_cast<float>(cy),
+                                                        static_cast<float>(r), 2048)};
+    const FieldImage f = generateFieldFromContours(cs, 128, 128);
+    REQUIRE(f.width == 128);
+
+    double sum = 0.0, worst = 0.0;
+    long n = 0;
+    for (std::uint32_t y = 0; y < f.height; ++y) {
+        for (std::uint32_t x = 0; x < f.width; ++x) {
+            const double dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+            const double rad = std::sqrt(dx * dx + dy * dy);
+            const double depth = r - rad;   // positive inside
+            if (depth <= 1.0 || depth >= 16.0) continue;
+            const float* p = f.at(x, y);
+            double dot = (p[1] * dx + p[2] * dy) / rad;
+            if (dot > 1.0) dot = 1.0;
+            if (dot < -1.0) dot = -1.0;
+            const double deg = std::acos(dot) * 180.0 / 3.14159265358979323846;
+            sum += deg;
+            if (deg > worst) worst = deg;
+            ++n;
+        }
+    }
+    REQUIRE(n > 1000);
+    std::printf("    normal vs the circle: mean %.2f deg, worst %.2f deg over %ld texels\n",
+                sum / n, worst, n);
+    CHECK(sum / n < 3.0);
+    CHECK(worst < 15.0);
+}
+
+// THE ONE PLACE THE DIFFERENCE MUST NOT WIN: the medial axis of a thin shape.
+//
+// Where two opposite faces of the same shape tie, the field creases: the true
+// gradient is `-y` on one side of the crease and `+y` on the other, and a
+// difference taken ACROSS it returns their sum, which is nearly zero. The
+// length carries no information there and normalising it would turn float
+// residue into a direction -- a confident normal where the geometry has an
+// ambiguity.
+//
+// A seven-pixel bar is the smallest honest version of the case, and it is not a
+// contrivance: icon art is full of strokes this thin. Below the floor the
+// generator keeps the vector to the seed, which still points across the bar.
+TEST_CASE(the_medial_axis_of_a_thin_bar_keeps_the_seed_vector_not_a_cancelled_difference) {
+    FieldContour bar;
+    bar.xy = {16.0f, 60.0f, 112.0f, 60.0f, 112.0f, 67.0f, 16.0f, 67.0f};
+    const FieldImage f = generateFieldFromContours({bar}, 128, 128);
+    REQUIRE(f.width == 128);
+
+    // Both rows either side of the crease at y = 63.5, away from the two ends
+    // where the bar's own caps have a say.
+    int sideways = 0, notUnit = 0, n = 0;
+    double worstNy = 1.0;
+    for (std::uint32_t y = 63; y <= 64; ++y) {
+        for (std::uint32_t x = 24; x < 104; ++x) {
+            const float* p = f.at(x, y);
+            const double len = std::sqrt(static_cast<double>(p[1]) * p[1] +
+                                         static_cast<double>(p[2]) * p[2]);
+            // EVERY comparison here is written so that a NaN FAILS it. Dropping
+            // the floor does not produce a wrong direction, it produces `0/0`,
+            // and a NaN quietly answers `false` to `<`, `>` and `==` alike --
+            // the first version of this case asserted `ny < 0.9` and passed
+            // against a field that was entirely NaN.
+            if (!(std::fabs(len - 1.0) <= 1e-5)) ++notUnit;
+            const double ny = std::fabs(static_cast<double>(p[2]));
+            if (!(ny >= worstNy)) worstNy = ny;
+            if (!(ny >= 0.9)) ++sideways;
+            ++n;
+        }
+    }
+    REQUIRE(n == 160);
+    std::printf("    thin bar's crease: worst |ny| %.4f over %d texels\n", worstNy, n);
+    CHECK_EQ(notUnit, 0);
+    // The normal crosses the bar. It never turns to run ALONG it, which is what
+    // a cancelled difference would produce.
+    CHECK_EQ(sideways, 0);
+}
