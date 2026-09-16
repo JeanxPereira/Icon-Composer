@@ -1875,7 +1875,7 @@ palavra0 bit 26   gama: no caminho de duas cores, `powr(t, arg)`; no de paradas,
 
 `[OBS]` `sample_stops_binary` foi localizado e **não** foi lido inteiro. E
 `Gradient::color_out` (97 linhas, noutro módulo) segue sem leitura. ~~o caminho do
-bit 25 no uniforme também não~~ — **FECHADO em 15/09/2026**, §23.3 acima e §41.
+bit 25 no uniforme também não~~ — **FECHADO em 15/09/2026**, §23.3 acima e §42.
 
 ~~`[OBS]` A regra do `automatic-gradient` … não está aqui.~~ **VENCIDO, e há
 tempo.** O §24 deste mesmo documento lê a regra inteira (`IconRendering
@@ -3013,14 +3013,14 @@ de uma tela de 1024. É `[INF]`, e fica marcado assim.
 
 | campo | o que está estabelecido | selo |
 |---|---|---|
-| `hasSpecular` | offset `+0x00`; trafega literalmente por `ICRIconLayer.hasSpecular`. **Não é "campo sem aritmética": é o portão de uma função inteira**, `0x491C0`–`0x49DBC`, testado na terceira instrução, e o destino é o shader `glassHighlight` do metallib do próprio `IconRendering` — **não** o `glass-highlight` do RenderBox. E ele acende **cinco** realces, não um (§37) | `[BIN]` transporte e consumo |
-| `shadowStyle` | offset `+0x01`, enum denso 0–3; `hasShadow = (≠ none)`, `shadowInfusesGlyphColor = (== vibrant)`, lidos de `0x38F58`/`0x38FB0`. O estilo troca o **consumidor**, não um bit (§35) | `[BIN]` |
-| `shadowOpacity` | offset `+0x08`; atravessa **cru** até o `alpha:` do `drawShape:`: `alpha = shadowOpacity × Shadow.<vibrant\|neutral>Opacity[3−classe] × FinalizedIcon.Layer.opacity`. Não há desnormalização (§35.1) | `[BIN]` transporte e consumo |
+| `hasSpecular` | offset `+0x00`; trafega literalmente por `ICRIconLayer.hasSpecular`. **Não é "campo sem aritmética": é o portão de uma função inteira**, `0x491C0`–`0x49DBC`, testado na terceira instrução, e o destino é o shader `glassHighlight` do metallib do próprio `IconRendering` — **não** o `glass-highlight` do RenderBox. E ele acende **cinco** realces, não um (§38) | `[BIN]` transporte e consumo |
+| `shadowStyle` | offset `+0x01`, enum denso 0–3; `hasShadow = (≠ none)`, `shadowInfusesGlyphColor = (== vibrant)`, lidos de `0x38F58`/`0x38FB0`. O estilo troca o **consumidor**, não um bit (§36) | `[BIN]` |
+| `shadowOpacity` | offset `+0x08`; atravessa **cru** até o `alpha:` do `drawShape:`: `alpha = shadowOpacity × Shadow.<vibrant\|neutral>Opacity[3−classe] × FinalizedIcon.Layer.opacity`. Não há desnormalização (§36.1) | `[BIN]` transporte e consumo |
 | `translucency` | offset `+0x10`; **não há** `translucencyMax`/`Power` em `ICRRenderingParameters` porque não há desnormalização. `f = glyphTranslucency.strength[classe] × translucency`, `eff(x) = 1 − (1 − x)·f`, consumida pelo shader `simplifiedShapeAwareGradientMask` | `[BIN]` transporte e consumo |
-| `blurStrength` | offset `+0x18`; `radius = min(b,1) × blurStrengthMax`, `blurStrengthMax = 64.0`; destino `addBlurFilterWithRadius:opaque:`. O kernel é **gaussiana separável truncada** com **`σ = raio` exatamente**, e o alvo nunca paga os taps que isso implicaria — ele desce a resolução subtraindo a variância que a descida introduz (§36). O que ele desfoca é o **fundo** (`needs-background`), atrás de um portão que só agora tem nome: a tag de `effectsFrame` (§36.3) | `[BIN]` aritmética, kernel e superfície · `[INF]` que o `b` seja este campo |
+| `blurStrength` | offset `+0x18`; `radius = min(b,1) × blurStrengthMax`, `blurStrengthMax = 64.0`; destino `addBlurFilterWithRadius:opaque:`. O kernel é **gaussiana separável truncada** com **`σ = raio` exatamente**, e o alvo nunca paga os taps que isso implicaria — ele desce a resolução subtraindo a variância que a descida introduz (§37). O que ele desfoca é o **fundo** (`needs-background`), atrás de um portão que só agora tem nome: a tag de `effectsFrame` (§37.4) | `[BIN]` aritmética, kernel e superfície · `[INF]` que o `b` seja este campo |
 | `refractionHeight` | offset `+0x20`; `min + (max−min)·pow(clamp01(h), p)` com `12.8 / 256.0 / 1.0`; vira `height` do `glass-displacement`, convertido a texels. A entrada deixou de ser `[INF]` em 15/09/2026: `0x4A30C` lê `[x0+0x18]`/`[x0+0x20]` como os operandos de `0x4A948`/`0x4A708` (§29.6) | `[BIN]` aritmética e entrada |
-| `refractionStrength` | offset `+0x28`; `max · sign(s) · pow(min(\|s\|,1), p)` com `640.0 / 1.0`; vira o **único** argumento do `displacementMap_v1`, **negado**. `[ART]` 2 de 271 grupos do corpus refratam, **os dois com força negativa** (§40) | `[BIN]` aritmética · `[BIN]` a entrada, pelo mesmo descritor |
-| `specularPlacement` | offset `+0x30`, enum denso 0–2, e os três valores estão medidos: `inside` e `outside` são **a mesma espessura, a mesma âncora, espelhados**; `automatic` segue o estado identidade **para `outside`**. E o bit é metade da decisão — `0x494E0`–`0x494FC` dá `(outsetOpacity_tag==1) ? 1 : (bit \| ¬isDarklight)` (§37.1) | `[BIN]` transporte e consumo |
+| `refractionStrength` | offset `+0x28`; `max · sign(s) · pow(min(\|s\|,1), p)` com `640.0 / 1.0`; vira o **único** argumento do `displacementMap_v1`, **negado**. `[ART]` 2 de 271 grupos do corpus refratam, **os dois com força negativa** (§41) | `[BIN]` aritmética · `[BIN]` a entrada, pelo mesmo descritor |
+| `specularPlacement` | offset `+0x30`, enum denso 0–2, e os três valores estão medidos: `inside` e `outside` são **a mesma espessura, a mesma âncora, espelhados**; `automatic` segue o estado identidade **para `outside`**. E o bit é metade da decisão — `0x494E0`–`0x494FC` dá `(outsetOpacity_tag==1) ? 1 : (bit \| ¬isDarklight)` (§38.1) | `[BIN]` transporte e consumo |
 
 ### 29.8. O que um implementador ainda não tem
 
@@ -3111,11 +3111,11 @@ de uma tela de 1024. É `[INF]`, e fica marcado assim.
      de `0x4266C`, copiado para a base do contexto em `0x42884`, lido num **único**
      sítio (`0x4C010`), e o valor **é** `1.0`, assado como `0x3ff0000000000000` no
      init `lightAngle:` (`0x35DF0`) — a tomada estava certa e agora é `[BIN]`
-     (`Docs/Laudos/2026-09-15-realce-intensidade.md`, §37.3). E a lacuna do raster
+     (`Docs/Laudos/2026-09-15-realce-intensidade.md`, §38.4). E a lacuna do raster
      não era lacuna: `[BIN]` o alvo tira o campo de distância do **alfa
      rasterizado** da camada, não do contorno vetorial dela, de modo que raster e
      vetor **não são dois casos**
-     (`Docs/Laudos/2026-09-15-vidro-sobre-raster.md`, §39.1).
+     (`Docs/Laudos/2026-09-15-vidro-sobre-raster.md`, §40.1).
    - **A armadilha que isso abre:** o enum de tamanho é `small 0 … display 3` e os
      structs declaram `display, large, medium, small`, então é `valor[3 − classe]`.
      Com os defaults desta versão **os quatro valores são iguais em todas as cinco
@@ -3129,7 +3129,7 @@ de uma tela de 1024. É `[INF]`, e fica marcado assim.
    especular (`0x49238`). O achado que vale mais que o valor: **o `range` é
    vocabulário do CAMPO, não do efeito.** Ele é compartilhado com
    `add_glass_highlight`, e por isso um `range` "da refração" nunca existiu como
-   grandeza separada. Ver §40.
+   grandeza separada. Ver §41.
 5. `[OBS]` `useSystemGlass` (`false` por padrão, §19.3) e `useOS26Compositing`:
    os dois existem e os dois trocam de caminho de composição. **Metade fechou em
    15/09/2026** (`Docs/Laudos/2026-09-15-translucencia.md` §5.2): `[BIN]`
@@ -3819,7 +3819,7 @@ simplesmente não é a que este caminho toma.
 > repositório é menos do que parece, o que é a parte instrutiva: **a premissa
 > corrigida vira a premissa ORIGINAL**. O dilema do §8.1 volta a ser um dilema
 > de verdade, e a razão pela qual o nosso `blendTheGroup` continua valendo passou
-> a ser outra — medida, e não lida (§40).
+> a ser outra — medida, e não lida (§41).
 >
 > A mesma premissa velha viveu em três lugares. O comentário de
 > `Source/RenderBox/IconRenderer.cpp` foi corrigido pelo próprio laudo; o
@@ -3880,7 +3880,7 @@ medições não se conciliam.~~
 > **A lição, e ela vale para além deste bit:** um flag numérico sem nome convida
 > a inferir pelo contexto — "vem depois de um blur, logo lê o fundo". O binário
 > tinha o nome escrito, num serializador de depuração que ninguém pensou em ler
-> porque não é código de desenho. Ver §36.3 e o §45, o bloco de método.
+> porque não é código de desenho. Ver §37.3 e o §45, o bloco de método.
 
 ### 34.5. Os instrumentos
 

@@ -189,9 +189,14 @@ o que viu e não tratou, e o gate conta isso sobre os 149.
 
 ## 5. O que NÃO está resolvido
 
-1. **Se o app rasteriza o SVG ou o converte em display list na importação.**
-   `IconRendering.SDF.SourceLayer` tem um campo `displayList` (doc 03 §5), o que
-   sugere o segundo — mas isso é leitura do nome, não medida.
+1. ~~**Se o app rasteriza o SVG ou o converte em display list na importação.**
+   `IconRendering.SDF.SourceLayer` tem um campo `displayList`, o que sugere o
+   segundo — mas isso é leitura do nome, não medida.~~ **FECHADO em 15/09/2026**
+   (doc 03 §40.1): `[BIN]` o gerador do campo de distância é um método de
+   `CUINamedLayerImage` — **uma imagem** — e **aborta se ela for `nil`**
+   (`0x28AEC`). **O alvo rasteriza e depois transforma**, e a leitura do nome
+   estava certa pelo motivo errado: `SourceLayer` é `{displayList, isOpaque}`
+   porque a fonte de um SDF é **um desenho e um bit**, não uma forma.
 2. **O que o CoreSVG faz com um elemento que não conhece** — ignora a subárvore
    ou o elemento apenas.
 3. **`preserveAspectRatio`**: o CoreSVG o nomeia, e nenhum arquivo do corpus o
