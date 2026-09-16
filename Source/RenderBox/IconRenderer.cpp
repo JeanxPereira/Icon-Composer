@@ -815,11 +815,16 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
         // have to stay distinguishable, which is the rule `shadowDraws` already
         // follows for a zero alpha.
         //
-        // THE FRAME IS THE UNIT RECT, and that is the `[OBS]` said out loud: the
-        // rect at descriptor `+0x70` is unit-coordinate by the arithmetic that
-        // consumes it, but who writes it was not followed, so this renderer uses
-        // the whole canvas and says so in `kBlurMaterialFrameNote`. A tighter
-        // frame can only ever SHRINK this region, never move it.
+        // THE FRAME IS THE UNIT RECT HERE, and that is still a placeholder --
+        // but it is now a placeholder for a NAMED field. `[BIN]` The rect at
+        // descriptor `+0x70` is `FinalizedIcon.Layer.effectsFrame`, a `CGRect?`
+        // (field-offset vector `0xBD400`, field descriptor `0xA306C`), and the
+        // target only opens the whole blur block when it is non-nil (the
+        // Optional tag at `+0x90`, tested at `0x4A344`-`0x4A348`). Who computes
+        // it was not read and it is not a document key, so this renderer keeps
+        // computing the surface for the report and keeps the DRAW off -- see
+        // `BlurKernel.h`. A tighter frame can only ever SHRINK this region,
+        // never move it.
         const BlurMaterialSurface blurSurface = blurMaterialSurface(
             glassNumbers.blurRadiusPoints, 0.0, 0.0, 1.0, 1.0, options.size, options.size);
 
@@ -1594,7 +1599,17 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
         // nine rows and then holds a flat `49`, while the blurred render is flat
         // at `84` and never reaches `49` at all. A canvas-wide backdrop blur at
         // this radius erases structure the target keeps, so the frame is NOT the
-        // unit rect, and this front does not know what it is.
+        // unit rect.
+        //
+        // AND IT IS NOT THE APEX RING EITHER, measured with the instrument that
+        // killed the other two candidates -- the luma profile by DEPTH at the
+        // apex, not the frame-wide mean. Drawing it moves the profile by
+        // `-87.0 / -90.2 / -69.0 / -52.2 / -47.2 / -43.1 / -39.4 / -36.0` luma
+        // at `0.0 .. 17.4` canvas units of depth, while the gabarito asks for
+        // `-64.0 / -47.1` and then `+0.3 / +47.2 / +43.7 / +35.5 / +27.5 /
+        // +15.9`. It is monotone in magnitude, it never turns around, it
+        // overshoots the ring itself by a third, and from five units down it
+        // pushes the wrong WAY by 35 to 52 luma. A blanket, not a ring.
         //
         // The arithmetic stays transcribed and switched OFF, which is the same
         // thing `BlendFormula.h` does with `shouldClampPlusLBlending` and for

@@ -367,10 +367,59 @@ std::vector<float> blurPremultipliedRgba(const std::vector<float>& src, std::uin
 // guard, not a crop. Wall 2 is down: the clip is arithmetic, and in this
 // renderer's units it is `frame x size`, grown by one pixel.
 //
-// `[OBS]` **What is still not read is the FRAME itself** -- descriptor `+0x70`.
-// It is unit-coordinate by the arithmetic above, it is copied wholesale by the
-// group-merging pass at `0x48724`, and the array it lives in hangs off
-// `ctx+0x400`; who first writes those four doubles was not followed.
+// `[BIN]` **THE FRAME HAS A NAME NOW, AND IT IS OPTIONAL: descriptor `+0x70` is
+// `IconRendering.FinalizedIcon.Layer.effectsFrame`, a `CGRect?`.** Read from the
+// Swift reflection metadata that `IconRendering` still carries, three sections
+// that agree:
+//
+//   * `__swift5_fieldmd` `0xA306C` is the field descriptor of the type whose
+//     mangled name resolves to `IconRendering.FinalizedIcon.Layer`
+//     (`__constg_swiftt` `0x9EF80`). Its nine fields are `material`,
+//     `blendMode`, `opacity`, `knocksOutBorder`, `image`, `contentFrame`,
+//     `effectsFrame`, `sdf`, `shadowImage`.
+//   * the struct METADATA is at `0xBD3F0` (kind word `0x200`, descriptor
+//     pointer at `0xBD3F8`), and its field-offset vector at `0xBD400` is
+//     `0x00, 0x31, 0x38, 0x40, 0x48, 0x50, 0x70, 0x98, 0xB0`. So
+//     `contentFrame` is at `+0x50` and **`effectsFrame` is at `+0x70`**, and
+//     the record is `0xC0` bytes -- the very stride of `add x23, x23, #0xc0`.
+//   * the typerefs confirm the types: `contentFrame` (`0x9C5CA`) resolves to
+//     `__C.CGRect` and `sdf` (`0x9CAA2`) to `IconRendering.SDF`.
+//
+// Three independent controls say the offsets are right and not an encouraging
+// coincidence. `sdf` at `+0x98` with its final `Double` at `+0xA8` is exactly
+// what the glass-displacement front read from the CODE (`0x4A324`/`0x4A3F0`
+// load `d14 = [x0,#0xA8]`); `shadowImage` at `+0xB0` is exactly the `ldur q0,
+// [x0, #0xb0]` of `0x4A3AC`; and an `Optional<CGRect>` is 32 bytes of payload
+// plus a tag byte, which is precisely why the prologue reads the rect as
+// `+0x70`/`+0x78`/`+0x80`/`+0x88` (`0x4A314`-`0x4A318`) and then a lone BYTE at
+// `+0x90` (`ldrb w25, [x0, #0x90]`, `0x4A31C`).
+//
+// `[BIN]` **AND THAT TAG BYTE IS THE GATE ON THE WHOLE EFFECT.** `0x4A334`-
+// `0x4A348`:
+//
+//     ldr  x21, [x20, #0x28]        ; renderer flags
+//     tbz  w21, #9,   0x4A34C       ; flag clear -> plain draw
+//     and  x8,  x23, #0xff          ; x23 = [x0+0xA0], inside sdf
+//     cmp  x8,  #0xff
+//     ccmp w25, #1, #4, ne          ; w25 = the effectsFrame tag
+//     b.ne 0x4A3F0                  ; effects ONLY if tag != 1
+//
+// and `0x4A3F0` is where the four doubles of the rect move into `d12/d11/d10/d9`
+// -- the very registers the clip arithmetic of `0x4A4A4`-`0x4A504` feeds to
+// `CGRectGetMinX/MinY/Width/Height`. The `blurStrength`/`refractionStrength`
+// ramification at `0x4A404`/`0x4A40C` sits BELOW that branch. So the entire
+// blur-material block is reachable only when `effectsFrame != nil`; when it is
+// nil the function falls through to `0x4A3AC`, draws the group's content through
+// `0x49ED4` and returns **without any layer at all**.
+//
+// `[OBS]` **Who COMPUTES `effectsFrame` is still not read**, and it is not a
+// document key: `[ART]` a scan of the 146 corpus bundles finds zero
+// `effects-frame`/`effectsFrame` keys and exactly one `"frame"` anywhere. It is
+// produced by the finaliser, in Swift, with no symbol. So this renderer still
+// cannot say what rect to clip to -- but it now knows that the honest default is
+// NOT "the whole canvas", it is "do not draw", because that is what the target
+// does for a nil frame.
+//
 // `blurMaterialSurface` takes the frame as an ARGUMENT for exactly that reason:
 // the caller states which reading it is using, in one visible place, instead of
 // the choice being baked into the blur.
@@ -402,16 +451,69 @@ std::vector<float> blurPremultipliedRgba(const std::vector<float>& src, std::uin
 // without the reading would move pixels on the measurer's authority instead of
 // the target's.
 //
-// `[OBS]` THE ONE CANDIDATE THIS FRONT FOUND AND DID NOT CLOSE is the `opaque:`
-// argument, which is `mov w2, #1` at BOTH sites (`0x4A5B0`, `0x4A95C`). It
-// enters the filter flags at `0x3E8D4`, sits in bit 0 of `GaussianBlur+0x18`
-// (`0xFE5C0`), is copied to `renderer+8` at `0xFECE8`-`0xFECEC`, and
-// `BlurRenderer::render` reads it exactly once, at `0xFFF98`: if it is `1` AND
-// this is the LAST pass (`[x20+0x1c]` has just been decremented to zero,
-// `0xFFF8C`-`0xFFFB0`) it sets `w23 = 0x10`, which `0xFFFF8`-`0x100004` folds
-// into the packed render state as bit 20. What bit 20 of an `RB::RenderState`
-// does was not followed, and it is the only thing in the chain that could stop a
-// blur from softening a silhouette.
+// THE `opaque:` ARGUMENT AND BIT 20, WHICH IS NOW CLOSED -- and it is an ALPHA
+// hint, not a region one. `opaque:` is `mov w2, #1` at BOTH sites (`0x4A5B0`,
+// `0x4A95C`). It enters the filter flags at `0x3E8D4`, sits in bit 0 of
+// `GaussianBlur+0x18` (`0xFE5C0`), and from there it forks TWICE, not once.
+//
+// `[BIN]` FORK A, the render state. It is copied to `renderer+8` at
+// `0xFECE8`-`0xFECEC`; `BlurRenderer::render` (`0xFF964`) reads it at `0xFFF98`
+// and, if it is `1` AND this is the LAST pass (`[x20+0x1c]` just decremented to
+// zero, `0xFFF8C`-`0xFFFB0`), sets `w23 = 0x10`, which `0xFFFF8`-`0x100004`
+// folds into the packed state as bit 20.
+//
+// The state is NOT an opaque cookie -- `FormattedRenderState::description()`
+// (`0x13365C`) names every field of it, and the names decode the word:
+// `function` = bits 0..5, `coverage_state` = bits 6..15 (`0x1337DC`),
+// **`fill_state` = bits 16..31** (`0x13380C`). So bit 20 is bit 4 of
+// `fill_state`. And `RenderState::name()` (`0x1328B0`) indexes a 39-entry table
+// at `0x1900D8` with bits 0..5: the constant `w9 = 0x03C0001E` that `0x100004`
+// ORs in makes the function id `0x1E` = **`filter_blur`**.
+//
+// `[BIN]` `fill_state` IS PER-FUNCTION -- every accessor special-cases on the
+// function id -- so the question is what bit 4 means FOR `filter_blur`, and the
+// answer is: nothing that the CPU ever asks. Every accessor, audited:
+// `dest_write_mask` (`0x132DA8`) takes `ubfx #0x16, #4`, i.e. bits 22..25;
+// `reads_destination` (`0x132AD0`) and `reads_coverage` (`0x132B80`) both test
+// `fill_state & 0xF == 9`; `reads_noise` (`0x132BBC`) dispatches through the
+// byte table at `0x16266C`, where id `0x1E` takes case 15 -> `0x132C24` = bit
+// **21**; `reads_tables` (`0x132C3C`, table `0x162692`) takes case 27 ->
+// `0x132CD4`, a constant zero; `uses_shader_blending` (`0x132930`) returns 0 for
+// `0x1E` before looking at any bit; `other_dest_write_mask` (`0x132DC4`) only
+// fires for id `0x23`. And a sweep of the whole `__text` for a bit-20 test finds
+// no `tbz/tbnz #20` at all, one `orr #0x100000` (`0x26280`, a writer), and one
+// `ubfx #20, #1` -- `0x132C04`, which is `reads_noise` case 7, i.e.
+// `filter_color`/`filter_custom`, not us.
+//
+// `[BIN]` Where bit 20 DOES go is the GPU. `0x1000AC` ORs the state into `x1`
+// for `RenderPass::draw_indexed_primitives(RenderState, ...)` (`0x11A8AC`), the
+// state is the pipeline-cache key, and `Device::make_render_pipeline_descriptor`
+// (`0xD8560`) hands the whole thing to the shader verbatim: `0xD86E8`-`0xD870C`
+// packs the 64-bit state plus the derived word into 16 bytes and calls
+// `setConstantValue:type:atIndex:` with type `0x24` = `MTLDataTypeUInt4`, index
+// 0. So bit 20 selects a compiled variant of the `filter_blur` Metal fragment
+// shader, whose source is in no slice we have.
+//
+// `[BIN]` FORK B is the one that is legible, and it decides the question. The
+// same flag is passed as the trailing `OptionSet<Filter::Flag>` of
+// `RenderGroup::add_multipass_renderer` (`0xFEE60`: `and w8, w8, #1`; call at
+// `0xFEE88`), stored at `MultipassInfo+0x85` (`0x105EE0`), and read by
+// `RenderGroup::resolve_unary_subgroup` (`0x1073D4`) in exactly two shapes,
+// both about ALPHA:
+//
+//   `0x107970`/`0x107A5C`  `tbnz w9, #0` -- if opaque, SKIP
+//                          `RenderPass::resolve_srgb_alpha()` (`0x11AD68`);
+//   `0x107564`/`0x107AAC`  `tst w8,#1 ; cset w3, eq` -- pass `!opaque` as the
+//                          trailing bool of `RenderPass::color_convert(
+//                          ColorSpace, ColorSpace, bool)` (`0x11ABE4`).
+//
+// `[BIN]` **And it touches no geometry anywhere.** `GaussianBlur::adjust_roi`
+// (`0xFEB04`), `roi`/`dod` (`0xFEB58`) and `layer_scale` (`0xFE6E4`) read only
+// the sigma pair at `+0x00`, the quality bits `+0x18[4:5]` and `+0x20`; none of
+// them reads bit 0 of `+0x18`. So `opaque:1` does NOT restrict the sampled
+// region, does not let the compositor skip the backdrop, and cannot be what
+// makes a backdrop blur coexist with a sharp silhouette. It says "this content
+// has no alpha worth resolving", and that is all it says.
 //
 // -------------------------------------------------------------------------
 // WALL 3, WHERE THE BACKDROP IS COMPLETE -- ours to answer, and answered
