@@ -58,9 +58,17 @@ target_link_libraries(ic_tests PRIVATE IconComposer::Foundation IconComposer::Cl
 target_include_directories(ic_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # The UI's own cases. `-DIC_BUILD_UI=OFF` builds no Kit, and a suite that failed
-# to configure there would be a worse gate than one that runs four cases fewer --
+# to configure there would be a worse gate than one that runs 26 cases fewer --
 # so the Kit's cases are added only when the Kit exists, and the count printed at
 # the end of a run is the honest tally for the build that produced it.
+#
+# THE 26 IS A HOMONYM AND IT HAS BURNED THIS PROJECT TWICE. `679` with the Kit
+# and `653` without it differ by the 26 cases these four files carry. A run with
+# no `IC_CORPUS_DIR` ALSO says 26 -- but as 26 FAILURES (`dir != nullptr`,
+# `!files.empty()`), not 26 absences. Same number, opposite meaning: one is a
+# build that has fewer cases, the other is a build whose cases cannot find the
+# corpus. Read which of the two the line says before calling anything a
+# regression.
 if(TARGET IconComposerKit)
     target_sources(ic_tests PRIVATE test_kit_idiom.cpp test_kit_canvas.cpp test_kit_layers.cpp test_kit_inspector.cpp)
     target_link_libraries(ic_tests PRIVATE IconComposer::Kit)

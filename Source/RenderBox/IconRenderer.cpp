@@ -863,6 +863,10 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
         // the two the target does was `[OBS]` -- unread -- so the group was not
         // drawn at all.
         //
+        // THE NEXT PARAGRAPH IS SUPERSEDED. It is kept because the correction
+        // below only makes sense against it, but read the two together or not
+        // at all -- stopping at the end of it leaves you with the false half.
+        //
         // `[BIN]` It was read (doc 03 §34.3), and NEITHER happens, because the
         // glass does not sample the destination in the first place.
         // `GlassDisplacementStyle::draw` (`0x000F3B38`) builds a
