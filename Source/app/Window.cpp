@@ -331,6 +331,24 @@ int run(const fs::path& initial) {
     window.app().SetRegistrar([&state, initial](Onyx::App::App& app) {
         state.app = &app;
         if (auto* config = app.getConfig()) config->windowTitle = "Icon Composer";
+#ifdef ONYX_HAS_OPEN_FILE_HANDLER
+        // ONYX'S `File > Open` IS THE ONE PEOPLE CLICK, so it is the one that
+        // has to work. Left to itself it builds its filters from the Workspace
+        // modules and probes the path for an owner; this app registers no
+        // module, so the filters collapse to "All Files", the dialog is for
+        // FILES and a `.icon` is a DIRECTORY, and anything picked is dropped
+        // with a warning nobody reads. Claiming it points that item at the
+        // same action our own menu raises, and takes Onyx's global Ctrl+O with
+        // it so one keystroke stops opening two dialogs.
+        //
+        // Only the REQUEST is recorded here: this runs mid-frame, and `act()`
+        // swaps the session after the panels have drawn.
+        //
+        // The `#ifdef` is not decoration -- `IC_ONYX_SOURCE_DIR` may be absent
+        // and the SHA pinned in CMakeLists.txt predates the hook, so this file
+        // has to compile against both.
+        app.SetOpenFileHandler([&state] { state.actions.open = true; });
+#endif
         // Onyx's generic panels are for game archives; ours replace them.
         app.setPanelVisible("Documents", false);
         app.setPanelVisible("Inspector", false);
