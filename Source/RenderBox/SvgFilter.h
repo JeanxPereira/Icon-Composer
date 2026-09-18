@@ -63,9 +63,14 @@ struct FilteredGroup {
 // Runs `filter` over `source`, which is the group's own rendering at the canvas
 // size, straight RGBA. `placement` carries user space into pixels, which the
 // filter region and `stdDeviation` both need.
+// `originX`/`originY` sao a origem do alvo na grade da COLOCACAO: a regiao do
+// filtro e medida contra `placement`, que e sempre a do canvas inteiro, entao
+// o centro do pixel tem que ser o absoluto (spec 2026-09-16, "O invariante que
+// governa o desenho"). Zero e o render cheio.
 FilteredGroup applySvgFilter(const icf::svg::SvgDocument::Filter& filter,
                              const std::vector<float>& source,
                              std::uint32_t width, std::uint32_t height,
-                             const PathGlobals& placement);
+                             const PathGlobals& placement, std::int32_t originX = 0,
+                             std::int32_t originY = 0);
 
 }  // namespace rb

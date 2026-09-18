@@ -246,15 +246,16 @@ struct LayerPlacement {
 // document states.
 LayerPlacement compose(const LayerPlacement& group, const LayerPlacement& layer);
 
-// The globals that place `box` on the canvas under `p`.
+// The globals that place `box` on the canvas under `p`, for a square target.
 //
-// A ESCALA SAI DE `grid.size` e A ORIGEM DE `grid.originX/Y`: este e o unico
-// sitio do renderizador que TRANSLADA geometria, porque a GPU desenha dentro
-// do buffer e o buffer pode nao comecar em (0,0) (spec 2026-09-16, "O
-// invariante que governa o desenho"). Com `PixelGrid::full(size)` a subtracao
-// e de zero e o resultado e bit a bit o de antes.
+// `size` E SO ESCALA, mesmo num render de viewport: a colocacao continua sendo
+// a do canvas inteiro e nao sabe que o alvo pode ser um pedaco dele. O
+// deslocamento do buffer entra DEPOIS, como um inteiro no viewport do Vulkan
+// (`RenderOptions::originX/Y`), porque dobra-lo dentro de `m2` movia o
+// arredondamento do estagio de vertice -- a medida esta no corpo da funcao
+// (spec 2026-09-16, "O invariante que governa o desenho").
 PathGlobals placeOnCanvas(const icf::svg::ViewBox& box, const LayerPlacement& p,
-                          const PixelGrid& grid);
+                          std::uint32_t size);
 
 // ---- the fill, from a resolution to paint --------------------------------
 
@@ -276,11 +277,11 @@ PathGlobals placeOnCanvas(const icf::svg::ViewBox& box, const LayerPlacement& p,
 // corner. The rect is now read, so the assumption is retired rather than kept
 // beside the reading.
 //
-// O retangulo sai na coordenada da grade recebida: do BUFFER quando a grade e
-// a do buffer (que e o que a GPU avalia um gradiente contra), e ABSOLUTO
-// quando a grade e a do canvas (que e o que a translucidez mede).
+// O retangulo e ABSOLUTO tambem num render de viewport, porque quem o consome
+// -- a rampa do compositor e os `bounds` da translucidez -- avalia em
+// coordenada absoluta.
 PlacementRect artPlacementRect(const icf::svg::ViewBox& box, const LayerPlacement& p,
-                               const PixelGrid& grid);
+                               std::uint32_t size);
 
 // A resolved fill turned into what the compositor paints with, against
 // `shapeRect`.

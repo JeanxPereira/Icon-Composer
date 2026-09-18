@@ -83,8 +83,8 @@ Result<CoveragePass> CoveragePass::create(Device& device, VkFormat format) {
     }
 
     VkPushConstantRange push{};
-    push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    push.size = sizeof(PathGlobals);
+    push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    push.size = sizeof(CoveragePush);
     VkPipelineLayoutCreateInfo pli{};
     pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pli.setLayoutCount = 1;
@@ -266,7 +266,7 @@ CoveragePass& CoveragePass::operator=(CoveragePass&& o) noexcept {
 }
 
 Result<void> CoveragePass::draw(Device& device, Image& target, const PathBuffer& path,
-                                const PathGlobals& globals) {
+                                const PathGlobals& globals, CoverageViewport vp) {
     if (pipeline_ == VK_NULL_HANDLE) {
         return std::unexpected(std::string("CoveragePass::draw on an unbuilt pass"));
     }
@@ -274,6 +274,30 @@ Result<void> CoveragePass::draw(Device& device, Image& target, const PathBuffer&
     // that stopped a mutated header from asking for a hundred gigabytes.
     if (!headerAgreesWithSegments(path)) {
         return std::unexpected(std::string("the path buffer's header disagrees with its segments"));
+    }
+
+    // O VIEWPORT DESLOCADO TEM LIMITE DE APARELHO, e ele e dito e nao
+    // contornado. A projecao e o canvas inteiro e a origem e negativa, entao
+    // um `size` alto sai da faixa antes de sair da memoria:
+    // `maxViewportDimensions` e `viewportBoundsRange` sao os dois numeros, e o
+    // minimo que o Vulkan garante (4096 e +-8192) cobre `size <= 4096`.
+    {
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(device.physical(), &props);
+        const VkPhysicalDeviceLimits& lim = props.limits;
+        const double vw = vp.width ? vp.width : target.width();
+        const double vh = vp.height ? vp.height : target.height();
+        if (vw > lim.maxViewportDimensions[0] || vh > lim.maxViewportDimensions[1]) {
+            return std::unexpected(std::string("a projecao do desenho passa de "
+                                               "maxViewportDimensions deste aparelho"));
+        }
+        if (-static_cast<double>(vp.originX) < lim.viewportBoundsRange[0] ||
+            -static_cast<double>(vp.originY) < lim.viewportBoundsRange[0] ||
+            vw - vp.originX > lim.viewportBoundsRange[1] ||
+            vh - vp.originY > lim.viewportBoundsRange[1]) {
+            return std::unexpected(std::string("o deslocamento do viewport sai de "
+                                               "viewportBoundsRange deste aparelho"));
+        }
     }
 
     auto segments = Buffer::create(device, path.entries.size() * sizeof(CubicSegment),
@@ -318,12 +342,13 @@ Result<void> CoveragePass::draw(Device& device, Image& target, const PathBuffer&
         (static_cast<std::uint32_t>(total) + indices - 1) / indices;
 
     VkRenderPass rp = renderPass_;
+    const CoveragePush push{globals, vp.originX, vp.originY};
     VkPipeline pipeline = pipeline_;
     VkPipelineLayout layout = layout_;
     VkDescriptorSet set = set_;
     const std::uint32_t w = target.width(), h = target.height();
 
-    auto ran = device.submitAndWait([&](VkCommandBuffer cmd) {
+    auto ran = device.submitAndWait([&, vp, push](VkCommandBuffer cmd) {
         VkClearValue clear{};
         VkRenderPassBeginInfo rbi{};
         rbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -335,8 +360,10 @@ Result<void> CoveragePass::draw(Device& device, Image& target, const PathBuffer&
         api.vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
 
         VkViewport viewport{};
-        viewport.width = static_cast<float>(w);
-        viewport.height = static_cast<float>(h);
+        viewport.x = static_cast<float>(-vp.originX);
+        viewport.y = static_cast<float>(-vp.originY);
+        viewport.width = static_cast<float>(vp.width ? vp.width : w);
+        viewport.height = static_cast<float>(vp.height ? vp.height : h);
         viewport.maxDepth = 1.0f;
         api.vkCmdSetViewport(cmd, 0, 1, &viewport);
         VkRect2D scissor{};
@@ -346,8 +373,9 @@ Result<void> CoveragePass::draw(Device& device, Image& target, const PathBuffer&
         api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0,
                                 nullptr);
-        api.vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PathGlobals),
-                           &globals);
+        api.vkCmdPushConstants(cmd, layout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(CoveragePush), &push);
         api.vkCmdDraw(cmd, indices * 6, instances, 0, 0);
         api.vkCmdEndRenderPass(cmd);
     });

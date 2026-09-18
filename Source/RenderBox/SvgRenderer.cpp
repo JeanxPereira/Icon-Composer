@@ -128,6 +128,8 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
     if (!pass) return std::unexpected(pass.error());
 
     const PathGlobals globals = placement;
+    const CoverageViewport vp{options.originX, options.originY, options.projectionWidth,
+                              options.projectionHeight};
 
     // THE CLIP MASKS, BUILT ONCE EACH AND ON DEMAND.
     //
@@ -153,7 +155,7 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
             if (path.segments.empty()) continue;
             auto buffer = buildPathBuffer(path, BuildOptions{options.subdivisions});
             if (!buffer) { clipFailed = true; clipError = buffer.error(); return nullptr; }
-            auto drew = pass->draw(device, *image, *buffer, globals);
+            auto drew = pass->draw(device, *image, *buffer, globals, vp);
             if (!drew) { clipFailed = true; clipError = drew.error(); return nullptr; }
             auto cov = readBack(device, *image);
             if (!cov) { clipFailed = true; clipError = cov.error(); return nullptr; }
@@ -228,6 +230,10 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
         RenderOptions subOptions;
         subOptions.width = options.width;
         subOptions.height = options.height;
+        subOptions.originX = options.originX;
+        subOptions.originY = options.originY;
+        subOptions.projectionWidth = options.projectionWidth;
+        subOptions.projectionHeight = options.projectionHeight;
         subOptions.subdivisions = options.subdivisions;
         auto drawn = renderSvgPlaced(device, sub, placement, subOptions);
         if (!drawn) { clipFailed = true; clipError = drawn.error(); return nullptr; }
@@ -312,13 +318,18 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
             RenderOptions subOptions;
             subOptions.width = options.width;
             subOptions.height = options.height;
+            subOptions.originX = options.originX;
+            subOptions.originY = options.originY;
+            subOptions.projectionWidth = options.projectionWidth;
+            subOptions.projectionHeight = options.projectionHeight;
             subOptions.subdivisions = options.subdivisions;
             subOptions.override = options.override;
             auto drawn = renderSvgPlaced(device, sub, placement, subOptions);
             if (!drawn) return std::unexpected(drawn.error());
 
             const FilteredGroup filtered =
-                applySvgFilter(def->second, drawn->rgba, options.width, options.height, globals);
+                applySvgFilter(def->second, drawn->rgba, options.width, options.height, globals,
+                               options.originX, options.originY);
             if (!filtered.ok) {
                 for (std::size_t k = i; k < end; ++k) {
                     out.skipped.push_back({k, doc.shapes[k].element, filtered.why});
@@ -458,7 +469,7 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
             out.skipped.push_back({i, shape.element, buffer.error()});
             continue;
         }
-        auto drew = pass->draw(device, *image, *buffer, globals);
+        auto drew = pass->draw(device, *image, *buffer, globals, vp);
         if (!drew) return std::unexpected(drew.error());
         auto coverage = readBack(device, *image);
         if (!coverage) return std::unexpected(coverage.error());
@@ -491,12 +502,23 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
             const float alpha = accumulatorShape(state, (*coverage)[t].y, ShapeCurve{});
             if (alpha == 0.0f) continue;
 
+            // O CENTRO DO PIXEL, ABSOLUTO. O alvo pode ser um pedaco do canvas,
+            // e a colocacao (`globals.m2`) e sempre a do canvas inteiro, entao
+            // os tres ramos abaixo -- que todos desfazem a colocacao ou medem
+            // contra ela -- tem que perguntar pelo ponto `(x + origem) + 0.5`
+            // (spec 2026-09-16, "O invariante que governa o desenho"). Com
+            // origem zero e o `+ 0.5` de sempre.
+            const double px =
+                static_cast<double>(static_cast<std::int64_t>(t % options.width) +
+                                    options.originX) + 0.5;
+            const double py =
+                static_cast<double>(static_cast<std::int64_t>(t / options.width) +
+                                    options.originY) + 0.5;
+
             if (options.override.kind == FillOverride::Kind::Ramp) {
                 // The override's map is already in CANVAS pixels: the compositor
                 // built it, and a layer's fill is placed on the canvas rather
                 // than in the art's own space.
-                const double px = static_cast<double>(t % options.width) + 0.5;
-                const double py = static_cast<double>(t / options.width) + 0.5;
                 const double gx = options.override.m[0] * px + options.override.m[1] * py +
                                   options.override.m[2];
                 if (options.override.smooth) {
@@ -509,16 +531,12 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
                 // and from there into the tile. A point the tile does not cover
                 // is NOT painted -- and it cannot be painted with the shape's
                 // own fill either, which is black by SVG's initial value.
-                const double px = static_cast<double>(t % options.width) + 0.5;
-                const double py = static_cast<double>(t / options.width) + 0.5;
                 const double ux = (px - globals.m2[0]) * sx;
                 const double uy = (py - globals.m2[1]) * sy;
                 if (!samplePattern(pattern, ux, uy, colour)) continue;
             } else if (ramp.ok) {
                 // The pixel CENTRE, back through the placement into user space,
                 // and from there into the gradient's own space.
-                const double px = static_cast<double>(t % options.width) + 0.5;
-                const double py = static_cast<double>(t / options.width) + 0.5;
                 const double ux = (px - globals.m2[0]) * sx;
                 const double uy = (py - globals.m2[1]) * sy;
                 const double gx = ramp.m[0] * ux + ramp.m[1] * uy + ramp.m[2];

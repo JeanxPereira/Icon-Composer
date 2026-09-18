@@ -17,6 +17,22 @@
 
 namespace rb {
 
+// A projecao e o deslocamento do desenho, separados da matriz.
+struct CoverageViewport {
+    std::int32_t originX = 0, originY = 0;
+    std::uint32_t width = 0, height = 0;   // 0 == a extensao do alvo
+};
+
+// O que vai no push constant. `PathGlobals` e a struct do ALVO e tem 52 bytes
+// cravados; a origem do buffer nao e dele e por isso mora depois, em dois
+// escalares (um `ivec2` alinharia a 8 e empurraria o offset para 56).
+struct CoveragePush {
+    PathGlobals globals;
+    std::int32_t gridOriginX = 0;
+    std::int32_t gridOriginY = 0;
+};
+static_assert(sizeof(CoveragePush) == 60, "52 do alvo mais dois inteiros");
+
 class CoveragePass {
 public:
     static Result<CoveragePass> create(Device& device, VkFormat format = VK_FORMAT_R16G16_SFLOAT);
@@ -31,7 +47,7 @@ public:
     // Clears `target` and draws every edge of `path` into it. Leaves the image in
     // TRANSFER_SRC_OPTIMAL, ready for readBack.
     Result<void> draw(Device& device, Image& target, const PathBuffer& path,
-                      const PathGlobals& globals);
+                      const PathGlobals& globals, CoverageViewport viewport = CoverageViewport{});
 
 private:
     void destroy();

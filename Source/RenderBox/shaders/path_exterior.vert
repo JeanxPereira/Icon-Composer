@@ -19,6 +19,11 @@ layout(push_constant) uniform Globals {
     float depth;
     float urx;
     float arg;
+    // A origem do buffer na grade do canvas. O estagio de vertice NAO a le --
+    // ele projeta no canvas, como o render cheio -- mas o bloco de push e um
+    // so, e os dois estagios tem que declara-lo igual.
+    int gridOriginX;
+    int gridOriginY;
 } g;
 
 layout(location = 0) out vec2 vPathY;

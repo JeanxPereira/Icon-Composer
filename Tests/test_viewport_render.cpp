@@ -191,13 +191,17 @@ private:
 };
 
 // Fundo em gradiente + um disco vetor + um raster ampliado, os dois sem vidro.
-// As cores sao a grafia do corpus (`display-p3:r,g,b,a`).
+// As cores sao a grafia do corpus (`display-p3:r,g,b,a`), e o `fill` do disco
+// e uma rampa de CAMADA -- que e o que faz o gate medir a avaliacao absoluta
+// do compositor de `SvgRenderer`, e nao so a colocacao.
 const char* const kPlainDocument = R"({
   "fill" : { "linear-gradient" : [ "display-p3:0.90000,0.20000,0.30000,1.00000",
                                    "display-p3:0.10000,0.30000,0.90000,1.00000" ] },
   "groups" : [
     { "layers" : [
-      { "glass" : false, "image-name" : "disc.svg", "name" : "disc" },
+      { "glass" : false, "image-name" : "disc.svg", "name" : "disc",
+        "fill" : { "linear-gradient" : [ "display-p3:0.10000,0.90000,0.40000,1.00000",
+                                         "display-p3:0.95000,0.85000,0.10000,1.00000" ] } },
       { "glass" : false, "image-name" : "dot.png", "name" : "dot",
         "position" : { "scale" : 6, "translation-in-points" : [ 120, -90 ] } }
     ] }
@@ -247,4 +251,10 @@ TEST_CASE(viewport_background_chiclet_and_art_match_the_full_render) {
     CHECK_EQ(compareViewports(*bundle, 512, gateViewports(512), &full), 0);
     CHECK(full.backgroundPainted);
     CHECK_EQ(full.drawn, 2u);
+    // A rampa da CAMADA tem que estar de fato pintando, ou o caso mediria a
+    // colocacao e nao a avaliacao. O SVG se pinta de `#3080ff`, cujo azul e o
+    // canal mais forte; a rampa do documento vai de verde a amarelo, e o
+    // centro do disco sai `0,527 / 0,875 / 0,249`.
+    const std::size_t c = (static_cast<std::size_t>(256) * full.width + 256) * 4;
+    CHECK(full.rgba[c + 1] > full.rgba[c + 2]);
 }

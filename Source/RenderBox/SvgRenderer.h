@@ -79,6 +79,13 @@ struct FillOverride {
 struct RenderOptions {
     std::uint32_t width = 512;
     std::uint32_t height = 512;
+    // O alvo e `width` x `height`, mas a PROJECAO pode ser maior: o desenho
+    // avalia em coordenada absoluta e o deslocamento entra como um inteiro no
+    // viewport. Zero em `projectionWidth/Height` quer dizer "a do alvo".
+    std::int32_t originX = 0;
+    std::int32_t originY = 0;
+    std::uint32_t projectionWidth = 0;
+    std::uint32_t projectionHeight = 0;
     // When set, every shape in the document is painted with this instead of its
     // own fill. The shape's own gradient reference is then not consulted.
     FillOverride override;

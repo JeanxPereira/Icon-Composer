@@ -327,8 +327,7 @@ TEST_CASE(the_flattener_honours_the_layers_placement_on_the_canvas) {
     // 512 points of art centred on a 1024-point canvas, rendered at 1024
     // pixels: the square spans 256..768 with nothing left over.
     const GlassContours c =
-        flattenSvgToContours(
-            *svg, placeOnCanvas(svg->viewBox, LayerPlacement{}, PixelGrid::full(1024)), 16);
+        flattenSvgToContours(*svg, placeOnCanvas(svg->viewBox, LayerPlacement{}, 1024), 16);
     REQUIRE(c.contours.size() == 1);
     CHECK_EQ(c.contours[0].xy[0], 256.0f);
     CHECK_EQ(c.contours[0].xy[1], 256.0f);

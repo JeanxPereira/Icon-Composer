@@ -170,7 +170,8 @@ bool parseFloodColour(const std::string& text, float rgb[3]) {
 FilteredGroup applySvgFilter(const SvgDocument::Filter& filter,
                              const std::vector<float>& source,
                              std::uint32_t width, std::uint32_t height,
-                             const PathGlobals& placement) {
+                             const PathGlobals& placement, std::int32_t originX,
+                             std::int32_t originY) {
     FilteredGroup out;
     const std::size_t texels = static_cast<std::size_t>(width) * height;
 
@@ -314,7 +315,10 @@ FilteredGroup applySvgFilter(const SvgDocument::Filter& filter,
         const double y1 = (filter.y + filter.height) * sy + oy;
         for (std::uint32_t py = 0; py < height; ++py) {
             for (std::uint32_t px = 0; px < width; ++px) {
-                const double cx = px + 0.5, cy = py + 0.5;
+                const double cx =
+                    static_cast<double>(static_cast<std::int64_t>(px) + originX) + 0.5;
+                const double cy =
+                    static_cast<double>(static_cast<std::int64_t>(py) + originY) + 0.5;
                 if (cx < x0 || cx > x1 || cy < y0 || cy > y1) {
                     out.rgba[(static_cast<std::size_t>(py) * width + px) * 4 + 3] = 0.0f;
                 }

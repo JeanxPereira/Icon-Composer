@@ -483,15 +483,16 @@ const char* const kGlassVectorFieldNote =
     "0xA46E0), entao uma amostra por pixel e escolha deste projeto, medida e nao lida.";
 
 PlacementRect artPlacementRect(const icf::svg::ViewBox& box, const LayerPlacement& p,
-                               const PixelGrid& grid) {
+                               std::uint32_t size) {
     // Derived from `placeOnCanvas` rather than recomputed beside it: the art's
     // box and the art's pixels have to agree, and two copies of the same
     // arithmetic is how they stop agreeing.
     //
-    // O retangulo sai na coordenada da grade RECEBIDA -- do buffer quando a
-    // grade e a do buffer, absoluto quando e a do canvas -- porque `m2` ja
-    // carrega a origem (spec 2026-09-16, "Os sitios").
-    const PathGlobals g = placeOnCanvas(box, p, grid);
+    // O retangulo e ABSOLUTO, como o do fundo: quem avalia a rampa -- o
+    // compositor de `SvgRenderer` -- passou a medir no ponto
+    // `(x + origem) + 0.5`, que e a regra de todo passo de CPU (spec
+    // 2026-09-16, "O invariante que governa o desenho").
+    const PathGlobals g = placeOnCanvas(box, p, size);
     const double sx = static_cast<double>(g.m0[0]);
     const double sy = static_cast<double>(g.m1[1]);
     PlacementRect r;
@@ -576,9 +577,9 @@ LayerPlacement compose(const LayerPlacement& g, const LayerPlacement& l) {
 }
 
 PathGlobals placeOnCanvas(const icf::svg::ViewBox& box, const LayerPlacement& p,
-                          const PixelGrid& grid) {
+                          std::uint32_t size) {
     PathGlobals g;
-    const double k = static_cast<double>(grid.size) / kCanvasPoints;
+    const double k = static_cast<double>(size) / kCanvasPoints;
     const double s = p.scale * k;
     const double w = box.width > 0 ? box.width : 1.0;
     const double h = box.height > 0 ? box.height : 1.0;
@@ -592,15 +593,28 @@ PathGlobals placeOnCanvas(const icf::svg::ViewBox& box, const LayerPlacement& p,
     g.m0[1] = 0.0f;
     g.m1[0] = 0.0f;
     g.m1[1] = static_cast<float>(s);
-    // O UNICO SITIO QUE TRANSLADA GEOMETRIA (spec 2026-09-16, "O invariante
-    // que governa o desenho"): a GPU desenha no buffer, e o buffer comeca na
-    // origem. A subtracao e feita em float, DEPOIS do cast, para que uma
-    // origem zero deixe o valor de hoje bit a bit intocado.
-    g.m2[0] = static_cast<float>(left * k - s * box.x) - static_cast<float>(grid.originX);
-    g.m2[1] = static_cast<float>(top * k - s * box.y) - static_cast<float>(grid.originY);
-    g.twoOverSize[0] = 2.0f / static_cast<float>(grid.width);
-    g.twoOverSize[1] = 2.0f / static_cast<float>(grid.height);
-    g.urx = static_cast<float>(grid.width);
+    // A COLOCACAO E SEMPRE A DO CANVAS, mesmo quando o alvo e um pedaco dele
+    // (spec 2026-09-16, "O invariante que governa o desenho"). A primeira
+    // versao desta frente subtraiu a origem aqui, que e a forma obvia, e ela
+    // NAO fecha o invariante: `[ART]` medido em 18/09, com `m2` menos a origem
+    // o disco do gate acusava 11 e 15 pixels da borda antialiasada com
+    // `max |d| = 0,00048828125`, que e UM ULP de `float16` -- a cobertura e
+    // `VK_FORMAT_R16G16_SFLOAT` (`Image.cpp`) --, porque `world = p.x*m0 + m2`
+    // arredonda noutro expoente quando `m2` encolhe e a cobertura cai do outro
+    // lado de um degrau de meia precisao. Um viewport de origem ZERO e
+    // extensao menor fechava em zero na mesma medida, o que isola a subtracao,
+    // e as duas formas de escrever `m2` davam o mesmo numero.
+    //
+    // Entao a translacao saiu da matriz e virou "subtracao inteira DEPOIS da
+    // colocacao", que e o que a spec pede: o deslocamento entra como um inteiro
+    // no viewport do Vulkan (`CoveragePass::draw`) e o fragmento soma a mesma
+    // origem de volta em `gl_FragCoord` (`path_exterior.frag`) -- somar um
+    // inteiro a um `x.5` e exato. Com isso o gate fecha em ZERO.
+    g.m2[0] = static_cast<float>(left * k - s * box.x);
+    g.m2[1] = static_cast<float>(top * k - s * box.y);
+    g.twoOverSize[0] = 2.0f / static_cast<float>(size);
+    g.twoOverSize[1] = 2.0f / static_cast<float>(size);
+    g.urx = static_cast<float>(size);
     return g;
 }
 
@@ -619,7 +633,6 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                                 documentReach(doc, options.context, options.sizeClass));
     if (!planned) return std::unexpected(planned.error());
     const PixelGrid grid = planned->buffer;
-    const PixelGrid canvasGrid = PixelGrid::full(options.size);
 
     RenderedIcon out;
     out.size = options.size;
@@ -1220,7 +1233,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 if (svg) {
                     std::string why;
                     paint = fillPaint(fill.fill,
-                                      artPlacementRect(svg->viewBox, lp, grid), why);
+                                      artPlacementRect(svg->viewBox, lp, options.size), why);
                     if (!why.empty()) {
                         skip(why);
                         continue;
@@ -1323,8 +1336,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 std::optional<FieldImage> field;
                 if (haveShape) {
                     const GlassContours shape =
-                        flattenSvgToContours(*svg,
-                                             placeOnCanvas(svg->viewBox, lp, canvasGrid),
+                        flattenSvgToContours(*svg, placeOnCanvas(svg->viewBox, lp, options.size),
                                              options.subdivisions);
                     if (shape.mixedRules) {
                         fieldGap =
@@ -1423,7 +1435,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                         // which is what the ramp is measured against.
                         OpacityMaskArguments args = groupMaskArgs;
                         const PlacementRect r =
-                            svg ? artPlacementRect(svg->viewBox, lp, canvasGrid)
+                            svg ? artPlacementRect(svg->viewBox, lp, options.size)
                                 : rasterPlacementRect(rasterW, rasterH, lp, options.size);
                         args.bounds[0] = static_cast<float>(r.x);
                         args.bounds[1] = static_cast<float>(r.y);
@@ -1517,10 +1529,14 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 RenderOptions ro;
                 ro.width = grid.width;
                 ro.height = grid.height;
+                ro.originX = grid.originX;
+                ro.originY = grid.originY;
+                ro.projectionWidth = grid.size;
+                ro.projectionHeight = grid.size;
                 ro.subdivisions = options.subdivisions;
                 ro.override = paint;
                 auto drew = renderSvgPlaced(
-                    device, *svg, placeOnCanvas(svg->viewBox, lp, grid), ro);
+                    device, *svg, placeOnCanvas(svg->viewBox, lp, options.size), ro);
                 if (!drew) return std::unexpected(drew.error());
                 for (const auto& s : drew->skipped) {
                     out.shapeGaps.push_back(name + " / " + *imageName + ": " + s.why);
