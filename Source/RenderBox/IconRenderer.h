@@ -95,6 +95,7 @@
 #include "Source/RenderBox/Device.h"
 #include "Source/RenderBox/FillResolve.h"
 #include "Source/RenderBox/GlassTranslucency.h"
+#include "Source/RenderBox/PixelGrid.h"
 #include "Source/RenderBox/SvgRenderer.h"
 #include "Source/RenderBox/SystemFill.h"
 
@@ -102,6 +103,20 @@ namespace rb {
 
 // `[INF]` The canvas the document's points are measured in. See the header note.
 inline constexpr double kCanvasPoints = 1024.0;
+
+// O retangulo que o chamador quer ver, em pixels da grade que `size` define
+// (spec 2026-09-16). O padrao e o canvas inteiro, e nesse caso todo sitio se
+// reduz a aritmetica de antes.
+//
+// O INVARIANTE: um render de viewport e IGUAL, float a float, ao recorte
+// correspondente de um render cheio na mesma `size`. `Tests/test_viewport_render.cpp`
+// e quem cobra.
+struct IconViewport {
+    std::int32_t originX = 0;
+    std::int32_t originY = 0;
+    std::uint32_t width = 0;    // 0 == `size`
+    std::uint32_t height = 0;   // 0 == `size`
+};
 
 struct IconRenderOptions {
     std::uint32_t size = 512;
@@ -121,6 +136,8 @@ struct IconRenderOptions {
     // the inversion `slots[3 - sizeClass]` has something to be exercised with
     // the day a parameter file differentiates the classes.
     IconSizeClass sizeClass = IconSizeClass::Large;
+
+    IconViewport viewport;
 };
 
 // A layer that was not drawn, and why. Named, never dropped in silence.
@@ -134,6 +151,19 @@ struct RenderedIcon {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::vector<float> rgba;   // straight RGBA, row major
+
+    // Onde `rgba` fica na grade: `width` x `height` pixels a partir de
+    // (`originX`, `originY`), numa grade de `size`. Num render cheio, a origem e
+    // zero e `width == height == size`.
+    std::uint32_t size = 0;
+    std::int32_t originX = 0, originY = 0;
+    // O buffer em que o render RODOU, margem incluida. Existe para o
+    // diagnostico do gate: uma diferenca colada numa borda interna deste
+    // retangulo e margem curta.
+    PixelGrid buffer;
+    // O buffer planejado passou do teto de area (spec, "O teto de area"). Nada
+    // foi desenhado; quem pediu decide se cai para a resolucao base.
+    bool viewportRefused = false;
 
     std::size_t drawn = 0;
     std::size_t total = 0;

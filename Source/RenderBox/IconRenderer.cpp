@@ -588,8 +588,19 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                                 IconRenderOptions options) {
     if (options.size == 0) return std::unexpected("a canvas of zero size was asked for");
 
+    const std::uint32_t viewW = options.viewport.width ? options.viewport.width : options.size;
+    const std::uint32_t viewH = options.viewport.height ? options.viewport.height : options.size;
+    if (options.viewport.originX < 0 || options.viewport.originY < 0 ||
+        static_cast<std::uint64_t>(options.viewport.originX) + viewW > options.size ||
+        static_cast<std::uint64_t>(options.viewport.originY) + viewH > options.size) {
+        return std::unexpected("viewport fora do canvas");
+    }
+
     RenderedIcon out;
-    out.width = out.height = options.size;
+    out.size = options.size;
+    out.originX = options.viewport.originX;
+    out.originY = options.viewport.originY;
+    out.buffer = PixelGrid::full(options.size);
     const std::size_t texels = static_cast<std::size_t>(options.size) * options.size;
     // The accumulator is PREMULTIPLIED while layers stack -- `over` is only
     // associative in that form -- and is un-multiplied once at the end, which is
@@ -1627,13 +1638,21 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
         if (blendTheGroup) blendPremulOver(acc, groupAcc, *groupMode);
     }
 
-    out.rgba.assign(texels * 4, 0.0f);
-    for (std::size_t t = 0; t < texels; ++t) {
-        const float a = acc[t * 4 + 3];
-        for (int k = 0; k < 3; ++k) {
-            out.rgba[t * 4 + k] = a > 0.0f ? acc[t * 4 + k] / a : 0.0f;
+    // TEMPORARIO (Task 1 do plano de 16/09): recorta a partir de (0,0) e
+    // ignora a origem -- e o que faz o gate falhar pelo motivo certo.
+    const std::int32_t cropX = 0, cropY = 0;
+    out.width = viewW;
+    out.height = viewH;
+    out.rgba.assign(static_cast<std::size_t>(viewW) * viewH * 4, 0.0f);
+    for (std::uint32_t y = 0; y < viewH; ++y) {
+        for (std::uint32_t x = 0; x < viewW; ++x) {
+            const std::size_t s =
+                ((static_cast<std::size_t>(y) + cropY) * out.buffer.width + x + cropX) * 4;
+            const std::size_t d = (static_cast<std::size_t>(y) * viewW + x) * 4;
+            const float a = acc[s + 3];
+            for (int k = 0; k < 3; ++k) out.rgba[d + k] = a > 0.0f ? acc[s + k] / a : 0.0f;
+            out.rgba[d + 3] = a;
         }
-        out.rgba[t * 4 + 3] = a;
     }
     return out;
 }
