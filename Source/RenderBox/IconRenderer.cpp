@@ -1079,13 +1079,11 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             // narrower and enough: the DOCUMENT's own answer for a missing key.
             const bool isGlass = boolOr(layer.resolve("glass", options.context), true);
 
-            // O vidro e a sombra ainda nao andam num buffer parcial (o campo, a
-            // refracao e a mascara amostram relativo). Dito, e nao desenhado
-            // errado. Sai quando o campo e a sombra forem convertidos.
-            if (isGlass && !grid.isFull()) {
-                skip("vidro em viewport: ainda nao convertido");
-                continue;
-            }
+            // A SOMBRA ainda nao anda num buffer parcial: a escada do desfoque
+            // precisa da origem alinhada, e isso so e conferido quando ela
+            // entra. Dito, e nao desenhado errado. O campo, a translucidez, o
+            // especular e a refracao ja amostram absoluto.
+            const bool shadowBlocked = !grid.isFull();
 
             // The LAYER's blend mode, resolved rather than refused. The eight
             // modes the format cannot spell cannot appear here; what can is a
@@ -1363,6 +1361,13 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                         // one and not a trade.
                         FieldOptions fo;
                         fo.rule = shape.rule;
+                        // ABSOLUTO: os contornos ja estao no CANVAS (
+                        // `placeOnCanvas` acima), entao a rasterizacao do campo
+                        // tem de amostrar em `(x + origem) + 0.5` e so deslocar
+                        // o indice (spec 2026-09-16, "O invariante que governa o
+                        // desenho"). Com origem zero a aritmetica e a de antes.
+                        fo.originX = grid.originX;
+                        fo.originY = grid.originY;
                         FieldImage fromShape = generateFieldFromContours(
                             shape.contours, grid.width, grid.height, fo, kFieldSuperSample);
                         if (fromShape.width == 0) {
@@ -1379,8 +1384,15 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                         }
                     }
                 } else if (rasterPlaced) {
+                    // O raster ja foi COLOCADO no buffer por `placeRaster`, que
+                    // amostrou absoluto, entao aqui a origem so viaja no eco de
+                    // `FieldImage` -- que e o que a translucidez e a refracao
+                    // leem para saber em que coordenada o indice esta.
+                    FieldOptions fo;
+                    fo.originX = grid.originX;
+                    fo.originY = grid.originY;
                     FieldImage fromAlpha =
-                        generateFieldFromAlpha(*rasterPlaced, grid.width, grid.height);
+                        generateFieldFromAlpha(*rasterPlaced, grid.width, grid.height, fo);
                     if (fromAlpha.width == 0) {
                         // No texel reaches `alpha >= 0.5`: there is no contour to
                         // sign, so there is no field. A raster that faint has
@@ -1414,8 +1426,8 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 } else {
                     if (wantsHighlight) specularField = field;
                     if (wantsRefraction) {
-                        glassOver(target, grid.width, grid.height,
-                                  glassDisplacementMap(*field, refraction), refraction);
+                        glassOver(target, grid, glassDisplacementMap(*field, refraction),
+                                  refraction);
                         note(out.notes, glassRulerNote(options.size));
                         ++out.glassRefracted;
                     }
@@ -1482,7 +1494,10 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             // `blendOver` below. One field, two draws, one multiplication each.
             const ShadowInputs shadowIn{glassNumbers.shadowStyle, glassNumbers.shadowOpacity,
                                         opacity, options.sizeClass};
-            const bool castsShadow = isGlass && shadowDraws(shadowIn);
+            const bool castsShadow = isGlass && !shadowBlocked && shadowDraws(shadowIn);
+            if (isGlass && shadowBlocked && shadowDraws(shadowIn)) {
+                note(out.notes, "sombra em viewport: ainda nao convertida");
+            }
             // THE OVERDRAW PASS IS A SECOND COMPOSITE OF THE SAME IMAGE, so the
             // image is kept between the two draws instead of being rebuilt: the
             // blur behind it is the most expensive thing this loop does.

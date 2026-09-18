@@ -65,6 +65,7 @@
 #include "Source/RenderBox/DistanceField.h"
 #include "Source/RenderBox/GlassMaterial.h"
 #include "Source/RenderBox/IconRenderer.h"
+#include "Source/RenderBox/PixelGrid.h"
 #include "Source/RenderBox/SdfDisplacement.h"
 
 namespace rb {
@@ -247,7 +248,13 @@ DisplacementImage glassDisplacementMap(const FieldImage& field, const GlassRefra
 // CHOOSES; `[OBS]` the target's own blend of the refracted backdrop against the
 // unrefracted one was not read, and the mask that gates it is the shader's own
 // `.z` output, which is the only thing that makes the choice more than free.
-void glassOver(std::vector<float>& acc, std::uint32_t width, std::uint32_t height,
-               const DisplacementImage& map, const GlassRefraction& r);
+// A GRADE E A DO CANVAS E O BUFFER E O RECORTE. `acc` e `map` tem a extensao
+// de `grid`, mas as UV das duas camadas sao medidas sobre `grid.size` e o
+// ponto amostrado e o absoluto `(x + origem) + 0.5` -- e o mesmo numero que o
+// render cheio calcula, e por isso o recorte sai identico (spec 2026-09-16, "O
+// invariante que governa o desenho"). Com `PixelGrid::full`, origem zero e
+// extensao igual a `size`, a aritmetica e a de antes.
+void glassOver(std::vector<float>& acc, const PixelGrid& grid, const DisplacementImage& map,
+               const GlassRefraction& r);
 
 }  // namespace rb

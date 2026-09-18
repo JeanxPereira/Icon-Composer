@@ -1,6 +1,7 @@
 #include "Source/RenderBox/GlassLayer.h"
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 
 namespace rb {
@@ -203,10 +204,10 @@ DisplacementImage glassDisplacementMap(const FieldImage& field, const GlassRefra
     return out;
 }
 
-void glassOver(std::vector<float>& acc, std::uint32_t width, std::uint32_t height,
-               const DisplacementImage& map, const GlassRefraction& r) {
-    if (map.width != width || map.height != height) return;
-    if (acc.size() < static_cast<std::size_t>(width) * height * 4) return;
+void glassOver(std::vector<float>& acc, const PixelGrid& grid, const DisplacementImage& map,
+               const GlassRefraction& r) {
+    if (map.width != grid.width || map.height != grid.height) return;
+    if (acc.size() < grid.texels() * 4) return;
 
     // The backdrop is read from a SNAPSHOT. Refracting in place would feed
     // already-refracted pixels back into later taps, which is a smear that
@@ -219,8 +220,13 @@ void glassOver(std::vector<float>& acc, std::uint32_t width, std::uint32_t heigh
     // normalised UV, clamped to it. `[BIN]` The transform's shape (an affine
     // 2x3 plus a clamp rect) is the target's `RB::Layer`; the VALUES are this
     // renderer's, because this renderer owns the two buffers.
-    const float ix = 1.0f / static_cast<float>(width);
-    const float iy = 1.0f / static_cast<float>(height);
+    //
+    // A UV E SOBRE O CANVAS, NAO SOBRE O BUFFER: `x * (1/size)` e o mesmo
+    // numero que o render cheio calcula, e o grampo em `m4 == 1` continua
+    // caindo na borda do CANVAS, que e onde o render cheio grampeia (spec
+    // 2026-09-16, "A margem, e de onde vem o numero").
+    const float ix = 1.0f / static_cast<float>(grid.size);
+    const float iy = 1.0f / static_cast<float>(grid.size);
     for (DisplacementLayer* layer : {&p.source, &p.map}) {
         layer->m[0][0] = ix;
         layer->m[0][1] = 0.0f;
@@ -235,12 +241,14 @@ void glassOver(std::vector<float>& acc, std::uint32_t width, std::uint32_t heigh
     }
 
     SampledImage source;
-    source.width = static_cast<int>(width);
-    source.height = static_cast<int>(height);
+    source.width = static_cast<int>(grid.size);
+    source.height = static_cast<int>(grid.size);
     source.rgba = backdrop.data();
-    SampledImage mapped;
-    mapped.width = static_cast<int>(width);
-    mapped.height = static_cast<int>(height);
+    source.originX = grid.originX;
+    source.originY = grid.originY;
+    source.bufferWidth = static_cast<int>(grid.width);
+    source.bufferHeight = static_cast<int>(grid.height);
+    SampledImage mapped = source;
     mapped.rgba = map.rgba.data();
 
     // `p`'s screen derivatives: one pixel per pixel, and axis aligned, because
@@ -249,15 +257,20 @@ void glassOver(std::vector<float>& acc, std::uint32_t width, std::uint32_t heigh
     const float dpdx[2] = {1.0f, 0.0f};
     const float dpdy[2] = {0.0f, 1.0f};
 
-    for (std::uint32_t y = 0; y < height; ++y) {
-        for (std::uint32_t x = 0; x < width; ++x) {
-            const std::size_t i = (static_cast<std::size_t>(y) * width + x) * 4;
+    for (std::uint32_t y = 0; y < grid.height; ++y) {
+        for (std::uint32_t x = 0; x < grid.width; ++x) {
+            const std::size_t i = (static_cast<std::size_t>(y) * grid.width + x) * 4;
             const float mask = map.rgba[i + 3];
             if (mask <= 0.0f) continue;   // outside the shape: untouched, bit for bit
 
             float refracted[4];
-            displacementMap(p, r.variant, static_cast<float>(x) + 0.5f,
-                            static_cast<float>(y) + 0.5f, dpdx, dpdy, source, mapped, refracted);
+            // O ponto ABSOLUTO da grade de `size`: a geometria fica intocada e
+            // so o indice em `acc` e deslocado (spec 2026-09-16).
+            const float px =
+                static_cast<float>(static_cast<std::int64_t>(x) + grid.originX) + 0.5f;
+            const float py =
+                static_cast<float>(static_cast<std::int64_t>(y) + grid.originY) + 0.5f;
+            displacementMap(p, r.variant, px, py, dpdx, dpdy, source, mapped, refracted);
             for (int k = 0; k < 4; ++k) {
                 acc[i + k] = backdrop[i + k] + (refracted[k] - backdrop[i + k]) * mask;
             }

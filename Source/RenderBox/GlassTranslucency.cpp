@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 namespace rb {
 namespace {
@@ -102,7 +103,13 @@ OpacityMask glassOpacityMask(const FieldImage& field, const OpacityMaskArguments
     out.a.assign(n, 1.0f);
     out.coverage.assign(n, 0.0f);
     for (std::uint32_t y = 0; y < field.height; ++y) {
-        const float py = static_cast<float>(y) + 0.5f;
+        // ABSOLUTO: `bounds` chega na grade de `size` -- e o retangulo da arte
+        // colocada no canvas --, nao na do buffer, entao a rampa tem de ser
+        // medida no ponto `(y + origem) + 0.5` dessa mesma grade (spec
+        // 2026-09-16, "O invariante que governa o desenho"). Com origem zero e
+        // exatamente `y + 0.5`, a aritmetica de antes.
+        const float py =
+            static_cast<float>(static_cast<std::int64_t>(y) + field.originY) + 0.5f;
         for (std::uint32_t x = 0; x < field.width; ++x) {
             // `FieldSample::distance` is NEGATIVE INSIDE and the shader's `sd` is
             // positive inside.

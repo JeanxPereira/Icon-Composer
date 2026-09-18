@@ -685,8 +685,12 @@ TEST_CASE(a_negative_strength_displaces_the_opposite_way_from_a_positive_one) {
 
     const std::vector<float> base = rampBuffer(w, h);
     std::vector<float> an = base, ap = base;
-    glassOver(an, w, h, map, rn);
-    glassOver(ap, w, h, map, rp);
+    // A grade do composite: o canvas tem `w` pixels de lado e o buffer e a
+    // faixa `h` de cima dele, origem zero. E o que faz as UV baterem com as de
+    // antes (`x/w`, `y/w` com `sampleBilinear` medindo sobre `w`).
+    const PixelGrid gridOf{w, 0, 0, w, h};
+    glassOver(an, gridOf, map, rn);
+    glassOver(ap, gridOf, map, rp);
 
     // 50 pixels inside the edge: `s / height` is about 0.37, well inside the
     // band, and the mask is saturated so the composite is a full replacement.

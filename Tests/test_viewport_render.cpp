@@ -243,6 +243,27 @@ const char* const kFilteredDocument = R"({
   ]
 })";
 
+// Vidro com translucidez, especular e refracao, e sombra `"none"`: o campo e a
+// refracao sao julgados sem a escada do desfoque no caminho, que e a unica
+// coisa que ainda nao anda num buffer parcial. A forca -0,53 e a do documento
+// do corpus que mais refrata (`CamilleScholtz__swmpc__swmpc`, -0,527), entao a
+// margem encadeada da spec e exercitada com o pior caso real.
+const char* const kGlassDocument = R"({
+  "fill" : { "linear-gradient" : [ "display-p3:0.9,0.2,0.3,1", "display-p3:0.1,0.3,0.9,1" ] },
+  "groups" : [
+    { "layers" : [ { "image-name" : "disc.svg", "name" : "disc" } ],
+      "refractivity" : { "depth" : 0.5, "enabled" : true, "strength" : -0.53 },
+      "shadow" : { "kind" : "none", "opacity" : 0.5 },
+      "specular" : true,
+      "translucency" : { "enabled" : true, "value" : 0.5 } },
+    { "layers" : [ { "image-name" : "dot.png", "name" : "dot",
+        "position" : { "scale" : 6, "translation-in-points" : [ 120, -90 ] } } ],
+      "shadow" : { "kind" : "none", "opacity" : 0.5 },
+      "specular" : true,
+      "translucency" : { "enabled" : true, "value" : 0.5 } }
+  ]
+})";
+
 // A recusa do filtro, procurada por nome no relatorio.
 bool namesTheFilterRefusal(const std::vector<std::string>& gaps) {
     for (const std::string& g : gaps) {
@@ -327,4 +348,27 @@ TEST_CASE(viewport_refuses_an_svg_filter_by_name_instead_of_clamping_it) {
     auto part = renderIcon(d, *bundle, o);
     REQUIRE(part.has_value());
     CHECK(namesTheFilterRefusal(part->shapeGaps));
+}
+
+// O CAMPO, A TRANSLUCIDEZ, O ESPECULAR E A REFRACAO, sobre pixel de verdade.
+//
+// O campo e o unico passo cujo alcance nao e uma constante -- a distancia de um
+// pixel de dentro pode medir ate a borda mais distante do canvas (spec
+// 2026-09-16, a `[OBS]` de "A margem, e de onde vem o numero"). O que o salva e
+// que nenhum consumidor le alem da propria banda. Este caso e o que prova isso:
+// se a hipotese cair, a diferenca aparece LONGE da borda interna, dentro da
+// forma, e nao colada nela.
+TEST_CASE(viewport_field_translucency_specular_and_refraction_match) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    TempBundle tb("glass", kGlassDocument);
+    auto bundle = icf::IconBundle::open(tb.path());
+    REQUIRE(bundle.has_value());
+    RenderedIcon full;
+    CHECK_EQ(compareViewports(*bundle, 512, gateViewports(512), &full), 0);
+    // Os tres efeitos tem de estar DESENHANDO, ou o caso mediria o silencio.
+    CHECK(full.glassRefracted > 0);
+    CHECK(full.glassTranslucent > 0);
+    CHECK(full.glassSpecular > 0);
+    CHECK_EQ(full.skipped.size(), 0u);
 }

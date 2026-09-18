@@ -128,9 +128,18 @@ void displacementJitter(float px, float py, const float dpdx[2], const float dpd
 // both sides, and replacing it when the descriptor is decoded touches nothing in
 // the math above.
 struct SampledImage {
-    int width = 0;
+    int width = 0;   // a grade das UV: o canvas inteiro
     int height = 0;
-    const float* rgba = nullptr;  // width * height * 4, row major
+    const float* rgba = nullptr;  // bufferWidth * bufferHeight * 4, row major
+    // O buffer cobre `[originX, originX + bufferWidth)` da grade. Zero em
+    // `bufferWidth`/`bufferHeight` significa "o buffer E a grade", que e o caso
+    // de todo chamador que nao e um viewport. O GRAMPO continua sendo o da
+    // GRADE -- e o que faz a borda do canvas se comportar igual nos dois
+    // renders (spec 2026-09-16, "A margem, e de onde vem o numero": um buffer
+    // que passasse do canvas grampearia num lugar em que o render cheio nao
+    // grampeia).
+    int originX = 0, originY = 0;
+    int bufferWidth = 0, bufferHeight = 0;
 };
 
 // Bilinear, normalised UV, half-texel centres, clamped at the edge. Written in

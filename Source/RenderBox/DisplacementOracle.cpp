@@ -1,6 +1,7 @@
 #include "Source/RenderBox/DisplacementOracle.h"
 
 #include <cmath>
+#include <cstddef>
 
 namespace rb {
 namespace {
@@ -163,11 +164,23 @@ void sampleBilinear(const SampledImage& image, float u, float v, float (&out)[4]
     const int x1 = clampi(static_cast<int>(bx) + 1, 0, image.width - 1);
     const int y0 = clampi(static_cast<int>(by), 0, image.height - 1);
     const int y1 = clampi(static_cast<int>(by) + 1, 0, image.height - 1);
+    // O indice sai da grade por SUBTRACAO INTEIRA da origem: os quatro texels
+    // ja foram grampeados na grade acima, que e onde o render cheio grampeia.
+    const int bw = image.bufferWidth ? image.bufferWidth : image.width;
+    const int bh = image.bufferHeight ? image.bufferHeight : image.height;
+    auto at = [&](int x, int y, int k) {
+        // Uma leitura fora do buffer e MARGEM CURTA. Grampear aqui esconderia
+        // isso; o grampo so evita ler fora da memoria, e o gate acusa a
+        // diferenca colada na borda interna (spec 2026-09-16, "O invariante").
+        const int lx = clampi(x - image.originX, 0, bw - 1);
+        const int ly = clampi(y - image.originY, 0, bh - 1);
+        return image.rgba[(static_cast<std::size_t>(ly) * bw + lx) * 4 + k];
+    };
     for (int k = 0; k < 4; ++k) {
-        const float c00 = image.rgba[(y0 * image.width + x0) * 4 + k];
-        const float c10 = image.rgba[(y0 * image.width + x1) * 4 + k];
-        const float c01 = image.rgba[(y1 * image.width + x0) * 4 + k];
-        const float c11 = image.rgba[(y1 * image.width + x1) * 4 + k];
+        const float c00 = at(x0, y0, k);
+        const float c10 = at(x1, y0, k);
+        const float c01 = at(x0, y1, k);
+        const float c11 = at(x1, y1, k);
         out[k] = lerp(lerp(c00, c10, tx), lerp(c01, c11, tx), ty);
     }
 }
