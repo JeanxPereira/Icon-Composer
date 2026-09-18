@@ -264,6 +264,54 @@ const char* const kGlassDocument = R"({
   ]
 })";
 
+// O MESMO VIDRO, MAS COM A ORIGEM DO BUFFER DE FATO EM JOGO.
+//
+// `kGlassDocument` acima mede o PIOR caso de margem do corpus, e o preco disso
+// e que a margem encadeada (339 pontos) come meio canvas: os quatro buffers do
+// gate saem com `originX == 0`, e a metade HORIZONTAL de todo sitio convertido
+// (`fo.originX`, `lx = x - originX`, `px`) nunca chega a rodar com um valor
+// nao-nulo. Pior: a arte daquele documento nao encosta em dois dos quatro
+// viewports, que passam por vacuidade.
+//
+// Este documento corrige as duas coisas de uma vez:
+//
+//   - a REFRACAO e modesta -- `strength -0.10` da 64 pontos e `depth 0.25` da
+//     73,6 pontos de altura, entao cada grupo contribui `max(64, 73,6) = 73,6`
+//     para a cadeia. DOIS grupos refratam, entao a soma e 147,2 pontos, que e
+//     exatamente a soma sobre a cadeia que a spec descreve ("A margem, e de
+//     onde vem o numero": cada refracao le o resultado da anterior). Em
+//     `size = 512` isso da margem 98 px e buffers com origem NAO-NULA em tres
+//     dos quatro viewports;
+//   - a ARTE cobre os quatro. O disco entra com `scale 2`, o que o poe em
+//     `56..456` da grade de 512 (centro 256, raio 200): a borda ESQUERDA dele
+//     cruza os quatro recortes, e o interior -- que e onde a translucidez age
+//     -- cobre os quatro. O raster desce para a esquerda (`x 72..192,
+//     y 342..462`, circulo de raio 60 em (132,402)) e alcanca tres deles, de
+//     modo que o caminho do campo por ALFA tambem seja julgado com origem.
+//
+// `position` LEVA AS DUAS CHAVES DE PROPOSITO. `positionFrom`
+// (`Values.cpp:209`) devolve `nullopt` se `translation-in-points` faltar ou
+// nao tiver dois elementos -- e um `position` invalido e descartado em
+// silencio, com a arte voltando ao `scale 1`. Escrever so `"scale": 2` aqui
+// deixou o disco em raio 100 e dois viewports julgando o vazio; foi medido.
+const char* const kSpreadGlassDocument = R"({
+  "fill" : { "linear-gradient" : [ "display-p3:0.9,0.2,0.3,1", "display-p3:0.1,0.3,0.9,1" ] },
+  "groups" : [
+    { "layers" : [ { "image-name" : "disc.svg", "name" : "disc",
+        "position" : { "scale" : 2, "translation-in-points" : [ 0, 0 ] } } ],
+      "refractivity" : { "depth" : 0.25, "enabled" : true, "strength" : -0.10 },
+      "shadow" : { "kind" : "none", "opacity" : 0.5 },
+      "specular" : true,
+      "translucency" : { "enabled" : true, "value" : 0.5 } },
+    { "layers" : [ { "image-name" : "dot.png", "name" : "dot",
+        "position" : { "scale" : 6, "translation-in-points" : [ -248, 292 ] } } ],
+      "refractivity" : { "depth" : 0.25, "enabled" : true, "strength" : -0.10 },
+      "shadow" : { "kind" : "none", "opacity" : 0.5 },
+      "specular" : true,
+      "translucency" : { "enabled" : true, "value" : 0.5 } }
+  ]
+})";
+
 // A recusa do filtro, procurada por nome no relatorio.
 bool namesTheFilterRefusal(const std::vector<std::string>& gaps) {
     for (const std::string& g : gaps) {
@@ -371,4 +419,67 @@ TEST_CASE(viewport_field_translucency_specular_and_refraction_match) {
     CHECK(full.glassTranslucent > 0);
     CHECK(full.glassSpecular > 0);
     CHECK_EQ(full.skipped.size(), 0u);
+}
+
+// O MESMO INVARIANTE COM A ORIGEM DO BUFFER DE FATO EM JOGO.
+//
+// O caso acima e o pior caso de margem do corpus, e por isso mesmo ele nao
+// exercita origem: os quatro buffers saem em `originX == 0` e dois dos quatro
+// viewports nao encostam na arte. Este caso e escrito para o contrario, e a
+// cobertura e CONFERIDA em vez de afirmada -- ele imprime a origem de cada
+// buffer e exige que a maioria delas seja nao-nula nos dois eixos, e que o
+// especular tenha de fato movido pixel em cada um. Sem isso a metade
+// horizontal de `fo.originX`, de `lx = x - originX` e de `px` atravessaria a
+// task inteira sem nunca rodar com um valor diferente de zero.
+TEST_CASE(viewport_glass_matches_with_a_non_zero_buffer_origin) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    TempBundle tb("glass-spread", kSpreadGlassDocument);
+    auto bundle = icf::IconBundle::open(tb.path());
+    REQUIRE(bundle.has_value());
+
+    IconRenderOptions o;
+    o.size = 512;
+    auto full = renderIcon(d, *bundle, o);
+    REQUIRE(full.has_value());
+    CHECK(full->glassRefracted > 0);
+    CHECK(full->glassTranslucent > 0);
+    CHECK(full->glassSpecular > 0);
+    CHECK_EQ(full->skipped.size(), 0u);
+
+    int nonZeroX = 0, nonZeroY = 0, bad = 0;
+    for (const IconViewport& v : gateViewports(512)) {
+        IconRenderOptions vo = o;
+        vo.viewport = v;
+        auto part = renderIcon(d, *bundle, vo);
+        if (!part) {
+            std::printf("  FAIL viewport (%d,%d %ux%u): %s\n", v.originX, v.originY, v.width,
+                        v.height, part.error().c_str());
+            ++bad;
+            continue;
+        }
+        const PixelGrid& b = part->buffer;
+        if (b.originX != 0) ++nonZeroX;
+        if (b.originY != 0) ++nonZeroY;
+        // O especular so conta pixel que ele de fato moveu, entao isto e o que
+        // separa "o vidro passou por aqui" de "o viewport julgou o vazio".
+        CHECK(part->glassSpecular > 0);
+        const ViewportDiff diff = diffAgainstCrop(*full, *part);
+        std::printf("  viewport (%d,%d %ux%u) buffer (%d,%d %ux%u): %zu px diferentes"
+                    " [refr %zu trans %zu spec %zu]\n",
+                    v.originX, v.originY, v.width, v.height, b.originX, b.originY, b.width,
+                    b.height, diff.differing, part->glassRefracted, part->glassTranslucent,
+                    part->glassSpecular);
+        if (diff.differing == 0) continue;
+        ++bad;
+        std::printf("    max |d| = %.9g em (%u,%u), a %u px da borda interna\n",
+                    static_cast<double>(diff.maxAbs), diff.worstX, diff.worstY,
+                    diff.worstInnerEdge);
+    }
+    CHECK_EQ(bad, 0);
+    // Tres dos quatro: o segundo viewport encosta na borda ESQUERDA do canvas
+    // de proposito, e a interseccao com o canvas manda a origem dele para zero
+    // em x -- isso e o desenho certo, nao um furo.
+    CHECK(nonZeroX >= 3);
+    CHECK(nonZeroY >= 3);
 }

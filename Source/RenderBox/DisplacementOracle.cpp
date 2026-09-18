@@ -169,9 +169,15 @@ void sampleBilinear(const SampledImage& image, float u, float v, float (&out)[4]
     const int bw = image.bufferWidth ? image.bufferWidth : image.width;
     const int bh = image.bufferHeight ? image.bufferHeight : image.height;
     auto at = [&](int x, int y, int k) {
-        // Uma leitura fora do buffer e MARGEM CURTA. Grampear aqui esconderia
-        // isso; o grampo so evita ler fora da memoria, e o gate acusa a
-        // diferenca colada na borda interna (spec 2026-09-16, "O invariante").
+        // Este segundo grampo e SO memoria: ele impede a leitura de sair do
+        // buffer, e nao promete detectar que ela saiu. O que ele substitui e o
+        // texel da borda do buffer, e se a regiao atravessada for plana -- um
+        // fundo uniforme, ou o canvas transparente que costuma ocupar
+        // justamente a margem externa de um icone -- esse texel E o valor
+        // certo, e uma margem curta passa sem aparecer. So uma margem
+        // GROSSEIRAMENTE curta, que alcanca conteudo que varia, aparece no
+        // gate como diferenca colada na borda interna. O grampo que carrega
+        // semantica e o de cima, na GRADE, que e onde o render cheio grampeia.
         const int lx = clampi(x - image.originX, 0, bw - 1);
         const int ly = clampi(y - image.originY, 0, bh - 1);
         return image.rgba[(static_cast<std::size_t>(ly) * bw + lx) * 4 + k];
