@@ -1079,12 +1079,6 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             // narrower and enough: the DOCUMENT's own answer for a missing key.
             const bool isGlass = boolOr(layer.resolve("glass", options.context), true);
 
-            // A SOMBRA ainda nao anda num buffer parcial: a escada do desfoque
-            // precisa da origem alinhada, e isso so e conferido quando ela
-            // entra. Dito, e nao desenhado errado. O campo, a translucidez, o
-            // especular e a refracao ja amostram absoluto.
-            const bool shadowBlocked = !grid.isFull();
-
             // The LAYER's blend mode, resolved rather than refused. The eight
             // modes the format cannot spell cannot appear here; what can is a
             // spelling this project does not know, and that is a gap, never a
@@ -1494,10 +1488,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             // `blendOver` below. One field, two draws, one multiplication each.
             const ShadowInputs shadowIn{glassNumbers.shadowStyle, glassNumbers.shadowOpacity,
                                         opacity, options.sizeClass};
-            const bool castsShadow = isGlass && !shadowBlocked && shadowDraws(shadowIn);
-            if (isGlass && shadowBlocked && shadowDraws(shadowIn)) {
-                note(out.notes, "sombra em viewport: ainda nao convertida");
-            }
+            const bool castsShadow = isGlass && shadowDraws(shadowIn);
             // THE OVERDRAW PASS IS A SECOND COMPOSITE OF THE SAME IMAGE, so the
             // image is kept between the two draws instead of being rebuilt: the
             // blur behind it is the most expensive thing this loop does.

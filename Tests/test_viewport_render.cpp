@@ -10,6 +10,7 @@
 #include "Source/IconComposerFoundation/IconBundle.h"
 #include "Source/IconComposerFoundation/Png.h"
 #include "Source/RenderBox/IconRenderer.h"
+#include "Source/RenderBox/ViewportPlan.h"
 
 #include <algorithm>
 #include <cmath>
@@ -312,6 +313,32 @@ const char* const kSpreadGlassDocument = R"({
   ]
 })";
 
+// A SOMBRA, na size em que a escada do desfoque reduz de fato.
+//
+// `documentReach` mede a sombra pela tabela DEFAULT de `radius` (0,3, igual
+// nos quatro slots de `SizeBasedValue`), nao pelo que o grupo pede -- entao
+// basta que ALGUM grupo desenhe sombra (`kind` diferente de `none`, alpha >
+// 0) para que `shadowSigmaPoints` saia do zero fixo em 19,2 pontos de canvas.
+// Em `size = 512` (`k = 0,5`) isso da `sigmaPx = 9,6`, `variance = 92,16`, e
+// `blurLadderAlignment` reduz por 2 (`ceil(92,16/27,5625 - 0,001) = 4 >= 3`);
+// nenhum dos fixtures anteriores exercitava isto porque todos eles escreviam
+// `"shadow": {"kind": "none", ...}` de proposito, para julgar campo, especular
+// e refracao sem a escada no caminho. Dois grupos aqui, um `neutral` (tabela
+// `neutralOpacity`) e um `layer-color` (`shadowUsesVibrantTable`, tabela
+// `vibrantOpacity`), para que as duas tabelas de alfa sejam exercitadas e nao
+// so uma.
+const char* const kShadowDocument = R"({
+  "groups" : [
+    { "layers" : [ { "image-name" : "disc.svg", "name" : "disc",
+        "position" : { "scale" : 0.6, "translation-in-points" : [ -140, -160 ] } } ],
+      "shadow" : { "kind" : "neutral", "opacity" : 0.8 } },
+    { "layers" : [ { "image-name" : "dot.png", "name" : "dot",
+        "position" : { "scale" : 5, "translation-in-points" : [ 150, 120 ] } } ],
+      "refractivity" : { "depth" : 0.4, "enabled" : true, "strength" : -0.36 },
+      "shadow" : { "kind" : "layer-color", "opacity" : 0.6 } }
+  ]
+})";
+
 // A recusa do filtro, procurada por nome no relatorio.
 bool namesTheFilterRefusal(const std::vector<std::string>& gaps) {
     for (const std::string& g : gaps) {
@@ -481,5 +508,58 @@ TEST_CASE(viewport_glass_matches_with_a_non_zero_buffer_origin) {
     // de proposito, e a interseccao com o canvas manda a origem dele para zero
     // em x -- isso e o desenho certo, nao um furo.
     CHECK(nonZeroX >= 3);
+    CHECK(nonZeroY >= 3);
+}
+
+// A SOMBRA, ULTIMO BLOQUEIO. O gate fecha em zero com a escada do desfoque de
+// fato reduzindo -- o passo 4 mediu que ela retornava 1 (nenhuma reducao) em
+// todo fixture ate aqui, entao esta e a primeira vez que a origem alinhada
+// prova alguma coisa: sem ela, as caixas de `reduceBox` comecam num multiplo
+// errado e o resultado muda em todo pixel do buffer, nao so na borda.
+TEST_CASE(viewport_shadow_matches_including_the_blur_ladder) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    TempBundle tb("shadow", kShadowDocument);
+    auto bundle = icf::IconBundle::open(tb.path());
+    REQUIRE(bundle.has_value());
+    RenderedIcon full;
+    CHECK_EQ(compareViewports(*bundle, 512, gateViewports(512), &full), 0);
+    CHECK(full.glassShadowed >= 2);
+    CHECK(full.glassRefracted > 0);   // refracao sobre a sombra do grupo de tras: a cadeia
+    CHECK(blurLadderAlignment(32.0) > 1);   // a fixture exercita a escada
+
+    // A COBERTURA, CONFERIDA E NAO AFIRMADA (a licao do passo 4: um "zero" so
+    // prova algo se o buffer que o produziu de fato continha o efeito). A
+    // refracao encadeada desta fixture pede margem grande -- 173 px em
+    // `size = 512`, MEDIDO -- e nenhum dos quatro viewports do gate tem
+    // origem X acima disso, entao `originX` sai 0 nos quatro por CLAMPING no
+    // canvas, nao por bug: `alignDown` de um valor ja negativo satura em 0
+    // antes de a rodada de alinhamento fazer diferenca. O eixo Y e o que
+    // sobra para provar o mecanismo, e prova: tres das quatro origens saem
+    // NAO-nulas, e o passo 3 (acima) mediu a mesma formula, aplicada ao MESMO
+    // `p.alignment`, falhar longe da borda quando desligada -- `alignDown` e
+    // uma unica funcao chamada identica para X e Y, entao a prova numa origem
+    // cobre a outra.
+    int nonZeroY = 0, bad = 0;
+    for (const IconViewport& v : gateViewports(512)) {
+        IconRenderOptions vo;
+        vo.size = 512;
+        vo.viewport = v;
+        auto part = renderIcon(d, *bundle, vo);
+        if (!part) {
+            std::printf("  FAIL viewport (%d,%d %ux%u): %s\n", v.originX, v.originY, v.width,
+                        v.height, part.error().c_str());
+            ++bad;
+            continue;
+        }
+        const PixelGrid& b = part->buffer;
+        if (b.originY != 0) ++nonZeroY;
+        std::printf("  viewport (%d,%d %ux%u) buffer (%d,%d %ux%u) glassShadowed=%zu\n",
+                    v.originX, v.originY, v.width, v.height, b.originX, b.originY, b.width,
+                    b.height, part->glassShadowed);
+        // Um viewport que nao carrega sombra nao prova nada sobre a escada.
+        CHECK(part->glassShadowed > 0);
+    }
+    CHECK_EQ(bad, 0);
     CHECK(nonZeroY >= 3);
 }
