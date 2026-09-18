@@ -526,7 +526,29 @@ TEST_CASE(viewport_shadow_matches_including_the_blur_ladder) {
     CHECK_EQ(compareViewports(*bundle, 512, gateViewports(512), &full), 0);
     CHECK(full.glassShadowed >= 2);
     CHECK(full.glassRefracted > 0);   // refracao sobre a sombra do grupo de tras: a cadeia
-    CHECK(blurLadderAlignment(32.0) > 1);   // a fixture exercita a escada
+
+    // A PROVA ISOLADA DA FUNCAO, num sigma que NENHUM documento alcanca --
+    // `radius` satura em 0,3 (ver `kShadowDocument` acima), entao 32,0 so
+    // acontece aqui, escrito a mao, para exercitar os DOIS degraus da escada
+    // (`blurLadderAlignment(32.0) == 8`: reduz por 4 e depois por 2). Isto
+    // prova que a funcao sabe encadear dois niveis; nao prova nada sobre esta
+    // fixture.
+    CHECK(blurLadderAlignment(32.0) > 1);
+
+    // A PROVA DA FIXTURE, pelo mesmo caminho que `renderIcon` usa
+    // (`IconRenderer.cpp`: `documentReach` -> `planViewport` -> `p.alignment`).
+    // `shadowSigmaPoints` sai da tabela DEFAULT de `radius` (0,3), fixa e
+    // independente do que os dois grupos pedem, contanto que ALGUM deles
+    // desenhe sombra -- MEDIDO em 19,2 pontos de canvas. Em `size = 512`,
+    // `k = size / kCanvasPoints = 0,5`, isso da `sigmaPx = 9,6` e
+    // `blurLadderAlignment(9,6) == 2` (um degrau, nao dois -- a fixture nao
+    // alcanca o regime que o CHECK acima exercita). Esta e a assercao que
+    // notaria uma regressao: se `radius` mudar, se `size` encolher, ou se
+    // `blurPassCountForVariance` mudar de constante, e o sigma real desta
+    // fixture cair de volta a 1, e AQUI que o gate acusa -- o CHECK acima,
+    // preso no literal 32,0, continuaria verde sem saber.
+    const DocumentReach reach = documentReach(bundle->document(), icf::Context{}, IconSizeClass::Large);
+    CHECK(blurLadderAlignment(reach.shadowSigmaPoints * (512.0 / kCanvasPoints)) > 1);
 
     // A COBERTURA, CONFERIDA E NAO AFIRMADA (a licao do passo 4: um "zero" so
     // prova algo se o buffer que o produziu de fato continha o efeito). A
@@ -557,7 +579,13 @@ TEST_CASE(viewport_shadow_matches_including_the_blur_ladder) {
         std::printf("  viewport (%d,%d %ux%u) buffer (%d,%d %ux%u) glassShadowed=%zu\n",
                     v.originX, v.originY, v.width, v.height, b.originX, b.originY, b.width,
                     b.height, part->glassShadowed);
-        // Um viewport que nao carrega sombra nao prova nada sobre a escada.
+        // `glassShadowed` conta o PASSO rodando no buffer (`++out.glassShadowed`
+        // em `IconRenderer.cpp`, uma vez por grupo cujo `castShadow` executa),
+        // nao pixels que a sombra de fato moveu -- mais fraco que o
+        // `glassSpecular` do caso de vidro acima, que so conta o que o efeito
+        // alterou. Ainda assim prova o que este caso precisa: que a escada
+        // (`blurLadder`, dentro de `castShadow`) rodou neste buffer e nao foi
+        // pulada por vacuidade.
         CHECK(part->glassShadowed > 0);
     }
     CHECK_EQ(bad, 0);
