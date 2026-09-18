@@ -72,6 +72,7 @@
 #include <vector>
 
 #include "Source/CoreSVG/Path.h"
+#include "Source/RenderBox/PixelGrid.h"
 
 namespace rb {
 
@@ -109,15 +110,26 @@ icf::svg::Path continuousRoundedRect(double x, double y, double w, double h,
 // radius scales with the canvas without a second constant.
 double chicletCornerRadius(std::uint32_t size);
 
-// Coverage of the chiclet over a `size` x `size` canvas, row major, one float
-// per pixel in [0, 1]. Antialiased: a pixel the outline crosses gets the
-// fraction of itself that is inside.
+// Coverage of the chiclet over the BUFFER of `g`, row major, one float per
+// pixel in [0, 1]. Antialiased: a pixel the outline crosses gets the fraction
+// of itself that is inside.
+//
+// O CONTORNO E ABSOLUTO -- ele e o retangulo continuo de `g.size` x `g.size`,
+// com o raio de `g.size` -- e so a VARREDURA se restringe ao buffer, na
+// coordenada absoluta `(x + g.originX) + 0.5` (spec 2026-09-16, "O invariante
+// que governa o desenho"). Com `PixelGrid::full(size)` sai exatamente a
+// cobertura de antes.
+std::vector<float> chicletCoverage(const PixelGrid& g);
+
+// A mesma cobertura sobre o canvas inteiro. Fica porque um chamador que so tem
+// a resolucao nao precisa montar uma grade para dizer "tudo".
 std::vector<float> chicletCoverage(std::uint32_t size);
 
 // Multiplies a PREMULTIPLIED RGBA accumulator by that coverage, in place.
 //
 // Premultiplied is why all four channels are scaled and not just alpha: in that
 // form the colour carries its own alpha and a partial pixel has to dim in step.
+void clipToChiclet(std::vector<float>& acc, const PixelGrid& g);
 void clipToChiclet(std::vector<float>& acc, std::uint32_t size);
 
 }  // namespace rb

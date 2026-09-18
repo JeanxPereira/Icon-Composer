@@ -27,6 +27,10 @@ std::int64_t alignDown(std::int64_t v, std::uint32_t a) { return v - (v % a); }
 DocumentReach documentReach(const icf::IconDocument& doc, const icf::Context& ctx,
                             IconSizeClass sizeClass) {
     DocumentReach r;
+    // A pastilha primeiro, porque ela nao depende de grupo nenhum -- ela e
+    // desenhada sempre que o fundo pinta, e o campo dela e lido ate
+    // `inset + height`.
+    r.localPoints = kChicletHighlightBandPoints;
     const ShadowGeometry unit = shadowGeometry(static_cast<std::uint32_t>(kCanvasPoints), sizeClass);
     const std::vector<icf::Group> groups = doc.groups();
     for (const icf::Group& group : groups) {

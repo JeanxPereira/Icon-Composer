@@ -774,8 +774,15 @@ struct Crossing {
 // below accumulates the ones to the LEFT. A closed contour's directions sum to
 // zero, so the left-hand winding is minus the right-hand one and "non-zero"
 // means the same thing measured from either side.
-void rasteriseContours(const std::vector<FieldContour>& contours, int w, int h, FieldRule rule,
-                       double scale, std::vector<char>& inside, std::size_t& insideCount) {
+//
+// `ox` e `oy` sao a origem do buffer JA MULTIPLICADA pelo supersample: a
+// geometria nao anda, as LINHAS amostradas e que sao as absolutas
+// `y + oy + 0.5`, e so o indice na mascara e deslocado (spec 2026-09-16, "O
+// invariante que governa o desenho"). Com origem zero a aritmetica e a de
+// antes, termo a termo.
+void rasteriseContours(const std::vector<FieldContour>& contours, int ox, int oy, int w, int h,
+                       FieldRule rule, double scale, std::vector<char>& inside,
+                       std::size_t& insideCount) {
     inside.assign(static_cast<std::size_t>(w) * h, 0);
     insideCount = 0;
 
@@ -794,13 +801,13 @@ void rasteriseContours(const std::vector<FieldContour>& contours, int w, int h, 
             const int dir = ay < by ? 1 : -1;
             const double lo = ay < by ? ay : by;
             const double hi = ay < by ? by : ay;
-            int y0 = static_cast<int>(std::ceil(lo - 0.5));
-            int y1 = static_cast<int>(std::ceil(hi - 0.5));   // exclusive
+            int y0 = static_cast<int>(std::ceil(lo - 0.5)) - oy;
+            int y1 = static_cast<int>(std::ceil(hi - 0.5)) - oy;   // exclusive
             if (y0 < 0) y0 = 0;
             if (y1 > h) y1 = h;
             const double invDy = 1.0 / (by - ay);
             for (int y = y0; y < y1; ++y) {
-                const double cy = static_cast<double>(y) + 0.5;
+                const double cy = static_cast<double>(y + oy) + 0.5;
                 const double t = (cy - ay) * invDy;
                 rows[static_cast<std::size_t>(y)].push_back({ax + t * (bx - ax), dir});
             }
@@ -815,8 +822,11 @@ void rasteriseContours(const std::vector<FieldContour>& contours, int w, int h, 
         char* row = &inside[static_cast<std::size_t>(y) * w];
         std::size_t k = 0;
         int acc = 0;
+        // O `while` comeca em `k = 0` em toda linha, entao os cruzamentos a
+        // ESQUERDA do buffer entram na soma antes da primeira coluna -- e a
+        // paridade/winding da coluna e a mesma do render cheio.
         for (int x = 0; x < w; ++x) {
-            const double px = static_cast<double>(x) + 0.5;
+            const double px = static_cast<double>(x + ox) + 0.5;
             while (k < r.size() && r[k].x <= px) {
                 acc += rule == FieldRule::NonZero ? r[k].dir : 1;
                 ++k;
@@ -848,23 +858,28 @@ void rasteriseContours(const std::vector<FieldContour>& contours, int w, int h, 
 // is what a supersampled field pays nine times over.
 constexpr int kCoverageSubRows = 16;
 
-void addSpan(std::vector<double>& acc, int w, double a, double b, double wt) {
-    if (a < 0.0) a = 0.0;
-    if (b > static_cast<double>(w)) b = static_cast<double>(w);
+// O span chega em coordenada ABSOLUTA e e grampeado em `[ox, ox + w)`. O
+// grampo so CORTA: a sobreposicao de uma coluna inteiramente dentro do buffer
+// e a mesma do render cheio, subtracao a subtracao.
+void addSpan(std::vector<double>& acc, int ox, int w, double a, double b, double wt) {
+    const double lo = static_cast<double>(ox);
+    const double hi = static_cast<double>(ox + w);
+    if (a < lo) a = lo;
+    if (b > hi) b = hi;
     if (!(b > a)) return;
     int x0 = static_cast<int>(std::floor(a));
     int x1 = static_cast<int>(std::ceil(b)) - 1;
-    if (x0 < 0) x0 = 0;
-    if (x1 >= w) x1 = w - 1;
+    if (x0 < ox) x0 = ox;
+    if (x1 >= ox + w) x1 = ox + w - 1;
     for (int x = x0; x <= x1; ++x) {
         const double l = a > static_cast<double>(x) ? a : static_cast<double>(x);
         const double r = b < static_cast<double>(x) + 1.0 ? b : static_cast<double>(x) + 1.0;
-        if (r > l) acc[static_cast<std::size_t>(x)] += (r - l) * wt;
+        if (r > l) acc[static_cast<std::size_t>(x - ox)] += (r - l) * wt;
     }
 }
 
-void coverageFromContours(const std::vector<FieldContour>& contours, int w, int h, FieldRule rule,
-                          double scale, std::vector<float>& coverage) {
+void coverageFromContours(const std::vector<FieldContour>& contours, int ox, int oy, int w, int h,
+                          FieldRule rule, double scale, std::vector<float>& coverage) {
     coverage.assign(static_cast<std::size_t>(w) * h, 0.0f);
     const int n = kCoverageSubRows;
     const int subRows = h * n;
@@ -887,13 +902,13 @@ void coverageFromContours(const std::vector<FieldContour>& contours, int w, int 
             // Sub-row k has its centre at `(k + 0.5) / n`, so the half-open
             // interval that decides which rows a segment crosses is the same one
             // `rasteriseContours` uses, measured in sub-rows.
-            int k0 = static_cast<int>(std::ceil(lo * n - 0.5));
-            int k1 = static_cast<int>(std::ceil(hi * n - 0.5));   // exclusive
+            int k0 = static_cast<int>(std::ceil(lo * n - 0.5)) - oy * n;
+            int k1 = static_cast<int>(std::ceil(hi * n - 0.5)) - oy * n;   // exclusive
             if (k0 < 0) k0 = 0;
             if (k1 > subRows) k1 = subRows;
             const double invDy = 1.0 / (by - ay);
             for (int k = k0; k < k1; ++k) {
-                const double cy = (static_cast<double>(k) + 0.5) / n;
+                const double cy = (static_cast<double>(k + oy * n) + 0.5) / n;
                 const double t = (cy - ay) * invDy;
                 rows[static_cast<std::size_t>(k)].push_back({ax + t * (bx - ax), dir});
             }
@@ -923,14 +938,14 @@ void coverageFromContours(const std::vector<FieldContour>& contours, int w, int 
                     start = r[i].x;
                     in = true;
                 } else if (!now && in) {
-                    addSpan(acc, w, start, r[i].x, wt);
+                    addSpan(acc, ox, w, start, r[i].x, wt);
                     in = false;
                 }
             }
             // A span still open past the last crossing is art that runs off the
             // right edge; the sweep in `rasteriseContours` keeps marking inside
             // there too, so this does.
-            if (in) addSpan(acc, w, start, static_cast<double>(w), wt);
+            if (in) addSpan(acc, ox, w, start, static_cast<double>(ox + w), wt);
         }
         if (!any) continue;
         float* row = &coverage[static_cast<std::size_t>(y) * w];
@@ -971,8 +986,14 @@ FieldImage generateFieldFromAlpha(const std::vector<float>& rgba, std::uint32_t 
     // empty, so the caller names a gap instead of drawing nothing quietly.
     if (insideCount == 0) return img;
 
-    return fieldFromInsideMask(inside, coverage, static_cast<int>(width),
-                               static_cast<int>(height), 1, options);
+    // No caminho do alpha o raster JA chega em coordenada do buffer -- quem o
+    // colocou foi `placeRaster`, que amostrou absoluto --, entao aqui so a
+    // origem e copiada para o eco.
+    FieldImage made = fieldFromInsideMask(inside, coverage, static_cast<int>(width),
+                                          static_cast<int>(height), 1, options);
+    made.originX = options.originX;
+    made.originY = options.originY;
+    return made;
 }
 
 FieldImage generateFieldFromContours(const std::vector<FieldContour>& contours,
@@ -992,7 +1013,11 @@ FieldImage generateFieldFromContours(const std::vector<FieldContour>& contours,
 
     std::vector<char> inside;
     std::size_t insideCount = 0;
-    rasteriseContours(contours, mw, mh, options.rule, static_cast<double>(ss), inside,
+    // A origem entra JA multiplicada pelo supersample: a mascara e a grade
+    // fina, e a origem dela e a do buffer medida nessa mesma grade.
+    const int ox = options.originX * ss;
+    const int oy = options.originY * ss;
+    rasteriseContours(contours, ox, oy, mw, mh, options.rule, static_cast<double>(ss), inside,
                       insideCount);
     // A contour set that covers no sample point has no inside to sign, and the
     // same rule applies as for an alpha that never reaches the threshold: an
@@ -1002,10 +1027,14 @@ FieldImage generateFieldFromContours(const std::vector<FieldContour>& contours,
 
     std::vector<float> coverage;
     if (options.subpixelSeed) {
-        coverageFromContours(contours, mw, mh, options.rule, static_cast<double>(ss), coverage);
+        coverageFromContours(contours, ox, oy, mw, mh, options.rule, static_cast<double>(ss),
+                             coverage);
     }
 
-    return fieldFromInsideMask(inside, coverage, mw, mh, ss, options);
+    FieldImage made = fieldFromInsideMask(inside, coverage, mw, mh, ss, options);
+    made.originX = options.originX;
+    made.originY = options.originY;
+    return made;
 }
 
 }  // namespace rb

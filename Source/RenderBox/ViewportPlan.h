@@ -33,6 +33,19 @@ inline constexpr std::size_t kViewportAreaCap = 16'000'000;
 // e quem diz se basta.
 inline constexpr double kLocalFieldBandPoints = 32.0;
 
+// A banda que os realces da PASTILHA leem do campo, em pontos. Ela nao sai de
+// grupo nenhum: a pastilha e desenhada sempre que o fundo pinta, entao ela
+// entra na margem por fora do laco dos grupos. `[BIN]` `chicletMember` de
+// `ChicletHighlights.cpp` da `inset = 0` nos sete slots e `distance` no maximo
+// 40 pontos (os dois difusos, `0x00062C64` e `0x00062DBC`), e
+// `resolveHighlight` faz `height = distance x pixelsPerPoint`, de modo que a
+// banda vale 40 pontos em qualquer `size`.
+//
+// `[ART]` MEDIDO em 18/09: sem esta linha o gate de um documento SO com fundo
+// acusa 5356 pixels e `max |d| = 0,198` a exatamente 4 px da borda interna --
+// que era a margem inteira que um documento sem grupos recebia.
+inline constexpr double kChicletHighlightBandPoints = 40.0;
+
 struct DocumentReach {
     double localPoints = 0.0;         // maior banda local que nao e sombra
     double shadowSigmaPoints = 0.0;   // maior sigma de sombra

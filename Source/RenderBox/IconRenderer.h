@@ -246,9 +246,15 @@ struct LayerPlacement {
 // document states.
 LayerPlacement compose(const LayerPlacement& group, const LayerPlacement& layer);
 
-// The globals that place `box` on the canvas under `p`, for a square target.
+// The globals that place `box` on the canvas under `p`.
+//
+// A ESCALA SAI DE `grid.size` e A ORIGEM DE `grid.originX/Y`: este e o unico
+// sitio do renderizador que TRANSLADA geometria, porque a GPU desenha dentro
+// do buffer e o buffer pode nao comecar em (0,0) (spec 2026-09-16, "O
+// invariante que governa o desenho"). Com `PixelGrid::full(size)` a subtracao
+// e de zero e o resultado e bit a bit o de antes.
 PathGlobals placeOnCanvas(const icf::svg::ViewBox& box, const LayerPlacement& p,
-                          std::uint32_t size);
+                          const PixelGrid& grid);
 
 // ---- the fill, from a resolution to paint --------------------------------
 
@@ -269,8 +275,12 @@ PathGlobals placeOnCanvas(const icf::svg::ViewBox& box, const LayerPlacement& p,
 // corpus cannot tell the two apart while every orientation runs corner to
 // corner. The rect is now read, so the assumption is retired rather than kept
 // beside the reading.
+//
+// O retangulo sai na coordenada da grade recebida: do BUFFER quando a grade e
+// a do buffer (que e o que a GPU avalia um gradiente contra), e ABSOLUTO
+// quando a grade e a do canvas (que e o que a translucidez mede).
 PlacementRect artPlacementRect(const icf::svg::ViewBox& box, const LayerPlacement& p,
-                               std::uint32_t size);
+                               const PixelGrid& grid);
 
 // A resolved fill turned into what the compositor paints with, against
 // `shapeRect`.

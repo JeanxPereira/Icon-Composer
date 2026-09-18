@@ -254,7 +254,7 @@ TEST_CASE(a_group_transform_applies_to_the_layers_inside_it) {
 // on the target with nothing left over.
 TEST_CASE(canvas_sized_art_fills_the_target_exactly) {
     const PathGlobals g = placeOnCanvas({0, 0, kCanvasPoints, kCanvasPoints},
-                                        LayerPlacement{}, 512);
+                                        LayerPlacement{}, PixelGrid::full(512));
     CHECK_EQ(g.m0[0], 0.5f);   // 512 pixels over 1024 points
     CHECK_EQ(g.m1[1], 0.5f);
     CHECK_EQ(g.m2[0], 0.0f);
@@ -265,7 +265,7 @@ TEST_CASE(canvas_sized_art_fills_the_target_exactly) {
 // Smaller art is CENTRED before it is translated. A placement that put it at the
 // origin instead would pass the test above and fail this one.
 TEST_CASE(smaller_art_is_centred_on_the_canvas) {
-    const PathGlobals g = placeOnCanvas({0, 0, 512, 512}, LayerPlacement{}, 512);
+    const PathGlobals g = placeOnCanvas({0, 0, 512, 512}, LayerPlacement{}, PixelGrid::full(512));
     // 512 points of art on a 1024-point canvas leaves 256 points either side,
     // which is 128 pixels at this target size.
     CHECK_EQ(g.m2[0], 128.0f);
@@ -282,13 +282,15 @@ TEST_CASE(smaller_art_is_centred_on_the_canvas) {
 TEST_CASE(a_negative_y_translation_moves_the_art_up) {
     LayerPlacement up;
     up.translateY = -384.0;
-    const PathGlobals g = placeOnCanvas({0, 0, kCanvasPoints, kCanvasPoints}, up, 512);
+    const PathGlobals g =
+        placeOnCanvas({0, 0, kCanvasPoints, kCanvasPoints}, up, PixelGrid::full(512));
     CHECK(g.m2[1] < 0.0f);
     CHECK_EQ(g.m2[1], -192.0f);   // -384 points is -192 pixels at 512
 
     LayerPlacement down;
     down.translateY = 125.0;
-    CHECK(placeOnCanvas({0, 0, kCanvasPoints, kCanvasPoints}, down, 512).m2[1] > 0.0f);
+    CHECK(placeOnCanvas({0, 0, kCanvasPoints, kCanvasPoints}, down, PixelGrid::full(512)).m2[1] >
+          0.0f);
 }
 
 // Scale multiplies the art AND moves its top-left, because the art grows about
@@ -296,7 +298,7 @@ TEST_CASE(a_negative_y_translation_moves_the_art_up) {
 TEST_CASE(scale_grows_the_art_about_its_centre) {
     LayerPlacement p;
     p.scale = 2.0;
-    const PathGlobals g = placeOnCanvas({0, 0, 512, 512}, p, 512);
+    const PathGlobals g = placeOnCanvas({0, 0, 512, 512}, p, PixelGrid::full(512));
     CHECK_EQ(g.m0[0], 1.0f);    // 512 points of art at 2x, over a 1024 canvas
     CHECK_EQ(g.m2[0], 0.0f);    // 1024 points wide now: it fills the canvas
     CHECK_EQ(g.m2[1], 0.0f);
@@ -304,8 +306,9 @@ TEST_CASE(scale_grows_the_art_about_its_centre) {
 
 // A viewBox with an ORIGIN must be shifted by it, not merely scaled.
 TEST_CASE(a_viewbox_origin_is_taken_out_of_the_placement) {
-    const PathGlobals a = placeOnCanvas({0, 0, 1024, 1024}, LayerPlacement{}, 512);
-    const PathGlobals b = placeOnCanvas({100, 50, 1024, 1024}, LayerPlacement{}, 512);
+    const PathGlobals a = placeOnCanvas({0, 0, 1024, 1024}, LayerPlacement{}, PixelGrid::full(512));
+    const PathGlobals b =
+        placeOnCanvas({100, 50, 1024, 1024}, LayerPlacement{}, PixelGrid::full(512));
     CHECK_EQ(b.m2[0], a.m2[0] - 50.0f);   // 100 units at 0.5 pixels per unit
     CHECK_EQ(b.m2[1], a.m2[1] - 25.0f);
 }

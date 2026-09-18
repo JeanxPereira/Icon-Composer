@@ -205,12 +205,14 @@ ChicletAppearance classifyChicletAppearance(const ChicletLuminance& l, bool simp
 
 const HighlightSlot* chicletHighlightSlots(std::size_t& count) { return buildChicletSlots(count); }
 
-std::size_t drawChicletHighlights(std::vector<float>& rgba, std::uint32_t size,
+std::size_t drawChicletHighlights(std::vector<float>& rgba, const PixelGrid& grid,
                                   const SpecularArguments& args) {
-    const std::size_t n = static_cast<std::size_t>(size) * size;
-    if (size == 0 || rgba.size() < n * 4) return 0;
+    const std::size_t n = grid.texels();
+    if (grid.size == 0 || grid.width == 0 || grid.height == 0 || rgba.size() < n * 4) return 0;
 
-    const std::vector<FieldContour> contours = chicletContours(size);
+    // O contorno e o do canvas inteiro; o campo e que nasce recortado, com a
+    // origem do buffer, e amostra as linhas absolutas.
+    const std::vector<FieldContour> contours = chicletContours(grid.size);
     if (contours.empty()) return 0;
     // UMA AMOSTRA POR PIXEL, e aqui a escolha foi medida contra o gabarito e nao
     // herdada. Este campo e o unico do render cujo custo NAO cresce com o
@@ -232,7 +234,10 @@ std::size_t drawChicletHighlights(std::vector<float>& rgba, std::uint32_t size,
     // continua sendo desperdicio mesmo em `ss = 1`; nao existe cache hoje e o
     // custo do campo em `ss = 1` nao foi isolado. Cachear por `size` e a
     // economia obvia, e e independente desta decisao.
-    const FieldImage field = generateFieldFromContours(contours, size, size);
+    FieldOptions fo;
+    fo.originX = grid.originX;
+    fo.originY = grid.originY;
+    const FieldImage field = generateFieldFromContours(contours, grid.width, grid.height, fo);
     if (field.width == 0) return 0;
 
     std::size_t count = 0;
@@ -244,8 +249,8 @@ std::size_t drawChicletHighlights(std::vector<float>& rgba, std::uint32_t size,
         // `rim` sai aqui: `opacity == 0` e o unico dos seis que nao pinta.
         if (g.opacity <= 0.0 || g.height <= 0.0) continue;
 
-        for (std::uint32_t y = 0; y < size; ++y) {
-            for (std::uint32_t x = 0; x < size; ++x) {
+        for (std::uint32_t y = 0; y < grid.height; ++y) {
+            for (std::uint32_t x = 0; x < grid.width; ++x) {
                 const float* p = field.at(x, y);
                 // O campo e NEGATIVO DENTRO e o `sd` do shader e positivo
                 // dentro -- o mesmo giro que `drawSpecular` faz.
@@ -266,7 +271,7 @@ std::size_t drawChicletHighlights(std::vector<float>& rgba, std::uint32_t size,
                 // `tinted` produz, que e `IconColor.clear` -- nao tem superficie
                 // para acender. Ler a cobertura do campo em vez do alfa poria
                 // luz sobre o nada nesse caso.
-                const double clip = rgba[(static_cast<std::size_t>(y) * size + x) * 4 + 3];
+                const double clip = rgba[(static_cast<std::size_t>(y) * grid.width + x) * 4 + 3];
                 if (clip <= 0.0) continue;
 
                 const double f = glassHighlightFragment(g, sd, nx, ny, 1.0);
@@ -279,7 +284,7 @@ std::size_t drawChicletHighlights(std::vector<float>& rgba, std::uint32_t size,
                 src.rgba[2] = g.colour[2] * alpha;
                 src.rgba[3] = alpha;
 
-                const std::size_t px = static_cast<std::size_t>(y) * size + x;
+                const std::size_t px = static_cast<std::size_t>(y) * grid.width + x;
                 const std::size_t i = px * 4;
                 BlendColour dst;
                 for (int c = 0; c < 4; ++c) dst.rgba[c] = rgba[i + c];
@@ -295,6 +300,11 @@ std::size_t drawChicletHighlights(std::vector<float>& rgba, std::uint32_t size,
     std::size_t touched = 0;
     for (std::size_t i = 0; i < n; ++i) touched += static_cast<std::size_t>(hit[i]);
     return touched;
+}
+
+std::size_t drawChicletHighlights(std::vector<float>& rgba, std::uint32_t size,
+                                  const SpecularArguments& args) {
+    return drawChicletHighlights(rgba, PixelGrid::full(size), args);
 }
 
 std::string chicletHighlightsNote(ChicletAppearance appearance, const ChicletLuminance& l) {

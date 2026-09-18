@@ -13,11 +13,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <limits>
 #include <string>
+#include <system_error>
 #include <vector>
 
 using namespace rb;
@@ -131,6 +133,77 @@ std::vector<IconViewport> gateViewports(std::uint32_t s) {
     };
 }
 
+// Um bundle de mentira, escrito no temporario, para gatear o que a Task 3
+// converteu SEM depender de um documento do corpus: fundo em gradiente,
+// pastilha, uma arte vetor e uma raster, e nenhum vidro -- que e exatamente a
+// fatia que ja anda num buffer parcial.
+class TempBundle {
+public:
+    explicit TempBundle(const std::string& name, const std::string& document) {
+        dir_ = fs::temp_directory_path() / ("ic-viewport-" + name);
+        std::error_code ec;
+        fs::remove_all(dir_, ec);
+        fs::create_directories(dir_ / "Assets", ec);
+        write(dir_ / "icon.json", document);
+        // Um circulo: borda curva para o antialias da GPU, e uma rampa propria
+        // que mede o retangulo de colocacao.
+        write(dir_ / "Assets" / "disc.svg",
+              "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\">"
+              "<circle cx=\"256\" cy=\"256\" r=\"200\" fill=\"#3080ff\"/></svg>");
+        // Um raster com borda dura e um degrade em x e em z, ampliado 6x: uma
+        // amostragem deslocada meio texel aparece na cor, nao so na borda.
+        const std::uint32_t side = 48;
+        std::vector<float> px(static_cast<std::size_t>(side) * side * 4, 0.0f);
+        for (std::uint32_t y = 0; y < side; ++y) {
+            for (std::uint32_t x = 0; x < side; ++x) {
+                const std::size_t i = (static_cast<std::size_t>(y) * side + x) * 4;
+                const bool in = (x - 24.0) * (x - 24.0) + (y - 24.0) * (y - 24.0) < 400.0;
+                px[i + 0] = static_cast<float>(x) / side;
+                px[i + 1] = 0.5f;
+                px[i + 2] = static_cast<float>(y) / side;
+                px[i + 3] = in ? 1.0f : 0.0f;
+            }
+        }
+        const std::vector<std::uint8_t> png = icf::encodePng(px, side, side);
+        std::FILE* f = std::fopen((dir_ / "Assets" / "dot.png").string().c_str(), "wb");
+        if (f) {
+            std::fwrite(png.data(), 1, png.size(), f);
+            std::fclose(f);
+        }
+    }
+    ~TempBundle() {
+        std::error_code ec;
+        fs::remove_all(dir_, ec);
+    }
+    const fs::path& path() const { return dir_; }
+
+    TempBundle(const TempBundle&) = delete;
+    TempBundle& operator=(const TempBundle&) = delete;
+
+private:
+    static void write(const fs::path& p, const std::string& text) {
+        std::FILE* f = std::fopen(p.string().c_str(), "wb");
+        if (!f) return;
+        std::fwrite(text.data(), 1, text.size(), f);
+        std::fclose(f);
+    }
+    fs::path dir_;
+};
+
+// Fundo em gradiente + um disco vetor + um raster ampliado, os dois sem vidro.
+// As cores sao a grafia do corpus (`display-p3:r,g,b,a`).
+const char* const kPlainDocument = R"({
+  "fill" : { "linear-gradient" : [ "display-p3:0.90000,0.20000,0.30000,1.00000",
+                                   "display-p3:0.10000,0.30000,0.90000,1.00000" ] },
+  "groups" : [
+    { "layers" : [
+      { "glass" : false, "image-name" : "disc.svg", "name" : "disc" },
+      { "glass" : false, "image-name" : "dot.png", "name" : "dot",
+        "position" : { "scale" : 6, "translation-in-points" : [ 120, -90 ] } }
+    ] }
+  ]
+})";
+
 }  // namespace
 
 TEST_CASE(viewport_default_is_the_whole_canvas) {
@@ -159,4 +232,19 @@ TEST_CASE(viewport_echoes_where_its_pixels_sit) {
     REQUIRE(part.has_value());
     CHECK_EQ(part->width, 64u);
     CHECK_EQ(part->originX, 96);
+}
+
+// O INVARIANTE SOBRE PIXEL DE VERDADE, no que a Task 3 converteu: o fundo em
+// rampa, o recorte da pastilha com os realces, a arte vetor pela GPU e a arte
+// raster amostrada na CPU. Tolerancia ZERO nos quatro viewports da spec.
+TEST_CASE(viewport_background_chiclet_and_art_match_the_full_render) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    TempBundle tb("plain", kPlainDocument);
+    auto bundle = icf::IconBundle::open(tb.path());
+    REQUIRE(bundle.has_value());
+    RenderedIcon full;
+    CHECK_EQ(compareViewports(*bundle, 512, gateViewports(512), &full), 0);
+    CHECK(full.backgroundPainted);
+    CHECK_EQ(full.drawn, 2u);
 }

@@ -20,6 +20,7 @@
 #include "Source/RenderBox/GlassSpecular.h"
 #include "Source/RenderBox/GradientOracle.h"
 #include "Source/RenderBox/SystemFill.h"
+#include "Source/RenderBox/ViewportPlan.h"
 #include "Source/IconComposerFoundation/Png.h"
 #include "Source/IconComposerFoundation/Values.h"
 
@@ -152,23 +153,29 @@ void blendOver(std::vector<float>& acc, const std::vector<float>& src, float alp
 // nearest would be just as much a guess. It is named here rather than silently
 // assumed.
 std::vector<float> placeRaster(const icf::DecodedPng& img, const LayerPlacement& p,
-                               std::uint32_t size) {
-    std::vector<float> out(static_cast<std::size_t>(size) * size * 4, 0.0f);
+                               const PixelGrid& grid) {
+    std::vector<float> out(grid.texels() * 4, 0.0f);
     if (img.width == 0 || img.height == 0) return out;
 
     // The art enters at its pixel size read as canvas POINTS, scaled, and
     // centred before the translation -- the same rule the vector path uses.
-    const double k = static_cast<double>(size) / kCanvasPoints;
+    // A ESCALA SAI DE `grid.size`, e nao da extensao: o buffer pode ser um
+    // pedaco do canvas, e a arte tem que cair onde o render cheio a poe.
+    const double k = static_cast<double>(grid.size) / kCanvasPoints;
     const double w = img.width * p.scale, h = img.height * p.scale;
     const double left = (kCanvasPoints - w) * 0.5 + p.translateX;
     const double top = (kCanvasPoints - h) * 0.5 + p.translateY;
 
-    for (std::uint32_t y = 0; y < size; ++y) {
-        // The pixel centre, back into the art's own space.
-        const double cy = ((y + 0.5) / k - top) / p.scale - 0.5;
+    for (std::uint32_t y = 0; y < grid.height; ++y) {
+        // The pixel centre, back into the art's own space. ABSOLUTO: o centro
+        // amostrado e o da grade de `size`, e so o indice no buffer anda (spec
+        // 2026-09-16, "O invariante que governa o desenho").
+        const double gy = static_cast<double>(static_cast<std::int64_t>(y) + grid.originY);
+        const double cy = ((gy + 0.5) / k - top) / p.scale - 0.5;
         if (cy < -1.0 || cy > img.height) continue;
-        for (std::uint32_t x = 0; x < size; ++x) {
-            const double cx = ((x + 0.5) / k - left) / p.scale - 0.5;
+        for (std::uint32_t x = 0; x < grid.width; ++x) {
+            const double gx = static_cast<double>(static_cast<std::int64_t>(x) + grid.originX);
+            const double cx = ((gx + 0.5) / k - left) / p.scale - 0.5;
             if (cx < -1.0 || cx > img.width) continue;
 
             const double fx = std::floor(cx), fy = std::floor(cy);
@@ -194,7 +201,7 @@ std::vector<float> placeRaster(const icf::DecodedPng& img, const LayerPlacement&
                     acc[3] += static_cast<float>(wgt) * sa;
                 }
             }
-            const std::size_t d = (static_cast<std::size_t>(y) * size + x) * 4;
+            const std::size_t d = (static_cast<std::size_t>(y) * grid.width + x) * 4;
             out[d + 3] = acc[3];
             for (int c = 0; c < 3; ++c) out[d + c] = acc[3] > 0.0f ? acc[c] / acc[3] : 0.0f;
         }
@@ -275,15 +282,20 @@ bool axisToMap(const GradientAxis& axis, double (&m)[6]) {
 // background is the first thing painted, so there is nothing underneath to hold
 // back. The form is the premultiplied one the accumulator keeps while layers
 // stack.
-void paintBackground(std::vector<float>& acc, std::uint32_t size,
+void paintBackground(std::vector<float>& acc, const PixelGrid& grid,
                      const FillOverride& paint) {
-    for (std::uint32_t y = 0; y < size; ++y) {
-        for (std::uint32_t x = 0; x < size; ++x) {
+    for (std::uint32_t y = 0; y < grid.height; ++y) {
+        for (std::uint32_t x = 0; x < grid.width; ++x) {
             float colour[4] = {paint.colour[0], paint.colour[1], paint.colour[2],
                                paint.colour[3]};
             if (paint.kind == FillOverride::Kind::Ramp) {
-                const double px = static_cast<double>(x) + 0.5;
-                const double py = static_cast<double>(y) + 0.5;
+                // ABSOLUTO: o mesmo ponto que o render cheio avalia, e a soma
+                // inteira antes do `+ 0.5` e exata (spec 2026-09-16, "O
+                // invariante que governa o desenho").
+                const double px =
+                    static_cast<double>(static_cast<std::int64_t>(x) + grid.originX) + 0.5;
+                const double py =
+                    static_cast<double>(static_cast<std::int64_t>(y) + grid.originY) + 0.5;
                 const double t = paint.m[0] * px + paint.m[1] * py + paint.m[2];
                 if (paint.smooth) {
                     rampSmoothAtPositions(paint.stops, static_cast<float>(t), colour);
@@ -291,7 +303,7 @@ void paintBackground(std::vector<float>& acc, std::uint32_t size,
                     rampAtPositions(paint.stops, static_cast<float>(t), colour);
                 }
             }
-            const std::size_t i = (static_cast<std::size_t>(y) * size + x) * 4;
+            const std::size_t i = (static_cast<std::size_t>(y) * grid.width + x) * 4;
             for (int k = 0; k < 3; ++k) acc[i + k] = colour[k] * colour[3];
             acc[i + 3] = colour[3];
         }
@@ -471,11 +483,15 @@ const char* const kGlassVectorFieldNote =
     "0xA46E0), entao uma amostra por pixel e escolha deste projeto, medida e nao lida.";
 
 PlacementRect artPlacementRect(const icf::svg::ViewBox& box, const LayerPlacement& p,
-                               std::uint32_t size) {
+                               const PixelGrid& grid) {
     // Derived from `placeOnCanvas` rather than recomputed beside it: the art's
     // box and the art's pixels have to agree, and two copies of the same
     // arithmetic is how they stop agreeing.
-    const PathGlobals g = placeOnCanvas(box, p, size);
+    //
+    // O retangulo sai na coordenada da grade RECEBIDA -- do buffer quando a
+    // grade e a do buffer, absoluto quando e a do canvas -- porque `m2` ja
+    // carrega a origem (spec 2026-09-16, "Os sitios").
+    const PathGlobals g = placeOnCanvas(box, p, grid);
     const double sx = static_cast<double>(g.m0[0]);
     const double sy = static_cast<double>(g.m1[1]);
     PlacementRect r;
@@ -560,9 +576,9 @@ LayerPlacement compose(const LayerPlacement& g, const LayerPlacement& l) {
 }
 
 PathGlobals placeOnCanvas(const icf::svg::ViewBox& box, const LayerPlacement& p,
-                          std::uint32_t size) {
+                          const PixelGrid& grid) {
     PathGlobals g;
-    const double k = static_cast<double>(size) / kCanvasPoints;
+    const double k = static_cast<double>(grid.size) / kCanvasPoints;
     const double s = p.scale * k;
     const double w = box.width > 0 ? box.width : 1.0;
     const double h = box.height > 0 ? box.height : 1.0;
@@ -576,11 +592,15 @@ PathGlobals placeOnCanvas(const icf::svg::ViewBox& box, const LayerPlacement& p,
     g.m0[1] = 0.0f;
     g.m1[0] = 0.0f;
     g.m1[1] = static_cast<float>(s);
-    g.m2[0] = static_cast<float>(left * k - s * box.x);
-    g.m2[1] = static_cast<float>(top * k - s * box.y);
-    g.twoOverSize[0] = 2.0f / static_cast<float>(size);
-    g.twoOverSize[1] = 2.0f / static_cast<float>(size);
-    g.urx = static_cast<float>(size);
+    // O UNICO SITIO QUE TRANSLADA GEOMETRIA (spec 2026-09-16, "O invariante
+    // que governa o desenho"): a GPU desenha no buffer, e o buffer comeca na
+    // origem. A subtracao e feita em float, DEPOIS do cast, para que uma
+    // origem zero deixe o valor de hoje bit a bit intocado.
+    g.m2[0] = static_cast<float>(left * k - s * box.x) - static_cast<float>(grid.originX);
+    g.m2[1] = static_cast<float>(top * k - s * box.y) - static_cast<float>(grid.originY);
+    g.twoOverSize[0] = 2.0f / static_cast<float>(grid.width);
+    g.twoOverSize[1] = 2.0f / static_cast<float>(grid.height);
+    g.urx = static_cast<float>(grid.width);
     return g;
 }
 
@@ -588,20 +608,31 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                                 IconRenderOptions options) {
     if (options.size == 0) return std::unexpected("a canvas of zero size was asked for");
 
-    const std::uint32_t viewW = options.viewport.width ? options.viewport.width : options.size;
-    const std::uint32_t viewH = options.viewport.height ? options.viewport.height : options.size;
-    if (options.viewport.originX < 0 || options.viewport.originY < 0 ||
-        static_cast<std::uint64_t>(options.viewport.originX) + viewW > options.size ||
-        static_cast<std::uint64_t>(options.viewport.originY) + viewH > options.size) {
-        return std::unexpected("viewport fora do canvas");
-    }
+    // O DOCUMENTO E LIDO AQUI porque a margem sai DELE: `documentReach` mede o
+    // alcance de cada efeito nos parametros ja denormalizados dos grupos, e o
+    // plano transforma isso no buffer, na origem alinhada e no teto de area
+    // (spec 2026-09-16, "A margem" e "O teto de area").
+    const icf::IconDocument doc = bundle.document();
+    const std::vector<icf::Group> groups = doc.groups();
+
+    auto planned = planViewport(options.viewport, options.size,
+                                documentReach(doc, options.context, options.sizeClass));
+    if (!planned) return std::unexpected(planned.error());
+    const PixelGrid grid = planned->buffer;
+    const PixelGrid canvasGrid = PixelGrid::full(options.size);
 
     RenderedIcon out;
     out.size = options.size;
-    out.originX = options.viewport.originX;
-    out.originY = options.viewport.originY;
-    out.buffer = PixelGrid::full(options.size);
-    const std::size_t texels = static_cast<std::size_t>(options.size) * options.size;
+    out.originX = planned->crop.originX;
+    out.originY = planned->crop.originY;
+    out.buffer = grid;
+    if (planned->overCap) {
+        out.viewportRefused = true;
+        note(out.notes, "viewport acima do teto de area: nada desenhado (spec 2026-09-16, "
+                        "\"O teto de area\")");
+        return out;
+    }
+    const std::size_t texels = grid.texels();
     // The accumulator is PREMULTIPLIED while layers stack -- `over` is only
     // associative in that form -- and is un-multiplied once at the end, which is
     // what `RenderedIcon::rgba` promises and what a PNG wants.
@@ -612,9 +643,6 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
     // as straight -- a semi-transparent icon came out too dark and every test
     // stayed green.
     std::vector<float> acc(texels * 4, 0.0f);
-
-    const icf::IconDocument doc = bundle.document();
-    const std::vector<icf::Group> groups = doc.groups();
 
     // ---- the background, before anything else --------------------------
     //
@@ -641,13 +669,13 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             if (!why.empty()) {
                 out.backgroundGap = why;
             } else {
-                paintBackground(acc, options.size, paint);
+                paintBackground(acc, grid, paint);
                 // The one line this front adds to this file. The background is
                 // painted over the whole square and then CUT, which is the order
                 // that keeps the ramp's parameter mapped to the canvas -- see
                 // `ChicletShape.h` for the reading, and `kBackgroundShapeNote`
                 // for what it leaves open.
-                clipToChiclet(acc, options.size);
+                clipToChiclet(acc, grid);
                 out.backgroundPainted = true;
                 note(out.notes, kBackgroundShapeNote);
 
@@ -677,7 +705,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                     chicletArgs.sizeClass = options.sizeClass;
                     chicletArgs.pixelsPerPoint =
                         static_cast<double>(options.size) / kCanvasPoints;
-                    if (drawChicletHighlights(acc, options.size, chicletArgs) > 0) {
+                    if (drawChicletHighlights(acc, grid, chicletArgs) > 0) {
                         note(out.notes, chicletHighlightsNote(appearance, lum));
                     }
                 }
@@ -836,6 +864,12 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
         // computing the surface for the report and keeps the DRAW off -- see
         // `BlurKernel.h`. A tighter frame can only ever SHRINK this region,
         // never move it.
+        //
+        // A ESCALA DESTA CHAMADA SAI DA EXTENSAO: `blurMaterialSurface` faz
+        // `min(w, h) / 1024` (`BlurKernel.cpp:279`). Por isso ela recebe o
+        // CANVAS e nao o buffer -- um buffer de viewport aqui mudaria a escala
+        // sem erro nenhum (spec 2026-09-16, "Os sitios"). O desenho esta
+        // desligado; a superficie so vai para o relatorio.
         const BlurMaterialSurface blurSurface = blurMaterialSurface(
             glassNumbers.blurRadiusPoints, 0.0, 0.0, 1.0, 1.0, options.size, options.size);
 
@@ -1032,6 +1066,14 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             // narrower and enough: the DOCUMENT's own answer for a missing key.
             const bool isGlass = boolOr(layer.resolve("glass", options.context), true);
 
+            // O vidro e a sombra ainda nao andam num buffer parcial (o campo, a
+            // refracao e a mascara amostram relativo). Dito, e nao desenhado
+            // errado. Sai quando o campo e a sombra forem convertidos.
+            if (isGlass && !grid.isFull()) {
+                skip("vidro em viewport: ainda nao convertido");
+                continue;
+            }
+
             // The LAYER's blend mode, resolved rather than refused. The eight
             // modes the format cannot spell cannot appear here; what can is a
             // spelling this project does not know, and that is a gap, never a
@@ -1168,7 +1210,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 }
                 rasterW = png.width;
                 rasterH = png.height;
-                rasterPlaced = placeRaster(png, lp, options.size);
+                rasterPlaced = placeRaster(png, lp, grid);
             }
 
             // The paint is built AFTER the art, because a gradient needs the
@@ -1178,7 +1220,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 if (svg) {
                     std::string why;
                     paint = fillPaint(fill.fill,
-                                      artPlacementRect(svg->viewBox, lp, options.size), why);
+                                      artPlacementRect(svg->viewBox, lp, grid), why);
                     if (!why.empty()) {
                         skip(why);
                         continue;
@@ -1281,7 +1323,8 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 std::optional<FieldImage> field;
                 if (haveShape) {
                     const GlassContours shape =
-                        flattenSvgToContours(*svg, placeOnCanvas(svg->viewBox, lp, options.size),
+                        flattenSvgToContours(*svg,
+                                             placeOnCanvas(svg->viewBox, lp, canvasGrid),
                                              options.subdivisions);
                     if (shape.mixedRules) {
                         fieldGap =
@@ -1309,7 +1352,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                         FieldOptions fo;
                         fo.rule = shape.rule;
                         FieldImage fromShape = generateFieldFromContours(
-                            shape.contours, options.size, options.size, fo, kFieldSuperSample);
+                            shape.contours, grid.width, grid.height, fo, kFieldSuperSample);
                         if (fromShape.width == 0) {
                             // Contours that close but cover no sample point --
                             // a hairline, a shape smaller than a texel. The
@@ -1325,7 +1368,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                     }
                 } else if (rasterPlaced) {
                     FieldImage fromAlpha =
-                        generateFieldFromAlpha(*rasterPlaced, options.size, options.size);
+                        generateFieldFromAlpha(*rasterPlaced, grid.width, grid.height);
                     if (fromAlpha.width == 0) {
                         // No texel reaches `alpha >= 0.5`: there is no contour to
                         // sign, so there is no field. A raster that faint has
@@ -1359,7 +1402,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 } else {
                     if (wantsHighlight) specularField = field;
                     if (wantsRefraction) {
-                        glassOver(target, options.size, options.size,
+                        glassOver(target, grid.width, grid.height,
                                   glassDisplacementMap(*field, refraction), refraction);
                         note(out.notes, glassRulerNote(options.size));
                         ++out.glassRefracted;
@@ -1380,7 +1423,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                         // which is what the ramp is measured against.
                         OpacityMaskArguments args = groupMaskArgs;
                         const PlacementRect r =
-                            svg ? artPlacementRect(svg->viewBox, lp, options.size)
+                            svg ? artPlacementRect(svg->viewBox, lp, canvasGrid)
                                 : rasterPlacementRect(rasterW, rasterH, lp, options.size);
                         args.bounds[0] = static_cast<float>(r.x);
                         args.bounds[1] = static_cast<float>(r.y);
@@ -1437,7 +1480,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 if (!castsShadow) return;
                 const ShadowGeometry geometry =
                     shadowGeometry(options.size, options.sizeClass);
-                std::vector<float> img = shadowImage(artRgba, options.size, options.size,
+                std::vector<float> img = shadowImage(artRgba, grid.width, grid.height,
                                                      shadowIn.style, geometry);
                 const double overdraw =
                     kShadow.drawOverContent
@@ -1445,8 +1488,8 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                                               options.sizeClass)
                         : 0.0;
                 if (overdraw > 0.0) {
-                    shadowOverdraw = shadowOverdrawImage(img, artRgba, options.size,
-                                                         options.size, overdraw);
+                    shadowOverdraw = shadowOverdrawImage(img, artRgba, grid.width,
+                                                         grid.height, overdraw);
                 }
                 blendOver(target, img, static_cast<float>(shadowAlpha(shadowIn)),
                           shadowBlendMode(shadowIn.style));
@@ -1472,11 +1515,12 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
 
             if (svg) {
                 RenderOptions ro;
-                ro.width = ro.height = options.size;
+                ro.width = grid.width;
+                ro.height = grid.height;
                 ro.subdivisions = options.subdivisions;
                 ro.override = paint;
                 auto drew = renderSvgPlaced(
-                    device, *svg, placeOnCanvas(svg->viewBox, lp, options.size), ro);
+                    device, *svg, placeOnCanvas(svg->viewBox, lp, grid), ro);
                 if (!drew) return std::unexpected(drew.error());
                 for (const auto& s : drew->skipped) {
                     out.shapeGaps.push_back(name + " / " + *imageName + ": " + s.why);
@@ -1638,9 +1682,14 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
         if (blendTheGroup) blendPremulOver(acc, groupAcc, *groupMode);
     }
 
-    // TEMPORARIO (Task 1 do plano de 16/09): recorta a partir de (0,0) e
-    // ignora a origem -- e o que faz o gate falhar pelo motivo certo.
-    const std::int32_t cropX = 0, cropY = 0;
+    // O RECORTE. O buffer e `(viewport + margem) ∩ canvas`, entao o pedaco
+    // pedido comeca onde a origem do recorte passa da origem do buffer -- uma
+    // subtracao de inteiros, que e a unica coisa que anda (spec 2026-09-16,
+    // "O invariante que governa o desenho").
+    const std::int32_t cropX = planned->crop.originX - grid.originX;
+    const std::int32_t cropY = planned->crop.originY - grid.originY;
+    const std::uint32_t viewW = planned->crop.width;
+    const std::uint32_t viewH = planned->crop.height;
     out.width = viewW;
     out.height = viewH;
     out.rgba.assign(static_cast<std::size_t>(viewW) * viewH * 4, 0.0f);

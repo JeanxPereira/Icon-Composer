@@ -235,6 +235,7 @@
 
 #include "Source/RenderBox/GlassSpecular.h"
 #include "Source/RenderBox/GradientOracle.h"
+#include "Source/RenderBox/PixelGrid.h"
 
 namespace rb {
 
@@ -281,6 +282,12 @@ const HighlightSlot* chicletHighlightSlots(std::size_t& count);
 // JA TEM: ele ja carrega a cobertura da pastilha, e uma pastilha transparente
 // (`automatic` sob `tinted` e `IconColor.clear`) nao tem superficie para
 // acender. Sem isso o realce poria luz sobre o nada.
+//
+// A pastilha e ABSOLUTA e so o buffer de `grid` e varrido: o contorno sai de
+// `grid.size` e o campo nasce com a origem de `grid`, entao o realce de um
+// pixel e o mesmo do render cheio (spec 2026-09-16, "Os sitios").
+std::size_t drawChicletHighlights(std::vector<float>& rgba, const PixelGrid& grid,
+                                  const SpecularArguments& args);
 std::size_t drawChicletHighlights(std::vector<float>& rgba, std::uint32_t size,
                                   const SpecularArguments& args);
 

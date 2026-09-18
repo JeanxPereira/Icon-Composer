@@ -167,12 +167,15 @@ double chicletCornerRadius(std::uint32_t size) {
     return 266.24 * static_cast<double>(size) / 1024.0;
 }
 
-std::vector<float> chicletCoverage(std::uint32_t size) {
-    std::vector<float> cov(static_cast<std::size_t>(size) * size, 0.0f);
-    if (size == 0) return cov;
+std::vector<float> chicletCoverage(const PixelGrid& g) {
+    std::vector<float> cov(g.texels(), 0.0f);
+    if (g.size == 0 || g.width == 0 || g.height == 0) return cov;
 
-    const double r = chicletCornerRadius(size);
-    const Path outline = continuousRoundedRect(0.0, 0.0, size, size, r, r);
+    // ABSOLUTO, e de proposito: a pastilha e a mesma forma no canvas inteiro,
+    // e o buffer so decide QUAIS pixels dela sao escritos (spec 2026-09-16,
+    // "Os sitios").
+    const double r = chicletCornerRadius(g.size);
+    const Path outline = continuousRoundedRect(0.0, 0.0, g.size, g.size, r, r);
 
     const int perCubic = std::clamp(static_cast<int>(std::ceil(r * 0.5)), 8, 96);
     const std::vector<Point> poly = flatten(outline, perCubic);
@@ -186,10 +189,11 @@ std::vector<float> chicletCoverage(std::uint32_t size) {
     const double w = 1.0 / kSubRows;
 
     std::vector<double> xs;
-    for (std::uint32_t py = 0; py < size; ++py) {
-        float* row = cov.data() + static_cast<std::size_t>(py) * size;
+    for (std::uint32_t ly = 0; ly < g.height; ++ly) {
+        const std::int64_t py = static_cast<std::int64_t>(ly) + g.originY;
+        float* row = cov.data() + static_cast<std::size_t>(ly) * g.width;
         for (int s = 0; s < kSubRows; ++s) {
-            const double sy = py + (s + 0.5) * w;
+            const double sy = static_cast<double>(py) + (s + 0.5) * w;
             xs.clear();
             for (std::size_t i = 0, n = poly.size(); i < n; ++i) {
                 const Point& a = poly[i];
@@ -199,17 +203,25 @@ std::vector<float> chicletCoverage(std::uint32_t size) {
             }
             if (xs.size() < 2) continue;
             std::sort(xs.begin(), xs.end());
+            // O grampo e o do CANVAS somado ao do buffer. O do canvas e o de
+            // sempre e e o que decide o numero; o do buffer so corta o span, e
+            // o `overlap` de um pixel que esta dentro dos dois nao muda -- que
+            // e o que faz o recorte bater float a float com o render cheio.
+            const double x0 = static_cast<double>(g.originX);
+            const double x1 = x0 + g.width;
             for (std::size_t k = 0; k + 1 < xs.size(); k += 2) {
-                const double lo = std::max(xs[k], 0.0);
-                const double hi = std::min(xs[k + 1], static_cast<double>(size));
+                const double lo = std::max(xs[k], std::max(0.0, x0));
+                const double hi =
+                    std::min(xs[k + 1], std::min(static_cast<double>(g.size), x1));
                 if (hi <= lo) continue;
-                const auto first = static_cast<std::uint32_t>(lo);
-                const auto last = static_cast<std::uint32_t>(
-                    std::min(std::ceil(hi) - 1.0, static_cast<double>(size) - 1.0));
-                for (std::uint32_t px = first; px <= last && px < size; ++px) {
+                const auto first = static_cast<std::int64_t>(lo);
+                const auto last = static_cast<std::int64_t>(std::ceil(hi) - 1.0);
+                for (std::int64_t px = first; px <= last; ++px) {
                     const double overlap =
                         std::min(hi, px + 1.0) - std::max(lo, static_cast<double>(px));
-                    if (overlap > 0.0) row[px] += static_cast<float>(overlap * w);
+                    if (overlap > 0.0) {
+                        row[px - g.originX] += static_cast<float>(overlap * w);
+                    }
                 }
             }
         }
@@ -218,15 +230,23 @@ std::vector<float> chicletCoverage(std::uint32_t size) {
     return cov;
 }
 
-void clipToChiclet(std::vector<float>& acc, std::uint32_t size) {
-    const std::size_t texels = static_cast<std::size_t>(size) * size;
+std::vector<float> chicletCoverage(std::uint32_t size) {
+    return chicletCoverage(PixelGrid::full(size));
+}
+
+void clipToChiclet(std::vector<float>& acc, const PixelGrid& g) {
+    const std::size_t texels = g.texels();
     if (acc.size() < texels * 4) return;
-    const std::vector<float> cov = chicletCoverage(size);
+    const std::vector<float> cov = chicletCoverage(g);
     for (std::size_t i = 0; i < texels; ++i) {
         const float c = cov[i];
         if (c >= 1.0f) continue;
         for (int k = 0; k < 4; ++k) acc[i * 4 + k] *= c;
     }
+}
+
+void clipToChiclet(std::vector<float>& acc, std::uint32_t size) {
+    clipToChiclet(acc, PixelGrid::full(size));
 }
 
 }  // namespace rb

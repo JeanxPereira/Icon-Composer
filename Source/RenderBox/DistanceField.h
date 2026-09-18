@@ -190,6 +190,13 @@ struct FieldOptions {
     // a test can prove the band is where it says it is.
     float aaWidth = 1.0f;
 
+    // A origem da grade amostrada, em pixels (antes do supersample). A
+    // amostragem e ABSOLUTA -- o centro da linha `y` e `y + originY + 0.5` --
+    // e so o indice no resultado e deslocado (spec 2026-09-16, "O invariante
+    // que governa o desenho"). Zero deixa a aritmetica de antes intocada.
+    std::int32_t originX = 0;
+    std::int32_t originY = 0;
+
     // `[INF]` THE SUB-TEXEL SEED. OURS. THE TARGET WAS NOT READ HERE.
     //
     // Only the grid-borne generators read this -- `generateFieldFromAlpha` and
@@ -292,6 +299,11 @@ private:
 struct FieldImage {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    // Onde o canto do campo cai na grade de destino: o eco da origem que
+    // `FieldOptions` pediu, para que um consumidor saiba em que coordenada o
+    // indice `(x, y)` esta.
+    std::int32_t originX = 0;
+    std::int32_t originY = 0;
     std::vector<float> rgba;
 
     const float* at(std::uint32_t x, std::uint32_t y) const {
