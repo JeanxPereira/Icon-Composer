@@ -53,6 +53,16 @@ struct State {
     ick::MenuActions actions;
     Onyx::App::App* app = nullptr;
     bool quit = false;
+    // WHY A DROP IS QUEUED AND NOT ACTED ON. GLFW delivers it from inside
+    // `glfwPollEvents`, i.e. mid-frame, and `adopt()` destroys the session the
+    // panels after it are about to draw -- the same reason `act()` runs LAST,
+    // from the diagnostics panel. The callback only records; `act()` opens.
+    std::optional<fs::path> dropped;
+    // The last thing that went wrong on a path the person took deliberately,
+    // shown on the empty canvas because a GUI has no stderr. The folder picker
+    // used to answer "" for a cancel and for a COM failure alike, and the two
+    // are indistinguishable to whoever is clicking.
+    std::string trouble;
 
     // The coordinator is recreated with the session because it caches the last
     // request it made; keeping it across a document would have it waiting for
@@ -65,10 +75,11 @@ struct State {
     void open(const fs::path& dir) {
         auto s = ick::Session::open(dir);
         if (!s) {
-            std::fprintf(stderr, "iconcomposer: not a bundle this reader can open: %s\n",
-                         dir.string().c_str());
+            trouble = "not a `.icon` this reader can open: " + dir.string();
+            std::fprintf(stderr, "iconcomposer: %s\n", trouble.c_str());
             return;
         }
+        trouble.clear();
         adopt(std::move(s));
     }
     void close() { adopt(std::nullopt); }
@@ -86,8 +97,24 @@ struct State {
             }
         }
         if (a.open) {
-            const fs::path p = SystemOpenBundleDialog();
-            if (!p.empty()) open(bundleDirOf(p));
+            std::string why;
+            const fs::path p = SystemOpenBundleDialog(&why);
+            if (!p.empty()) {
+                open(bundleDirOf(p));
+            } else if (!why.empty()) {
+                // Not a cancel: the picker never got as far as asking.
+                trouble = why;
+                std::fprintf(stderr, "iconcomposer: %s\n", why.c_str());
+            }
+        }
+        // A `.icon` is a folder, so DRAGGING IT IN is the gesture the format
+        // actually suggests -- and it is the one path into the document that
+        // does not depend on finding the right `File` menu (Onyx draws one of
+        // its own, above ours, whose Open cannot accept a folder at all).
+        if (dropped) {
+            const fs::path p = *dropped;
+            dropped.reset();
+            open(bundleDirOf(p));
         }
         if (a.save && session) {
             const std::string r = session->save();
@@ -132,6 +159,11 @@ struct LayersPanel : Onyx::App::IPanel {
     State& st;
 };
 
+// Where a dropped path goes. See the note at the `glfwSetDropCallback` call:
+// the GLFW window's user pointer belongs to Onyx, and a GLFW callback carries
+// no user data of its own.
+State* g_dropTarget = nullptr;
+
 struct CanvasPanel : Onyx::App::IPanel {
     explicit CanvasPanel(State& s) : st(s) {}
     void Draw() override {
@@ -153,7 +185,18 @@ struct CanvasPanel : Onyx::App::IPanel {
                 }
                 ImGui::EndMenuBar();
             }
-            ImGui::TextDisabled("Open a .icon bundle");
+            // A BUTTON AND NOT A LABEL. `TextDisabled` read as a caption for a
+            // window that had nothing to press, and the only working Open was
+            // in the menu above -- next to Onyx's own `File > Open`, which is
+            // drawn higher, looks more like the one you want, and cannot take
+            // a folder. The empty canvas now carries the action itself.
+            if (ImGui::Button("Open a .icon bundle...")) st.actions.open = true;
+            ImGui::SameLine();
+            ImGui::TextDisabled("or drag one in");
+            if (!st.trouble.empty()) {
+                ImGui::Spacing();
+                ImGui::TextWrapped("%s", st.trouble.c_str());
+            }
             ImGui::End();
         }
     }
@@ -259,6 +302,30 @@ int run(const fs::path& initial) {
     state.window = window.getGLFWwindow();
     state.sink = std::make_unique<OnyxTextureSink>(window.vkContext());
     state.scheduler = std::make_unique<JobScheduler>(window.workspace().Jobs(), *device);
+
+    // DROPPING A `.icon` ON THE WINDOW OPENS IT. Onyx installs an EMPTY drop
+    // callback of its own (`Source/App/Window.cpp:191` on the dddce38
+    // checkout), so until now every drop was swallowed without a trace. This
+    // replaces it: GLFW keeps one callback per window and the last writer
+    // wins, so this must run after the `Window` constructor.
+    //
+    // Only the FIRST path is taken. A multi-selection drop has no meaning for
+    // an editor that holds one document, and picking one silently beats
+    // opening the last of several.
+    // THE USER POINTER IS NOT OURS. Onyx stores its own `Window*` there
+    // (`Source/App/Window.cpp:305`) and casts it back in three callbacks
+    // (:310, :319, :404); writing ours over it made those read a `State` as a
+    // `Window` and the process died on the first resize -- measured, not
+    // feared. GLFW passes no user data to a callback, so the one window this
+    // process owns is reached through a file-static instead. `run()` is the
+    // only writer and there is exactly one `State` per process.
+    if (GLFWwindow* w = window.getGLFWwindow()) {
+        g_dropTarget = &state;
+        glfwSetDropCallback(w, [](GLFWwindow*, int count, const char** paths) {
+            if (count < 1 || !paths || !paths[0]) return;
+            if (g_dropTarget) g_dropTarget->dropped = fs::path(paths[0]);
+        });
+    }
 
     window.app().SetDefaultLayout(&defaultLayout);
     window.app().SetRegistrar([&state, initial](Onyx::App::App& app) {

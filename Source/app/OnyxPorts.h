@@ -78,6 +78,15 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r);
 
 // Asks for a `.icon` to open. Empty when the user cancels.
 //
+// `why` separates the two ways of answering empty. A cancel leaves it empty
+// too; a failure before the dialog is even shown writes the reason there. The
+// caller cannot tell them apart otherwise, and the difference is the whole
+// diagnosis when someone reports that "the menu does nothing" -- measured
+// 18/09 against a report of exactly that, where the cause turned out to be a
+// DIFFERENT File menu (Onyx draws one above ours) and not this port at all.
+// A probe of this function's COM path, everything up to `Show()`, passes both
+// with a virgin apartment and with the one GLFW has already entered.
+//
 // Onyx's `SystemOpenFileDialog` cannot answer this question: it is
 // `GetOpenFileNameA` with OFN_FILEMUSTEXIST (Source/App/Platform/
 // SystemFileDialog.cpp on the dddce38 checkout), and a `.icon` is a DIRECTORY
@@ -88,6 +97,6 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r);
 // the pick to its parent. The result is a `path` and not a `string` because
 // the wide name the shell hands back converts to `path` exactly, with no
 // code page in between.
-std::filesystem::path SystemOpenBundleDialog();
+std::filesystem::path SystemOpenBundleDialog(std::string* why = nullptr);
 
 }  // namespace icapp

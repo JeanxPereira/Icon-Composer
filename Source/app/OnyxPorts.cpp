@@ -2,6 +2,7 @@
 
 #include "Source/RenderBox/IconRenderer.h"
 
+#include <cstdio>
 #include <string>
 #include <utility>
 
@@ -176,7 +177,8 @@ std::optional<ick::RenderResult> SyncScheduler::poll() {
     return r;
 }
 
-std::filesystem::path SystemOpenBundleDialog() {
+std::filesystem::path SystemOpenBundleDialog(std::string* why) {
+    if (why) why->clear();
 #ifdef _WIN32
     // GLFW already put the main thread in an apartment (`glfwInit` calls
     // CoInitializeEx), so this returns S_FALSE rather than doing the work --
@@ -190,8 +192,20 @@ std::filesystem::path SystemOpenBundleDialog() {
     IFileOpenDialog* dialog = nullptr;
     // The explicit IID rather than IID_PPV_ARGS: `__uuidof` is a compiler
     // extension and this file is built by both g++ and cl.
-    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                   IID_IFileOpenDialog, reinterpret_cast<void**>(&dialog)))) {
+    const HRESULT made = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                          IID_IFileOpenDialog, reinterpret_cast<void**>(&dialog));
+    if (FAILED(made)) {
+        // The silent branch that made this port indistinguishable from a
+        // cancel. It has never been seen to fire -- a probe of everything up
+        // to `Show()` passes on this machine both with a virgin apartment and
+        // with GLFW's -- and that is exactly why it has to SAY so if it ever
+        // does, instead of answering "" like a person who changed their mind.
+        char buf[96];
+        std::snprintf(buf, sizeof buf, "the folder picker could not be created (HRESULT 0x%08lX)",
+                      static_cast<unsigned long>(made));
+        if (why) *why = buf;
+    }
+    if (SUCCEEDED(made)) {
         DWORD options = 0;
         if (SUCCEEDED(dialog->GetOptions(&options))) {
             // FORCEFILESYSTEM keeps the answer to something SIGDN_FILESYSPATH
