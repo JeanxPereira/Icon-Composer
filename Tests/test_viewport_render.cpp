@@ -591,3 +591,36 @@ TEST_CASE(viewport_shadow_matches_including_the_blur_ladder) {
     CHECK_EQ(bad, 0);
     CHECK(nonZeroY >= 3);
 }
+
+// O CORPUS, em `size = 2048` -- 400% sobre 512, o zoom que motivou a spec.
+//
+// Os dois documentos da spec: `swmpc` (refracao 337 pontos, raster,
+// translucidez, sombra, especular, fundo) e `Jellify-Music` (vetor, o mesmo
+// sem refracao). Uma execucao so: o render cheio de 2048 roda duas vezes por
+// documento (spec 2026-09-16, "A margem", medido em 18/09).
+TEST_CASE(viewport_corpus_documents_match_at_2048) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    const char* dir = std::getenv("IC_CORPUS_DIR");
+    REQUIRE(dir && *dir);
+    for (const char* name : {"CamilleScholtz__swmpc__swmpc",
+                             "Jellify-Music__App__teal-icon-composer"}) {
+        auto bundle = icf::IconBundle::open(fs::path(dir) / name);
+        REQUIRE(bundle.has_value());
+        RenderedIcon full;
+        const int bad = compareViewports(*bundle, 2048, gateViewports(2048), &full);
+        if (bad) std::printf("  %s: %d viewports diferentes\n", name, bad);
+        CHECK_EQ(bad, 0);
+        CHECK(full.glassShadowed > 0);
+        CHECK(full.backgroundPainted);
+        if (std::string(name).find("swmpc") != std::string::npos) {
+            CHECK(full.glassRefracted > 0);   // o documento que refrata tem que refratar
+        }
+        const auto reach = documentReach(bundle->document(), IconRenderOptions{}.context,
+                                         IconSizeClass::Large);
+        auto plan = planViewport(gateViewports(2048)[0], 2048, reach);
+        REQUIRE(plan.has_value());
+        std::printf("  %s: margem %u px em 2048 (alinhamento %u), buffer %ux%u\n", name,
+                    plan->marginPixels, plan->alignment, plan->buffer.width, plan->buffer.height);
+    }
+}

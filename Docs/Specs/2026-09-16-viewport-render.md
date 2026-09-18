@@ -115,13 +115,26 @@ são conhecidos e medidos, em unidades de canvas (o canvas tem 1024 —
 
 | efeito | alcance em pontos de canvas | sítio |
 | --- | --- | --- |
-| sombra: desfoque | `2,8 × 64 × clamp(radius)`, máx **179,2** | `GlassShadow.cpp:164`, `BlurKernel.cpp:44` |
+| sombra: desfoque | `2,8 × 64 × clamp(radius)`, teto da fórmula **179,2** (só alcançável com um `ShadowParameters` não-default) | `GlassShadow.cpp:164`, `BlurKernel.cpp:44` |
 | sombra: deslocamento | **32** para baixo, somado ao de cima | `GlassShadow.h:274`, `GlassShadow.cpp:277` |
 | sombra: anel | **16** | `GlassShadow.h` (`Shadow.ringWidth`) |
 | refração: deslocamento | `|refractionStrength|`, teto **640** | `GlassMaterial.h` (`refractionStrengthMax`), `GlassLayer.cpp:146` |
 | refração: banda do campo | `refractionHeight`, teto **256** | `GlassMaterial.h` (`refractionHeightMax`) |
 | especular: banda do campo | `inset + height`, ~**24** | `GlassSpecular.h` |
+| pastilha: realces | `inset + height ≤` **40**, de `distance` no máximo (os dois slots difusos), com `inset = 0` fixo nos sete | `ChicletHighlights.cpp:27-40,60,65`, `GlassSpecular.cpp:137-153` |
 | desfoque do material (desenho DESLIGADO hoje) | `2,8 × min(b,1) × 64`, máx **179,2**, +1 px de outset | `BlurKernel.h`, `IconRenderer.cpp:828` |
+
+`[ART]` **A sombra estava superestimada em 3,33×.** A linha acima é o teto da
+FÓRMULA, e ele só é alcançável se algum sítio passar um `ShadowParameters`
+diferente do default a `sizeBasedValue(p.radius, sizeClass)`
+(`GlassShadow.cpp:162`). Nenhum passa: `radius` é `SizeBasedValue{{0.3, 0.3,
+0.3, 0.3}}` com os quatro slots IGUAIS (`GlassShadow.h:285`, então a classe de
+tamanho não move nada), `blurStrengthMax = 64,0` (`GlassMaterial.h:237`) é
+igualmente sempre o default, `ShadowParameters` é sempre `kShadow`, e o grupo
+do documento só alcança `kind` e `opacity` (`Coverage.cpp:50`, `Values.h:67-70`
+— não existe uma chave `legacy-*` de sombra). O alcance ALCANÇÁVEL é portanto
+`2,8 × (64 × 0,3) = 2,8 × 19,2 =` **53,76** pontos, e `GlassShadow.h:442` já diz
+isto em palavras: "the shadow sits 32 px down under a 19.2 px blur radius".
 
 **A margem é calculada por documento, não é uma constante.** O pior caso
 teórico é 640 pontos, mais de meio canvas. Com uma constante desse tamanho, o
@@ -139,6 +152,22 @@ exato com margem ≥ os dois somados. Por lado, a margem é:
 - a SOMA de `max(|strength|, height)` sobre os grupos que refratam, porque cada
   refração lê o resultado da anterior.
 
+`[ART]` **Medido em 18/09.** Em `size = 2048`, a margem calculada é **222** px
+para `Jellify-Music` (vetor, sem refração) e **897** px para `swmpc` (o
+documento que mais refrata do corpus, força −0,527), e o gate fecha em zero com
+ela nos dois, nos quatro viewports. Com a metade (111 px e 448 px,
+`IC_MARGIN_SCALE=0,5`), `swmpc` FALHA em 2 dos 4 viewports — 238 e 1371 pixels
+diferentes, `max |Δ|` 0,0536 e 0,184, a 606 e 481 px da borda interna do
+buffer, longe dela — provando que a margem cheia não é folga para este
+documento, é o que o invariante exige; `Jellify-Music` continua em zero. Isto
+NÃO prova que a margem dela está duas vezes maior do que precisa: um "zero" é
+fraco sobre região plana, porque o grampo da borda do buffer substitui ali
+exatamente o valor que o render cheio também leria (o mesmo aviso que
+`diffAgainstCrop` carrega desde a Task 4). A conta está justa para `swmpc`; para
+`Jellify-Music`, sem refração e sem sombra que alcance a escada, esta medição
+não decide se há folga — só que, se houver, não é neste documento que ela
+aparece.
+
 O arredondamento vai para cima, em pixels, com uma folga de duas vezes o
 alinhamento da escada (abaixo): a redução e a expansão bilinear alcançam alguns
 pixels além do kernel.
@@ -153,8 +182,11 @@ pixels além do kernel.
 Nos dois, a altura denormalizada (134,5 e 105,3) fica abaixo da força. O
 terceiro, `videolan__vlc-ios__VLC26`, tem `enabled: false` e força 0, ou seja,
 identidade. Então, em 144 dos 146 documentos, quem manda na margem é a sombra
-(≤ 211 pontos). Nos dois que refratam, a soma leva a margem a até
-337 + 211 ≈ 548 pontos por lado, mais de meio canvas. Nesses dois o viewport
+— 101,76 pontos, CONSTANTE entre documentos, porque `radius` é sempre o mesmo
+default ("A sombra estava superestimada", acima; o valor usado aqui já é o
+corrigido, não o teto da fórmula). Nos dois que refratam, a soma leva a margem
+a até 337 + 101,76 ≈ 439 pontos por lado, quase 43% do canvas de 1024. Nesses
+dois o viewport
 praticamente vira o render cheio até zooms altos, onde o teto de área assume.
 Isso está aceito: são 2 documentos, e o resultado continua exato. A varredura é um passeio
 Python pelas chaves `refractivity` de `References/corpus/*/icon.json`, com a
@@ -200,6 +232,22 @@ a conta. O invariante é o que prova isso; se ele acusar
 diferença longe da borda, esta hipótese caiu e o campo precisa de tratamento
 próprio.
 
+`[OBS]` **O `<filter>` de SVG é RECUSADO num buffer parcial, não margeado.**
+`applySvgFilter` grampeia o desfoque de `feGaussianBlur` na borda do BUFFER
+(`SvgFilter.cpp`), do mesmo jeito que os outros passos — mas o alcance dele não
+sai de um parâmetro do documento: sai do `stdDeviation` de cada primitiva, isto
+é, do CONTEÚDO do SVG. `documentReach` não enxerga isso: ela percorre os
+grupos do documento e nunca abre a arte. Dar a ele uma margem exigiria abrir
+cada SVG referenciado dentro de `documentReach`, o que é tarefa própria — então,
+em vez de desenhar errado, `SvgRenderer.cpp` (`isPartialTarget`) recusa por
+NOME todo `<filter>` num alvo parcial, do mesmo jeito que o vidro foi recusado
+enquanto não convertido — a mesma disciplina de "O invariante que governa o
+desenho", acima. A recusa
+aparece em `RenderedIcon::shapeGaps`, com o motivo por escrito; o gate
+(`viewport_refuses_an_svg_filter_by_name_instead_of_clamping_it`) procura essa
+recusa por nome em vez de comparar pixel. Cinco SVGs do corpus têm
+`<filter>`/`feGaussianBlur`, e todos passam pelo mesmo caminho.
+
 ## O teto de área
 
 Todo passo roda na resolução da tela, margem cheia — não há efeito calculado na
@@ -208,8 +256,12 @@ resolução base e amostrado para dentro. Em troca existe um teto: se
 volta a esticar a textura da resolução base.
 
 O teto é explícito porque a margem escala com o zoom e o retângulo visível não.
-Com o canvas de 512 em 1600% (`size = 8192`, 8 px por ponto), os 211 pontos da
-sombra viram ~1690 pixels por lado, e o buffer ainda é cortado pelo canvas. O
+Com o canvas de 512 em 1600% (`size = 8192`, 8 px por ponto), os 211,2 pontos
+da fórmula (179,2 do desfoque + 32 do deslocamento — o teto, não o alcançável)
+virariam ~1690 pixels por lado; com o `radius` que o documento de fato alcança
+(acima, "A sombra estava superestimada"), o número é 85,76 pontos (53,76 + 32)
+sem contar o anel, ou **101,76** contando-o (+16), o que dá ~814 pixels por
+lado em 8192 — e o buffer ainda é cortado pelo canvas de qualquer forma. O
 ladrilho é constante; a margem não é. Consequência: o teto dispara justamente
 nos zooms mais altos e nos documentos com refração forte, e é lá que o canvas
 volta a esticar. Isso está aceito, e o motivo é este.
