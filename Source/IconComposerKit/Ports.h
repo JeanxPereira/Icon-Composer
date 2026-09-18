@@ -34,7 +34,7 @@ struct RenderResult {
     // What this result ANSWERS, echoed back from the request that produced it.
     // The implementor of RenderScheduler must copy it across: the coordinator
     // decides "is this still the frame I am waiting for?" by comparing version,
-    // context and width against what it last asked for, and a result that does
+    // context and size against what it last asked for, and a result that does
     // not carry its context can never be matched -- it would be dropped forever
     // and the canvas would stay empty.
     icf::Context context;

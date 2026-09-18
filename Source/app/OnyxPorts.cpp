@@ -67,6 +67,13 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r) {
     const bool tileErrored = !icon.has_value() && r.tile.w > 0;
     std::string tileError;
     if (tileErrored) tileError = icon.error();
+    // A nota do teto de area ("viewport acima do teto de area: nada
+    // desenhado", `IconRenderer.cpp:636-638`) mora no `icon` RECUSADO, que
+    // esta prestes a ser sobrescrito pela tentativa de base -- capturada
+    // ANTES, pela mesma razao que `tileError` acima: sem isso a nota
+    // desapareceria em silencio toda vez que a base desse certo.
+    std::vector<std::string> areaCapNotes;
+    if (areaCapped) areaCapNotes = icon->notes;
 
     if ((areaCapped || tileErrored) && r.fallbackSize > 0) {
         // O teto (spec 2026-09-16): o canvas inteiro na resolucao base, e o
@@ -75,11 +82,14 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r) {
         io.viewport = rb::IconViewport{};
         icon = rb::renderIcon(device, r.bundle, io);
         out.refined = false;
-        if (icon.has_value() && !tileError.empty()) {
-            // O motivo da queda nao pode desaparecer so porque a base deu
-            // certo: `error` nao-vazio diz "nada mais e valido" (Ports.h), e
-            // este resultado E valido, entao o motivo vai para as notas.
-            out.notes.push_back("ladrilho recusado, caiu para a base: " + tileError);
+        if (icon.has_value()) {
+            if (!tileError.empty()) {
+                // O motivo da queda nao pode desaparecer so porque a base deu
+                // certo: `error` nao-vazio diz "nada mais e valido" (Ports.h), e
+                // este resultado E valido, entao o motivo vai para as notas.
+                out.notes.push_back("ladrilho recusado, caiu para a base: " + tileError);
+            }
+            out.notes.insert(out.notes.end(), areaCapNotes.begin(), areaCapNotes.end());
         }
     }
 
