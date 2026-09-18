@@ -622,5 +622,15 @@ TEST_CASE(viewport_corpus_documents_match_at_2048) {
         REQUIRE(plan.has_value());
         std::printf("  %s: margem %u px em 2048 (alinhamento %u), buffer %ux%u\n", name,
                     plan->marginPixels, plan->alignment, plan->buffer.width, plan->buffer.height);
+        // Os numeros que a spec cita (2026-09-16, "A margem, e de onde vem o
+        // numero", medido em 18/09) ficam PRESOS ao build: sem isto, uma
+        // mudanca futura em `documentReach` que alargasse a margem passaria
+        // pelo gate (que so confere zero diferencas) e deixaria a spec
+        // mentindo em silencio.
+        if (std::string(name).find("swmpc") != std::string::npos) {
+            CHECK_EQ(plan->marginPixels, 897u);
+        } else {
+            CHECK_EQ(plan->marginPixels, 222u);
+        }
     }
 }

@@ -94,7 +94,12 @@ arte vetor passa pela GPU (`Device.h`). Lá a translação é inevitável: o
 extensão do buffer. Uma coordenada transladada não tem garantia de arredondar
 igual à original, e este é o único sítio onde o risco existe. Então o gate imprime o `max |Δ|` e a
 distância do pior pixel até a borda do buffer. Uma margem curta aparece com Δ
-grande e colada na borda. Resíduo de aritmética aparece com Δ na ordem de ULP,
+grande e colada na borda. Isto vale para uma banda que DECAI com a distância
+(desfoque, sombra, campo, especular). A refração não decai — ela desloca a
+leitura em `|strength| × pixels-por-ponto`, um valor FIXO —, então uma margem
+curta nela produz um PLATÔ de Δ que alcança até essa distância inteira da
+borda, não um pico colado nela (medido em 18/09, abaixo: "A margem, e de onde
+vem o número"). Resíduo de aritmética aparece com Δ na ordem de ULP,
 espalhado pelas bordas antialiasadas. Só o primeiro caso é o desenho errado. O
 segundo pede que a translação seja feita de outro jeito (subtração inteira
 depois da colocação, e não dobrada dentro da matriz), e a tolerância continua
@@ -124,7 +129,7 @@ são conhecidos e medidos, em unidades de canvas (o canvas tem 1024 —
 | pastilha: realces | `inset + height ≤` **40**, de `distance` no máximo (os dois slots difusos), com `inset = 0` fixo nos sete | `ChicletHighlights.cpp:27-40,60,65`, `GlassSpecular.cpp:137-153` |
 | desfoque do material (desenho DESLIGADO hoje) | `2,8 × min(b,1) × 64`, máx **179,2**, +1 px de outset | `BlurKernel.h`, `IconRenderer.cpp:828` |
 
-`[ART]` **A sombra estava superestimada em 3,33×.** A linha acima é o teto da
+`[BIN]` **A sombra estava superestimada em 3,33×.** A linha acima é o teto da
 FÓRMULA, e ele só é alcançável se algum sítio passar um `ShadowParameters`
 diferente do default a `sizeBasedValue(p.radius, sizeClass)`
 (`GlassShadow.cpp:162`). Nenhum passa: `radius` é `SizeBasedValue{{0.3, 0.3,
@@ -143,11 +148,11 @@ já denormalizados dos grupos que de fato desenham cada efeito.
 
 **Os alcances se SOMAM ao longo da cadeia.** Um passo só lê pixels certos se o
 passo anterior os deixou certos. A sombra de um grupo é exata até
-`2,8 × σ + deslocamento` da borda do buffer. A refração de um grupo seguinte lê
+`2,8 × σ + deslocamento + anel` da borda do buffer. A refração de um grupo seguinte lê
 esse backdrop até `|strength|` de distância. Então um pixel do recorte só sai
 exato com margem ≥ os dois somados. Por lado, a margem é:
 
-- a maior banda local (sombra `2,8 × σ + deslocamento`, especular e
+- a maior banda local (sombra `2,8 × σ + deslocamento + anel`, especular e
   translucidez), **mais**
 - a SOMA de `max(|strength|, height)` sobre os grupos que refratam, porque cada
   refração lê o resultado da anterior.
@@ -155,18 +160,27 @@ exato com margem ≥ os dois somados. Por lado, a margem é:
 `[ART]` **Medido em 18/09.** Em `size = 2048`, a margem calculada é **222** px
 para `Jellify-Music` (vetor, sem refração) e **897** px para `swmpc` (o
 documento que mais refrata do corpus, força −0,527), e o gate fecha em zero com
-ela nos dois, nos quatro viewports. Com a metade (111 px e 448 px,
-`IC_MARGIN_SCALE=0,5`), `swmpc` FALHA em 2 dos 4 viewports — 238 e 1371 pixels
-diferentes, `max |Δ|` 0,0536 e 0,184, a 606 e 481 px da borda interna do
-buffer, longe dela — provando que a margem cheia não é folga para este
-documento, é o que o invariante exige; `Jellify-Music` continua em zero. Isto
-NÃO prova que a margem dela está duas vezes maior do que precisa: um "zero" é
-fraco sobre região plana, porque o grampo da borda do buffer substitui ali
-exatamente o valor que o render cheio também leria (o mesmo aviso que
-`diffAgainstCrop` carrega desde a Task 4). A conta está justa para `swmpc`; para
-`Jellify-Music`, sem refração e sem sombra que alcance a escada, esta medição
-não decide se há folga — só que, se houver, não é neste documento que ela
-aparece.
+ela nos dois, nos quatro viewports. Com a metade — um fator `IC_MARGIN_SCALE`
+acrescentado TEMPORARIAMENTE a `planViewport` só para esta medição, e removido
+logo depois (111 px e 448 px) —, `swmpc` FALHA em 2 dos 4 viewports: 238 e 1371
+pixels diferentes, `max |Δ|` 0,0536 e 0,184, a 606 e 481 px da borda interna do
+buffer. Esta NÃO é a assinatura "Δ colado na borda" que a seção anterior
+descreve para uma banda que decai — é o PLATÔ que a mesma seção agora qualifica
+para a refração: `|strength| × pixels-por-ponto` alcança 674,56 px nesta size
+(337,3 pontos × `k = 2`), e 606 e 481 caem dentro dele, não além. A margem
+cheia não é folga para este documento: é o que o invariante exige.
+`Jellify-Music` continua em zero. Isto NÃO prova que a margem dela está duas
+vezes maior do que precisa: um "zero" é fraco sobre região plana, porque o
+grampo da borda do buffer substitui ali exatamente o valor que o render cheio
+também leria (o mesmo aviso que `diffAgainstCrop` carrega desde a Task 4). A
+conta está justa para `swmpc`; para `Jellify-Music`, que DESENHA sombra (o
+`alinhamento 8` que o caso imprime só acontece com `sigmaPixels > 0` —
+`blurLadderAlignment` devolve 1 no caso contrário, `ViewportPlan.cpp:62-75` —
+então a escada de fato reduz nela) mas não refração, esta medição não decide
+se há folga: a banda da sombra DECAI com a distância e a leitura acima já
+qualifica esse caso como "colado na borda", não "platô", e a hipótese mais
+provável continua sendo a região plana perto da borda, já apontada acima — só
+que, se houver folga, não é neste documento que ela aparece.
 
 O arredondamento vai para cima, em pixels, com uma folga de duas vezes o
 alinhamento da escada (abaixo): a redução e a expansão bilinear alcançam alguns
@@ -245,8 +259,17 @@ enquanto não convertido — a mesma disciplina de "O invariante que governa o
 desenho", acima. A recusa
 aparece em `RenderedIcon::shapeGaps`, com o motivo por escrito; o gate
 (`viewport_refuses_an_svg_filter_by_name_instead_of_clamping_it`) procura essa
-recusa por nome em vez de comparar pixel. Cinco SVGs do corpus têm
-`<filter>`/`feGaussianBlur`, e todos passam pelo mesmo caminho.
+recusa por nome em vez de comparar pixel. `[ART]` **Medido em 18/09**
+(`grep -rl` sobre `References/corpus/**/*.svg`): a recusa é por NOME de
+`<filter>` (`SvgRenderer.cpp:322`), e é esse o predicado que decide a
+exposição dela — **9** SVGs do corpus têm `<filter>`, em três documentos
+(`Bunn__PiStats__pistats`, `PDF-Archiver__PDF-Archiver__AppIcon`,
+`rileytestut__Delta__MicrochipIcon`); **5**, todos dentro dos mesmos três
+documentos, têm `feGaussianBlur` especificamente. `[INF]` Que os nove seriam
+recusados do mesmo jeito é inferência da leitura do predicado, não uma medição
+de execução: nenhum SVG do corpus passou de fato por este caminho em nenhuma
+execução até aqui — o caso do gate usa `kFilteredDocument`, sintético, não um
+asset do corpus.
 
 ## O teto de área
 
