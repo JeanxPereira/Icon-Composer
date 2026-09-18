@@ -253,14 +253,19 @@ void defaultLayout(ImGuiID dockspaceId) {
     ImGui::DockBuilderDockWindow(ick::kLayersWindow, left);
     ImGui::DockBuilderDockWindow(ick::kCanvasWindow, centre);
     ImGui::DockBuilderDockWindow(ick::kInspectorWindow, right);
-    // Onyx brings windows of its own that this tree does not place: "Viewer",
-    // drawn unconditionally by its DocumentWindow (not a panel, so
-    // `setPanelVisible` does not reach it, and with no Onyx document open it
-    // only ever says "No documents open"), and "Log", which is worth keeping --
-    // it prints the adapter and the swapchain. Undocked, either one floats over
-    // the Layers tree. They go to the bottom as tabs, and Diagnostics is docked
-    // LAST so it is the tab that comes up selected.
+    // "Log" is Onyx's and this tree does not create it, but it is worth
+    // keeping -- it prints the adapter and the swapchain. Undocked it floats
+    // over the Layers tree, so it goes to the bottom as a tab, and
+    // Diagnostics is docked LAST so it is the tab that comes up selected.
+#ifndef ONYX_HAS_DOCUMENT_WINDOW_VISIBILITY
+    // Onyx's "Viewer" is its DocumentWindow's tab host. Our documents are the
+    // Session's and never become tabs there, so it can only ever say "No
+    // documents open" -- which, next to an open icon, reads as the open
+    // having failed. The registrar hides it outright; on an SDK pin that
+    // predates `SetVisible` it cannot be hidden, and then docking it here at
+    // least keeps it from floating over the Layers tree.
     ImGui::DockBuilderDockWindow("Viewer", bottom);
+#endif
     ImGui::DockBuilderDockWindow("Log", bottom);
     ImGui::DockBuilderDockWindow(ick::kDiagnosticsWindow, bottom);
     ImGui::DockBuilderFinish(dockspaceId);
@@ -352,6 +357,19 @@ int run(const fs::path& initial) {
         // Onyx's generic panels are for game archives; ours replace them.
         app.setPanelVisible("Documents", false);
         app.setPanelVisible("Inspector", false);
+#ifdef ONYX_HAS_DOCUMENT_WINDOW_VISIBILITY
+        // And "Viewer" is not a panel, so `setPanelVisible` never reached it:
+        // it is the DocumentWindow's own tab host, drawn straight from
+        // `App::frame()`. Our documents belong to the Session, not to Onyx's
+        // Workspace (Rule 2 of the architecture spec -- the same reason this
+        // app registers no GameModule), so no tab is ever added to it and the
+        // window has exactly one thing it can say: "No documents open."
+        // Measured 18/09 with `AppIcon-27.icon` open on screen and that line
+        // underneath it -- true about that tab host, and read by anyone
+        // looking at the screen as the open having silently failed. It is the
+        // same trap as the File menu that swallowed the pick, one panel down.
+        app.getDocumentWindow().SetVisible(false);
+#endif
         app.addPanel(std::make_unique<LayersPanel>(state));
         app.addPanel(std::make_unique<CanvasPanel>(state));
         app.addPanel(std::make_unique<InspectorPanel>(state));
