@@ -461,10 +461,28 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions)
     // A comparacao e de igualdade exata porque o ease acima GRAMPEIA o valor
     // no alvo dentro de meio pixel (as tres linhas de snap); sem elas o pan
     // nunca chegaria ao alvo e nada aqui jamais assentaria.
-    const bool settled = v.zoom == v.zoomTarget && v.panX == v.panTargetX && v.panY == v.panTargetY;
+    //
+    // E O RETANGULO PINTADO ENTRA NA CONDICAO, nao so o zoom e o pan. O
+    // ladrilho sai de `st.painted`, que depende do espaco disponivel do
+    // painel: redimensionar a janela ou arrastar o splitter do dock em
+    // zoom > 1 mexe nele com o zoom e o pan PARADOS. So com os dois na
+    // condicao, `settled` continuava verdadeiro durante o gesto inteiro, o
+    // bloco abaixo reescrevia `v.tile` a cada quadro e o coordenador disparava
+    // um pedido por quadro -- cada um com um `bundle().clone()` e um render de
+    // ladrilho reiniciado a cada conclusao. O mesmo caso que este temporizador
+    // existe para evitar, alcancado por outro gesto.
+    //
+    // A comparacao e do LADRILHO que sairia, e nao de `painted` cru: e ele que
+    // vira pedido, ele ja tem `operator==` e e inteiro (entao um pixel de
+    // jitter em `painted` que nao muda ladrilho nenhum nao reinicia a espera).
+    // Com zoom <= 1 ele e sempre `TileRect{}`, entao esta condicao nao muda
+    // nada la -- vale o caminho de sempre.
+    const TileRect want = canvasTileFor(st.painted, CanvasVec{tl.x, tl.y}, v.size, v.zoom);
+    const bool settled = v.zoom == v.zoomTarget && v.panX == v.panTargetX &&
+                         v.panY == v.panTargetY && want == v.lastWanted;
+    v.lastWanted = want;
     v.settledSeconds = settled ? v.settledSeconds + io.DeltaTime : 0.0f;
     if (v.settledSeconds >= kTileSettleSeconds) {
-        const TileRect want = canvasTileFor(st.painted, CanvasVec{tl.x, tl.y}, v.size, v.zoom);
         v.tileSize = want.w ? canvasTileSize(v.size, v.zoom) : 0;
         v.tile = want;
     }

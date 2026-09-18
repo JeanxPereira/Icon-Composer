@@ -18,6 +18,16 @@ namespace {
 // mudar, `blurLadderAlignment` passa a mentir, e o gate acusa.
 constexpr double kReduce4Variance = 0.47265625;
 constexpr double kReduce2Variance = 0.765625;
+// GUARDA DE LACO, e nada mais -- nenhum sigma real a alcanca. Cada nivel
+// divide a variancia por `f²` (e ainda subtrai a variancia da propria
+// reducao), entao o produto dos fatores cresce como o LOGARITMO de sigma:
+// chegar a 4096 pede seis niveis de `f == 4`, isto e, `variance > 165 x 16⁶`,
+// ou sigma na ordem de 10⁴ PIXELS. O teto da formula da sombra e 64 pontos de
+// sigma (`GlassShadow.cpp:164`, o teto que a spec chama de inalcancavel), logo
+// `sigmaPixels = 64 x size/1024`: chegar la pediria uma `size` de centenas de
+// milhares de pixels, muito alem do teto de area e do teto do aparelho. O
+// valor esta aqui para que um `residual` que nunca caia (um NaN, uma constante
+// trocada) pare o laco em vez de o travar.
 constexpr std::uint32_t kMaxAlignment = 1u << 12;
 
 std::int64_t alignDown(std::int64_t v, std::uint32_t a) { return v - (v % a); }
@@ -59,6 +69,22 @@ DocumentReach documentReach(const icf::IconDocument& doc, const icf::Context& ct
     return r;
 }
 
+// ESTA FUNCAO OMITE `kBlurMinReducedSide`, E ISSO E SEGURO -- dito aqui para
+// que o proximo leitor nao tenha de rederivar. `blurLadder`
+// (`BlurKernel.cpp:209-210`) so reduz se os DOIS lados reduzidos ficarem >= 8;
+// aqui so a variancia decide. Um buffer pequeno demais faria `blurLadder`
+// parar um nivel antes do que este alinhamento supoe, e a origem estaria
+// alinhada a um multiplo maior do que o necessario -- o que custa area, nunca
+// o invariante (uma origem multipla de 8 tambem e multipla de 4 e de 2).
+//
+// E o caso nem chega a acontecer: alinhamento diferente de 1 exige sombra, e a
+// sombra poe `blurKernelHalfWidth(sigma) = ceil(2,8 x sigma)` na margem, que
+// cresce mais rapido que o lado que a reducao pede (~8 x o produto dos
+// fatores). Nivel a nivel: `a = 2` pede lado >= 15 e da margem >= 26;
+// `a = 4` pede 29 e da >= 37; `a = 8` pede 57 e da >= 84; `a = 16` pede 113 e
+// da >= 145. E o lado do buffer e >= `min(size, margem + 1)`. Em `size = 512`
+// com a sombra default isso e margem 57 px contra os 15 px que o unico degrau
+// alcancavel (`a == 2`) pede.
 std::uint32_t blurLadderAlignment(double sigmaPixels) {
     std::uint32_t a = 1;
     double variance = sigmaPixels * sigmaPixels;
@@ -102,7 +128,25 @@ Result<ViewportPlan> planViewport(const IconViewport& v, std::uint32_t size,
     const std::int64_t y1 = std::min<std::int64_t>(size, static_cast<std::int64_t>(v.originY) + h + m);
     p.buffer = PixelGrid{size, static_cast<std::int32_t>(x0), static_cast<std::int32_t>(y0),
                          static_cast<std::uint32_t>(x1 - x0), static_cast<std::uint32_t>(y1 - y0)};
-    p.overCap = !p.buffer.isFull() && p.buffer.texels() > kViewportAreaCap;
+    // O TETO OLHA O QUE FOI PEDIDO, NAO O QUE FOI PLANEJADO (spec 2026-09-16,
+    // "O teto de area"). A isencao existe para um so caso: quem pediu o CANVAS
+    // INTEIRO nao tem para onde cair -- a queda e justamente para a base, com
+    // `crop` cheio -- entao recusa-lo travaria o renderizador. Quem diz isso e
+    // `crop`, que e o pedido.
+    //
+    // Testar `buffer.isFull()` aqui -- como o plano escrevia, e como o codigo
+    // fez ate esta correcao -- confundia os dois: um LADRILHO cuja margem
+    // crescesse ate `(viewport ⊕ margem) ∩ canvas` cobrir o canvas ficava
+    // indistinguivel de um render cheio e escapava do teto inteiro. Alcancavel
+    // pela UI: com refracao forte a margem e ~439 pontos por lado, e em
+    // `size = 8192` (base 512 a 1600%) basta o retangulo visivel passar de
+    // ~1168 px por eixo -- uma janela maximizada em 1440p -- para o buffer
+    // saturar e um render de 8192x8192 sair no lugar da recusa.
+    //
+    // `crop.isFull()` implica `buffer.isFull()` (margem sobre o canvas inteiro
+    // volta ao canvas inteiro), entao esta linha so pode RECUSAR mais do que a
+    // anterior, nunca menos.
+    p.overCap = !p.crop.isFull() && p.buffer.texels() > kViewportAreaCap;
     return p;
 }
 

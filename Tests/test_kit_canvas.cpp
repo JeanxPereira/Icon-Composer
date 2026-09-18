@@ -627,12 +627,17 @@ TEST_CASE(canvas_writes_the_tile_only_after_the_pan_settles) {
     s->view.panY = s->view.panTargetY = -100.0f;
     s->view.settledSeconds = 0.0f;
 
-    // Eight frames at 60Hz is 133ms: not yet.
-    for (int i = 0; i < 8; ++i) canvasFrame(gui, *s, view);
+    // Nine frames at 60Hz: not yet. NINE AND NOT EIGHT, and the extra one is
+    // not slack -- the settle predicate also compares the tile this frame would
+    // ask for with the previous frame's, and the four lines above have just
+    // changed the zoom and the pan, so the FIRST frame after them sees a tile
+    // that moved and holds `settledSeconds` at zero. The clock therefore starts
+    // on the second frame: eight more of them is 133ms.
+    for (int i = 0; i < 9; ++i) canvasFrame(gui, *s, view);
     CHECK_EQ(s->view.tileSize, 0u);
     CHECK_EQ(s->view.tile.w, 0u);
 
-    // The ninth crosses 150ms, and now there is a tile -- at the resolution the
+    // The tenth crosses 150ms, and now there is a tile -- at the resolution the
     // zoom asks for, and offset by the pan.
     const ick::CanvasStats at4 = canvasFrame(gui, *s, view);
     CHECK_EQ(s->view.tileSize, 2048u);
@@ -672,6 +677,76 @@ TEST_CASE(canvas_writes_the_tile_only_after_the_pan_settles) {
     for (int i = 0; i < 60; ++i) canvasFrame(gui, *s, view);
     CHECK_EQ(s->view.tileSize, 0u);
     CHECK_EQ(s->view.tile.w, 0u);
+    CHECK_EQ(gui.errors(), std::uint64_t(0));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9b. NOR WHILE THE PAINTED RECTANGLE IS STILL CHANGING
+//
+// The case above drives a PAN, and a pan is the only gesture the first version
+// of the settle predicate could see: it keyed on zoom and pan alone. But the
+// tile is computed from `CanvasStats::painted`, which also depends on how much
+// room the panel has -- so resizing the window, or dragging the dock splitter,
+// moves the tile with the zoom and the pan STANDING STILL. `settled` was
+// therefore true for the whole gesture, `settledSeconds` was already past the
+// threshold, and `v.tile` was rewritten on every frame: one request per frame,
+// each with a `bundle().clone()`, the worker restarting a large tile render on
+// every completion, and the pending dot never going out. The same case the
+// timer exists to prevent, reached by a different gesture.
+//
+// This drives it through the coordinator rather than through `v.tile`, because
+// the claim worth pinning is about REQUESTS and not about a field. It also
+// checks that the pan target did not move, so a green here cannot be the pan
+// clamp doing the work by accident.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_CASE(canvas_asks_for_nothing_while_the_painted_rectangle_keeps_changing) {
+    auto s = ick::Session::open(makeBundle("resize"));
+    REQUIRE(s.has_value());
+    ick::HeadlessImGui gui;
+    TileRecorder sched;
+    TexSink sink;
+    ick::RenderCoordinator coord(sched, sink);
+
+    float w = 840.0f;
+    auto frame = [&] { coord.tick(*s); return canvasFrame(gui, *s, coord.view(), w, 700.0f); };
+
+    // Settle at 400% with its tile asked for and answered, so the canvas is
+    // quiet before the gesture begins.
+    frame();
+    REQUIRE(sched.asks.size() == 1);
+    sched.answerTile(s->version(), s->view.context, sched.asks[0]);
+    frame();
+    s->view.zoomRequest = 4.0f;
+    for (int i = 0; i < 60; ++i) frame();
+    REQUIRE(sched.asks.size() == 2);
+    CHECK_EQ(sched.asks[1].size, 2048u);
+    sched.answerTile(s->version(), s->view.context, sched.asks[1]);
+    frame();
+    REQUIRE(!coord.view().pending);
+    const std::size_t quiet = sched.asks.size();
+    const ick::TileRect before = s->view.tile;
+    REQUIRE(before.w > 0u);
+
+    // THE GESTURE: twenty frames of the panel getting narrower. Nothing else
+    // moves.
+    const float panX0 = s->view.panTargetX, panY0 = s->view.panTargetY;
+    for (int i = 0; i < 20; ++i) {
+        w -= 5.0f;
+        const ick::CanvasStats st = frame();
+        CHECK_EQ(st.zoom, s->view.zoomTarget);         // not a zoom
+        CHECK_EQ(s->view.panTargetX, panX0);           // and not a pan: the clamp
+        CHECK_EQ(s->view.panTargetY, panY0);           // never bit at this width
+        CHECK_EQ(s->view.settledSeconds, 0.0f);        // the timer is held down
+        CHECK(s->view.tile == before);                 // so the tile does not move
+        CHECK_EQ(sched.asks.size(), quiet);            // and nothing is asked for
+    }
+
+    // LET GO. The timer runs, and exactly ONE tile -- for the rectangle the
+    // panel ended up with -- is asked for. One, not twenty.
+    for (int i = 0; i < 20; ++i) frame();
+    CHECK(s->view.settledSeconds >= ick::kTileSettleSeconds);
+    CHECK(!(s->view.tile == before));
+    CHECK_EQ(sched.asks.size(), quiet + 1);
     CHECK_EQ(gui.errors(), std::uint64_t(0));
 }
 

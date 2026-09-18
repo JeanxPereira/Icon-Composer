@@ -110,10 +110,27 @@ PathGlobals fitViewBox(const icf::svg::ViewBox& box, std::uint32_t width,
     return g;
 }
 
+// O ENQUADRAMENTO E SOBRE A PROJECAO, NAO SOBRE O ALVO. Com o padrao --
+// origem zero e projecao tomada do proprio alvo -- os dois sao o mesmo numero
+// e isto e literalmente o que a funcao fazia antes. Num alvo PARCIAL nao sao:
+// `renderSvgPlaced` desenha em coordenada absoluta e desloca por
+// `originX/Y` (`CoveragePass`), entao um enquadramento medido sobre a
+// extensao do LADRILHO poria o viewBox dentro do ladrilho e o desenho o
+// projetaria sobre o canvas -- errado, e em silencio.
+//
+// Enquadrar em vez de recusar: e o que `IconRenderer.cpp:1544` ja faz pelo
+// caminho do icone (`placeOnCanvas(..., options.size)`, a grade da projecao,
+// com `ro.projectionWidth = grid.size`), entao a alternativa -- devolver
+// `unexpected` em `isPartialTarget` -- deixaria o unico ponto de entrada
+// publico incapaz de fazer o que a biblioteca faz por dentro, e o proximo
+// chamador teria de recopiar essas duas linhas para contornar a recusa. A
+// recusa por `<filter>` (linha 322) e outra coisa: la o alcance nao e
+// conhecido, aqui ele e.
 Result<RenderedImage> renderSvg(Device& device, const icf::svg::SvgDocument& doc,
                                 RenderOptions options) {
-    return renderSvgPlaced(device, doc,
-                           fitViewBox(doc.viewBox, options.width, options.height), options);
+    const std::uint32_t pw = options.projectionWidth ? options.projectionWidth : options.width;
+    const std::uint32_t ph = options.projectionHeight ? options.projectionHeight : options.height;
+    return renderSvgPlaced(device, doc, fitViewBox(doc.viewBox, pw, ph), options);
 }
 
 Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocument& doc,

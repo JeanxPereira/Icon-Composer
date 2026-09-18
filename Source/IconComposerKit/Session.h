@@ -86,6 +86,15 @@ struct ViewContext {
     // com o canvas inteiro, o pedido de sempre.
     std::uint32_t tileSize = 0;
     TileRect tile;
+    // O ladrilho que ESTE quadro pediria, guardado para o quadro seguinte
+    // comparar. O assentamento nao pode olhar so o zoom e o pan: `tile` sai de
+    // `CanvasStats::painted`, que muda quando a janela e redimensionada ou o
+    // splitter do dock e arrastado. Sem esta comparacao, esses dois gestos
+    // deixavam `settled` VERDADEIRO -- zoom e pan parados -- e o bloco de
+    // `v.tile` reescrevia o ladrilho a cada quadro: um pedido por quadro, que
+    // e exatamente o que o temporizador existe para impedir (spec 2026-09-16,
+    // "O que o Kit faz"), alcancado por outro gesto.
+    TileRect lastWanted;
     float settledSeconds = 0.0f;
 };
 

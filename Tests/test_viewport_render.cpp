@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -348,6 +349,143 @@ bool namesTheFilterRefusal(const std::vector<std::string>& gaps) {
 }
 
 }  // namespace
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `planViewport` SOZINHA, SEM APARELHO E SEM CORPUS
+//
+// Tudo abaixo desta linha ate o proximo separador e funcao pura sobre tres
+// escalares e uma `DocumentReach`: nao abre Vulkan, nao le documento, nao mede
+// tempo. Ate aqui NADA no `Tests/` nomeava `viewportRefused`,
+// `kViewportAreaCap`, `overCap` nem a recusa "viewport fora do canvas" -- a
+// valvula de seguranca da producao e a guarda de canvas eram o pedaco nao
+// coberto do plano, e e nela que o defeito do teto de area morava.
+//
+// A `DocumentReach` ZERADA e o instrumento destes casos: sem sombra
+// (`sigma == 0`, logo `alignment == 1`), sem banda local e sem refracao, a
+// margem e `0 + 0 + 2 x 1 + 2 = 4` px em qualquer `size`
+// (`ViewportPlan.cpp`, a conta de `marginPx`). Com a margem presa em 4, cada
+// caso abaixo mede uma coisa so: a geometria, ou o teto.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// O CASO CONFORTAVEL E O CASO ACIMA DO TETO, com a mesma margem de 4 px: o que
+// separa os dois e a area pedida, e nada mais.
+TEST_CASE(viewport_plan_refuses_only_above_the_area_cap) {
+    const DocumentReach none;
+
+    // 1024 + 4 de margem por lado: 1,06 Mpx, bem abaixo dos 16 Mpx.
+    auto small = planViewport(IconViewport{0, 0, 1024, 1024}, 8192, none);
+    REQUIRE(small.has_value());
+    CHECK_EQ(small->marginPixels, 4u);
+    CHECK_EQ(small->buffer.width, 1028u);
+    CHECK_EQ(small->buffer.texels(), std::size_t{1028} * 1028);
+    CHECK(small->buffer.texels() < kViewportAreaCap);
+    CHECK_EQ(small->overCap, false);
+    // O recorte ECOA o que foi pedido -- e ele que o renderizador devolve.
+    CHECK_EQ(small->crop.originX, 0);
+    CHECK_EQ(small->crop.width, 1024u);
+    CHECK_EQ(small->crop.isFull(), false);
+
+    // 5000 + 4: 25,04 Mpx, acima.
+    auto big = planViewport(IconViewport{0, 0, 5000, 5000}, 8192, none);
+    REQUIRE(big.has_value());
+    CHECK_EQ(big->buffer.texels(), std::size_t{5004} * 5004);
+    CHECK(big->buffer.texels() > kViewportAreaCap);
+    CHECK_EQ(big->overCap, true);
+}
+
+// O DEFEITO QUE ESTE CASO EXISTE PARA PRENDER: um LADRILHO cuja margem cresce
+// ate o buffer cobrir o canvas inteiro.
+//
+// A linha original testava `!buffer.isFull()`, isto e, perguntava ao BUFFER se
+// o canvas inteiro tinha sido pedido. Um ladrilho que satura o buffer responde
+// "sim" sem nunca ter pedido o canvas: ele escapava do teto inteiro e o render
+// saia em `size x size`. Quem sabe a resposta e o RECORTE, que e o pedido.
+//
+// Os numeros sao os da propria spec ("O teto de area" e "A margem"): refracao
+// forte da ~439 pontos de margem por lado, `size = 8192` e a base de 512 a
+// 1600%, e 1168 px por eixo e o retangulo visivel de uma janela maximizada em
+// 1440p -- 0,143 x 8192. `swmpc` esta no corpus e e o pior caso da spec.
+TEST_CASE(viewport_plan_refuses_a_tile_whose_margin_saturates_the_canvas) {
+    DocumentReach refracts;
+    refracts.chainedPoints = 439.0;   // ~a soma de swmpc: 337,3 de refracao + a sombra
+
+    const std::uint32_t size = 8192;                 // base 512 a 1600%
+    const std::int32_t origin = (8192 - 1168) / 2;   // a janela maximizada, centrada
+    auto p = planViewport(IconViewport{origin, origin, 1168, 1168}, size, refracts);
+    REQUIRE(p.has_value());
+
+    // A margem come o resto do canvas nos dois lados, e o buffer SATURA.
+    CHECK_EQ(p->marginPixels, 3516u);   // ceil(439 x 8) + 2 x 1 + 2
+    CHECK_EQ(p->buffer.isFull(), true);
+    CHECK_EQ(p->buffer.texels(), std::size_t{8192} * 8192);
+    CHECK(p->buffer.texels() > kViewportAreaCap);
+
+    // E o RECORTE nao e o canvas: foi um ladrilho que se pediu.
+    CHECK_EQ(p->crop.isFull(), false);
+    CHECK_EQ(p->crop.width, 1168u);
+
+    // Logo, recusado. Com a linha antiga (`!buffer.isFull()`) isto era `false`
+    // e o que seguia era um render de 8192x8192.
+    CHECK_EQ(p->overCap, true);
+}
+
+// A ISENCAO QUE NAO PODE CAIR JUNTO: um pedido de CANVAS INTEIRO acima do teto
+// continua aceito. E para ele que a recusa de um ladrilho cai (a `fallbackSize`
+// do coordenador), entao recusa-lo tambem deixaria a queda sem destino.
+TEST_CASE(viewport_plan_never_refuses_a_whole_canvas_request) {
+    const DocumentReach none;
+    // O padrao: `width == height == 0` quer dizer `size`.
+    auto implicit = planViewport(IconViewport{}, 8192, none);
+    REQUIRE(implicit.has_value());
+    CHECK_EQ(implicit->crop.isFull(), true);
+    CHECK(implicit->buffer.texels() > kViewportAreaCap);
+    CHECK_EQ(implicit->overCap, false);
+
+    // E o canvas inteiro escrito por extenso, que e o que o CLI manda.
+    auto spelled = planViewport(IconViewport{0, 0, 8192, 8192}, 8192, none);
+    REQUIRE(spelled.has_value());
+    CHECK_EQ(spelled->crop.isFull(), true);
+    CHECK_EQ(spelled->overCap, false);
+}
+
+// A INTERSECCAO COM O CANVAS. O viewport cabe no canvas -- e exigido, o caso
+// seguinte mede a recusa --, mas a MARGEM passa da borda nos dois extremos, e
+// o buffer e grampeado: origem >= 0 e fim <= `size`. Isto e o que faz a borda
+// do buffer coincidir com a do canvas, que e a condicao do invariante
+// (spec, "O buffer e `(viewport ⊕ margem) ∩ canvas`").
+TEST_CASE(viewport_plan_intersects_the_buffer_with_the_canvas) {
+    const DocumentReach none;   // margem 4
+
+    auto corner = planViewport(IconViewport{0, 0, 100, 100}, 512, none);
+    REQUIRE(corner.has_value());
+    CHECK_EQ(corner->buffer.originX, 0);   // nao -4
+    CHECK_EQ(corner->buffer.originY, 0);
+    CHECK_EQ(corner->buffer.width, 104u);
+
+    auto farEdge = planViewport(IconViewport{412, 412, 100, 100}, 512, none);
+    REQUIRE(farEdge.has_value());
+    CHECK_EQ(farEdge->buffer.originX, 408);
+    CHECK_EQ(farEdge->buffer.originX + static_cast<std::int32_t>(farEdge->buffer.width), 512);
+    CHECK_EQ(farEdge->buffer.originY + static_cast<std::int32_t>(farEdge->buffer.height), 512);
+}
+
+// A GUARDA DE CANVAS. Um viewport que nao cabe e ERRO, e nao um recorte
+// silenciosamente encolhido: o chamador recebe de volta uma grade que nao e a
+// que pediu, e o eco de `RenderedIcon` passaria a mentir sobre onde os pixels
+// estao.
+TEST_CASE(viewport_plan_rejects_a_viewport_outside_the_canvas) {
+    const DocumentReach none;
+    CHECK(!planViewport(IconViewport{400, 0, 200, 100}, 512, none).has_value());
+    CHECK(!planViewport(IconViewport{0, 400, 100, 200}, 512, none).has_value());
+    CHECK(!planViewport(IconViewport{-1, 0, 100, 100}, 512, none).has_value());
+    CHECK(!planViewport(IconViewport{0, -1, 100, 100}, 512, none).has_value());
+    // Exatamente encostado NAO e fora.
+    CHECK(planViewport(IconViewport{412, 412, 100, 100}, 512, none).has_value());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// O GATE SOBRE PIXEL, daqui para baixo: precisa de aparelho.
+// ─────────────────────────────────────────────────────────────────────────────
 
 TEST_CASE(viewport_default_is_the_whole_canvas) {
     Device& d = gpu();
