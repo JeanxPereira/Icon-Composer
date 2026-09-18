@@ -32,6 +32,7 @@ add_library(RenderBox STATIC
     ChicletHighlights.cpp
     ChicletShape.cpp
     IconRenderer.cpp
+    ViewportPlan.cpp
     GradientOracle.cpp
     AutomaticGradient.cpp
     GlassOracle.cpp

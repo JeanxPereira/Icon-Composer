@@ -1,0 +1,61 @@
+#pragma once
+// O buffer em que um render de viewport roda (spec 2026-09-16, "A margem").
+//
+// Tres decisoes, cada uma com o motivo medido:
+//
+//   1. A MARGEM E POR DOCUMENTO. O pior caso teorico (refracao, 640 pontos)
+//      faria todo viewport virar o render cheio. `[ART]` So 2 dos 146
+//      documentos do corpus refratam.
+//   2. OS ALCANCES SE SOMAM NA CADEIA. A refracao le o backdrop, que contem a
+//      sombra de grupos anteriores; um pixel do recorte so e exato com margem
+//      >= a banda local MAIS a soma das refracoes.
+//   3. O BUFFER E (viewport + margem) ∩ canvas, COM ORIGEM ALINHADA. O
+//      desfoque, a reducao e a amostragem da refracao grampeiam na borda do
+//      buffer -- que so pode ser a do canvas ou estar alem do alcance -- e a
+//      escada do desfoque agrupa em caixas a partir da origem do buffer.
+#include "Source/IconComposerFoundation/IconDocument.h"
+#include "Source/RenderBox/Device.h"
+#include "Source/RenderBox/GlassTranslucency.h"
+#include "Source/RenderBox/IconRenderer.h"
+#include "Source/RenderBox/PixelGrid.h"
+
+#include <cstddef>
+#include <cstdint>
+
+namespace rb {
+
+// Acima disto o refino nao acontece e o canvas estica a base (spec, "O teto
+// de area").
+inline constexpr std::size_t kViewportAreaCap = 16'000'000;
+
+// A banda que o especular e a translucidez leem do campo, em pontos. `[OBS]`
+// A spec mede ~24 para o especular; 32 e o arredondamento para cima, e o gate
+// e quem diz se basta.
+inline constexpr double kLocalFieldBandPoints = 32.0;
+
+struct DocumentReach {
+    double localPoints = 0.0;         // maior banda local que nao e sombra
+    double shadowSigmaPoints = 0.0;   // maior sigma de sombra
+    double shadowShiftPoints = 0.0;   // maior deslocamento de sombra (+ anel)
+    double chainedPoints = 0.0;       // SOMA dos alcances de refracao
+};
+
+DocumentReach documentReach(const icf::IconDocument& doc, const icf::Context& ctx,
+                            IconSizeClass sizeClass);
+
+// O produto dos fatores de reducao que `blurLadder` vai usar para este sigma,
+// nivel a nivel. A origem do buffer tem que ser multipla dele.
+std::uint32_t blurLadderAlignment(double sigmaPixels);
+
+struct ViewportPlan {
+    PixelGrid buffer;
+    PixelGrid crop;
+    std::uint32_t marginPixels = 0;
+    std::uint32_t alignment = 1;
+    bool overCap = false;
+};
+
+Result<ViewportPlan> planViewport(const IconViewport& viewport, std::uint32_t size,
+                                  const DocumentReach& reach);
+
+}  // namespace rb
