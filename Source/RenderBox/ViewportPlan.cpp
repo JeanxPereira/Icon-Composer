@@ -21,8 +21,10 @@ constexpr double kReduce2Variance = 0.765625;
 // GUARDA DE LACO, e nada mais -- nenhum sigma real a alcanca. Cada nivel
 // divide a variancia por `f²` (e ainda subtrai a variancia da propria
 // reducao), entao o produto dos fatores cresce como o LOGARITMO de sigma:
-// chegar a 4096 pede seis niveis de `f == 4`, isto e, `variance > 165 x 16⁶`,
-// ou sigma na ordem de 10⁴ PIXELS. O teto da formula da sombra e 64 pontos de
+// chegar a 4096 pede seis niveis de `f == 4`, e cada nivel abaixo do ultimo
+// paga um `x 16` (mais a variancia da propria reducao), entao o sexto so
+// acontece com `variance > 165 x 16⁵ ~ 1,73e8` -- sigma ~1,3 x 10⁴ PIXELS. O
+// teto da formula da sombra e 64 pontos de
 // sigma (`GlassShadow.cpp:164`, o teto que a spec chama de inalcancavel), logo
 // `sigmaPixels = 64 x size/1024`: chegar la pediria uma `size` de centenas de
 // milhares de pixels, muito alem do teto de area e do teto do aparelho. O
@@ -80,7 +82,7 @@ DocumentReach documentReach(const icf::IconDocument& doc, const icf::Context& ct
 // E o caso nem chega a acontecer: alinhamento diferente de 1 exige sombra, e a
 // sombra poe `blurKernelHalfWidth(sigma) = ceil(2,8 x sigma)` na margem, que
 // cresce mais rapido que o lado que a reducao pede (~8 x o produto dos
-// fatores). Nivel a nivel: `a = 2` pede lado >= 15 e da margem >= 26;
+// fatores). Nivel a nivel: `a = 2` pede lado >= 15 e da margem >= 21;
 // `a = 4` pede 29 e da >= 37; `a = 8` pede 57 e da >= 84; `a = 16` pede 113 e
 // da >= 145. E o lado do buffer e >= `min(size, margem + 1)`. Em `size = 512`
 // com a sombra default isso e margem 57 px contra os 15 px que o unico degrau

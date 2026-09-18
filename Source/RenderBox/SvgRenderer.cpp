@@ -75,15 +75,25 @@ void compose2x3(const double (&a)[6], const double (&b)[6], double (&out)[6]) {
     out[5] = b[3] * a[2] + b[4] * a[5] + b[5];
 }
 
+// A PROJECAO EFETIVA, NUM LUGAR SO. "Zero quer dizer a do alvo"
+// (`SvgRenderer.h`) e uma regra, e ela e lida em dois sitios -- o predicado de
+// alvo parcial e o enquadramento de `renderSvg`. Duas copias dela se
+// separariam em silencio no dia em que a regra mudasse.
+std::uint32_t projectionWidthOf(const RenderOptions& o) {
+    return o.projectionWidth ? o.projectionWidth : o.width;
+}
+std::uint32_t projectionHeightOf(const RenderOptions& o) {
+    return o.projectionHeight ? o.projectionHeight : o.height;
+}
+
 }  // namespace
 
 // O alvo e um PEDACO da projecao? Com o padrao -- origem zero e projecao
 // tomada do proprio alvo -- e sempre falso, e todo sitio abaixo se reduz ao
 // que fazia antes.
 bool isPartialTarget(const RenderOptions& o) {
-    const std::uint32_t pw = o.projectionWidth ? o.projectionWidth : o.width;
-    const std::uint32_t ph = o.projectionHeight ? o.projectionHeight : o.height;
-    return o.originX != 0 || o.originY != 0 || pw != o.width || ph != o.height;
+    return o.originX != 0 || o.originY != 0 || projectionWidthOf(o) != o.width ||
+           projectionHeightOf(o) != o.height;
 }
 
 PathGlobals fitViewBox(const icf::svg::ViewBox& box, std::uint32_t width,
@@ -123,14 +133,14 @@ PathGlobals fitViewBox(const icf::svg::ViewBox& box, std::uint32_t width,
 // com `ro.projectionWidth = grid.size`), entao a alternativa -- devolver
 // `unexpected` em `isPartialTarget` -- deixaria o unico ponto de entrada
 // publico incapaz de fazer o que a biblioteca faz por dentro, e o proximo
-// chamador teria de recopiar essas duas linhas para contornar a recusa. A
-// recusa por `<filter>` (linha 322) e outra coisa: la o alcance nao e
-// conhecido, aqui ele e.
+// chamador teria de recopiar estas linhas para contornar a recusa. A recusa
+// por `<filter>` (a chamada a `isPartialTarget` mais abaixo, hoje na linha
+// 349) e outra coisa: la o alcance nao e conhecido, aqui ele e.
 Result<RenderedImage> renderSvg(Device& device, const icf::svg::SvgDocument& doc,
                                 RenderOptions options) {
-    const std::uint32_t pw = options.projectionWidth ? options.projectionWidth : options.width;
-    const std::uint32_t ph = options.projectionHeight ? options.projectionHeight : options.height;
-    return renderSvgPlaced(device, doc, fitViewBox(doc.viewBox, pw, ph), options);
+    return renderSvgPlaced(
+        device, doc,
+        fitViewBox(doc.viewBox, projectionWidthOf(options), projectionHeightOf(options)), options);
 }
 
 Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocument& doc,

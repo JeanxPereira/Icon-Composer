@@ -261,7 +261,7 @@ aparece em `RenderedIcon::shapeGaps`, com o motivo por escrito; o gate
 (`viewport_refuses_an_svg_filter_by_name_instead_of_clamping_it`) procura essa
 recusa por nome em vez de comparar pixel. `[ART]` **Medido em 18/09**
 (`grep -rl` sobre `References/corpus/**/*.svg`): a recusa é por NOME de
-`<filter>` (`SvgRenderer.cpp:322`), e é esse o predicado que decide a
+`<filter>` (`SvgRenderer.cpp:349`), e é esse o predicado que decide a
 exposição dela — **9** SVGs do corpus têm `<filter>`, em três documentos
 (`Bunn__PiStats__pistats`, `PDF-Archiver__PDF-Archiver__AppIcon`,
 `rileytestut__Delta__MicrochipIcon`); **5**, todos dentro dos mesmos três
@@ -300,29 +300,42 @@ nunca zero), então recusar também esse pedido deixaria a queda sem destino.
 `crop` é o pedido; `buffer` é a consequência do pedido mais a margem — e só o
 primeiro sabe o que o chamador quis.
 
+O que vem a seguir tem duas metades com marcações diferentes, de propósito: o
+que foi EXECUTADO aqui é `[ART]`; o alcance do defeito pela UI e o custo de
+memória dele são DERIVADOS de leitura de código e de aritmética, nunca
+executados, e são `[INF]`.
+
 `[ART]` **A primeira versão testava `!buffer.isFull()`, e por isso o teto não
 disparava exatamente no caso que ele existe para cobrir.** Corrigido em 18/09.
 Um LADRILHO cuja margem cresce até `(viewport ⊕ margem) ∩ canvas` cobrir o
 canvas inteiro responde "sim" a `buffer.isFull()` sem nunca ter pedido o
 canvas: ficava indistinguível de um render cheio e escapava do teto por
-inteiro. E é alcançável pela UI, nos números desta mesma seção: com refração
-forte a margem é ~439 pontos por lado, o buffer satura assim que a área
-visível do canvas passa de `0,143 × size`, e em `size = 8192` (a base de 512 a
-1600%) isso são 1168 px por eixo — uma janela maximizada num monitor 1440p,
-sobre `CamilleScholtz__swmpc__swmpc`, que está no corpus e é o pior caso desta
-spec. O que vinha em seguida era um render de 8192×8192: `acc` sozinho é
-1,07 GB, o armazenamento de float no pico é da ordem de 7 GB, e a lambda do
-job (`OnyxPorts.cpp:145`) não tem `try`/`catch`, de modo que um `bad_alloc`
-escapando deixa `working_` verdadeiro e `JobScheduler::~JobScheduler` espera
-para sempre. Com `crop`, o mesmo pedido cai para a base — que é o que o
-parágrafo acima sempre disse que aconteceria nos zooms altos com refração
-forte. `crop.isFull()` implica `buffer.isFull()` (a margem sobre o canvas
-inteiro volta ao canvas inteiro), então a troca só pode recusar MAIS do que a
-linha antiga, nunca menos; o gate do corpus a 2048 px não se move, porque lá o
-buffer de `swmpc` é 2048×2048 = 4,19 Mpx e o teto nem é consultado.
-`viewport_plan_refuses_a_tile_whose_margin_saturates_the_canvas`
+inteiro. `viewport_plan_refuses_a_tile_whose_margin_saturates_the_canvas`
 (`Tests/test_viewport_render.cpp`) prende o caso, e foi VISTO falhando contra
-a linha antiga antes de a nova entrar.
+a linha antiga — `overCap` saindo `false` onde tem de ser `true` — antes de a
+nova entrar. E o gate do corpus a 2048 px foi RODADO com a troca no lugar e
+não se moveu: o buffer de `swmpc` ali é 2048×2048 = 4,19 Mpx, abaixo do teto,
+que portanto nem chega a ser consultado — exatamente a forma "buffer cheio,
+recorte não cheio" que a correção passa a enxergar, e que continua aceita.
+
+`[INF]` **O alcance e o custo do defeito, derivados e não executados.** É
+alcançável pela UI, nos números desta mesma seção: com refração forte a margem
+é ~439 pontos por lado, o buffer satura assim que a área visível do canvas
+passa de `0,143 × size`, e em `size = 8192` (a base de 512 a 1600%) isso são
+1168 px por eixo — uma janela maximizada num monitor 1440p, sobre
+`CamilleScholtz__swmpc__swmpc`, que está no corpus e é o pior caso desta spec.
+O que viria em seguida é um render de 8192×8192: `acc` sozinho seria 1,07 GB e
+o armazenamento de float no pico da ordem de 7 GB; e a lambda do job
+(`OnyxPorts.cpp:145`) não tem `try`/`catch`, de modo que um `bad_alloc`
+escapando deixaria `working_` verdadeiro e `JobScheduler::~JobScheduler`
+esperando para sempre. Nada disso foi executado — nenhum render de 8192 foi
+tentado nesta máquina; os números saem da aritmética de `texels × 4 × 4 B` e
+da leitura de `OnyxPorts.cpp`. Na mesma classe está a prova de que a troca é
+segura: `crop.isFull()` implica `buffer.isFull()` (a margem sobre o canvas
+inteiro volta ao canvas inteiro), logo ela só pode recusar MAIS do que a linha
+antiga, nunca menos. Com `crop`, o mesmo pedido cai para a base — que é o que
+o parágrafo acima sempre disse que aconteceria nos zooms altos com refração
+forte.
 
 ## O que o Kit faz
 
@@ -451,6 +464,7 @@ Os oito passos da "Ordem de execução" acima landaram, um a um, entre
 | 6 | `73ea8bd`, `b92b19e` | O gate fecha em zero sobre o corpus a 2048 px, a margem medida entra na spec, e três dívidas de precisão da tabela de margem são pagas (sombra superestimada em 3,33×, a banda da pastilha, a afirmação falsa sobre a sombra de `Jellify-Music`). |
 | 7 | `8e7319a`, `f971028` | Pedido e resultado passam a carregar o ladrilho; a queda para a base cobre também o teto de APARELHO (`CoveragePass::draw`, erro, não recusa); a nota do teto de área deixa de desaparecer atrás de um fallback bem-sucedido. |
 | 8 | `03a043f` | O Kit: o canvas pede o ladrilho quando o pan e o zoom param por 150 ms, o coordenador ganha o ladrilho na chave, a régua vira a `size` base, e a textura é posta no retângulo que ela cobre. |
+| revisão | `789ce9b`, `fc979d1`, e a correção documental **deste mesmo commit** | A revisão da branch inteira achou uma Critical e três Important. O teto de área passa a olhar o viewport PEDIDO (`crop`) e não o buffer planejado; o assentamento do canvas passa a comparar também o ladrilho deste quadro; `renderSvg` enquadra pela projeção; e `planViewport`, que não tinha teste nenhum, ganha cinco casos — o do ladrilho que satura o buffer foi VISTO falhando contra a linha antiga. Abaixo, "O plano copiado sem ser examinado". |
 
 A margem medida (Task 6) já está registrada em "A margem, e de onde vem o
 número", acima, e não é repetida aqui: **897 px** para `swmpc` (o documento que
@@ -558,7 +572,7 @@ linha faz antes de deixá-la entrar.
    `OnyxPorts.cpp:78-93` empurra uma linha para `notes` explicando O MOTIVO
    da queda ("ladrilho recusado, caiu para a base: …", ou a nota do teto de
    área preservada), e essa linha aparece no painel de Diagnóstico via o laço
-   de `[OBS]` que já lê `view.notes` (`PanelCanvas.cpp:587`). Mas nada em
+   de `[OBS]` que já lê `view.notes` (`PanelCanvas.cpp:605`). Mas nada em
    `PanelCanvas.cpp` lê `view.refined`, então não existe uma linha própria
    dizendo "estes pixels na tela são o canvas inteiro esticado, não o
    ladrilho pedido" — o motivo da queda aparece; o fato de que o resultado
@@ -580,5 +594,7 @@ linha faz antes de deixá-la entrar.
    vem o número", acima ("O `<filter>` de SVG é RECUSADO num buffer parcial,
    não margeado") — não duplicado aqui.
 
-Commits do estado: `03a043f` (passo 8) é o HEAD desta frente até aqui; este
-arquivo fecha a spec para a Task 9 do plano.
+Commits do estado: `03a043f` fechou o passo 8, e este arquivo fechou a spec
+para a Task 9 do plano. O HEAD desta frente é agora o terceiro commit da onda
+de conserto da revisão de branch (`789ce9b` o código, `fc979d1` a spec, e a
+correção documental deste commit) — a linha "revisão" da tabela acima.
