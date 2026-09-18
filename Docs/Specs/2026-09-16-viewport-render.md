@@ -289,6 +289,41 @@ ladrilho é constante; a margem não é. Consequência: o teto dispara justament
 nos zooms mais altos e nos documentos com refração forte, e é lá que o canvas
 volta a esticar. Isso está aceito, e o motivo é este.
 
+**O teto olha o VIEWPORT PEDIDO, e não o buffer planejado.** A expressão é
+`!crop.isFull() && buffer.texels() > kViewportAreaCap` (`ViewportPlan.cpp`), e
+os dois lados dela medem coisas diferentes de propósito. A ÁREA que pesa é a
+do buffer, porque é o buffer que é alocado e percorrido. Mas quem tem direito
+à ISENÇÃO é o recorte, porque a isenção existe para um caso só: **quem pediu o
+canvas inteiro não tem para onde cair.** A queda de um ladrilho recusado é
+justamente o canvas inteiro na resolução base (`RenderRequest::fallbackSize`,
+nunca zero), então recusar também esse pedido deixaria a queda sem destino.
+`crop` é o pedido; `buffer` é a consequência do pedido mais a margem — e só o
+primeiro sabe o que o chamador quis.
+
+`[ART]` **A primeira versão testava `!buffer.isFull()`, e por isso o teto não
+disparava exatamente no caso que ele existe para cobrir.** Corrigido em 18/09.
+Um LADRILHO cuja margem cresce até `(viewport ⊕ margem) ∩ canvas` cobrir o
+canvas inteiro responde "sim" a `buffer.isFull()` sem nunca ter pedido o
+canvas: ficava indistinguível de um render cheio e escapava do teto por
+inteiro. E é alcançável pela UI, nos números desta mesma seção: com refração
+forte a margem é ~439 pontos por lado, o buffer satura assim que a área
+visível do canvas passa de `0,143 × size`, e em `size = 8192` (a base de 512 a
+1600%) isso são 1168 px por eixo — uma janela maximizada num monitor 1440p,
+sobre `CamilleScholtz__swmpc__swmpc`, que está no corpus e é o pior caso desta
+spec. O que vinha em seguida era um render de 8192×8192: `acc` sozinho é
+1,07 GB, o armazenamento de float no pico é da ordem de 7 GB, e a lambda do
+job (`OnyxPorts.cpp:145`) não tem `try`/`catch`, de modo que um `bad_alloc`
+escapando deixa `working_` verdadeiro e `JobScheduler::~JobScheduler` espera
+para sempre. Com `crop`, o mesmo pedido cai para a base — que é o que o
+parágrafo acima sempre disse que aconteceria nos zooms altos com refração
+forte. `crop.isFull()` implica `buffer.isFull()` (a margem sobre o canvas
+inteiro volta ao canvas inteiro), então a troca só pode recusar MAIS do que a
+linha antiga, nunca menos; o gate do corpus a 2048 px não se move, porque lá o
+buffer de `swmpc` é 2048×2048 = 4,19 Mpx e o teto nem é consultado.
+`viewport_plan_refuses_a_tile_whose_margin_saturates_the_canvas`
+(`Tests/test_viewport_render.cpp`) prende o caso, e foi VISTO falhando contra
+a linha antiga antes de a nova entrar.
+
 ## O que o Kit faz
 
 A chave do `RenderCoordinator` ganha o viewport, e o canvas passa a mostrar
@@ -478,6 +513,28 @@ A passagem interativa — os olhos vendo a roda subir a 400%, a borda ficar mais
 nítida, o "rendering…" aparecer e sumir — continua em aberto. Nenhum teste
 aqui compara nitidez subjetiva; o gate só prova igualdade com o recorte.
 
+### O plano copiado sem ser examinado, e o contraexemplo
+
+Duas das quatro correções da revisão de branch de 18/09 — a expressão do teto
+de área e o predicado de assentamento — **estavam literalmente no plano**
+(`Docs/Plans/2026-09-16-viewport-render.md`, linhas 593 e 1568) e chegaram ao
+código sem que ninguém as examinasse. Isso não foi escorregão de quem
+construiu: foi o pensamento do plano, transcrito. Um plano é uma hipótese
+escrita antes de o código existir, e as duas linhas só ficam visivelmente
+erradas depois de se saber o que `PixelGrid::isFull` passou a distinguir e de
+onde `st.painted` passa a vir — coisas que o plano não tinha como saber e que
+o passo que digitou a linha já sabia. Copiar uma linha do plano é, portanto,
+aceitar uma hipótese sem a medir.
+
+O contraexemplo está duas subseções acima, e é ele que dá a medida: na Task 3
+o plano pedia a origem do buffer dobrada dentro de `m2`; isso foi MEDIDO
+(11 e 15 pixels da borda antialiasada a um ULP de `float16`), o plano foi
+DESOBEDECIDO, e o resultado — o offset de viewport do Vulkan, com o fragmento
+somando a origem de volta — é melhor do que o que estava escrito, e ainda
+apagou uma assimetria `grid`/`canvasGrid` que o plano previa. A diferença
+entre os dois casos não é a qualidade do plano. É se alguém mediu o que a
+linha faz antes de deixá-la entrar.
+
 ### `[OBS]` O que ficou aberto
 
 1. **HiDPI.** O ladrilho usa pixel lógico, exatamente como a textura usava
@@ -506,16 +563,19 @@ aqui compara nitidez subjetiva; o gate só prova igualdade com o recorte.
    dizendo "estes pixels na tela são o canvas inteiro esticado, não o
    ladrilho pedido" — o motivo da queda aparece; o fato de que o resultado
    NA TELA é a base esticada, não.
-5. **O predicado de assentamento não cobre um redimensionamento do
-   viewport.** `PanelCanvas.cpp:464` crava `settled` só em zoom e pan; o
-   ladrilho depende também do retângulo pintado (`st.painted`), então
-   redimensionar a janela ou arrastar o splitter do dock em zoom > 1 —
-   com zoom e pan parados, logo `settledSeconds` já acima do limiar — faz o
-   bloco de `v.tile` (linha 466-470) recalcular e escrever a cada quadro: o
-   caso "não há pedido por quadro" que o temporizador existe para evitar,
-   alcançado por outro gesto. Conserto de uma linha (somar a igualdade do
-   retângulo pintado à condição de `settled`, ou zerar `settledSeconds`
-   quando ele muda), ainda não feito.
+5. ~~**O predicado de assentamento não cobre um redimensionamento do
+   viewport.**~~ **RESOLVIDO em 18/09.** `settled` passa a comparar também o
+   LADRILHO que este quadro pediria com o do quadro anterior
+   (`ViewContext::lastWanted`), de modo que redimensionar a janela ou
+   arrastar o splitter do dock reinicia o temporizador como um arrasto
+   reinicia. A comparação é do ladrilho, e não de `st.painted` cru, porque é
+   o ladrilho que vira pedido: ele é inteiro (um pixel de jitter que não muda
+   ladrilho nenhum não reinicia a espera) e com zoom ≤ 1 ele é sempre vazio,
+   então nada muda lá. `[ART]` Contra o predicado antigo,
+   `canvas_asks_for_nothing_while_the_painted_rectangle_keeps_changing`
+   (`Tests/test_kit_canvas.cpp`) foi VISTO disparando um pedido por quadro
+   durante o gesto (`asks` indo 2 → 3 → 4 → 5 … em vinte quadros de
+   redimensionamento); com o conserto, um só, depois que o gesto para.
 6. **O `<filter>` de SVG** já tem seu próprio `[OBS]` em "A margem, e de onde
    vem o número", acima ("O `<filter>` de SVG é RECUSADO num buffer parcial,
    não margeado") — não duplicado aqui.
