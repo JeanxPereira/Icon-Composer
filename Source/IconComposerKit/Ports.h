@@ -7,6 +7,7 @@
 // makes the whole UI exercisable on a machine with no device.
 #include "Source/IconComposerFoundation/IconBundle.h"
 #include "Source/IconComposerFoundation/IconDocument.h"
+#include "Source/IconComposerKit/Tile.h"
 #include "imgui.h"
 
 #include <cstdint>
@@ -21,6 +22,11 @@ struct RenderRequest {
     icf::IconBundle bundle;      // a clone: the job reads it while the UI keeps editing
     icf::Context context;
     std::uint32_t size = 512;
+    // O ladrilho, na grade de `size`. `w == 0`: o canvas inteiro.
+    TileRect tile;
+    // Se o buffer do ladrilho passar do teto, o job renderiza o canvas inteiro
+    // nesta resolucao. Zero: nao ha para onde cair.
+    std::uint32_t fallbackSize = 0;
 };
 
 struct RenderResult {
@@ -32,6 +38,16 @@ struct RenderResult {
     // not carry its context can never be matched -- it would be dropped forever
     // and the canvas would stay empty.
     icf::Context context;
+    // O ECO do pedido, que e o que o coordenador compara: `size` e `tile`
+    // como foram PEDIDOS, mesmo quando o job caiu para a base.
+    std::uint32_t size = 0;
+    TileRect tile;
+    // O que os pixels SAO: `width` x `height` a partir de (`originX`,
+    // `originY`) numa grade de `gridSize`.
+    std::uint32_t gridSize = 0;
+    std::int32_t originX = 0, originY = 0;
+    bool refined = true;   // false: caiu para a base por causa do teto
+
     std::uint32_t width = 0, height = 0;
     std::vector<std::uint8_t> rgba8;   // straight alpha, R8G8B8A8, row major
     std::size_t drawn = 0, total = 0;

@@ -78,6 +78,10 @@ struct Recorder : ick::RenderScheduler {
         ick::RenderResult res;
         res.version = version;
         res.context = ctx;
+        // `size` is what the coordinator's key compares (RenderCoordinator.cpp);
+        // `width`/`height` are what the pixels turned out to be. This helper
+        // renders no tile, so they agree.
+        res.size = size;
         res.width = size;
         res.height = size;
         res.rgba8.assign(static_cast<std::size_t>(size) * size * 4, 255);

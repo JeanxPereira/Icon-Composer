@@ -32,35 +32,79 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r) {
     ick::RenderResult out;
     out.version = r.version;
     // THE ECHO. The coordinator matches a result against the request it is
-    // waiting for by the WHOLE key -- version, context and width (spec 13/09
+    // waiting for by the WHOLE key -- version, context and size (spec 13/09
     // §6, and Ports.h's own note on this field). A result that does not carry
     // back the context it answers can never match: it would be dropped on every
     // frame, forever, and the canvas would stay empty with nothing on screen to
     // say why.
     out.context = r.context;
-    // And the width is the size half of that key, so it has to be set even when
-    // there are no pixels -- otherwise a render that FAILED is also dropped
-    // forever, and the error never reaches the diagnostics panel.
-    out.width = r.size;
+    // And `size`/`tile` are the rest of that key, so they have to be set even
+    // when there are no pixels -- otherwise a render that FAILED is also
+    // dropped forever, and the error never reaches the diagnostics panel. This
+    // is what was ASKED, not what the job ended up drawing: it stays as asked
+    // even when the job below falls back to the base resolution.
+    out.size = r.size;
+    out.tile = r.tile;
 
     rb::IconRenderOptions io;
     io.size = r.size;
     io.context = r.context;
+    io.viewport = rb::IconViewport{r.tile.x, r.tile.y, r.tile.w, r.tile.h};
     auto icon = rb::renderIcon(device, r.bundle, io);
-    if (!icon) {
-        out.error = icon.error();
+
+    // Um ladrilho pode ser impossivel de desenhar de duas formas (spec
+    // 2026-09-16, "O teto de area"):
+    //  - o teto de AREA: `renderIcon` devolve com sucesso e `viewportRefused`,
+    //    porque nada foi desenhado -- nao e um erro, e o convite explicito da
+    //    spec para cair na base;
+    //  - um teto de APARELHO que o teto de area nao cobre
+    //    (`CoveragePass.cpp:290-300`, `maxViewportDimensions` /
+    //    `viewportBoundsRange`), que chega como ERRO. So um ladrilho de fato
+    //    (`tile.w > 0`) cai aqui: um pedido de canvas inteiro que falha e uma
+    //    falha real e tem que aparecer como tal, nunca virar um render de base
+    //    silencioso.
+    const bool areaCapped = icon.has_value() && icon->viewportRefused;
+    const bool tileErrored = !icon.has_value() && r.tile.w > 0;
+    std::string tileError;
+    if (tileErrored) tileError = icon.error();
+
+    if ((areaCapped || tileErrored) && r.fallbackSize > 0) {
+        // O teto (spec 2026-09-16): o canvas inteiro na resolucao base, e o
+        // painel estica -- o que ele fazia antes desta frente.
+        io.size = r.fallbackSize;
+        io.viewport = rb::IconViewport{};
+        icon = rb::renderIcon(device, r.bundle, io);
+        out.refined = false;
+        if (icon.has_value() && !tileError.empty()) {
+            // O motivo da queda nao pode desaparecer so porque a base deu
+            // certo: `error` nao-vazio diz "nada mais e valido" (Ports.h), e
+            // este resultado E valido, entao o motivo vai para as notas.
+            out.notes.push_back("ladrilho recusado, caiu para a base: " + tileError);
+        }
+    }
+
+    if (!icon.has_value()) {
+        // Falha real: a base tambem nao rendeu, ou nao havia base para cair
+        // (`fallbackSize == 0`). O erro do ladrilho, se houver, nao pode
+        // desaparecer atras do erro da base.
+        out.error = (!tileError.empty() && tileError != icon.error())
+                        ? "ladrilho: " + tileError + "; base: " + icon.error()
+                        : icon.error();
         return out;
     }
     out.width = icon->width;
     out.height = icon->height;
     out.rgba8 = ick::toRgba8(icon->rgba);
+    out.gridSize = icon->size;
+    out.originX = icon->originX;
+    out.originY = icon->originY;
     out.drawn = icon->drawn;
     out.total = icon->total;
     for (const auto& s : icon->skipped) {
         out.skipped.push_back("grupo " + std::to_string(s.group) + " / " + s.layer + ": " + s.why);
     }
     out.shapeGaps = icon->shapeGaps;
-    out.notes = icon->notes;
+    out.notes.insert(out.notes.end(), icon->notes.begin(), icon->notes.end());
     return out;
 }
 

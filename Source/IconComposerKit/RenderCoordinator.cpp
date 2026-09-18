@@ -40,7 +40,7 @@ void RenderCoordinator::tick(Session& s) {
         // was. Ask for 512, drag the size to 1024, and the 512 that lands carries
         // the same version -- it would be shown as if it were the answer, and
         // `pending` would go false, so nothing would ever correct it.
-        const Key answered{result->version, result->context, result->width};
+        const Key answered{result->version, result->context, result->size};
         if (!(answered == requested_)) continue;   // stale: the latest wins
         view_.drawn = result->drawn;
         view_.total = result->total;
