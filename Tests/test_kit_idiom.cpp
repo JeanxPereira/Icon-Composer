@@ -61,12 +61,14 @@ struct Recorder : ick::RenderScheduler {
         std::uint64_t version;
         icf::Context context;
         std::uint32_t size;
+        ick::TileRect tile;         // o ladrilho pedido, na grade de `size`
+        std::uint32_t fallbackSize; // para onde o job cai se ele nao couber
     };
     std::vector<Ask> asks;
     std::optional<ick::RenderResult> ready;
 
     void request(ick::RenderRequest r) override {
-        asks.push_back({r.version, r.context, r.size});
+        asks.push_back({r.version, r.context, r.size, r.tile, r.fallbackSize});
     }
     std::optional<ick::RenderResult> poll() override {
         std::optional<ick::RenderResult> r = std::move(ready);
@@ -82,9 +84,51 @@ struct Recorder : ick::RenderScheduler {
         // `width`/`height` are what the pixels turned out to be. This helper
         // renders no tile, so they agree.
         res.size = size;
+        res.gridSize = size;
         res.width = size;
         res.height = size;
         res.rgba8.assign(static_cast<std::size_t>(size) * size * 4, 255);
+        res.drawn = 1;
+        res.total = 1;
+        ready = std::move(res);
+    }
+    // O LADRILHO RESPONDIDO (spec 2026-09-16). O eco (`size`, `tile`) e o que
+    // foi PEDIDO; `gridSize`/`origin`/`width` sao o que os pixels SAO.
+    void answerTile(std::uint64_t version, icf::Context ctx, std::uint32_t size,
+                    ick::TileRect tile) {
+        ick::RenderResult res;
+        res.version = version;
+        res.context = ctx;
+        res.size = size;
+        res.tile = tile;
+        res.gridSize = size;
+        res.originX = tile.x;
+        res.originY = tile.y;
+        res.width = tile.w;
+        res.height = tile.h;
+        res.rgba8.assign(static_cast<std::size_t>(tile.w) * tile.h * 4, 255);
+        res.drawn = 1;
+        res.total = 1;
+        ready = std::move(res);
+    }
+    // A QUEDA PARA A BASE: o ladrilho nao coube (o teto de area, ou o do
+    // aparelho que chega como erro), e o job rendeu o canvas inteiro em
+    // `fallback` -- com o eco INTACTO, porque e ele que responde a pergunta
+    // que o coordenador fez. `refined` false e o unico sinal de que os pixels
+    // nao sao os pedidos.
+    void answerFallback(std::uint64_t version, icf::Context ctx, std::uint32_t size,
+                        ick::TileRect tile, std::uint32_t fallback, std::string note) {
+        ick::RenderResult res;
+        res.version = version;
+        res.context = ctx;
+        res.size = size;   // o eco, intacto: e a pergunta que foi feita
+        res.tile = tile;
+        res.gridSize = fallback;
+        res.width = fallback;
+        res.height = fallback;
+        res.rgba8.assign(static_cast<std::size_t>(fallback) * fallback * 4, 255);
+        res.refined = false;
+        res.notes.push_back(std::move(note));
         res.drawn = 1;
         res.total = 1;
         ready = std::move(res);
@@ -300,4 +344,109 @@ TEST_CASE(kit_coordinator_times_the_render_it_is_waiting_for) {
     CHECK(coord.view().lastRenderSeconds >= 0.0);
     CHECK(coord.view().lastRenderSeconds >= second);
     CHECK_EQ(coord.view().pendingSeconds, 0.0);
+}
+
+// O LADRILHO NA CHAVE, E A BASE PARA ONDE CAIR (spec 2026-09-16, "O que o Kit
+// faz").
+//
+// O canvas escreve `view.tileSize`/`view.tile` quando o pan e o zoom param
+// (Tests/test_kit_canvas.cpp mede aquele lado); daqui para baixo o ladrilho e
+// so mais um pedaco da chave, e e esta a metade que decide se um resultado
+// responde a pergunta que esta em pe. Dois ladrilhos VIZINHOS da mesma grade
+// tem a mesma versao, o mesmo contexto e a mesma `size`: sem o ladrilho na
+// chave, o primeiro a chegar apagaria o `pending` do segundo e a tela ficaria
+// parada no pedaco errado.
+//
+// A queda para a base tambem mora aqui. Ate esta task nada no editor escrevia
+// `RenderRequest::fallbackSize`, entao os dois caminhos de queda do job
+// (`Source/app/OnyxPorts.cpp`) nunca tinham sido exercitados por teste nenhum.
+TEST_CASE(kit_coordinator_keys_on_the_tile_and_falls_back_to_the_base) {
+    const auto dir = makeBundle("tile", kSquaresShared);
+    auto s = ick::Session::open(dir);
+    REQUIRE(s.has_value());
+
+    Recorder sched;
+    FakeSink sink;
+    ick::RenderCoordinator coord(sched, sink);
+
+    // Sem ladrilho: o pedido de sempre -- o canvas inteiro na base. E a base
+    // para onde cair ja vai junto, e nunca e zero: com ela, o job nunca
+    // devolve "recusado, sem pixels e sem erro", que seria uma tela parada sem
+    // nada que a explicasse.
+    coord.tick(*s);
+    REQUIRE(sched.asks.size() == 1);
+    CHECK_EQ(sched.asks[0].size, 512u);
+    CHECK_EQ(sched.asks[0].tile.w, 0u);
+    CHECK_EQ(sched.asks[0].fallbackSize, 512u);
+    sched.answer(s->version(), sched.asks[0].context, 512);
+    coord.tick(*s);
+    CHECK(!coord.view().pending);
+    CHECK(coord.view().refined);
+    CHECK_EQ(coord.view().gridSize, 512u);
+
+    // 400%: a grade e 2048 e o pedido e o retangulo visivel dentro dela.
+    const ick::TileRect want{100, 100, 700, 600};
+    s->view.tileSize = 2048;
+    s->view.tile = want;
+    coord.tick(*s);
+    REQUIRE(sched.asks.size() == 2);
+    CHECK_EQ(sched.asks[1].size, 2048u);
+    CHECK(sched.asks[1].tile == want);
+    CHECK_EQ(sched.asks[1].fallbackSize, 512u);   // a base, nao a grade
+    CHECK(coord.view().pending);
+
+    // O VIZINHO NAO RESPONDE. Mesma versao, mesmo contexto, mesma grade, outro
+    // retangulo: nao e a resposta, e `pending` continua de pe.
+    sched.answerTile(s->version(), s->view.context, 2048, ick::TileRect{340, 100, 700, 600});
+    coord.tick(*s);
+    CHECK(coord.view().pending);
+    CHECK_EQ(coord.view().gridSize, 512u);   // a textura de antes continua
+
+    // O que responde, responde -- e traz consigo onde os pixels ficam.
+    sched.answerTile(s->version(), s->view.context, 2048, want);
+    coord.tick(*s);
+    CHECK(!coord.view().pending);
+    CHECK_EQ(coord.view().gridSize, 2048u);
+    CHECK_EQ(coord.view().width, 700u);
+    CHECK_EQ(coord.view().height, 600u);
+    CHECK_EQ(coord.view().originX, 100);
+    CHECK_EQ(coord.view().originY, 100);
+    CHECK(coord.view().refined);
+
+    // A QUEDA. O ladrilho seguinte nao cabe -- o teto de area, ou o do
+    // aparelho -- e o job devolve o canvas inteiro na base, com o eco intacto.
+    // O resultado E valido, entao o motivo vai nas notas e nao em `error`
+    // (Ports.h: `error` nao-vazio diz "nada mais e valido").
+    const ick::TileRect big{0, 0, 8192, 8192};
+    s->view.tileSize = 8192;
+    s->view.tile = big;
+    coord.tick(*s);
+    REQUIRE(sched.asks.size() == 3);
+    CHECK_EQ(sched.asks[2].size, 8192u);
+    sched.answerFallback(s->version(), s->view.context, 8192, big, 512,
+                         "viewport acima do teto de area: nada desenhado");
+    coord.tick(*s);
+    CHECK(!coord.view().pending);       // respondeu a chave, entao E a resposta
+    CHECK(!coord.view().refined);       // e diz que nao e o que foi pedido
+    CHECK_EQ(coord.view().gridSize, 512u);
+    CHECK_EQ(coord.view().width, 512u);
+    CHECK_EQ(coord.view().originX, 0);
+    CHECK_EQ(coord.view().originY, 0);
+    CHECK(coord.view().error.empty());
+    REQUIRE(coord.view().notes.size() == 1);
+    CHECK_EQ(coord.view().notes[0], std::string("viewport acima do teto de area: nada desenhado"));
+
+    // De volta a 100%: o canvas inteiro na base, e `refined` volta a ser
+    // verdade quando os pixels pedidos sao os que chegam.
+    s->view.tileSize = 0;
+    s->view.tile = ick::TileRect{};
+    coord.tick(*s);
+    REQUIRE(sched.asks.size() == 4);
+    CHECK_EQ(sched.asks[3].size, 512u);
+    CHECK_EQ(sched.asks[3].tile.w, 0u);
+    sched.answer(s->version(), s->view.context, 512);
+    coord.tick(*s);
+    CHECK(!coord.view().pending);
+    CHECK(coord.view().refined);
+    CHECK_EQ(coord.view().gridSize, 512u);
 }

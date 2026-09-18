@@ -62,6 +62,15 @@ struct RenderView {
     // `ImTextureRef`, and Onyx's own TexturePool already spells it this way.
     ImTextureID texture = ImTextureID_Invalid;
     std::uint32_t width = 0, height = 0;
+    // Onde a textura fica: `width` x `height` a partir de (`originX`,
+    // `originY`) numa grade de `gridSize` (spec 2026-09-16, "O que o Kit
+    // faz"). Zero = a textura e o canvas inteiro em `width`, que e o que ela
+    // sempre foi antes desta frente.
+    std::uint32_t gridSize = 0;
+    std::int32_t originX = 0, originY = 0;
+    // False: o ladrilho pedido nao coube (o teto de area ou o do aparelho) e
+    // isto e o canvas inteiro na resolucao base, esticado.
+    bool refined = true;
     bool pending = false;   // a newer render is on its way
     std::size_t drawn = 0, total = 0;
     std::vector<std::string> skipped, shapeGaps, notes;
@@ -154,6 +163,23 @@ CanvasVec canvasClampPan(CanvasVec pan, float availW, float availH, float sidePx
                          float margin = kCanvasPanMargin);
 CanvasRect canvasImageRect(CanvasVec pan, float sidePx, float zoom);
 CanvasRect canvasIntersect(CanvasRect a, CanvasRect b);
+
+// ─── O LADRILHO (spec 2026-09-16, "O que o Kit faz") ─────────────────────────
+//
+// Quanto tempo o pan e o zoom precisam ficar parados antes de um pedido sair.
+// Curto de proposito: e o intervalo que separa "a pessoa parou de arrastar" de
+// "a pessoa esta arrastando", e nao um atraso que ela deva sentir. Casa com o
+// settle do ease (`canvasEase`, ~150 ms), entao um zoom com a roda acaba de
+// assentar na tela quando o pedido sai.
+inline constexpr float kTileSettleSeconds = 0.15f;
+// A resolucao do ladrilho para um zoom: zero (a base) ate 100%, e a base
+// ampliada acima disso. Com zoom <= 1 nada muda -- vale o caminho de sempre.
+std::uint32_t canvasTileSize(std::uint32_t baseSize, float zoom);
+// O retangulo pintado (`CanvasStats::painted`, em pixels de tela), levado ao
+// espaco de um ladrilho de `canvasTileSize`. `imageTopLeft` e o canto da imagem
+// na tela. Vazio (`w == 0`) quando nao ha nada pintado.
+TileRect canvasTileFor(CanvasRect painted, CanvasVec imageTopLeft, std::uint32_t baseSize,
+                       float zoom);
 // The per-frame coefficient of the exponential ease, clamped against both a
 // stalled frame and a 500 Hz one so the settle is ~150ms on any machine.
 float canvasEase(float deltaSeconds);

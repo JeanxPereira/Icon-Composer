@@ -68,6 +68,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <initializer_list>
 #include <string>
@@ -130,6 +131,36 @@ CanvasRect canvasIntersect(CanvasRect a, CanvasRect b) {
                  std::min(a.x1, b.x1), std::min(a.y1, b.y1)};
     if (r.empty()) return CanvasRect{r.x0, r.y0, r.x0, r.y0};
     return r;
+}
+
+std::uint32_t canvasTileSize(std::uint32_t baseSize, float zoom) {
+    if (!(zoom > 1.0f) || baseSize == 0) return 0;   // `!(>)` tambem pega NaN
+    return static_cast<std::uint32_t>(std::lround(static_cast<double>(baseSize) * zoom));
+}
+
+TileRect canvasTileFor(CanvasRect painted, CanvasVec imageTopLeft, std::uint32_t baseSize,
+                       float zoom) {
+    const std::uint32_t t = canvasTileSize(baseSize, zoom);
+    if (t == 0 || painted.empty()) return TileRect{};
+    // Tela -> ladrilho. O lado na tela e `base * zoom` e o ladrilho tem `t`
+    // pixels, entao a razao e ~1 e so absorve o arredondamento de `t`.
+    const double k = static_cast<double>(t) / (static_cast<double>(baseSize) * zoom);
+    const std::int64_t tMax = static_cast<std::int64_t>(t);
+    // Para FORA nos dois lados -- `floor` no canto de cima e `ceil` no de
+    // baixo -- para que o ladrilho cubra todo pixel de tela que o recorte
+    // toca; arredondar para dentro deixaria uma fatia de fundo do painel na
+    // borda. O grampo em [0, t] e o que mantem o pedido dentro da grade.
+    auto lo = [&](float v, float o) {
+        return std::clamp<std::int64_t>(static_cast<std::int64_t>(std::floor((v - o) * k)), 0, tMax);
+    };
+    auto hi = [&](float v, float o) {
+        return std::clamp<std::int64_t>(static_cast<std::int64_t>(std::ceil((v - o) * k)), 0, tMax);
+    };
+    const std::int64_t x0 = lo(painted.x0, imageTopLeft.x), x1 = hi(painted.x1, imageTopLeft.x);
+    const std::int64_t y0 = lo(painted.y0, imageTopLeft.y), y1 = hi(painted.y1, imageTopLeft.y);
+    if (x1 <= x0 || y1 <= y0) return TileRect{};
+    return TileRect{static_cast<std::int32_t>(x0), static_cast<std::int32_t>(y0),
+                    static_cast<std::uint32_t>(x1 - x0), static_cast<std::uint32_t>(y1 - y0)};
 }
 
 float canvasEase(float deltaSeconds) {
@@ -308,12 +339,13 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions)
     const ImVec2 corner(origin.x + availW, origin.y + availH);
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
-    // The ruler for every number below. Before the first render lands there is
-    // no texture to measure, and Fit still has to have an answer, so the preview
-    // size stands in -- it is what that render will be, so the fit computed from
-    // it is the fit the picture arrives into.
-    const float sidePx = view.width > 0 ? static_cast<float>(view.width)
-                                        : static_cast<float>(v.size);
+    // The ruler for every number below is the PREVIEW SIZE, not the texture:
+    // since the viewport render (spec 2026-09-16) the texture may be a tile of
+    // a larger grid, and measuring the canvas by it would move the icon every
+    // time a tile landed. It was already the stand-in before the first render
+    // lands -- it is what that render will be, so the fit computed from it is
+    // the fit the picture arrives into -- and now it is the ruler always.
+    const float sidePx = static_cast<float>(v.size);
 
     // ── Fit on open ─────────────────────────────────────────────────────────
     // `fitted` is false in a freshly opened Session and nowhere else, so this is
@@ -419,6 +451,24 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions)
     st.painted = canvasIntersect(st.image, st.clip);
     st.zoom = v.zoom;
 
+    // ── O LADRILHO, SO COM O PAN E O ZOOM PARADOS ───────────────────────────
+    // Spec 2026-09-16, "O que o Kit faz": nao ha pedido por quadro. Durante um
+    // arrasto a chave mudaria a cada quadro e o agendador so descartaria
+    // trabalho, e o intervalo sem imagem nitida viraria o arrasto inteiro. O
+    // coordenador pede o que estiver em `v.tile`, e enquanto a pessoa arrasta
+    // isto nao muda -- o ladrilho velho e o que continua na tela.
+    //
+    // A comparacao e de igualdade exata porque o ease acima GRAMPEIA o valor
+    // no alvo dentro de meio pixel (as tres linhas de snap); sem elas o pan
+    // nunca chegaria ao alvo e nada aqui jamais assentaria.
+    const bool settled = v.zoom == v.zoomTarget && v.panX == v.panTargetX && v.panY == v.panTargetY;
+    v.settledSeconds = settled ? v.settledSeconds + io.DeltaTime : 0.0f;
+    if (v.settledSeconds >= kTileSettleSeconds) {
+        const TileRect want = canvasTileFor(st.painted, CanvasVec{tl.x, tl.y}, v.size, v.zoom);
+        v.tileSize = want.w ? canvasTileSize(v.size, v.zoom) : 0;
+        v.tile = want;
+    }
+
     // ── THE RECORTE ─────────────────────────────────────────────────────────
     // Everything from here to PopClipRect is the canvas's own rectangle and
     // nothing else. The window's draw list is otherwise clipped to the window's
@@ -428,12 +478,32 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions)
     // rather than replacing it, so the window's own bounds still apply.
     dl->PushClipRect(origin, corner, true);
 
+    // A TEXTURA VAI NO RETANGULO QUE ELA COBRE, e nao mais no canvas inteiro
+    // (spec 2026-09-16, "O que o Kit faz"). `fullSide` e o canvas inteiro na
+    // tela; `perTexel` leva um pixel da grade do render a um pixel de tela, e
+    // a textura ocupa `width` x `height` a partir de (`originX`, `originY`)
+    // DESSA grade. Com a grade igual ao canvas e origem zero -- todo render
+    // que nao e ladrilho -- isto e exatamente o `AddImage` de antes.
+    //
+    // E e por aqui que a espera funciona: a grade vem do render que esta na
+    // tela, nao do que foi pedido, entao o ladrilho velho fica ancorado na
+    // imagem e acompanha o pan; um zoom o estica ate o novo chegar.
+    const float fullSide = sidePx * v.zoom;
     if (view.texture != ImTextureID_Invalid && view.width > 0) {
-        const float side = static_cast<float>(view.width) * v.zoom;
-        dl->AddImage(view.texture, tl, ImVec2(tl.x + side, tl.y + side));
+        const float grid = view.gridSize > 0 ? static_cast<float>(view.gridSize)
+                                             : static_cast<float>(view.width);
+        const float perTexel = fullSide / grid;
+        const ImVec2 a(tl.x + static_cast<float>(view.originX) * perTexel,
+                       tl.y + static_cast<float>(view.originY) * perTexel);
+        const ImVec2 b(a.x + static_cast<float>(view.width) * perTexel,
+                       a.y + static_cast<float>(view.height) * perTexel);
+        dl->AddImage(view.texture, a, b);
         st.textured = true;
 
-        if (s.selection && s.selection->layer) drawSelectionOverlay(s, dl, tl, side);
+        // O lado do CANVAS INTEIRO na tela, que e o que este overlay recebia
+        // quando a textura era o canvas: ele mede em `rb::kCanvasPoints` sobre
+        // o canvas, e um ladrilho nao muda onde a camada esta.
+        if (s.selection && s.selection->layer) drawSelectionOverlay(s, dl, tl, fullSide);
     }
 
     // The provisional mark: these pixels are not the answer to what the context

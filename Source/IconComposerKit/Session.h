@@ -26,6 +26,7 @@
 // invariants at once, and no caller in this editor does it.
 #include "Source/IconComposerFoundation/Edit.h"
 #include "Source/IconComposerFoundation/IconBundle.h"
+#include "Source/IconComposerKit/Tile.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -76,6 +77,16 @@ struct ViewContext {
     // corner, which is not where anybody is looking.
     float zoomRequest = 0.0f;     // > 0 = pending
     bool fitRequest = false;
+
+    // O LADRILHO (spec 2026-09-16, "O que o Kit faz"). O canvas o escreve
+    // quando o pan e o zoom ficam parados por `kTileSettleSeconds`, e o
+    // coordenador pede o que estiver aqui. Enquanto a pessoa arrasta, estes
+    // dois NAO mudam -- e e isso que impede um pedido por quadro, que o
+    // agendador so descartaria. `tileSize == 0` e a resolucao base (`size`)
+    // com o canvas inteiro, o pedido de sempre.
+    std::uint32_t tileSize = 0;
+    TileRect tile;
+    float settledSeconds = 0.0f;
 };
 
 class Session {

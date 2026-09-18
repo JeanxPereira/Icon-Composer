@@ -29,6 +29,11 @@ private:
         std::uint64_t version = 0;
         icf::Context context;
         std::uint32_t size = 0;
+        // O ladrilho pedido, na grade de `size` (spec 2026-09-16, "O que o Kit
+        // faz"). Parte da chave como o resto: dois ladrilhos da MESMA grade
+        // sao dois pedidos diferentes, e um resultado que responde o vizinho
+        // nao responde este.
+        TileRect tile;
         bool operator==(const Key&) const = default;
     };
     RenderScheduler& scheduler_;
