@@ -71,7 +71,8 @@ std::vector<FlatSubpath> flattenForStroke(const icf::svg::Path& path, int subdiv
 std::vector<float> rasteriseStroke(const icf::svg::Shape& shape,
                                    const StrokePlacement& placement,
                                    std::uint32_t width, std::uint32_t height,
-                                   int subdivisions, const StrokeParams& base) {
+                                   int subdivisions, const StrokeParams& base,
+                                   std::int32_t originX, std::int32_t originY) {
     if (shape.stroke.kind == icf::svg::PaintKind::None) return {};
     if (shape.strokeWidth <= 0.0) return {};
 
@@ -106,20 +107,26 @@ std::vector<float> rasteriseStroke(const icf::svg::Shape& shape,
             // Only the box this segment can possibly touch. Scanning the whole
             // target per segment is what makes the naive version unusable on a
             // path with two thousand of them.
+            //
+            // A caixa e o BUFFER, e a amostragem e ABSOLUTA: o grampo abaixo so
+            // corta o retangulo, e o pixel que esta dentro do buffer recebe
+            // exatamente a mesma cobertura do render cheio.
             const double x0 = std::min(a.x, b.x) - half, x1 = std::max(a.x, b.x) + half;
             const double y0 = std::min(a.y, b.y) - half, y1 = std::max(a.y, b.y) + half;
-            const long px0 = std::max<long>(0, static_cast<long>(std::floor(x0)));
-            const long py0 = std::max<long>(0, static_cast<long>(std::floor(y0)));
-            const long px1 = std::min<long>(static_cast<long>(width) - 1,
-                                            static_cast<long>(std::ceil(x1)));
-            const long py1 = std::min<long>(static_cast<long>(height) - 1,
-                                            static_cast<long>(std::ceil(y1)));
+            const long bx0 = originX, by0 = originY;
+            const long bx1 = originX + static_cast<long>(width) - 1;
+            const long by1 = originY + static_cast<long>(height) - 1;
+            const long px0 = std::max<long>(bx0, static_cast<long>(std::floor(x0)));
+            const long py0 = std::max<long>(by0, static_cast<long>(std::floor(y0)));
+            const long px1 = std::min<long>(bx1, static_cast<long>(std::ceil(x1)));
+            const long py1 = std::min<long>(by1, static_cast<long>(std::ceil(y1)));
 
             for (long y = py0; y <= py1; ++y) {
                 for (long x = px0; x <= px1; ++x) {
                     const double c = strokeCoverageAt(stream, iid, x + 0.5, y + 0.5, params);
                     if (c <= 0.0) continue;
-                    float& dst = cov[static_cast<std::size_t>(y) * width + x];
+                    float& dst =
+                        cov[static_cast<std::size_t>(y - by0) * width + (x - bx0)];
                     // MAX, not sum. Two segments of one stroke overlap at every
                     // join, and adding would show the seam as a bright line --
                     // the same reason the target draws joins as their own

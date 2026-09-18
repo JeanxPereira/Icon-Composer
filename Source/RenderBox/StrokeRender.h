@@ -68,9 +68,16 @@ struct StrokePlacement {
 
 // The coverage of one shape's stroke, as an alpha image `width * height`.
 // Returns empty when the shape is not stroked or the width rounds to nothing.
+//
+// `originX`/`originY` sao a origem do alvo na grade da COLOCACAO. O mapa que
+// `placement` aplica poe o traco na coordenada do canvas inteiro, entao a
+// amostragem tem que perguntar pelo ponto absoluto `(x + origem) + 0.5` e so o
+// indice no resultado anda (spec 2026-09-16, "O invariante que governa o
+// desenho"). Zero e o render cheio, termo a termo.
 std::vector<float> rasteriseStroke(const icf::svg::Shape& shape,
                                    const StrokePlacement& placement,
                                    std::uint32_t width, std::uint32_t height,
-                                   int subdivisions, const StrokeParams& base);
+                                   int subdivisions, const StrokeParams& base,
+                                   std::int32_t originX = 0, std::int32_t originY = 0);
 
 }  // namespace rb

@@ -77,6 +77,15 @@ void compose2x3(const double (&a)[6], const double (&b)[6], double (&out)[6]) {
 
 }  // namespace
 
+// O alvo e um PEDACO da projecao? Com o padrao -- origem zero e projecao
+// tomada do proprio alvo -- e sempre falso, e todo sitio abaixo se reduz ao
+// que fazia antes.
+bool isPartialTarget(const RenderOptions& o) {
+    const std::uint32_t pw = o.projectionWidth ? o.projectionWidth : o.width;
+    const std::uint32_t ph = o.projectionHeight ? o.projectionHeight : o.height;
+    return o.originX != 0 || o.originY != 0 || pw != o.width || ph != o.height;
+}
+
 PathGlobals fitViewBox(const icf::svg::ViewBox& box, std::uint32_t width,
                        std::uint32_t height) {
     PathGlobals g;
@@ -255,9 +264,17 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
             const double x0 = def->second.x * sx + ox, y0 = def->second.y * sy + oy;
             const double x1 = (def->second.x + def->second.width) * sx + ox;
             const double y1 = (def->second.y + def->second.height) * sy + oy;
+            // A regiao sai de `placement.m2`, que e a colocacao no CANVAS,
+            // entao o centro do pixel comparado contra ela tem que ser o
+            // absoluto -- a mesma regra dos outros passos de CPU (spec
+            // 2026-09-16, "O invariante que governa o desenho").
             for (std::uint32_t py = 0; py < options.height; ++py) {
+                const double cy =
+                    static_cast<double>(static_cast<std::int64_t>(py) + options.originY) + 0.5;
                 for (std::uint32_t px2 = 0; px2 < options.width; ++px2) {
-                    const double cx = px2 + 0.5, cy = py + 0.5;
+                    const double cx =
+                        static_cast<double>(static_cast<std::int64_t>(px2) + options.originX) +
+                        0.5;
                     if (cx < x0 || cx > x1 || cy < y0 || cy > y1) {
                         value[static_cast<std::size_t>(py) * options.width + px2] = 0.0f;
                     }
@@ -288,6 +305,33 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
                    doc.shapes[end].filterInstance == shape.filterInstance) {
                 ++end;
             }
+            // O FILTRO E RECUSADO NUM BUFFER PARCIAL, e isso e diferente em
+            // ESPECIE dos outros sitios desta frente.
+            //
+            // Os outros eram coordenada: bastava avaliar no ponto absoluto. O
+            // desfoque de `feGaussianBlur` nao e -- ele le vizinhos, e grampeia
+            // na borda do BUFFER (`SvgFilter.cpp`) onde o render cheio grampeia
+            // na do canvas. Para bater, o buffer teria que trazer margem, e a
+            // margem dele sai do CONTEUDO do SVG (o `stdDeviation` de cada
+            // primitiva), que `documentReach` nao enxerga: ela percorre os
+            // grupos do documento e nunca abre a arte.
+            //
+            // Entao ele e DITO e nao desenhado errado, como o vidro (spec
+            // 2026-09-16, "O invariante que governa o desenho"). O termo de
+            // margem pertence a conta da margem medida, nao a este arquivo.
+            if (isPartialTarget(options)) {
+                for (std::size_t k = i; k < end; ++k) {
+                    out.skipped.push_back(
+                        {k, doc.shapes[k].element,
+                         "filtro SVG em render de viewport: o desfoque le vizinhos e grampearia"
+                         " na borda do buffer, e a margem dele sai do conteudo do SVG, que a"
+                         " conta da margem ainda nao le -- nao desenhado, para nao desenhar"
+                         " errado (spec 2026-09-16)"});
+                }
+                i = end - 1;
+                continue;
+            }
+
             auto def = doc.filters.find(shape.filterId);
             if (def == doc.filters.end()) {
                 // The reader names a dangling reference and never marks the
@@ -610,7 +654,8 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
 
                 const std::vector<float> cov =
                     rasteriseStroke(shape, sp, options.width, options.height,
-                                    options.subdivisions, params);
+                                    options.subdivisions, params, options.originX,
+                                    options.originY);
                 if (!cov.empty()) {
                     const float sr = static_cast<float>(shape.stroke.color.r);
                     const float sg = static_cast<float>(shape.stroke.color.g);

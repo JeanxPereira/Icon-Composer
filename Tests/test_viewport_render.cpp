@@ -135,8 +135,10 @@ std::vector<IconViewport> gateViewports(std::uint32_t s) {
 
 // Um bundle de mentira, escrito no temporario, para gatear o que a Task 3
 // converteu SEM depender de um documento do corpus: fundo em gradiente,
-// pastilha, uma arte vetor e uma raster, e nenhum vidro -- que e exatamente a
-// fatia que ja anda num buffer parcial.
+// pastilha, arte vetor (preenchida, TRACADA e MASCARADA com regiao) e arte
+// raster, e nenhum vidro -- que e exatamente a fatia que ja anda num buffer
+// parcial. O `<filter>` mora num documento a parte, porque ele nao anda: e
+// recusado por nome, e o caso que o cobre mede a recusa e nao o pixel.
 class TempBundle {
 public:
     explicit TempBundle(const std::string& name, const std::string& document) {
@@ -150,6 +152,29 @@ public:
         write(dir_ / "Assets" / "disc.svg",
               "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\">"
               "<circle cx=\"256\" cy=\"256\" r=\"200\" fill=\"#3080ff\"/></svg>");
+        // O TRACO e a MASCARA COM REGIAO, numa arte propria e sem fill de
+        // camada, para que cada um chegue ao gate com a sua propria tinta.
+        //
+        // O traco corre em diagonal por tres quadrantes, com dois vertices, de
+        // modo que todo viewport do gate pegue um pedaco dele; a regiao da
+        // mascara (80..380) corta um retangulo que vai de 40 a 460, entao as
+        // duas bordas do corte caem DENTRO do canvas e um recorte que medisse
+        // a regiao na grade errada as moveria.
+        write(dir_ / "Assets" / "marks.svg",
+              "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\">"
+              "<defs><mask id=\"m\" maskUnits=\"userSpaceOnUse\" x=\"80\" y=\"80\""
+              " width=\"300\" height=\"300\">"
+              "<rect width=\"512\" height=\"512\" fill=\"white\"/></mask></defs>"
+              "<rect x=\"40\" y=\"300\" width=\"420\" height=\"140\" fill=\"#20d0a0\""
+              " mask=\"url(#m)\"/>"
+              "<path d=\"M60 60 L452 210 L200 452\" fill=\"none\" stroke=\"#ff2080\""
+              " stroke-width=\"18\"/></svg>");
+        // Uma arte com `<filter>`, para o caso da recusa.
+        write(dir_ / "Assets" / "blur.svg",
+              "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\">"
+              "<defs><filter id=\"b\"><feGaussianBlur stdDeviation=\"12\"/></filter></defs>"
+              "<rect x=\"120\" y=\"120\" width=\"272\" height=\"272\" fill=\"#ffcc00\""
+              " filter=\"url(#b)\"/></svg>");
         // Um raster com borda dura e um degrade em x e em z, ampliado 6x: uma
         // amostragem deslocada meio texel aparece na cor, nao so na borda.
         const std::uint32_t side = 48;
@@ -202,11 +227,29 @@ const char* const kPlainDocument = R"({
       { "glass" : false, "image-name" : "disc.svg", "name" : "disc",
         "fill" : { "linear-gradient" : [ "display-p3:0.10000,0.90000,0.40000,1.00000",
                                          "display-p3:0.95000,0.85000,0.10000,1.00000" ] } },
+      { "glass" : false, "image-name" : "marks.svg", "name" : "marks" },
       { "glass" : false, "image-name" : "dot.png", "name" : "dot",
         "position" : { "scale" : 6, "translation-in-points" : [ 120, -90 ] } }
     ] }
   ]
 })";
+
+// So a arte com `<filter>`, sem fundo: o caso da recusa nao compara pixel.
+const char* const kFilteredDocument = R"({
+  "groups" : [
+    { "layers" : [
+      { "glass" : false, "image-name" : "blur.svg", "name" : "blur" }
+    ] }
+  ]
+})";
+
+// A recusa do filtro, procurada por nome no relatorio.
+bool namesTheFilterRefusal(const std::vector<std::string>& gaps) {
+    for (const std::string& g : gaps) {
+        if (g.find("filtro SVG em render de viewport") != std::string::npos) return true;
+    }
+    return false;
+}
 
 }  // namespace
 
@@ -250,11 +293,38 @@ TEST_CASE(viewport_background_chiclet_and_art_match_the_full_render) {
     RenderedIcon full;
     CHECK_EQ(compareViewports(*bundle, 512, gateViewports(512), &full), 0);
     CHECK(full.backgroundPainted);
-    CHECK_EQ(full.drawn, 2u);
+    CHECK_EQ(full.drawn, 3u);
     // A rampa da CAMADA tem que estar de fato pintando, ou o caso mediria a
     // colocacao e nao a avaliacao. O SVG se pinta de `#3080ff`, cujo azul e o
     // canal mais forte; a rampa do documento vai de verde a amarelo, e o
     // centro do disco sai `0,527 / 0,875 / 0,249`.
     const std::size_t c = (static_cast<std::size_t>(256) * full.width + 256) * 4;
     CHECK(full.rgba[c + 1] > full.rgba[c + 2]);
+}
+
+// A RECUSA DO FILTRO, e nao um pixel.
+//
+// O desfoque de `feGaussianBlur` le vizinhos e grampeia na borda do buffer, e a
+// margem dele sairia do conteudo do SVG, que a conta da margem ainda nao le.
+// Entao num buffer parcial ele e DITO (spec 2026-09-16, "O invariante que
+// governa o desenho") -- e este caso mede exatamente isso: o render cheio
+// desenha e nao recusa, o de viewport recusa com o motivo por escrito.
+TEST_CASE(viewport_refuses_an_svg_filter_by_name_instead_of_clamping_it) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    TempBundle tb("filtered", kFilteredDocument);
+    auto bundle = icf::IconBundle::open(tb.path());
+    REQUIRE(bundle.has_value());
+
+    IconRenderOptions o;
+    o.size = 512;
+    auto full = renderIcon(d, *bundle, o);
+    REQUIRE(full.has_value());
+    CHECK_EQ(full->drawn, 1u);
+    CHECK(!namesTheFilterRefusal(full->shapeGaps));
+
+    o.viewport = IconViewport{128, 128, 128, 128};
+    auto part = renderIcon(d, *bundle, o);
+    REQUIRE(part.has_value());
+    CHECK(namesTheFilterRefusal(part->shapeGaps));
 }
