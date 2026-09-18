@@ -400,3 +400,125 @@ overdraw da sombra. Um viewport não toca em nenhum dos três.
 5. O teto de área.
 6. O Kit: chave, retângulo do ladrilho, pedido só com o pan parado, e o estado
    de espera que já existe.
+
+## Estado em 2026-09-18
+
+Os oito passos da "Ordem de execução" acima landaram, um a um, entre
+`e45b301` (HEAD antes desta frente) e `03a043f`:
+
+| passo | commit(s) | o que mudou |
+| --- | --- | --- |
+| 1 | `be77824` | `IconViewport` no contrato, `RenderedIcon` ecoando a grade, e o gate do invariante escrito ANTES de qualquer sítio mudar (visto falhar por desconto de origem, de propósito). |
+| 2 | `1e9ec1a` | O plano do buffer: margem por documento com a cadeia de refrações somada, interseção com o canvas, origem alinhada aos fatores da escada do desfoque, teto de 16 Mpx. |
+| 3 | `0a6463e`, `926fe94`, `bc89160` | Os sítios de CPU (fundo, pastilha, raster, SVG) passam a amostrar em coordenada absoluta; a translação da arte vetor sai da matriz e vira offset de viewport do Vulkan (abaixo, "O resíduo de GPU"); a fatia SVG que o primeiro commit do passo dava por convertida tinha o traço e a região de máscara ainda na grade errada, corrigido no terceiro. |
+| 4 | `7ad503e`, `50bec5b` | O campo, a translucidez e a refração passam a ler o buffer em coordenada absoluta; o gate roda pela primeira vez com a origem HORIZONTAL do buffer de fato não-nula, expondo (e corrigindo) um `"position": {"scale": 2}` que não tinha efeito nenhum sem `translation-in-points`. |
+| 5 | `3ca664a`, `de43f56` | A sombra volta a andar num buffer parcial (`shadowBlocked` cai); o gate ganha uma fixture em que a escada do desfoque de fato reduz, e a asserção de `blurLadderAlignment` passa a depender dela, não de um literal solto. |
+| 6 | `73ea8bd`, `b92b19e` | O gate fecha em zero sobre o corpus a 2048 px, a margem medida entra na spec, e três dívidas de precisão da tabela de margem são pagas (sombra superestimada em 3,33×, a banda da pastilha, a afirmação falsa sobre a sombra de `Jellify-Music`). |
+| 7 | `8e7319a`, `f971028` | Pedido e resultado passam a carregar o ladrilho; a queda para a base cobre também o teto de APARELHO (`CoveragePass::draw`, erro, não recusa); a nota do teto de área deixa de desaparecer atrás de um fallback bem-sucedido. |
+| 8 | `03a043f` | O Kit: o canvas pede o ladrilho quando o pan e o zoom param por 150 ms, o coordenador ganha o ladrilho na chave, a régua vira a `size` base, e a textura é posta no retângulo que ela cobre. |
+
+A margem medida (Task 6) já está registrada em "A margem, e de onde vem o
+número", acima, e não é repetida aqui: **897 px** para `swmpc` (o documento que
+mais refrata do corpus) e **222 px** para `Jellify-Music`, os dois em
+`size = 2048`, gate em zero nos quatro viewports de cada. A trava
+(`CHECK_EQ(marginPixels, ...)` em `Tests/test_viewport_render.cpp`) veio no
+mesmo passo, para que uma margem futura mais larga não passe pelo gate (que só
+confere zero diferenças) em silêncio.
+
+### O resíduo de GPU na Task 3, e o que foi decidido
+
+O plano original pedia a origem do buffer dobrada dentro de `m2`, com
+`twoOverSize`/`urx` sobre a extensão do buffer em vez do canvas. `[ART]`
+Medido: isso deixava 11 e 15 pixels da borda antialiasada do disco do gate
+diferindo por exatamente `0,00048828125` — `2⁻¹¹`, **um ULP de `float16`**
+(o anexo de cobertura é `VK_FORMAT_R16G16_SFLOAT`, `Image.cpp:115`). Um
+viewport de origem zero e extensão menor fechava em zero na mesma medida, o
+que isolou a subtração da origem como a única causa — não a extensão.
+
+O remédio já estava escrito na própria spec ("subtração inteira depois da
+colocação, e não dobrada dentro da matriz"), e foi aplicado como um **offset
+de viewport do Vulkan**: `viewport.x = -originX`, a projeção segue sobre o
+canvas inteiro, e o scissor fica no buffer (`CoveragePass::draw`). **E a
+sondagem achou um segundo termo que o diagnóstico não tinha previsto:** o
+offset sozinho, sem mais nada, piorou o caso — 16080 pixels diferentes,
+`max |Δ| = 0,847` —, porque `path_exterior.frag` lê as varyings da aresta em
+coordenada de MUNDO enquanto `gl_FragCoord` já tinha virado `mundo − origem`:
+o fragmento estava comparando duas grades. O conserto foi o fragmento somar a
+mesma origem de volta (`IconRenderer.cpp:608-612`) — **somar um inteiro a um
+`x.5` é exato, que é justamente o que subtrair dentro de `m2` não era.**
+
+Consequência de forma, não só de correção: sem a origem dentro da matriz,
+`placeOnCanvas` e `artPlacementRect` voltam a usar `size` só como escala
+(a origem nunca entra ali), e por isso a assimetria `grid`/`canvasGrid` que o
+plano original previa **não existe** — os retângulos de colocação são
+absolutos em todo lugar, sem um segundo sistema de coordenadas para a arte
+vetor. Quem vier do plano vai esperar o contrário; não é o que está no código.
+
+### O que o teste à mão da Task 8 mostrou
+
+O passo 6 da Task 8 pede uma passagem interativa: zoom a 400% pela roda,
+arrastar, voltar a 100%. **Isso não foi feito. Ninguém dirigiu a GUI.**
+
+O que foi verificado programaticamente, sem janela, dirigindo `drawCanvas` de
+verdade nos testes do Kit: um único ladrilho é pedido depois que o ease
+assenta, e nenhum durante um arrasto de dez quadros
+(`canvas_and_coordinator_ask_for_one_tile_and_place_the_answer`); o ladrilho
+velho continua ancorado na imagem durante esse arrasto, lido do quadrilátero
+que o ImGui de fato emitiu, não de um número calculado à parte
+(`iconQuad`, mesmo caso, e `canvas_places_a_tile_at_its_own_origin_and_does_not_move_the_icon`);
+e zoom ≤ 1 volta ao canvas inteiro na base
+(`canvas_writes_the_tile_only_after_the_pan_settles`, e o fim do laço do caso
+acima). O binário real foi aberto num aparelho de verdade com uma captura em
+120%: a barra mostra `512 px` / `120%`, sem a faixa "rendering…" ao lado do
+Fit, e em 120% o pedido corrente é um ladrilho de grade **614** — a ausência
+do indicador de pendência é o sinal de que esse ladrilho foi pedido,
+renderizado, ecoado, casado com a chave e posto no retângulo certo.
+
+A passagem interativa — os olhos vendo a roda subir a 400%, a borda ficar mais
+nítida, o "rendering…" aparecer e sumir — continua em aberto. Nenhum teste
+aqui compara nitidez subjetiva; o gate só prova igualdade com o recorte.
+
+### `[OBS]` O que ficou aberto
+
+1. **HiDPI.** O ladrilho usa pixel lógico, exatamente como a textura usava
+   antes desta frente (`ViewContext::tileSize`/`tile`, `Session.h`). Não
+   olhado em nenhum monitor com escala ≠ 1.
+2. **O tempo de render de um ladrilho num ícone pesado nunca foi medido.** Um
+   dado de referência, não medido nesta task e que não limita nada sobre
+   ladrilhos, só diz a ordem de grandeza em que a pergunta vive: um render
+   CHEIO de 2048×2048 do ícone `GoWToolkit.icon` levou ~9,1 s nesta máquina.
+3. **O grampo de `sampleBilinear` esconde uma margem curta sobre uma região
+   plana.** `DisplacementOracle.cpp:171-184` (`at()`) documenta isto no
+   próprio código: o segundo grampo é só memória — impede a leitura de sair
+   do buffer, não promete detectar que ela saiu — e substitui a leitura pelo
+   texel da borda do buffer; sobre um fundo uniforme ou o canvas transparente
+   que costuma ocupar a margem externa de um ícone, esse texel **é** o valor
+   certo, e uma margem curta passa sem aparecer no gate. Isto qualifica
+   quanto um "zero" do invariante prova (a mesma ressalva que "A margem, e de
+   onde vem o número" já carrega para `Jellify-Music`, acima).
+4. **`RenderView::refined` é produzido e não é lido por ninguém na UI.**
+   Quando um ladrilho cai para a base (teto de área ou de aparelho),
+   `OnyxPorts.cpp:78-93` empurra uma linha para `notes` explicando O MOTIVO
+   da queda ("ladrilho recusado, caiu para a base: …", ou a nota do teto de
+   área preservada), e essa linha aparece no painel de Diagnóstico via o laço
+   de `[OBS]` que já lê `view.notes` (`PanelCanvas.cpp:587`). Mas nada em
+   `PanelCanvas.cpp` lê `view.refined`, então não existe uma linha própria
+   dizendo "estes pixels na tela são o canvas inteiro esticado, não o
+   ladrilho pedido" — o motivo da queda aparece; o fato de que o resultado
+   NA TELA é a base esticada, não.
+5. **O predicado de assentamento não cobre um redimensionamento do
+   viewport.** `PanelCanvas.cpp:464` crava `settled` só em zoom e pan; o
+   ladrilho depende também do retângulo pintado (`st.painted`), então
+   redimensionar a janela ou arrastar o splitter do dock em zoom > 1 —
+   com zoom e pan parados, logo `settledSeconds` já acima do limiar — faz o
+   bloco de `v.tile` (linha 466-470) recalcular e escrever a cada quadro: o
+   caso "não há pedido por quadro" que o temporizador existe para evitar,
+   alcançado por outro gesto. Conserto de uma linha (somar a igualdade do
+   retângulo pintado à condição de `settled`, ou zerar `settledSeconds`
+   quando ele muda), ainda não feito.
+6. **O `<filter>` de SVG** já tem seu próprio `[OBS]` em "A margem, e de onde
+   vem o número", acima ("O `<filter>` de SVG é RECUSADO num buffer parcial,
+   não margeado") — não duplicado aqui.
+
+Commits do estado: `03a043f` (passo 8) é o HEAD desta frente até aqui; este
+arquivo fecha a spec para a Task 9 do plano.
