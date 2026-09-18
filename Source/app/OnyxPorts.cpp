@@ -3,6 +3,7 @@
 #include "Source/RenderBox/IconRenderer.h"
 
 #include <cstdio>
+#include <exception>
 #include <string>
 #include <utility>
 
@@ -144,12 +145,36 @@ void JobScheduler::submitPending() {
     jobs_.Submit(
         /*lane*/ 1,
         [this, req, result](Onyx::Services::Progress&) {
-            *result = renderNow(device_, *req);
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                working_ = false;
+            // A LIBERACAO SAI DO CAMINHO FELIZ. `~JobScheduler` espera em
+            // `!working_`, e so estas duas linhas o baixam -- qualquer escape
+            // entre aqui e elas fecharia a janela em cima de uma espera que
+            // nunca termina. Onyx CONTEM o throw (Jobs.cpp:180-185: o job
+            // "still completes normally"), entao nada aqui aborta o processo
+            // e nada aqui reclama: o destrutor simplesmente nunca voltaria.
+            // Num destrutor, por isso, e sem lancar.
+            struct Release {
+                JobScheduler* s;
+                ~Release() {
+                    {
+                        std::lock_guard<std::mutex> lock(s->mutex_);
+                        s->working_ = false;
+                    }
+                    s->idle_.notify_all();
+                }
+            } release{this};
+            // E o resultado tem que CHEGAR. Sem isto `*result` volta como foi
+            // construido -- versao 0, contexto vazio -- e o coordenador
+            // descarta uma resposta assim em todo frame para sempre (Ports.h,
+            // `failedResult`): tela vazia, `pending` eterno, diagnostico
+            // nenhum. `renderNow` aloca o buffer inteiro do ladrilho, entao
+            // `bad_alloc` e o escape que se espera de verdade aqui.
+            try {
+                *result = renderNow(device_, *req);
+            } catch (const std::exception& e) {
+                *result = ick::failedResult(*req, std::string("o render lancou: ") + e.what());
+            } catch (...) {
+                *result = ick::failedResult(*req, "o render lancou algo que nao e std::exception");
             }
-            idle_.notify_all();
         },
         [this, result] {
             // Done runs on the main thread, inside Pump().

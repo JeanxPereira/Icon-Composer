@@ -73,6 +73,20 @@ struct TextureSink {
     virtual void remove(ImTextureID id) = 0;
 };
 
+// UM RENDER QUE MORREU, dito de um jeito que o coordenador consegue OUVIR.
+//
+// O eco (`version`, `context`, `size`, `tile`) e a razao inteira desta funcao
+// existir. Um fracasso que perde a chave nao e um fracasso visivel: ele nao
+// casa com `requested_` (RenderCoordinator.cpp), e descartado em todo frame
+// para sempre, `pending` nunca cai, e o canvas fica vazio sem nada na tela
+// dizendo por que. Quem constroi o resultado na mao acerta a chave quando o
+// render deu certo e esquece dela justamente no caminho de erro, que e o
+// caminho que ninguem exercita.
+//
+// `why` vai para `error`, que por contrato quer dizer "nada mais aqui e
+// valido" -- entao nao ha pixels, e o coordenador preserva a textura anterior.
+RenderResult failedResult(const RenderRequest& r, std::string why);
+
 // Straight RGBA floats, as `rb::RenderedIcon::rgba` gives them, to 8 bits:
 // clamped to [0,1] and rounded, the same rule `icf::encodePng` applies, so the
 // canvas and the PNG show the same byte.

@@ -66,9 +66,14 @@ struct Recorder : ick::RenderScheduler {
     };
     std::vector<Ask> asks;
     std::optional<ick::RenderResult> ready;
+    // O pedido INTEIRO, e nao so o resumo: `RenderRequest` carrega um
+    // `IconBundle`, que nao tem construtor vazio, entao um caso que precisa
+    // de um pedido de verdade (ick::failedResult) nao consegue fabricar um.
+    std::optional<ick::RenderRequest> last;
 
     void request(ick::RenderRequest r) override {
         asks.push_back({r.version, r.context, r.size, r.tile, r.fallbackSize});
+        last = std::move(r);
     }
     std::optional<ick::RenderResult> poll() override {
         std::optional<ick::RenderResult> r = std::move(ready);
@@ -449,4 +454,61 @@ TEST_CASE(kit_coordinator_keys_on_the_tile_and_falls_back_to_the_base) {
     CHECK(!coord.view().pending);
     CHECK(coord.view().refined);
     CHECK_EQ(coord.view().gridSize, 512u);
+}
+
+// UM RENDER QUE MORREU AINDA TEM QUE CHEGAR.
+//
+// O job roda numa thread de trabalho, e Onyx CONTEM uma excecao que escape
+// dele (Jobs.cpp:180-185: "a throw is contained here and the job still
+// completes normally"). Contida quer dizer engolida: o `RenderResult` que o
+// job ia preencher volta como foi CONSTRUIDO -- versao 0, contexto vazio --
+// e o coordenador compara a chave inteira, entao uma resposta assim nunca
+// casa. Ela e descartada em todo frame, para sempre: `pending` nao cai, o
+// canvas fica vazio, e o motivo nao chega em lugar nenhum da tela.
+//
+// O controle negativo abaixo E esse resultado mudo, e ele tem que ser
+// descartado -- se o coordenador o aceitasse, o caso seguinte passaria por
+// acidente e nao provaria nada. `failedResult` e a unica diferenca entre os
+// dois.
+TEST_CASE(kit_failed_result_reaches_the_canvas) {
+    const auto dir = makeBundle("render-morto", kSquaresShared);
+    auto s = ick::Session::open(dir);
+    REQUIRE(s.has_value());
+
+    Recorder sched;
+    FakeSink sink;
+    ick::RenderCoordinator coord(sched, sink);
+
+    coord.tick(*s);
+    REQUIRE(sched.asks.size() == 1);
+    CHECK(coord.view().pending);
+
+    // O MUDO: o erro esta la, a chave nao.
+    ick::RenderResult mudo;
+    mudo.error = "std::bad_alloc";
+    sched.ready = mudo;
+    coord.tick(*s);
+    CHECK(coord.view().pending);         // descartado, como tem que ser
+    CHECK(coord.view().error.empty());   // e ninguem nunca soube por que
+    CHECK_EQ(sched.asks.size(), std::size_t{1});   // nada mudou, nada re-pedido
+
+    // O MESMO ERRO, dito com a chave -- a partir do pedido de verdade, que e
+    // exatamente o que o job tem na mao quando algo escapa dele.
+    REQUIRE(sched.last.has_value());
+    const ick::RenderRequest& r = *sched.last;
+    const ick::RenderResult morto = ick::failedResult(r, "o render lancou: std::bad_alloc");
+
+    // O eco, campo por campo: e disto que o casamento depende.
+    CHECK_EQ(morto.version, r.version);
+    CHECK(morto.context == r.context);
+    CHECK_EQ(morto.size, r.size);
+    CHECK(morto.tile == r.tile);
+    CHECK(morto.rgba8.empty());   // `error` nao-vazio: nao ha pixels
+
+    sched.ready = morto;
+    coord.tick(*s);
+    CHECK(!coord.view().pending);
+    CHECK_EQ(coord.view().error, std::string("o render lancou: std::bad_alloc"));
+    CHECK_EQ(sink.live, 0);              // um fracasso nao cria textura
+    CHECK_EQ(coord.view().gridSize, 0u); // nem adota uma grade que nao veio
 }
