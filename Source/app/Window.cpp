@@ -25,11 +25,12 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// A `.icon` is a DIRECTORY (spec 13/09 §4), and Onyx's open dialog is
-// `GetOpenFileNameA` with OFN_FILEMUSTEXIST -- read on the dddce38 checkout,
-// Source/App/Platform/SystemFileDialog.cpp -- which cannot return a folder.
-// So the dialog asks for a file and a file inside the bundle names the bundle:
-// picking `Foo.icon/icon.json` opens `Foo.icon`.
+// A `.icon` is a DIRECTORY (spec 13/09 §4), and the dialog that asks for one
+// is `SystemOpenBundleDialog` (OnyxPorts.h), which on Windows hands back the
+// folder itself. This stays because the answer is not a bundle on every path
+// into it: the fallback dialog off Windows still returns a FILE, and a file
+// inside the bundle names the bundle -- picking `Foo.icon/icon.json` opens
+// `Foo.icon`. A folder comes back unchanged.
 fs::path bundleDirOf(const fs::path& picked) {
     std::error_code ec;
     if (fs::is_directory(picked, ec)) return picked;
@@ -85,7 +86,7 @@ struct State {
             }
         }
         if (a.open) {
-            const std::string p = SystemOpenFileDialog({{"Icon Composer document", {"json"}}});
+            const fs::path p = SystemOpenBundleDialog();
             if (!p.empty()) open(bundleDirOf(p));
         }
         if (a.save && session) {

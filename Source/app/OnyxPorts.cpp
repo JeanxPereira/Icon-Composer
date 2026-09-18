@@ -5,6 +5,15 @@
 #include <string>
 #include <utility>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <objbase.h>
+#include <shobjidl.h>
+#else
+#include <Onyx/App/UIHelpers.h>
+#endif
+
 namespace icapp {
 
 ImTextureID OnyxTextureSink::create(std::uint32_t w, std::uint32_t h, const std::uint8_t* rgba8) {
@@ -111,6 +120,53 @@ std::optional<ick::RenderResult> SyncScheduler::poll() {
     std::optional<ick::RenderResult> r = std::move(done_);
     done_.reset();
     return r;
+}
+
+std::filesystem::path SystemOpenBundleDialog() {
+#ifdef _WIN32
+    // GLFW already put the main thread in an apartment (`glfwInit` calls
+    // CoInitializeEx), so this returns S_FALSE rather than doing the work --
+    // which still has to be balanced. RPC_E_CHANGED_MODE would mean someone
+    // chose the other model: COM is up either way, so the dialog goes ahead
+    // and only the CoUninitialize is skipped.
+    const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool balance = SUCCEEDED(init);
+
+    std::filesystem::path out;
+    IFileOpenDialog* dialog = nullptr;
+    // The explicit IID rather than IID_PPV_ARGS: `__uuidof` is a compiler
+    // extension and this file is built by both g++ and cl.
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_IFileOpenDialog, reinterpret_cast<void**>(&dialog)))) {
+        DWORD options = 0;
+        if (SUCCEEDED(dialog->GetOptions(&options))) {
+            // FORCEFILESYSTEM keeps the answer to something SIGDN_FILESYSPATH
+            // can name -- without it the picker also offers This PC and the
+            // libraries, which have no path on disk.
+            dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM);
+        }
+        dialog->SetTitle(L"Open a .icon bundle");
+        // No owner window, as Onyx's own dialogs pass none.
+        if (SUCCEEDED(dialog->Show(nullptr))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dialog->GetResult(&item))) {
+                PWSTR wide = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &wide)) && wide) {
+                    out = std::filesystem::path(wide);
+                    CoTaskMemFree(wide);
+                }
+                item->Release();
+            }
+        }
+        dialog->Release();
+    }
+    if (balance) CoUninitialize();
+    return out;
+#else
+    // No folder picker here yet: the caller reduces a file to the bundle that
+    // holds it, which is what this app did on every platform before.
+    return std::filesystem::path(SystemOpenFileDialog({{"Icon Composer document", {"json"}}}));
+#endif
 }
 
 }  // namespace icapp

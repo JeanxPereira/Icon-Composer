@@ -12,6 +12,7 @@
 #include <Onyx/Services/Jobs.h>
 
 #include <condition_variable>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -74,5 +75,19 @@ private:
 
 // The one function both schedulers call.
 ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r);
+
+// Asks for a `.icon` to open. Empty when the user cancels.
+//
+// Onyx's `SystemOpenFileDialog` cannot answer this question: it is
+// `GetOpenFileNameA` with OFN_FILEMUSTEXIST (Source/App/Platform/
+// SystemFileDialog.cpp on the dddce38 checkout), and a `.icon` is a DIRECTORY
+// (spec 13/09 §4) -- clicking the bundle only walks into it, so the only way
+// through was to know that `icon.json` inside it names the bundle. On Windows
+// this is IFileOpenDialog with FOS_PICKFOLDERS, which returns the folder
+// itself; elsewhere it falls back to Onyx's file dialog and the caller reduces
+// the pick to its parent. The result is a `path` and not a `string` because
+// the wide name the shell hands back converts to `path` exactly, with no
+// code page in between.
+std::filesystem::path SystemOpenBundleDialog();
 
 }  // namespace icapp

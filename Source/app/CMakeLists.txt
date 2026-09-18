@@ -10,6 +10,14 @@ add_executable(iconcomposer
     Window.cpp
 )
 target_link_libraries(iconcomposer PRIVATE IconComposer::Kit Onyx::Onyx)
+
+# The open dialog is IFileOpenDialog, because only a folder picker can name a
+# `.icon` (OnyxPorts.h). `ole32` is CoCreateInstance and `uuid` carries
+# CLSID_FileOpenDialog and IID_IFileOpenDialog as symbols, which is what lets
+# the call site name them without `__uuidof`.
+if(WIN32)
+    target_link_libraries(iconcomposer PRIVATE ole32 uuid)
+endif()
 target_include_directories(iconcomposer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
 # Onyx resolves its bundled fonts against the EXECUTABLE's directory
