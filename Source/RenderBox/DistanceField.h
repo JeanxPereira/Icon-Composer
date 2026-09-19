@@ -443,6 +443,15 @@ FieldImage generateFieldFromAlpha(const std::vector<float>& rgba, std::uint32_t 
 // of a 57.2 s render. A million pixels times tens of thousands of segments does
 // not have a constant that saves it.
 //
+// THOSE TWO NUMBERS ARE DATED 15/09 AND DESCRIBE THE TREE THAT STILL WALKED
+// EVERY SEGMENT. They are the REASON this door exists, so they stay -- but
+// read as "what the exact path cost", not as what a render costs now. Since
+// the contours started arriving here, the same document at 1024 px measured
+// 2,42 s (19/09, Release, min of three), of which the field was 0,95 s, and
+// the CPU sweeps below then went multi-threaded and took it to 1,68 s.
+// Anyone reaching for these figures to justify an optimisation should measure
+// first: a task was dispatched on 19/09 against the 73 %, and found 39 %.
+//
 // `[BIN]` And the exactness it buys is not what the target does. The target's
 // field comes from `sdfTextureWithBufferAllocator:` (`0x000867F8`) sent to a
 // `CUINamedLayerImage` (`0x000CC928`) that BAILS if its `image` is nil

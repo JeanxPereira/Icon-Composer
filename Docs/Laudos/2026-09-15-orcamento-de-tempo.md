@@ -7,6 +7,22 @@ laudo não lê o alvo — ele mede o **nosso** renderizador. O que há é `[INF]
 
 ---
 
+> **DATADO — 19/09/2026.** Os números deste laudo foram medidos numa árvore
+> que ainda percorria **todo segmento por pixel** para construir o campo. Esse
+> caminho foi trocado por `generateFieldFromContours` (rasteriza e roda duas
+> EDT exatas, O(pixels + segmentos)) depois desta medição, e em 19/09 as
+> varreduras de CPU passaram a rodar em várias threads. Medido de novo em
+> 19/09, Release, mínimo de três execuções, o MESMO documento a 1024 px:
+> **2,42 s** antes das threads e **1,68 s** depois, com o campo em **39 %** e
+> não 73 %.
+>
+> O laudo **não** está errado: ele descreve fielmente a árvore que mediu, e a
+> frase dele ("o gargalo não é a sombra, é o campo") continua verdadeira — foi
+> ela que orientou as duas trocas. O que não vale mais são as **grandezas
+> absolutas**. Quem for otimizar mede de novo antes: uma task foi despachada
+> em 19/09 contra os "73 %" deste texto e encontrou 39 %, e a premissa dela
+> estava vencida sem que nada na página dissesse isso.
+
 ## 0. A frase
 
 **O gargalo do vidro não é a sombra. É o campo de distância.**
