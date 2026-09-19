@@ -14,6 +14,7 @@
 #include "Source/IconComposerFoundation/Png.h"
 #include "Source/RenderBox/IconRenderer.h"
 #include "Source/RenderBox/SvgRenderer.h"
+#include "Source/cli/RenderBundle.h"
 
 #include <chrono>
 #include <cstdio>
@@ -131,12 +132,14 @@ int main(int argc, char** argv) {
     // A bundle and a loose SVG take different paths, and the argument says which
     // by being a directory or not -- the same test `IconBundle::open` makes.
     if (auto bundle = icf::IconBundle::open(input)) {
-        rb::IconRenderOptions io;
-        io.size = options.width;
-        io.subdivisions = options.subdivisions;
-        io.context = ctx;
+        // AS OPCOES E O RENDER SAO DE `iccli::renderBundleIcon`, e nao destas
+        // linhas, desde 19/09: e a UNICA copia da sequencia que decide os
+        // bytes, e `Tests/test_e2e_export.cpp` compara a UI contra ELA. Ver
+        // RenderBundle.h -- o caso comparava contra uma transcricao destas
+        // linhas, e uma transcricao nao e um portao.
         const Clock clock;
-        auto icon = rb::renderIcon(*device, *bundle, io);
+        auto icon = iccli::renderBundleIcon(*device, *bundle, options.width,
+                                            options.subdivisions, ctx);
         const double elapsed = clock.seconds();
         if (!icon) return fail(icon.error());
         const std::string wrote =

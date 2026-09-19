@@ -32,6 +32,8 @@
 #include "Source/IconComposerKit/Session.h"
 #include "Source/RenderBox/Device.h"
 #include "Source/RenderBox/IconRenderer.h"
+#include "Source/RenderBox/SvgRenderer.h"
+#include "Source/cli/RenderBundle.h"
 #include "imgui.h"
 
 #include <algorithm>
@@ -87,9 +89,14 @@ fs::path makeBundle(const std::string& name, const char* document = kPlain) {
     fs::remove_all(dir, ec);
     fs::create_directories(dir / "Assets", ec);
     writeFile(dir / "icon.json", document);
+    // COM UMA CURVA, e isso importa: o portao de bytes (caso (d)) afirma que a
+    // UI e o `icrender` concordam inclusive em `subdivisions`, e `subdivisions`
+    // so move um pixel onde ha cubica. Com quatro retas a arte desenhava igual
+    // com 8 e com 16 -- medido -- e o portao passava por cima dessa metade.
     writeFile(dir / "Assets" / "art.svg",
               "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1024 1024\">"
-              "<path d=\"M128 128 L896 128 L896 896 L128 896 Z\" fill=\"#3366cc\"/></svg>");
+              "<path d=\"M128 512 C128 200 896 200 896 512 C896 824 128 824 128 512 Z\" "
+              "fill=\"#3366cc\"/></svg>");
     return dir;
 }
 
@@ -457,11 +464,17 @@ TEST_CASE(e2e_export_bytes_are_exactly_what_icrender_writes) {
     CHECK_EQ(made.name, std::string("ic-e2e-export-bytes-dark-square-128.png"));
     CHECK(made.drawn > 0);
 
-    // O CAMINHO DO `icrender`, transcrito de render_main.cpp.
-    rb::IconRenderOptions io;
-    io.size = kSize;
-    io.context = ctx;
-    auto icon = rb::renderIcon(device, s->bundle(), io);
+    // O CAMINHO DO `icrender`, que é o `icrender`. `iccli::renderBundleIcon`
+    // (Source/cli/RenderBundle.h) é a função que o binário chama -- as opções
+    // e o render saíram do `main` para lá exatamente para que esta linha
+    // deixasse de ser uma TRANSCRIÇÃO. Enquanto era uma, um campo novo em
+    // `render_main.cpp` mudava o `icrender`, não mudava a UI, e este caso
+    // continuava verde comparando a UI com a cópia que ele tinha do que o
+    // `icrender` fazia em 19/09. `subdivisions` é o padrão do `--subdivisions`.
+    // O `subdivisions` que o `icrender` passa sem `--subdivisions` é o padrão
+    // de `rb::RenderOptions`, que é de onde o `main` o tira.
+    auto icon = iccli::renderBundleIcon(device, s->bundle(), kSize,
+                                        rb::RenderOptions{}.subdivisions, ctx);
     REQUIRE(icon.has_value());
     const std::vector<std::uint8_t> reference =
         icf::encodePng(icon->rgba, icon->width, icon->height);

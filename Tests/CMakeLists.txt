@@ -55,7 +55,7 @@ add_executable(ic_tests EXCLUDE_FROM_ALL
     test_time_budget.cpp
 )
 
-target_link_libraries(ic_tests PRIVATE IconComposer::Foundation IconComposer::CliLib IconComposer::CoreSVG IconComposer::RenderBox)
+target_link_libraries(ic_tests PRIVATE IconComposer::Foundation IconComposer::CliLib IconComposer::RenderCliLib IconComposer::CoreSVG IconComposer::RenderBox)
 target_include_directories(ic_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # The UI's own cases. `-DIC_BUILD_UI=OFF` builds no Kit, and a suite that failed

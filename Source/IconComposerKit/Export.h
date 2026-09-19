@@ -24,8 +24,17 @@
 //     aplicam a mesma regra de clamp e arredondamento --, mas seria uma
 //     igualdade que depende de uma coincidência em vez do caminho.
 //
-// `Tests/test_e2e_export.cpp` cobra essa igualdade byte a byte contra a
-// sequência do `icrender`. Divergir é defeito, não tolerância.
+// `Tests/test_e2e_export.cpp` cobra essa igualdade byte a byte contra
+// `iccli::renderBundleIcon` (`Source/cli/RenderBundle.h`), que é a função que o
+// binário `icrender` CHAMA -- não uma transcrição dela. Divergir é defeito, não
+// tolerância.
+//
+// A DIFERENÇA ENTRE AS DUAS COISAS, porque ela já custou uma promessa falsa: até
+// 19/09 o caso comparava contra as opções de `render_main.cpp` copiadas para
+// dentro do teste. As três cópias concordavam naquele dia, e nada impedia a
+// divergência: um campo novo no `main` mudava o `icrender`, não mudava a UI, e o
+// caso continuava verde. As linhas que decidem os bytes moraram para
+// `RenderBundle.h` por isso, e agora um campo novo muda os dois lados de uma vez.
 #include "Source/IconComposerFoundation/IconBundle.h"
 #include "Source/IconComposerFoundation/IconDocument.h"
 #include "Source/IconComposerFoundation/Json.h"

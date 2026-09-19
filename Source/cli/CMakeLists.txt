@@ -14,5 +14,15 @@ target_link_libraries(ictool PRIVATE IconComposer::CliLib)
 # icrender is a SECOND executable on purpose: it links the GPU tower, and
 # `ictool` must keep running on a machine that has no device. The target ships
 # `ictool` and `icrtool` for the same reason.
+#
+# E O CAMINHO DE BUNDLE DELE E UMA BIBLIOTECA, pela mesma razao que `ic_cli_lib`
+# e uma: o que decide os BYTES nao pode exigir um processo para ser exercido.
+# `Tests/test_e2e_export.cpp` linka esta e compara a UI contra ela, que e o que
+# faz a promessa de `Export.h` ("byte a byte contra a sequencia do `icrender`")
+# ser verdade em vez de uma transcricao (revisao 19/09, I6).
+add_library(ic_render_lib STATIC RenderBundle.cpp)
+target_link_libraries(ic_render_lib PUBLIC IconComposer::RenderBox IconComposer::Foundation)
+add_library(IconComposer::RenderCliLib ALIAS ic_render_lib)
+
 add_executable(icrender render_main.cpp)
-target_link_libraries(icrender PRIVATE IconComposer::RenderBox IconComposer::Foundation)
+target_link_libraries(icrender PRIVATE IconComposer::RenderCliLib)
