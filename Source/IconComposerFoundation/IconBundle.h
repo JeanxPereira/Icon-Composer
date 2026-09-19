@@ -12,6 +12,7 @@
 #include "Source/IconComposerFoundation/IconDocument.h"
 #include "Source/IconComposerFoundation/Json.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -50,6 +51,26 @@ public:
     // The files in `Assets/`, sorted.
     const std::vector<std::string>& assetFiles() const { return assets_; }
 
+    // A GERAÇÃO DOS BYTES EM `Assets/`: um inteiro que se move toda vez que um
+    // arquivo de asset é escrito. Quem guarda algo LIDO de um asset -- o cache
+    // de `viewBox` da `Session`, que o hit-test do canvas consulta -- compara
+    // este número e joga fora o que guardou quando ele mexe.
+    //
+    // POR QUE UM CONTADOR AQUI, e não um aviso à Session nos chamadores de
+    // `importAsset`: hoje há dois (`app/Window.cpp` e `PanelInspectorAsset.cpp`)
+    // e NENHUM passa pela Session -- ela recebe só o `image-name` depois, como
+    // uma edição comum. Consertar os dois deixaria de fora o terceiro que
+    // aparecesse depois, e o sintoma seria mudo: um retângulo de seleção
+    // calculado sobre a caixa da arte ANTIGA. `IconBundle` continua sem
+    // conhecer a Session; é ela que pergunta.
+    //
+    // `assetFiles()` não responde isto: importar POR CIMA de um nome que já
+    // está lá não mexe na lista, e é exatamente o caso que invalida a leitura.
+    //
+    // `saveAs` NÃO o move, de propósito: copiar os assets para outra pasta não
+    // muda um byte de nenhum deles, e o que foi lido continua valendo.
+    std::uint64_t assetsGeneration() const { return assetsGeneration_; }
+
     // Every image the icon can actually display: `image-name` resolved through
     // every (appearance, idiom) context, deduped, in the order first reached.
     std::vector<std::string> referencedImageNames() const;
@@ -69,6 +90,7 @@ private:
     std::filesystem::path dir_;
     std::unique_ptr<json::Value> tree_;
     std::vector<std::string> assets_;
+    std::uint64_t assetsGeneration_ = 0;
 };
 
 }  // namespace icf

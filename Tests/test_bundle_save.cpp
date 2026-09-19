@@ -87,6 +87,41 @@ TEST_CASE(bundle_import_asset_copies_into_assets_and_lists_it) {
     CHECK(!b->importAsset(srcDir / "does-not-exist.svg").empty());
 }
 
+// REIMPORTAR POR CIMA DE UM NOME QUE JÁ ESTÁ EM `Assets/`.
+//
+// É o gesto normal de quem desenha o ícone: reexportar o SVG do editor de arte
+// e importá-lo de novo, com o mesmo nome, para a mesma camada. Falhava --
+// "could not copy a.svg: File exists" -- e não trocava byte nenhum, porque
+// `copy_options::overwrite_existing` não sobrescreve nesta toolchain (a
+// medição está em IconBundle.cpp). O caso acima não o alcançava: importa um
+// nome NOVO, onde a flag nunca é exercida.
+//
+// Este caso cobra as duas coisas que o defeito quebrava ao mesmo tempo -- o
+// relato de erro E os bytes -- e mais a geração, que é o que avisa quem tenha
+// LIDO o arquivo antigo (a `Session` cacheia a `viewBox` de cada asset).
+TEST_CASE(bundle_import_asset_replaces_an_asset_that_is_already_there) {
+    const fs::path dir = scratch("reimport");
+    const fs::path srcDir = fs::temp_directory_path() / "ic-reimport-src";
+    fs::remove_all(srcDir);
+    fs::create_directories(srcDir);
+    const fs::path src = srcDir / "a.svg";      // o MESMO nome que `scratch` põe
+    std::ofstream(src, std::ios::binary) << "<svg id='novo'/>";
+
+    auto b = IconBundle::open(dir);
+    REQUIRE(b.has_value());
+    CHECK_EQ(slurp(dir / "Assets" / "a.svg"), std::string("<svg/>"));
+    const std::uint64_t gen = b->assetsGeneration();
+
+    CHECK_EQ(b->importAsset(src), std::string(""));
+    // OS BYTES, e não só a ausência de erro: um import que reportasse sucesso
+    // e deixasse a arte velha no lugar é exatamente o defeito que havia.
+    CHECK_EQ(slurp(dir / "Assets" / "a.svg"), std::string("<svg id='novo'/>"));
+    // A lista não muda -- o nome já estava lá --, e é por isso que ela não
+    // serve como aviso de que a arte mudou. A geração serve.
+    CHECK_EQ(b->assetFiles().size(), std::size_t(1));
+    CHECK(b->assetsGeneration() != gen);
+}
+
 TEST_CASE(bundle_save_keeps_every_byte_exact_corpus_document_byte_exact) {
     // Open, edit, put the edit back by hand, save to a scratch copy: the bytes must
     // be the corpus's own for every document the writer already reproduces.

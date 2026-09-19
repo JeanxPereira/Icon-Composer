@@ -139,9 +139,40 @@ std::string IconBundle::importAsset(const fs::path& file) {
     std::error_code ec;
     if (!fs::is_regular_file(file, ec)) return "not a file: " + file.string();
     const std::string name = file.filename().string();
-    fs::create_directories(dir_ / "Assets", ec);
-    fs::copy_file(file, dir_ / "Assets" / name, fs::copy_options::overwrite_existing, ec);
-    if (ec) return "could not copy " + name + ": " + ec.message();
+    const fs::path dest = dir_ / "Assets" / name;
+    // Um `error_code` por chamada. Era um só para as três, e um resto deixado
+    // por uma podia ser lido como falha da seguinte -- não era o que estava
+    // acontecendo aqui (medido), mas é um jeito de ler um erro que não houve.
+    std::error_code mk;
+    fs::create_directories(dir_ / "Assets", mk);
+
+    // APAGAR ANTES DE COPIAR, porque `copy_options::overwrite_existing` NÃO
+    // sobrescreve nesta toolchain.
+    //
+    // MEDIDO (g++ 13.2.0, MinGW, 19/09): com o destino já existente,
+    // `fs::copy_file(src, dst, overwrite_existing, ec)` devolve false e deixa
+    // `ec` em `file_exists` (17) -- a flag é simplesmente ignorada --, e os
+    // bytes antigos ficam onde estavam. Com o destino ausente ela copia
+    // normalmente, e apagar antes faz a reimportação funcionar. Por isso o
+    // `remove`: não é cinto e suspensório, é a única forma que funciona.
+    //
+    // O DEFEITO ERA VISÍVEL NO APP e não tinha caso: trocar a arte de uma
+    // camada por um arquivo de mesmo nome -- reexportar o SVG e reimportar,
+    // que é o laço de trabalho normal de quem está desenhando o ícone --
+    // falhava com "could not copy X: File exists" e não trocava nada. O caso
+    // que existia importava um nome NOVO, onde a flag nunca é exercida.
+    //
+    // Um destino ausente não é erro: `remove` devolve false e segue.
+    std::error_code rm;
+    fs::remove(dest, rm);
+    if (rm) return "could not replace " + name + ": " + rm.message();
+    std::error_code cp;
+    fs::copy_file(file, dest, fs::copy_options::overwrite_existing, cp);
+    if (cp) return "could not copy " + name + ": " + cp.message();
+    // `overwrite_existing`: estes bytes podem ter caído POR CIMA de um asset
+    // que alguém já leu. Ver `assetsGeneration()` -- o bump é aqui e só aqui,
+    // porque esta é a única operação que reescreve um arquivo de `Assets/`.
+    ++assetsGeneration_;
     if (std::find(assets_.begin(), assets_.end(), name) == assets_.end()) {
         assets_.push_back(name);
         std::sort(assets_.begin(), assets_.end());
