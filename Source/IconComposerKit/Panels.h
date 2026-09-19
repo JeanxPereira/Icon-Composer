@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace ick {
@@ -128,12 +129,50 @@ struct RenderView {
 
 // What the menu asked the app to do this frame. The Kit cannot open a file
 // dialog or quit; the app reads these after the frame and does it.
+//
+// AND SINCE 19/09 IT IS NOT ONLY THE MENU THAT ASKS. The Image Asset section
+// needs the same door: importing a file means choosing one, choosing one means
+// a dialog, and a dialog is Onyx's (Rule 2 -- only `Source/app` links it). The
+// channel already existed for `open`/`save`/`saveAs`; it was simply never
+// spelled for anything but the bar, and the asset panel said so in a comment
+// instead of using it.
 struct MenuActions {
     bool newDocument = false, open = false, save = false, saveAs = false, close = false, quit = false;
+
+    // ---- importar um asset por dialogo ------------------------------------
+    // `importInto` E O PEDIDO, NAO A SELECAO. `State::act()` roda DEPOIS do
+    // frame, e entre o clique no botao e o retorno do dialogo a pessoa pode
+    // ter selecionado outra camada (o dialogo e modal para a janela, mas a
+    // selecao tambem muda por undo, por apagar um irmao, por um drop). Um
+    // pedido que dissesse so "importe" faria o app escrever `image-name` no
+    // que estivesse selecionado quando o dialogo fechasse -- outra camada, sem
+    // um pixel na tela explicando. Entao o pedido carrega consigo O NO que
+    // pediu e O ESCOPO em que ele estava, que sao as duas coordenadas de uma
+    // escrita (Edit.h, `setProperty`).
+    bool importAsset = false;
+    icf::NodePath importInto;
+    icf::Context importScope;
+};
+
+// UM ITEM DA BARRA, COMO ELE FOI PARA A TELA -- e ONDE, pelo mesmo motivo de
+// `RowInfo`: entre o pixel e a operacao existem o retangulo do item, o popup
+// que o contem e a ordem em que os dois sao submetidos. Um teste que chama
+// `s.duplicateNode()` prova a operacao e nao prova o item de menu.
+struct MenuItemInfo {
+    std::string label;
+    bool enabled = true;
+    ImVec2 at{0.0f, 0.0f};   // o centro do item, em pixels de tela
 };
 
 struct MenuStats {
     std::size_t menus = 0, items = 0, disabled = 0;
+    // Uma entrada por item desenhado NESTE quadro. Um menu fechado nao desenha
+    // os itens dele, entao a lista so os tem depois que o popup abriu.
+    std::vector<MenuItemInfo> drawn;
+    // Onde cada TITULO da barra ficou ("File", "Edit", ...). E nele que se
+    // clica para o popup abrir, e so entao os itens existem para serem
+    // clicados. Gravado apenas com o menu FECHADO -- ver MenuBar.cpp.
+    std::vector<MenuItemInfo> titles;
 };
 // Draws inside the current window's menu bar: the caller opened the window with
 // ImGuiWindowFlags_MenuBar (the canvas does, like sfsymview's "Symbols").
@@ -233,8 +272,19 @@ struct CanvasStats {
     // frame. Espelha `RenderView::refined`, que ate 18/09 era escrito pelo
     // coordenador e lido por ninguem.
     bool stretchedNotice = false;
+    // A LINHA VERMELHA, EXATAMENTE COMO ELA FOI PARA A TELA -- elidida, que e
+    // o que a barra cabe. Vazia quando nao havia nada a dizer. O texto
+    // INTEIRO e do painel de Diagnostics (`DiagnosticsStats::trouble`); esta
+    // aqui e a que garante que a pessoa OLHANDO o canvas ve que houve falha.
+    std::string trouble;
 };
-CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions);
+
+// `trouble` E DO APP E CHEGA POR PARAMETRO (Regra 2). `State::trouble` mora em
+// `Source/app/Window.cpp` -- e o app que abre dialogo, cria e salva, e portanto
+// e o app que sabe o que deu errado. O Kit nao inventa um global para ler isso:
+// recebe a frase e a desenha. Vazia e o caso normal, e entao nada e desenhado.
+CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
+                       std::string_view trouble = {});
 
 // O QUE UMA SECAO DO INSPETOR E, para quem precisa conferir de fora.
 //
@@ -257,12 +307,24 @@ struct InspectorStats {
     std::size_t inherited = 0;   // of those, marked as inherited under the scope
     std::size_t disabled = 0;    // sections drawn greyed, with the reason
     std::vector<SectionInfo> drawn;   // uma entrada por `Section::begin`, em ordem
+    // ONDE O BOTAO "Browse..." DA SECAO Image Asset FOI DESENHADO, em pixels
+    // de tela, para quem precisa CLICAR nele. `{0,0}` quando o no em foco nao
+    // tem essa secao -- o mesmo contrato de `RowInfo::glassAt` num grupo.
+    ImVec2 importBrowseAt{0.0f, 0.0f};
 };
-InspectorStats drawInspector(Session& s);
+// `actions` porque o botao Browse da secao Image Asset pede um dialogo, e o
+// Kit nao abre dialogo (Regra 2): ele escreve o pedido aqui e o app o le
+// depois do frame, como ja fazia com a barra de menu.
+InspectorStats drawInspector(Session& s, MenuActions& actions);
 
 struct DiagnosticsStats {
     std::size_t rows = 0;
+    // A FRASE INTEIRA da ultima falha do app, como ela foi para a tela --
+    // vazia quando nao havia nenhuma. A barra do canvas elide para caber;
+    // este painel e o "algum lugar" onde o texto completo tem de estar.
+    std::string trouble;
 };
-DiagnosticsStats drawDiagnostics(const Session& s, const RenderView& view);
+DiagnosticsStats drawDiagnostics(const Session& s, const RenderView& view,
+                                 std::string_view trouble = {});
 
 }  // namespace ick

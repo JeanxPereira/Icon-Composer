@@ -313,9 +313,28 @@ void drawSelectionOverlay(const Session& s, ImDrawList* dl, ImVec2 topLeft, floa
                 IM_COL32(80, 160, 255, 255), 0.0f, 0, 2.0f);
 }
 
+// A FRASE ELIDIDA QUE CABE NUMA BARRA. O motivo de uma falha de escrita e uma
+// linha do sistema de arquivos -- caminho inteiro mais a mensagem do
+// `error_code` -- e vai facil a duzentos caracteres. Inteira na barra ela
+// empurra o canvas para baixo e some na borda da janela; o lugar dela inteira
+// e o painel de Diagnostics, que quebra linha numa tabela feita para isso.
+// Aqui fica o comeco, que e onde estao a operacao e o arquivo.
+//
+// Elide em BYTES e nao em caracteres: o corte pode cair no meio de uma
+// sequencia UTF-8 e a fonte do ImGui desenharia o pedaco como um losango. Por
+// isso o corte recua ate o inicio de um caractere -- os bytes de continuacao
+// sao `10xxxxxx`.
+std::string elide(std::string_view text, std::size_t budget) {
+    if (text.size() <= budget) return std::string(text);
+    std::size_t cut = budget;
+    while (cut > 0 && (static_cast<unsigned char>(text[cut]) & 0xC0) == 0x80) --cut;
+    return std::string(text.substr(0, cut)) + "...";
+}
+
 }  // namespace
 
-CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions) {
+CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
+                       std::string_view trouble) {
     CanvasStats st;
     // The canvas is the window that carries the menu bar: Onyx owns the frame,
     // and one of our windows has to hold the bar we draw ourselves (spec §7).
@@ -342,6 +361,34 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions)
         ImGui::TextDisabled("stretched");
         ImGui::SetItemTooltip("The tile this zoom asks for does not fit, so this is the base "
                               "resolution stretched. Diagnostics says which ceiling refused it.");
+    }
+
+    // A FALHA DE ESCRITA, ONDE A PESSOA ESTA OLHANDO.
+    //
+    // Medido 18/09 (laudo §4.2): `State::act()` mandava o motivo de `save`, de
+    // `saveAs` e da criacao de documento para `stderr`, e uma janela nao tem
+    // stderr. `State::trouble` existia e so era desenhado no canvas VAZIO --
+    // some no instante em que ha documento, que e o unico instante em que
+    // salvar pode falhar. O resultado media exatamente isto: Ctrl+S num disco
+    // cheio, nenhum pixel muda, o titulo continua com o asterisco e nada na
+    // tela diz por que.
+    //
+    // Por que AQUI e nao um modal: um modal interrompe, e a falha ja
+    // aconteceu -- nao ha decisao a tomar, ha um fato a saber. Esta barra e
+    // onde "rendering..." e "stretched" ja moram, esta a dois centimetros do
+    // Ctrl+S que acabou de ser apertado, e e vermelha, que e a unica cor que
+    // este editor usa para dizer que algo esta errado (a mesma `kAlarm` do
+    // painel de asset). O texto INTEIRO esta no Diagnostics, e o tooltip o
+    // repete aqui para quem nao quer abrir o painel.
+    //
+    // E fica em LINHA PROPRIA, nao em `SameLine`: a frase e longa e, ao lado
+    // dos combos, ou empurra o zoom para fora da janela ou e cortada
+    // justamente onde esta a informacao.
+    if (!trouble.empty()) {
+        st.trouble = elide(trouble, 96);
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f), "%s", st.trouble.c_str());
+        ImGui::SetItemTooltip("%.*s\n\nThe whole line is in the Diagnostics panel, under `write`.",
+                              static_cast<int>(trouble.size()), trouble.data());
     }
 
     ViewContext& v = s.view;
@@ -551,7 +598,8 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions)
     return st;
 }
 
-DiagnosticsStats drawDiagnostics(const Session& s, const RenderView& view) {
+DiagnosticsStats drawDiagnostics(const Session& s, const RenderView& view,
+                                 std::string_view trouble) {
     DiagnosticsStats st;
     if (!ImGui::Begin(kDiagnosticsWindow)) {
         ImGui::End();
@@ -570,6 +618,17 @@ DiagnosticsStats drawDiagnostics(const Session& s, const RenderView& view) {
     if (ImGui::BeginTable("diag", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("origin", ImGuiTableColumnFlags_WidthFixed, 90.0f);
         ImGui::TableSetupColumn("text");
+
+        // PRIMEIRA LINHA, E INTEIRA. A barra do canvas elide para caber; aqui
+        // e o "algum lugar" onde o texto completo tem de estar, e a celula
+        // quebra linha (`TextWrapped`) porque uma mensagem do sistema de
+        // arquivos traz o caminho inteiro. Primeira porque e a unica linha
+        // desta tabela sobre algo que FALHOU -- as outras descrevem o que o
+        // render fez.
+        if (!trouble.empty()) {
+            st.trouble = std::string(trouble);
+            row("write", st.trouble);
+        }
 
         // Always present, even when nothing is wrong: "191 of 194" is the line
         // that makes a missing layer visible at a glance.

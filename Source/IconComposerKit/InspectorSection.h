@@ -146,6 +146,12 @@ struct Section {
     Session& s;
     icf::NodePath path;
     InspectorStats& st;
+    // O canal do Kit para o app (Panels.h, `MenuActions`). Uma seção que
+    // precisa de um diálogo -- Image Asset precisa -- escreve o pedido aqui e
+    // o app o executa depois do frame. Por REFERÊNCIA e vinda de fora, nunca
+    // um global: a Regra 2 separa quem pede de quem faz, e um global no Kit
+    // seria a terceira porta que `Ports.h` recusa a ter.
+    MenuActions& menu;
 
     // Opens a section for `prop`; returns the view and whether the body draws.
     bool begin(const char* label, std::string_view prop, PropertyView& view) {

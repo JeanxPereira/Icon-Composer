@@ -66,7 +66,7 @@ Frame frame(HeadlessImGui& gui, Session& s, RenderCoordinator& c) {
     f.diagnostics = drawDiagnostics(s, c.view());
     ImGui::SetNextWindowPos(ImVec2(1120, 0));
     ImGui::SetNextWindowSize(ImVec2(320, 900));
-    f.inspector = drawInspector(s);
+    f.inspector = drawInspector(s, actions);
     gui.render();
     return f;
 }

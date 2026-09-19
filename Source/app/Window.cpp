@@ -63,7 +63,22 @@ struct State {
     // shown on the empty canvas because a GUI has no stderr. The folder picker
     // used to answer "" for a cancel and for a COM failure alike, and the two
     // are indistinguishable to whoever is clicking.
+    //
+    // E DESDE 19/09 ELE E DESENHADO COM DOCUMENTO ABERTO TAMBEM. Ate aqui
+    // `trouble` so aparecia no canvas VAZIO -- sumia exatamente quando ha
+    // documento, que e o unico momento em que salvar pode falhar (laudo 18/09
+    // §4.2). As falhas de escrita abaixo escreviam so em `stderr`, que uma
+    // janela nao tem. Agora toda saida de `act()` que nao e um cancelamento
+    // passa por `fail()`, e as duas superficies do Kit a mostram: uma linha
+    // vermelha elidida na barra do canvas, a frase inteira no Diagnostics.
     std::string trouble;
+    // Uma falha: para a tela E para o stderr. O stderr fica porque este
+    // binario tambem roda como `--selftest` e da linha de comando, onde nao
+    // ha painel para ler.
+    void fail(std::string what) {
+        std::fprintf(stderr, "iconcomposer: %s\n", what.c_str());
+        trouble = std::move(what);
+    }
     // A pasta que continha o ultimo bundle aberto -- onde o seletor deve
     // abrir da proxima vez. Ver `act()`.
     fs::path lastParent;
@@ -79,8 +94,7 @@ struct State {
     void open(const fs::path& dir) {
         auto s = ick::Session::open(dir);
         if (!s) {
-            trouble = "not a `.icon` this reader can open: " + dir.string();
-            std::fprintf(stderr, "iconcomposer: %s\n", trouble.c_str());
+            fail("not a `.icon` this reader can open: " + dir.string());
             return;
         }
         trouble.clear();
@@ -97,8 +111,12 @@ struct State {
             const std::string p = SystemSaveFileDialog("Untitled.icon");
             if (!p.empty()) {
                 auto s = ick::Session::create(p);
-                if (!s) std::fprintf(stderr, "iconcomposer: could not create %s\n", p.c_str());
-                else adopt(std::move(s));
+                if (!s) {
+                    fail("could not create " + p);
+                } else {
+                    trouble.clear();
+                    adopt(std::move(s));
+                }
             }
         }
         if (a.open) {
@@ -116,8 +134,7 @@ struct State {
                 open(bundleDirOf(p));
             } else if (!why.empty()) {
                 // Not a cancel: the picker never got as far as asking.
-                trouble = why;
-                std::fprintf(stderr, "iconcomposer: %s\n", why.c_str());
+                fail(why);
             }
         }
         // A `.icon` is a folder, so DRAGGING IT IN is the gesture the format
@@ -129,15 +146,50 @@ struct State {
             dropped.reset();
             open(bundleDirOf(p));
         }
+        // O SUCESSO APAGA A QUEIXA ANTERIOR, e nada mais a apaga. Uma linha
+        // vermelha que ficasse para sempre viraria parte do cenario; uma que
+        // sumisse sozinha depois de N segundos sumiria enquanto a pessoa
+        // estivesse lendo o porque. Gravar de novo, e conseguir, e a resposta
+        // exata para "isto ja passou".
         if (a.save && session) {
             const std::string r = session->save();
-            if (!r.empty()) std::fprintf(stderr, "save: %s\n", r.c_str());
+            if (r.empty()) trouble.clear();
+            else fail("save: " + r);
         }
         if (a.saveAs && session) {
             const std::string p = SystemSaveFileDialog(session->bundle().path().filename().string());
             if (!p.empty()) {
                 const std::string r = session->saveAs(p);
-                if (!r.empty()) std::fprintf(stderr, "save as: %s\n", r.c_str());
+                if (r.empty()) trouble.clear();
+                else fail("save as: " + r);
+            }
+        }
+        // IMPORTAR UM ASSET POR DIALOGO (laudo 18/09 §4.3). O pedido veio do
+        // painel do inspetor e trouxe CONSIGO o no e o escopo (Panels.h,
+        // `MenuActions::importInto`): este bloco roda depois do frame, e a
+        // camada que pediu pode nao ser mais a selecionada.
+        //
+        // A ordem e a mesma do campo digitado em PanelInspectorAsset.cpp, e
+        // deliberadamente: copiar o arquivo para `Assets/` NAO e uma edicao do
+        // documento e nao carrega comando; apontar a camada para ele E, e vai
+        // pela Session como tudo o mais. Um undo tira a referencia e deixa a
+        // copia onde esta, que `unusedAssets()` nomeia no Diagnostics.
+        if (a.importAsset && session) {
+            // Os filtros sao os dois formatos que o motor le (doc 04), mais o
+            // "All Files" que o proprio Onyx acrescenta -- quem tem um `.SVG`
+            // em maiusculas ou um arquivo sem extensao continua podendo
+            // escolher, e `importAsset` recusa o que nao for arquivo.
+            const std::string picked = SystemOpenFileDialog({{"Artwork (svg, png)", {"svg", "png"}}});
+            if (!picked.empty()) {
+                const fs::path file(picked);
+                const std::string why = session->bundle().importAsset(file);
+                if (!why.empty()) {
+                    fail("import: " + why);
+                } else {
+                    trouble.clear();
+                    session->setProperty(a.importInto, "image-name", a.importScope,
+                                         icf::json::Value::string(file.filename().string()));
+                }
             }
         }
         if (a.close) close();
@@ -184,7 +236,7 @@ struct CanvasPanel : Onyx::App::IPanel {
             // The coordinator ticks BEFORE the canvas draws: it may create or
             // replace the texture the canvas is about to show (spec 13/09 §6).
             st.coordinator->tick(*st.session);
-            ick::drawCanvas(*st.session, st.coordinator->view(), st.actions);
+            ick::drawCanvas(*st.session, st.coordinator->view(), st.actions, st.trouble);
         } else {
             // With no document the Kit's menu bar has nothing to hang from, so
             // the empty canvas carries the two items that can still be acted on.
@@ -221,7 +273,7 @@ struct InspectorPanel : Onyx::App::IPanel {
     explicit InspectorPanel(State& s) : st(s) {}
     void Draw() override {
         if (st.session) {
-            ick::drawInspector(*st.session);
+            ick::drawInspector(*st.session, st.actions);
         } else {
             ImGui::Begin(ick::kInspectorWindow);
             ImGui::End();
@@ -235,7 +287,7 @@ struct DiagnosticsPanel : Onyx::App::IPanel {
     explicit DiagnosticsPanel(State& s) : st(s) {}
     void Draw() override {
         if (st.session && st.coordinator) {
-            ick::drawDiagnostics(*st.session, st.coordinator->view());
+            ick::drawDiagnostics(*st.session, st.coordinator->view(), st.trouble);
         } else {
             ImGui::Begin(ick::kDiagnosticsWindow);
             ImGui::End();

@@ -102,12 +102,21 @@ void imageAsset(Section& x) {
         }
 
         ImGui::Separator();
-        // The Kit cannot open a file dialog: `Ports.h` gives it exactly two doors
-        // to the app, a texture sink and a render scheduler, and neither is a
-        // dialog -- the menu asks the app for one through `MenuActions`, which is
-        // the menu's own channel. So the path is typed here. A typed path is a
-        // plain thing that works; a Browse button with nothing behind it would be
-        // the same lie as a slider that moves no pixel.
+        // DUAS PORTAS, E ANTES DE 19/09 HAVIA UMA SO.
+        //
+        // O Kit continua sem poder abrir dialogo: `Ports.h` lhe da duas portas
+        // para o app, um sorvedouro de textura e um agendador de render, e
+        // nenhuma das duas e um dialogo (Regra 2 -- so `Source/app` linka
+        // Onyx). O que mudou nao foi a regra, foi o canal: `MenuActions` ja
+        // levava `open`, `save` e `saveAs` do Kit ate o app, e o comentario
+        // que estava aqui dizia que esse canal "era do menu". Nao e -- e do
+        // Kit. O botao abaixo escreve um pedido nele e o app abre o dialogo
+        // depois do frame, exatamente como faz com o `File > Open`.
+        //
+        // E o CAMPO DIGITADO FICA. Ele funciona, colar um caminho e mais
+        // rapido do que navegar ate ele, e um caminho digitado e a unica porta
+        // que sobra se o dialogo nativo falhar (o laudo de 18/09 tem um caso
+        // desses, com o COM do seletor de pasta).
         ImGui::TextDisabled("Import into Assets/");
         ImGui::SetNextItemWidth(220.0f);
         // Typing clears the last failure. The buffer and the error are file
@@ -119,9 +128,8 @@ void imageAsset(Section& x) {
             g_importError.clear();
         }
         ImGui::SetItemTooltip(
-            "The Kit links no toolkit and cannot open a file dialog (Ports.h gives it a texture "
-            "sink and a render scheduler, and nothing else), so the path is typed. A Browse button "
-            "with nothing behind it would be the same lie as a slider that moves no pixel.");
+            "A full path to an .svg or .png. Pasting one is often faster than walking to it, and "
+            "this field is also the way through if the native dialog ever refuses to open.");
         ImGui::SameLine();
         ImGui::BeginDisabled(g_importPath[0] == '\0');
         if (ImGui::Button("Import")) {
@@ -139,6 +147,32 @@ void imageAsset(Section& x) {
         }
         ImGui::EndDisabled();
         ImGui::SetItemTooltip("Copies the file into Assets/ and points this layer at it");
+
+        // O BOTAO QUE PEDE O DIALOGO. Ele nao importa nada: escreve o pedido
+        // em `MenuActions` e o app o executa depois do frame (Panels.h). O
+        // pedido leva o NO e o ESCOPO consigo -- ver a nota em `MenuActions`:
+        // `act()` roda depois, e "a camada selecionada" pode ja ser outra.
+        ImGui::SameLine();
+        const bool browse = ImGui::Button("Browse…");
+        // Onde o botao ficou, para quem precisa clicar nele de fora
+        // (Panels.h, `InspectorStats::importBrowseAt`).
+        const ImVec2 a = ImGui::GetItemRectMin();
+        const ImVec2 b = ImGui::GetItemRectMax();
+        x.st.importBrowseAt = ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+        ImGui::SetItemTooltip(
+            "Opens a file chooser. The Kit cannot open one itself (it links no toolkit), so the "
+            "request goes to the app, which opens the dialog after this frame and then copies the "
+            "file into Assets/ and points THIS layer at it.");
+        if (browse) {
+            x.menu.importAsset = true;
+            x.menu.importInto = x.path;
+            x.menu.importScope = x.s.scope;
+            // Um pedido novo apaga a queixa do anterior: a mensagem vermelha
+            // abaixo e do caminho DIGITADO, e deixa-la sob um dialogo que
+            // acabou de ser pedido e a mesma mentira que digitar ja apagava.
+            g_importError.clear();
+        }
+
         if (!g_importError.empty()) ImGui::TextColored(kAlarm, "%s", g_importError.c_str());
     }
     x.end();

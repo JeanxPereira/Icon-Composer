@@ -735,7 +735,7 @@ void documentRow(Session& s) {
     ImGui::Separator();
 }
 
-InspectorStats drawInspector(Session& s) {
+InspectorStats drawInspector(Session& s, MenuActions& actions) {
     InspectorStats st;
     if (!ImGui::Begin(kInspectorWindow)) {
         ImGui::End();
@@ -756,7 +756,7 @@ InspectorStats drawInspector(Session& s) {
     scopeSelector(s);
     ImGui::Separator();
 
-    Section x{s, path, st};
+    Section x{s, path, st, actions};
     // Only the properties `Values.h` types and the renderer already consumes get
     // a live section (spec 13/09 §7); the rest are named and greyed.
     switch (kindOf(path)) {
