@@ -51,6 +51,14 @@
 namespace ick {
 namespace {
 
+// O centro do ultimo item submetido, em pixels de tela. E o ponto em que um
+// teste injeta o clique (Tests/test_e2e_layers.cpp, `clickAt`).
+ImVec2 centreOfLastItem() {
+    const ImVec2 a = ImGui::GetItemRectMin();
+    const ImVec2 b = ImGui::GetItemRectMax();
+    return ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+}
+
 // Every item goes through here so that `MenuStats` counts what was actually
 // drawn: a disabled item that stopped being counted is a menu that can quietly
 // lose an entry without any frame noticing.
@@ -61,8 +69,23 @@ struct Builder {
         ++st.items;
         if (!enabled) ++st.disabled;
         const bool pressed = ImGui::MenuItem(label, shortcut, selected, enabled);
+        // Gravado aqui porque aqui e o unico caminho por onde um item nasce
+        // (Panels.h, `MenuItemInfo`): um item novo entra no relato sem ninguem
+        // o acrescentar.
+        st.drawn.push_back(MenuItemInfo{label, enabled, centreOfLastItem()});
         if (why) ImGui::SetItemTooltip("%s", why);
         return pressed;
+    }
+
+    // `BeginMenu` com o titulo gravado. So com o menu FECHADO: aberto, o
+    // `BeginMenu` ja comecou o popup e `GetItemRect*` deixa de falar do
+    // titulo. E nao faz falta -- quem clica para ABRIR clica num menu fechado,
+    // que e exatamente o estado em que a posicao e gravada.
+    bool menu(const char* label) {
+        ++st.menus;
+        const bool open = ImGui::BeginMenu(label);
+        if (!open) st.titles.push_back(MenuItemInfo{label, true, centreOfLastItem()});
+        return open;
     }
 };
 
@@ -89,8 +112,7 @@ MenuStats drawMenuBar(Session& s, MenuActions& a) {
     if (!ImGui::BeginMenuBar()) return st;
     Builder b{st};
 
-    ++st.menus;
-    if (ImGui::BeginMenu("File")) {
+    if (b.menu("File")) {
         if (b.item("New…", "Ctrl+N")) a.newDocument = true;
         if (b.item("Open…", "Ctrl+O")) a.open = true;
         ImGui::Separator();
@@ -105,11 +127,25 @@ MenuStats drawMenuBar(Session& s, MenuActions& a) {
         ImGui::EndMenu();
     }
 
-    ++st.menus;
-    if (ImGui::BeginMenu("Edit")) {
+    if (b.menu("Edit")) {
         if (b.item("Undo", "Ctrl+Z", s.canUndo())) s.undo();
         if (b.item("Redo", "Ctrl+Y", s.canRedo())) s.redo();
         ImGui::Separator();
+        // DUPLICATE. A spec de 13/09 §7 lista o item entre Redo e Delete e e
+        // ai que ele fica; o alvo o tem em `DocumentCommands`. Desabilitado
+        // sem selecao pela MESMA condicao do Delete ao lado -- duplicar a raiz
+        // nao e uma operacao (ela nao tem irmaos), e `duplicateNode` recusa.
+        //
+        // SEM ATALHO IMPRESSO, de proposito. Nada medido diz qual o alvo usa,
+        // e a nota no topo deste arquivo e sobre exatamente esse defeito: a
+        // terceira posicao de `MenuItem` DESENHA e nao LIGA nada, e esta barra
+        // ja anunciou nove acordes que nao existiam. Um `Ctrl+D` inventado
+        // seria o decimo.
+        if (b.item("Duplicate", nullptr, s.selection && s.selection->group)) {
+            // A selecao segue a DUPLICATA, que e o no que a pessoa acabou de
+            // criar e o que ela vai renomear ou mover em seguida.
+            if (auto made = s.duplicateNode(*s.selection)) s.selection = *made;
+        }
         if (b.item("Delete", "Del", s.selection && s.selection->group)) s.removeNode(*s.selection);
         b.item("Copy Properties", nullptr, false, kRound5);
         b.item("Paste Properties", nullptr, false, kRound5);
@@ -117,8 +153,7 @@ MenuStats drawMenuBar(Session& s, MenuActions& a) {
         ImGui::EndMenu();
     }
 
-    ++st.menus;
-    if (ImGui::BeginMenu("View")) {
+    if (b.menu("View")) {
         // These four write `Session::view` directly. They are NOT commands: the
         // context a person is looking through is not part of the document, it
         // does not move `version()`, and it is not on the undo stack.
@@ -166,8 +201,7 @@ MenuStats drawMenuBar(Session& s, MenuActions& a) {
         ImGui::EndMenu();
     }
 
-    ++st.menus;
-    if (ImGui::BeginMenu("Layer")) {
+    if (b.menu("Layer")) {
         const bool hasSel = s.selection && s.selection->group;
         const bool isLayer = hasSel && s.selection->layer;
         const icf::json::Value* groupsNode = s.root().find("groups");

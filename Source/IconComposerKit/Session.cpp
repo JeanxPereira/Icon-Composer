@@ -112,6 +112,20 @@ bool Session::removeNode(icf::NodePath path) {
     return ok;
 }
 
+std::optional<icf::NodePath> Session::duplicateNode(icf::NodePath path) {
+    coalesceKey_.clear();
+    if (!path.group) return std::nullopt;   // a raiz nao tem irmaos
+    const icf::NodePath parent = path.layer ? icf::NodePath{path.group, std::nullopt} : icf::NodePath{};
+    // O instantaneo e do PAI e a edicao e `icf::duplicateNode` sobre a raiz --
+    // a mesma forma de `removeNode` logo acima, e pela mesma razao: duas
+    // grafias da operacao seriam dois lugares para errar.
+    const bool ok = apply(parent, "", [&](icf::json::Value&) { return icf::duplicateNode(root(), path); });
+    if (!ok) return std::nullopt;
+    reindexSelectionAfterInsert(path);
+    return path.layer ? icf::NodePath{path.group, *path.layer + 1}
+                      : icf::NodePath{*path.group + 1, std::nullopt};
+}
+
 bool Session::moveNode(icf::NodePath path, int delta, bool coalesce) {
     if (!path.group) return false;
     const icf::NodePath parent = path.layer ? icf::NodePath{path.group, std::nullopt} : icf::NodePath{};
@@ -199,6 +213,19 @@ void Session::reindexSelectionAfterMove(icf::NodePath path, int delta) {
 // Removing a sibling shifts every later one down by one. A selection naming one of
 // those has to shift with it, or it silently comes to mean the next node down; a
 // selection at or under what was removed is gone.
+// O espelho exato de `reindexSelectionAfterRemove`: a duplicata entra em
+// `index + 1`, entao todo irmao a partir dali desce um. Uma selecao no
+// ORIGINAL nao se move -- ele continua onde estava.
+void Session::reindexSelectionAfterInsert(icf::NodePath path) {
+    if (!selection || !path.group) return;
+    if (path.layer) {
+        if (selection->group != path.group || !selection->layer) return;
+        if (*selection->layer > *path.layer) selection->layer = *selection->layer + 1;
+    } else {
+        if (selection->group > path.group) selection->group = *selection->group + 1;
+    }
+}
+
 void Session::reindexSelectionAfterRemove(icf::NodePath path) {
     if (!selection || !path.group) return;
     if (path.layer) {

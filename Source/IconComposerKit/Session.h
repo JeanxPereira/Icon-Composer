@@ -117,6 +117,14 @@ public:
     std::optional<std::size_t> addGroup(std::string name);
     std::optional<std::size_t> addLayer(std::size_t group, std::string name, std::string imageName);
     bool removeNode(icf::NodePath path);
+    // A copia do no, logo depois dele (Edit.h, `duplicateNode`, e o `[INF]`
+    // sobre o nome esta la). Devolve o caminho do no NOVO, para quem quiser
+    // seleciona-lo, ou nullopt quando nao ha o que duplicar.
+    //
+    // UM COMANDO SO, e o instantaneo e do PAI -- como `addGroup` e
+    // `removeNode`, e pelo mesmo motivo: a operacao acrescenta um irmao, e o
+    // unico no cuja imagem antes/depois descreve isso inteiro e o pai.
+    std::optional<icf::NodePath> duplicateNode(icf::NodePath path);
     // `coalesce` is the drag rule of the header note applied to structure: a drop
     // five rows down is five swaps, and five entries on the undo stack for one
     // gesture is five presses of Ctrl+Z to take back one drag. Consecutive moves
@@ -162,6 +170,11 @@ private:
     // siblings has to renumber it too, or it silently points at another node.
     void reindexSelectionAfterMove(icf::NodePath path, int delta);
     void reindexSelectionAfterRemove(icf::NodePath path);
+    // E inserir um irmao empurra para baixo todo irmao que vinha depois dele,
+    // exatamente como remover empurra para cima. Sem isto uma selecao abaixo
+    // da duplicata passaria a nomear o vizinho de cima em silencio -- o mesmo
+    // defeito que `reindexSelectionAfterRemove` existe para impedir.
+    void reindexSelectionAfterInsert(icf::NodePath path);
 
     icf::IconBundle bundle_;
     std::vector<Command> undo_;

@@ -231,6 +231,21 @@ bool removeNode(json::Value& root, NodePath path) {
     return true;
 }
 
+bool duplicateNode(json::Value& root, NodePath path) {
+    std::size_t index = 0;
+    json::Value* siblings = siblingsOf(root, path, index);
+    if (!siblings) return false;
+    auto& v = siblings->elements();
+    // A copia e feita ANTES do insert: `insert` pode realocar o vetor, e um
+    // `v[index]` passado por referencia para dentro dele seria uma leitura de
+    // memoria que acabou de se mover. `json::Value` e copiavel e o maior
+    // documento do corpus esta abaixo de 200 KB (Session.h), entao a copia
+    // custa menos do que a discussao.
+    json::Value copy = v[index];
+    v.insert(v.begin() + static_cast<std::ptrdiff_t>(index) + 1, std::move(copy));
+    return true;
+}
+
 bool moveNode(json::Value& root, NodePath path, int delta) {
     std::size_t index = 0;
     json::Value* siblings = siblingsOf(root, path, index);

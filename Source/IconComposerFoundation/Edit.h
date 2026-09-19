@@ -49,6 +49,23 @@ bool hasOwnEntry(const json::Value& owner, std::string_view prop, Context scope)
 std::size_t addGroup(json::Value& root, std::string name);
 std::size_t addLayer(json::Value& group, std::string name, std::string imageName);
 bool removeNode(json::Value& root, NodePath path);     // false for the root or out of range
+// A COPIA VERBATIM DO NO, LOGO DEPOIS DELE. `false` para a raiz ou fora da
+// faixa, como `removeNode`.
+//
+// `[INF]` O NOME VAI JUNTO, SEM SUFIXO. Nada medido diz o que o alvo escreve:
+// `DocumentCommands` esta no slice e a grafia do nome que ele produz nao esta,
+// e os 145 documentos do corpus nao tem um par que se possa ler como
+// "original e duplicata" (nenhuma regra de nome e observavel ali). As duas
+// respostas possiveis sao inventar um sufixo -- " copy", " 2", " copia", cada
+// um errado em algum idioma e nenhum medido -- ou copiar o que esta la. Copiar
+// e a escolha com menos invencao: o unico byte que a operacao acrescenta ao
+// documento e o proprio no, e a pessoa renomeia por duplo clique na arvore
+// como renomeia qualquer outro. Dois irmaos de mesmo nome sao legais no
+// formato (nada indexa por nome: `resolve`, `nodeAt` e o render andam por
+// INDICE), e o corpus ja carrega irmaos homonimos -- medido 19/09 sobre os
+// 145 documentos: `Apollo-Reborn/apollo` tem tres camadas irmas chamadas
+// `apollo_ring_large`.
+bool duplicateNode(json::Value& root, NodePath path);
 bool moveNode(json::Value& root, NodePath path, int delta);   // -1 up, +1 down; false at an edge
 bool setName(json::Value& root, NodePath path, std::string name);
 
