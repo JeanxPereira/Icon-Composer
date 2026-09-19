@@ -214,6 +214,19 @@ Para não ler a lista acima como "nada funciona":
 
 ## 5.1. Adendo de 19/09 — a exportação nomeia SEIS renditions, e nós temos quatro aparências
 
+> **SUPERSEDIDO no mesmo dia, e a correção importa.** Esta seção termina
+> propondo que "o combo de aparência ganhe entradas". **Está errado.**
+> `Docs/Laudos/2026-09-19-renditions-e-mirroring.md` mediu o que faltava:
+> `Clear` **não é uma aparência do documento** — é o terceiro valor de um
+> eixo DIFERENTE, o modo de render (`RenderingMode.Contents =
+> {color, tinted, clear}`), e as seis renditions são
+> `SystemAppearance{light,dark}` × esse trio. As quatro tingidas, Clear
+> incluído, leem a MESMA fatia `tinted` do documento. Escrever `clear` como
+> aparência produziria "Unknown appearance name".
+> Quem ganha seis entradas é um seletor de **rendition**, que é outro
+> controle. O resto desta seção segue valendo como o que foi medido primeiro;
+> a conclusão dela, não.
+
 `[BIN]` Junto dos tipos de exportação, o binário carrega uma tabela compacta
 de nomes (blocos de 8 bytes, o resto em continuação logo abaixo — a forma
 que o Swift usa para nomes de caso de enum):
