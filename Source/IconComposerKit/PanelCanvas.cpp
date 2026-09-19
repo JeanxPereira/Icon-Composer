@@ -330,6 +330,19 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions)
         ImGui::SameLine();
         ImGui::TextDisabled("rendering…");
     }
+    // O QUE ESTA NA TELA NAO E O QUE FOI PEDIDO. `refined` era escrito pelo
+    // coordenador e lido por ninguem: quando o ladrilho nao cabe, o canvas
+    // mostra a resolucao base esticada, que a esta altura do zoom e um borrao
+    // -- e o unico sinal disso era uma nota tecnica dentro do painel de
+    // Diagnostics, que ninguem abre para entender por que a imagem piorou.
+    // Aqui, ao lado do zoom, e onde a pessoa ja esta olhando quando piora.
+    if (!view.refined) {
+        st.stretchedNotice = true;
+        ImGui::SameLine();
+        ImGui::TextDisabled("stretched");
+        ImGui::SetItemTooltip("The tile this zoom asks for does not fit, so this is the base "
+                              "resolution stretched. Diagnostics says which ceiling refused it.");
+    }
 
     ViewContext& v = s.view;
     const ImVec2 availRaw = ImGui::GetContentRegionAvail();

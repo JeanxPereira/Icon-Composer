@@ -197,6 +197,10 @@ struct CanvasStats {
     // two intersected -- the pixels that can reach the screen.
     CanvasRect clip, image, painted;
     float zoom = 1.0f;   // the eased magnification this frame, not the target
+    // O aviso de que estes pixels sao a base esticada esteve na barra neste
+    // frame. Espelha `RenderView::refined`, que ate 18/09 era escrito pelo
+    // coordenador e lido por ninguem.
+    bool stretchedNotice = false;
 };
 CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions);
 

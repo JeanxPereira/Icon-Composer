@@ -927,3 +927,70 @@ TEST_CASE(canvas_and_coordinator_ask_for_one_tile_and_place_the_answer) {
     CHECK_EQ(s->view.tileSize, 0u);
     CHECK_EQ(gui.errors(), std::uint64_t(0));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A TEXTURA ESTICADA PASSA A SE ANUNCIAR
+//
+// `RenderView::refined` existia desde a frente do viewport, era escrito pelo
+// coordenador e lido por ninguem. Quando o ladrilho pedido nao cabe -- o teto
+// de area ou o do aparelho -- o que vai para a tela e o canvas inteiro na
+// resolucao base, esticado; no zoom em que isso acontece a imagem vira um
+// borrao, e o unico sinal era uma nota tecnica dentro do painel de
+// Diagnostics. A pessoa ve a qualidade cair e nada na tela diz por que.
+//
+// O aviso e um `TextDisabled` na barra, ao lado do zoom. O `stretchedNotice`
+// sozinho seria o painel concordando consigo mesmo, entao a contagem de
+// vertices do frame vem junto: um aviso que nao desenha nada nao muda o
+// numero, e o caso reprova.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+int frameVertices() {
+    ImDrawData* d = ImGui::GetDrawData();
+    if (!d) return -1;
+    return d->TotalVtxCount;
+}
+}  // namespace
+
+TEST_CASE(canvas_says_when_the_pixels_are_the_base_stretched) {
+    auto s = ick::Session::open(makeBundle("esticado"));
+    REQUIRE(s.has_value());
+    ick::HeadlessImGui gui;
+
+    // O ENQUADRAMENTO TEM DE ASSENTAR ANTES DE QUALQUER MEDICAO. O Fit da
+    // abertura suaviza o zoom ao longo de varios quadros, entao dois quadros
+    // seguidos nao tem a mesma contagem de vertices ate a suavizacao acabar --
+    // medir antes disso compararia a animacao, nao o aviso.
+    ick::RenderView fine = landed(512);
+    int vtxQuiet = -1;
+    int settled = 0;
+    for (int i = 0; i < 60 && settled < 2; ++i) {
+        canvasFrame(gui, *s, fine);
+        const int v = frameVertices();
+        settled = (v == vtxQuiet) ? settled + 1 : 0;
+        vtxQuiet = v;
+    }
+    REQUIRE(settled >= 2);   // assentou de fato; sem isto o resto nao mede nada
+    REQUIRE(vtxQuiet > 0);
+
+    // O render que COUBE: nada a avisar.
+    const ick::CanvasStats quiet = canvasFrame(gui, *s, fine);
+    REQUIRE(quiet.textured);
+    CHECK(!quiet.stretchedNotice);
+    CHECK_EQ(frameVertices(), vtxQuiet);
+
+    // O MESMO frame, com a unica diferenca sendo a queda para a base.
+    ick::RenderView stretched = landed(512);
+    stretched.refined = false;
+    const ick::CanvasStats loud = canvasFrame(gui, *s, stretched);
+    REQUIRE(loud.textured);
+    CHECK(loud.stretchedNotice);
+    const int vtxLoud = frameVertices();
+
+    // Desenhou de verdade, e nao so ligou um bool.
+    CHECK(vtxLoud > vtxQuiet);
+
+    // E volta a calar quando o ladrilho volta a caber.
+    const ick::CanvasStats again = canvasFrame(gui, *s, fine);
+    CHECK(!again.stretchedNotice);
+    CHECK_EQ(frameVertices(), vtxQuiet);
+}
