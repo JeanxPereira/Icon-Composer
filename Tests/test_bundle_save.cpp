@@ -140,6 +140,44 @@ TEST_CASE(bundle_import_asset_copies_into_assets_and_lists_it) {
     CHECK(!b->importAsset(srcDir / "does-not-exist.svg").empty());
 }
 
+// IMPORTAR O PRÓPRIO ARQUIVO QUE JÁ É A ARTE, QUE É COMO A ARTE MORRIA.
+//
+// O diálogo de importar não restringe onde abre, e a pasta que ele oferece é
+// justamente a que o editor acabou de mostrar -- então escolher um arquivo que
+// já está no `Assets/` deste bundle é um clique comum, não um caso de canto.
+//
+// O caminho destrutivo era: `remove(dest)` apaga o destino, que É a origem, e
+// o `copy_file` seguinte não tem de onde copiar. O asset some do disco e a
+// camada fica apontando para um arquivo que não existe mais. Antes de o
+// `remove` existir isto era inócuo (a cópia falhava, os bytes ficavam); foi o
+// conserto da flag `overwrite_existing` que o tornou perda de dados -- o
+// defeito nasceu da onda que foi consertar o defeito irmão.
+//
+// A asserção que importa é a terceira: os BYTES continuam lá. Um caso que só
+// olhasse o código de retorno passaria com a arte destruída.
+TEST_CASE(bundle_import_of_the_asset_itself_keeps_the_art) {
+    const fs::path dir = scratch("import-self");
+    auto b = IconBundle::open(dir);
+    REQUIRE(b.has_value());
+
+    const fs::path inside = dir / "Assets" / "self.svg";
+    const std::string art = "<svg id='self'>the bytes that must survive</svg>";
+    std::ofstream(inside, std::ios::binary) << art;
+    // Reabre para que `assetFiles()` veja o arquivo novo.
+    b = IconBundle::open(dir);
+    REQUIRE(b.has_value());
+    const std::size_t before = b->assetFiles().size();
+
+    // O gesto: importar o arquivo que já é a arte.
+    CHECK_EQ(b->importAsset(inside), std::string(""));
+
+    CHECK(fs::exists(inside));
+    std::ifstream in(inside, std::ios::binary);
+    const std::string after((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK_EQ(after, art);                       // os bytes, que é o que se perdia
+    CHECK_EQ(b->assetFiles().size(), before);   // e a lista não ganha duplicata
+}
+
 // REIMPORTAR POR CIMA DE UM NOME QUE JÁ ESTÁ EM `Assets/`.
 //
 // É o gesto normal de quem desenha o ícone: reexportar o SVG do editor de arte

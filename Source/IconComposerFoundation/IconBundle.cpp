@@ -132,7 +132,13 @@ std::string IconBundle::saveAs(const fs::path& dir) {
         // sobre si mesmo é um erro em qualquer toolchain. Acontece num Save As
         // para a pasta em que o documento já está, que é o que a caixa de
         // gravação oferece por padrão.
-        if (src == dst) continue;
+        // `fs::equivalent` e não `==`, pela mesma razão de `importAsset`: no
+        // Windows a mesma pasta chega com outra caixa de letras ou outro
+        // separador conforme venha do diálogo, de um caminho digitado ou de
+        // arrastar, e a comparação lexical deixa passar justo esses -- para
+        // cair no `remove` destrutivo logo abaixo.
+        std::error_code eq;
+        if (fs::equivalent(src, dst, eq) && !eq) continue;
         // APAGAR ANTES DE COPIAR, pela medição de `importAsset` logo abaixo:
         // nesta toolchain (g++ 13.2.0, MinGW) `copy_options::overwrite_existing`
         // é IGNORADA -- com o destino existente `copy_file` devolve false e
@@ -169,6 +175,38 @@ std::string IconBundle::importAsset(const fs::path& file) {
     // acontecendo aqui (medido), mas é um jeito de ler um erro que não houve.
     std::error_code mk;
     fs::create_directories(dir_ / "Assets", mk);
+
+    // O ARQUIVO PODE SER O PRÓPRIO DESTINO, E SEM ESTA LINHA A ARTE MORRE.
+    //
+    // O diálogo de importar não restringe onde abre, então escolher um
+    // arquivo que JÁ está no `Assets/` deste bundle é um clique comum -- é
+    // literalmente a pasta que o editor acabou de mostrar. O `remove` logo
+    // abaixo apagaria o destino, que é a origem, e o `copy_file` seguinte
+    // não teria de onde copiar: o asset some do disco e a camada fica
+    // apontando para um arquivo que não existe mais. Antes de o `remove`
+    // existir isto era inócuo (a cópia falhava e os bytes ficavam); foi o
+    // conserto da flag que o tornou destrutivo.
+    //
+    // `fs::equivalent` e não `==`: o mesmo arquivo alcançado por outra caixa
+    // de letras, outro separador, ou por um link, é o mesmo arquivo -- e no
+    // Windows as três coisas acontecem entre um caminho digitado, um vindo do
+    // diálogo e um vindo de arrastar. A comparação lexical deixaria passar
+    // exatamente os casos que o usuário produz sem querer.
+    //
+    // Falha do `equivalent` (destino ausente, por exemplo) NÃO é igualdade:
+    // `ec` fica setado e `same` fica false, que é o caminho normal de importar
+    // um arquivo de fora.
+    std::error_code eq;
+    const bool same = fs::equivalent(file, dest, eq) && !eq;
+    if (same) {
+        // Nada a copiar, e o asset já está na lista. Silêncio é a resposta
+        // certa: a pessoa pediu que este arquivo fosse a arte, e ele já é.
+        if (std::find(assets_.begin(), assets_.end(), name) == assets_.end()) {
+            assets_.push_back(name);
+            std::sort(assets_.begin(), assets_.end());
+        }
+        return {};
+    }
 
     // APAGAR ANTES DE COPIAR, porque `copy_options::overwrite_existing` NÃO
     // sobrescreve nesta toolchain.
