@@ -13,6 +13,7 @@
 #include "imgui.h"
 #include "imgui_internal.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <memory>
 #include <optional>
@@ -305,15 +306,59 @@ struct DiagnosticsPanel : Onyx::App::IPanel {
     State& st;
 };
 
-// `[OBS]` 20% / 28% / 22% are sfsymview's fractions, not the target's
-// WindowLayoutConstants, which have not been read (spec 13/09 §2.1).
+// `[BIN]` As larguras dos dois paineis sao as do alvo, lidas em 19/09 de
+// `WindowLayoutConstants` no slice `IconComposerKit.arm64`
+// (`Docs/Laudos/2026-09-19-renditions-e-mirroring.md` §4.2): a sidebar quer
+// 330 pt, entre 250 e 480; o inspetor quer 330 pt -- que e tambem o minimo
+// dele --, ate 500.
+//
+// Elas eram percentuais herdados do `sfsymview`, 20% e 28%, e a diferenca nao
+// e cosmetica: numa janela de 1601 pt aquilo dava 320 / 448, isto e, o
+// inspetor saia quase 120 pt largo demais. E, por serem percentuais, os dois
+// paineis nao tinham piso nem teto -- a janela encolhendo, a sidebar passava
+// abaixo dos 250 do alvo sem resistencia.
+//
+// `DockBuilderSplitNode` pede uma RAZAO, nao pixels, entao a razao e derivada
+// da largura que existe, e o grampo acontece antes da divisao. A do inspetor
+// e contra o que SOBROU depois da sidebar, que e onde ela e aplicada.
+//
+// O QUE EU NAO APLIQUEI, DE PROPOSITO: `Window.minContentSize` do alvo e
+// 1284x704, e este editor roda numa maquina cujo monitor retrato tem 1080 de
+// largura. Um minimo de 1284 poria a janela maior que a tela. O alvo e macOS
+// e supoe um monitor largo; a medicao fica no laudo e nao vira grampo aqui.
+// `Canvas.padding` (96 pt) tambem nao: mexer nele muda o que o `Fit` faz, e
+// `canvas_fit_fits_exactly_and_centres` afirma hoje que o Fit encosta EXATO
+// no eixo curto. Trocar isso e uma decisao com teste proprio, nao um efeito
+// colateral desta linha.
 void defaultLayout(ImGuiID dockspaceId) {
     ImGui::DockBuilderRemoveNode(dockspaceId);
     ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
-    ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
+    const ImVec2 work = ImGui::GetMainViewport()->WorkSize;
+    ImGui::DockBuilderSetNodeSize(dockspaceId, work);
+
+    // `[BIN]` §4.2 do laudo de 19/09.
+    constexpr float kSidebarIdeal = 330.0f, kSidebarMin = 250.0f, kSidebarMax = 480.0f;
+    constexpr float kInspectorIdeal = 330.0f, kInspectorMin = 330.0f, kInspectorMax = 500.0f;
+
+    const float total = work.x > 1.0f ? work.x : 1.0f;
+    // Numa janela estreita demais para os dois minimos, a razao ainda tem de
+    // caber: o grampo final e a metade do que existe, para nenhum dos dois
+    // engolir o canvas inteiro.
+    auto ratio = [](float want, float lo, float hi, float span) {
+        const float px = std::clamp(want, lo, hi);
+        const float r = px / (span > 1.0f ? span : 1.0f);
+        return std::clamp(r, 0.05f, 0.5f);
+    };
+
     ImGuiID centre = dockspaceId;
-    const ImGuiID left = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Left, 0.20f, nullptr, &centre);
-    const ImGuiID right = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Right, 0.28f, nullptr, &centre);
+    const ImGuiID left = ImGui::DockBuilderSplitNode(
+        centre, ImGuiDir_Left, ratio(kSidebarIdeal, kSidebarMin, kSidebarMax, total), nullptr,
+        &centre);
+    // Contra o que sobrou, nao contra a janela inteira.
+    const float afterLeft = total - std::clamp(kSidebarIdeal, kSidebarMin, kSidebarMax);
+    const ImGuiID right = ImGui::DockBuilderSplitNode(
+        centre, ImGuiDir_Right, ratio(kInspectorIdeal, kInspectorMin, kInspectorMax, afterLeft),
+        nullptr, &centre);
     const ImGuiID bottom = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down, 0.22f, nullptr, &centre);
     ImGui::DockBuilderDockWindow(ick::kLayersWindow, left);
     ImGui::DockBuilderDockWindow(ick::kCanvasWindow, centre);
