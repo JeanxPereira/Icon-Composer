@@ -246,20 +246,60 @@ void features(Section& x) {
     ImGui::PopID();
 }
 
+// ---- implicit-asset-mirroring -----------------------------------------------
+// `[BIN]` The root of the mirroring chain, and the one member of it that is a
+// BARE BOOL. `IconComposition.implicitAssetMirroring` is `Bool` non-optional
+// (`fieldmd` "Sb", descriptors `0x13070c` and `0x1317cc`), it is NOT
+// specializable -- the binary declares no `-specializations` sibling for it --
+// and its default is `false`: the default initialiser at `0x1A48` is
+// `mov w0, #0 ; ret` (laudo 19/09 §3.3). The key's spelling is read, not
+// derived: `__cstring` `0x12a750`, referenced from the document's `CodingKeys`
+// at `0x418C4`, `0x41D68`, `0xC8EC4`, `0xC8FC4` (§3.2).
+//
+// So this is a plain checkbox and not the group's and the layer's three-position
+// control: the value here has no third state to have. A node that says nothing
+// lands on THIS bool (`efetivo = mirrorable ?? herdado`, §3.4), which is what
+// makes it worth its own line rather than being folded into Features.
+//
+// UNCHECKING REMOVES THE KEY rather than writing `false`, which is the same rule
+// `features` and the SVG colour space above follow, and for the same reason:
+// `[ART]` 145 of 145 documents leave the key out, the binary's default for it is
+// `false`, and a key that only ever restates the default is a byte the
+// round-trip gate has to carry for nothing.
+void implicitMirroring(Section& x) {
+    ImGui::PushID("Implicit Asset Mirroring");
+    if (header(x, "Implicit Asset Mirroring")) {
+        const icf::json::Value* v = rootValue(x, "implicit-asset-mirroring");
+        bool on = booleanOr(v, false);
+        if (ImGui::Checkbox("Mirror assets for right-to-left languages", &on)) {
+            writeRoot(x, "implicit-asset-mirroring",
+                      on ? std::optional<icf::json::Value>(icf::json::Value::boolean(true))
+                         : std::nullopt);
+        }
+        ImGui::SetItemTooltip(
+            "What every group and layer falls back to when its own Asset Mirroring is left "
+            "Inherited. Off is the binary's default, and 0 of the 145 corpus documents write this "
+            "key at all -- so turning it off again takes the key back out.");
+    }
+    ImGui::PopID();
+}
+
 }  // namespace
 
 void drawDocumentSections(Section& x) {
     platforms(x);
     svgColorSpace(x);
     features(x);
-    // The last two root keys the binary declares. `[ART]` neither occurs in any
-    // of the 145 documents, so nothing has ever shown what their value LOOKS
-    // like -- and a control invented over an unmeasured shape writes a document
-    // nobody can read back. Named and greyed says that; hiding them would not.
-    const char* kUnmeasured = "Declared by the binary and written by 0 of the 145 corpus documents: "
-                              "no measured value shape to edit (doc 01 section 2)";
-    x.disabled("Language IDs", kUnmeasured);
-    x.disabled("Implicit Asset Mirroring", kUnmeasured);
+    implicitMirroring(x);
+    // The last root key the binary declares that still has nothing behind it.
+    // `[ART]` it occurs in none of the 145 documents, and unlike
+    // `implicit-asset-mirroring` -- whose type, default and semantics were read
+    // out of the binary on 19/09 -- nothing has ever shown what its value LOOKS
+    // like. A control invented over an unmeasured shape writes a document nobody
+    // can read back. Named and greyed says that; hiding it would not.
+    x.disabled("Language IDs",
+               "Declared by the binary and written by 0 of the 145 corpus documents: no measured "
+               "value shape to edit (doc 01 section 2)");
 }
 
 }  // namespace ick

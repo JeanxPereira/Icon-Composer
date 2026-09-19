@@ -26,7 +26,7 @@ constexpr std::string_view kSpecializationKeys[] = {
 // Properties whose value is an OBJECT with a shape of its own. Anything not
 // listed here is a scalar, or an array of scalars, and has no keys to check.
 enum class Shape { Scalar, Fill, Orientation, Point, Position, Shadow, Translucency,
-                   Refractivity, SupportedPlatforms };
+                   Refractivity, SupportedPlatforms, AssetMirroring };
 
 Shape shapeOf(std::string_view property) {
     if (property == "fill") return Shape::Fill;
@@ -37,6 +37,11 @@ Shape shapeOf(std::string_view property) {
     if (property == "translucency") return Shape::Translucency;
     if (property == "refractivity") return Shape::Refractivity;
     if (property == "supported-platforms") return Shape::SupportedPlatforms;
+    // `[BIN]` `IconComposition.AssetMirroring` (descriptor `0x130ae0`) is a
+    // struct with exactly one coding key, `mirrorable : Bool?` -- laudo 19/09
+    // §3.3. Listing it here is what turns a misspelt sub-key into a line in the
+    // Diagnostics panel instead of a member the document carries in silence.
+    if (property == "asset-mirroring") return Shape::AssetMirroring;
     return Shape::Scalar;
 }
 
@@ -51,6 +56,7 @@ std::vector<std::string_view> keysOf(Shape s) {
         case Shape::Translucency:       return {"enabled", "value"};
         case Shape::Refractivity:       return {"enabled", "strength", "depth"};
         case Shape::SupportedPlatforms: return {"squares", "circles"};
+        case Shape::AssetMirroring:     return {"mirrorable"};
         case Shape::Scalar:             return {};
     }
     return {};

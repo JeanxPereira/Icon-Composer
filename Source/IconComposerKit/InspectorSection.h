@@ -253,6 +253,13 @@ struct Section {
 void drawCommonSections(Section& x, NodeKind kind);   // PanelInspector.cpp
 // Round 3, each in its own translation unit:
 void drawLayerAssetSections(Section& x);              // PanelInspectorAsset.cpp
+// `asset-mirroring` is the one property of the Asset family that is NOT the
+// layer's alone: `[BIN]` the group's snapshot carries the same `CodingKey` and
+// the same `SpecializableProperty<AssetMirroring>` (laudo 19/09 §3.2, §3.3), and
+// the target draws one inspector for both levels (`AssetMirroringInspector`,
+// §3.5). So the section has its own entry point, and the group's branch calls it
+// without dragging in `image-name`, which a group does not have.
+void drawAssetMirroringSection(Section& x);           // PanelInspectorAsset.cpp
 void drawGroupEffectSections(Section& x);             // PanelInspectorEffects.cpp
 void drawDocumentSections(Section& x);                // PanelInspectorDocument.cpp
 

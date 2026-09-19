@@ -773,6 +773,10 @@ InspectorStats drawInspector(Session& s, MenuActions& actions) {
             translucency(x);
             specular(x);
             drawGroupEffectSections(x);
+            // Not an effect and not the layer's: `asset-mirroring` is declared
+            // on both snapshots (laudo 19/09 §3.2), so it is drawn at both
+            // levels from the one place it is written.
+            drawAssetMirroringSection(x);
             break;
         case NodeKind::Layer:
             visible(x);

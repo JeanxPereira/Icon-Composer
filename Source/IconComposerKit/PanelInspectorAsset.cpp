@@ -1,7 +1,8 @@
-// The Asset family of inspector sections: which file the layer draws, and the
-// two neighbours the format NAMES but never writes.
+// The Asset family of inspector sections: which file the layer draws, whether
+// it is mirrored for right-to-left, and the one neighbour the format NAMES but
+// never writes.
 //
-// ONE OF THE THREE IS LIVE, AND THE REASON THE OTHER TWO ARE NOT
+// TWO OF THE THREE ARE LIVE, AND THE REASON THE THIRD IS NOT
 // -----------------------------------------------------------------------------
 // `image-name` is the property of this family that the corpus actually writes
 // (408 layers carry it, plus 29 specialization lists -- doc 01 §4) and that the
@@ -11,24 +12,53 @@
 // import, and -- loudest of the four -- the case where the document names a file
 // that is not there.
 //
-// `material` on the layer and `asset-mirroring` stay greyed, and NOT for the
-// usual reason. It is not that the renderer is behind: it is that nobody knows
-// what to write. Both are sealed `CodingKey`s that occur ZERO times in the 145
-// documents (verified against the corpus, and doc 01 §3, §4, §9). Two separate
-// things are therefore unknown about each of them:
+// TWO CONTROLS WERE GREY FOR ONE REASON, AND HALF OF THAT REASON FELL ON 19/09
+// -----------------------------------------------------------------------------
+// `asset-mirroring` and the layer's `material` were greyed together, and NOT
+// because the renderer was behind: because nobody knew what to write. Both are
+// sealed `CodingKey`s that occur ZERO times in the 145 documents, and two
+// separate things were unknown about each:
 //
 //   1. The KEY's spelling on disk. The camelCase-to-kebab rule "prevê, não
 //      decide" (doc 01 §1): the corpus already caught it being wrong once, where
 //      `assumedSVGColorSpace` is written `color-space-for-untagged-svg-colors`.
 //      For a key the corpus never uses, the derived name is a guess (§10.1).
 //   2. The VALUE's grammar. §7 counts the observed shape of every key that
-//      occurs; these two have no row there, because they have no observations.
+//      occurs; these had no row there, because they had no observations.
 //
-// A control for either would write an unseen value under an unread key, and the
-// document would take it without a word -- the exact failure this family is best
-// placed to cause, since both keys sit beside the one property that works. So
-// they are named, greyed, and carry that reason in the tooltip, which is a
-// different statement from "not built yet".
+// `asset-mirroring` NOW HAS BOTH, and neither came from the corpus, which is
+// still mute (0 of 145 -- laudo 19/09 §3.6). They came out of the binary
+// (laudo 19/09 §3, every line `[BIN]`, with an address):
+//
+//   * the key is spelled `asset-mirroring` -- read off the `CodingKeys`
+//     `rawValue` of the group snapshot (`0xBA35C`) and of the layer snapshot
+//     (`0xC3474`), as an immediate, not derived from camelCase (§3.2);
+//   * the value is an OBJECT, `IconComposition.AssetMirroring` (descriptor
+//     `0x130ae0`), one member `mirrorable : Bool?`, encoded through a KEYED
+//     container, and the member's default is `nil` -- the default initialiser
+//     at `0x1A04` is `mov w0, #2 ; ret`, and 2 is the extra inhabitant of
+//     `Optional<Bool>` (§3.3);
+//   * it IS specializable at both levels, so the pair `asset-mirroring` +
+//     `asset-mirroring-specializations` obeys the same invariant every other
+//     specializable property does (§3.3);
+//   * the semantics are `efetivo = mirrorable ?? herdado`, disassembled from
+//     `effectiveIsMirrorable(inheritedValue:)` at `0xA5DE8`, and the root of the
+//     chain is the document's `implicit-asset-mirroring` (§3.4).
+//
+// So the control below is a THREE-position one, because `Bool?` has three
+// inhabitants, and each position writes a shape the binary says the decoder
+// accepts.
+//
+// THE LAYER'S `material` STAYS GREY, AND THIS IS THE HALF THAT DID NOT FALL
+// -----------------------------------------------------------------------------
+// Nothing in the 19/09 laudo touched it. Its key name on disk is still a guess
+// off the camelCase rule and its value has never been seen -- no `fieldmd` type
+// was read for it, no `CodingKeys` `rawValue` was disassembled, and the corpus
+// has no row for it either (doc 01 §4, §7). A control for it would write an
+// unseen value under an unread key and `icon.json` would accept it in silence,
+// which is exactly the failure this family is best placed to cause, since the
+// key sits beside the two that work. It stays named, greyed, and carrying that
+// reason in the tooltip -- a different statement from "not built yet".
 #include "Source/IconComposerKit/InspectorSection.h"
 
 #include <algorithm>
@@ -178,23 +208,119 @@ void imageAsset(Section& x) {
     x.end();
 }
 
+// ---- asset-mirroring --------------------------------------------------------
+// THREE POSITIONS, NAMED BY WHAT THEY DO AND NOT BY WHAT THE TARGET CALLS THEM
+//
+// The target's own picker has three cases -- the Kit's `AssetMirroring.
+// InspectorValue` is an enum of `inherited`, `fixed`, `mirror` (field metadata
+// at `0x1D78E0`). Those names are read; the FUNCTION that maps them onto `Bool?`
+// is internal to the Kit, not exported, and was not disassembled. The laudo says
+// so in as many words: `inherited = nil, fixed = false, mirror = true` is the
+// only assignment that closes with §3.3 and §3.4, but it is marked `[INF]`, not
+// `[BIN]` (laudo 19/09 §3.5).
+//
+// That is why the three positions below are labelled by the VALUE and never by
+// the target's case names. Swapping two of those names would produce a document
+// that is perfectly valid and semantically inverted, and nothing here would
+// catch it: `asset-mirroring` occurs 0 times in 145 documents (§3.6), so the
+// corpus gate has nothing to compare against. A label that says "does not
+// mirror" is true of `{"mirrorable": false}` whatever the target calls that
+// case; a label that says "Fixed" is only true if the inference holds.
+enum class Mirror { Inherited, Off, On };
+
+Mirror readMirror(const icf::json::Value* v) {
+    if (!v || v->kind() != icf::json::Value::Kind::Object) return Mirror::Inherited;
+    const icf::json::Value* m = v->find("mirrorable");
+    if (!m || m->kind() != icf::json::Value::Kind::Bool) return Mirror::Inherited;
+    return m->boolean() ? Mirror::On : Mirror::Off;
+}
+
+// `[BIN]` the encoder is a KEYED container over one `Bool?` (§3.3), so the
+// absent case is the object with the member left out -- which is what Swift's
+// synthesised `encodeIfPresent` writes for `nil`. "Inherited" therefore REMOVES
+// `mirrorable`; it does not write `false`, and those two are different
+// documents with different meanings.
+icf::json::Value mirrorToJson(Mirror m) {
+    std::vector<icf::json::Value::Member> members;
+    if (m != Mirror::Inherited) {
+        members.emplace_back("mirrorable", icf::json::Value::boolean(m == Mirror::On));
+    }
+    return icf::json::Value::object(std::move(members));
+}
+
+// `efetivo = mirrorable ?? herdado`, with the document's `implicit-asset-mirroring`
+// at the root of the chain (§3.4, `0xA5DE8`). `[BIN]` covers the fold and the
+// root; `[INF]` is only the middle link -- that a LAYER's inherited value is its
+// GROUP's rather than the document's directly. `Layer.effectiveIsMirrorable(for:)`
+// and `Group.effectiveIsMirrorable(for:)` were both named but neither was
+// disassembled far enough to show who hands the layer its `inheritedValue`.
+bool effectiveMirroring(const Session& s, icf::NodePath path, icf::Context scope) {
+    auto own = [&](icf::NodePath p) -> Mirror {
+        const icf::json::Value* node = icf::nodeAt(s.root(), p);
+        if (!node) return Mirror::Inherited;
+        return readMirror(icf::resolve(*node, "asset-mirroring", scope));
+    };
+    // The root of the chain: a plain, non-specializable bool on the document.
+    bool value = booleanOr(s.root().find("implicit-asset-mirroring"), false);
+    if (path.group) {
+        const Mirror g = own(icf::NodePath{path.group, std::nullopt});
+        if (g != Mirror::Inherited) value = (g == Mirror::On);
+    }
+    if (path.layer) {
+        const Mirror l = own(path);
+        if (l != Mirror::Inherited) value = (l == Mirror::On);
+    }
+    return value;
+}
+
+void assetMirroring(Section& x) {
+    PropertyView v;
+    if (x.begin("Asset Mirroring", "asset-mirroring", v)) {
+        const Mirror now = readMirror(v.value);
+        Mirror next = now;
+
+        // The labels say what the value DOES. See the note above for why they do
+        // not say `inherited` / `fixed` / `mirror`.
+        if (ImGui::RadioButton("Inherited", now == Mirror::Inherited)) next = Mirror::Inherited;
+        ImGui::SetItemTooltip(
+            "No decision of its own: 'mirrorable' is left out of the object, and the value in "
+            "force comes from further up, with the document's Implicit Asset Mirroring at the "
+            "root of the chain. Picking this REMOVES the member; it does not write false.");
+        if (ImGui::RadioButton("Does not mirror", now == Mirror::Off)) next = Mirror::Off;
+        ImGui::SetItemTooltip(
+            "Writes {\"mirrorable\": false}: this node keeps its artwork as authored in a "
+            "right-to-left language, whatever the document asks for.");
+        if (ImGui::RadioButton("Mirrors", now == Mirror::On)) next = Mirror::On;
+        ImGui::SetItemTooltip(
+            "Writes {\"mirrorable\": true}: this node's asset is flipped for right-to-left "
+            "languages.");
+
+        if (next != now) x.write("asset-mirroring", mirrorToJson(next), false);
+
+        // The arithmetic of the chain, shown because the tri-state is the only
+        // control in this panel whose displayed position does NOT tell you what
+        // the icon does -- "Inherited" is an answer of "look somewhere else".
+        ImGui::TextDisabled("in force here: %s",
+                            effectiveMirroring(x.s, x.path, x.s.scope) ? "mirrors" : "does not mirror");
+        ImGui::SetItemTooltip(
+            "The fold is 'own value, or else the inherited one' (laudo 19/09 sec. 3.4), and the "
+            "root of the chain is the document's Implicit Asset Mirroring. That a layer inherits "
+            "from its GROUP rather than from the document directly is inference, not a reading.");
+    }
+    x.end();
+}
+
 }  // namespace
+
+void drawAssetMirroringSection(Section& x) { assetMirroring(x); }
 
 void drawLayerAssetSections(Section& x) {
     imageAsset(x);
+    assetMirroring(x);
 
-    // The tooltips are ASCII: the default ImGui font has no section sign, and a
+    // The tooltip is ASCII: the default ImGui font has no section sign, and a
     // reason that renders as a box is not a reason. Section numbers are spelled
     // out ("doc 01 sec. 4") on screen; the comments above keep the mark.
-    x.disabled("Asset Mirroring",
-               "Nothing to write yet, and the gap is the FORMAT's, not the renderer's.\n"
-               "'asset-mirroring' is a sealed CodingKey that occurs 0 times in the 145 documents "
-               "(doc 01 sec. 3, sec. 4), so both its spelling on disk and the shape of its value "
-               "are unobserved -- the derived key name is a guess (doc 01 sec. 10.1), and the "
-               "value grammar in sec. 7 has no row for it. Nothing consumes it either. A control "
-               "here would write an invented value under an invented key, and icon.json would "
-               "accept it in silence.");
-
     x.disabled("Material",
                "The layer's 'material' occurs 0 times in the 145 documents (doc 01 sec. 4): its "
                "key name on disk is a guess and its value has never been seen, exactly as for "
