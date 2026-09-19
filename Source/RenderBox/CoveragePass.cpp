@@ -282,9 +282,10 @@ Result<void> CoveragePass::draw(Device& device, Image& target, const PathBuffer&
     // `maxViewportDimensions` e `viewportBoundsRange` sao os dois numeros, e o
     // minimo que o Vulkan garante (4096 e +-8192) cobre `size <= 4096`.
     {
-        VkPhysicalDeviceProperties props{};
-        vkGetPhysicalDeviceProperties(device.physical(), &props);
-        const VkPhysicalDeviceLimits& lim = props.limits;
+        // Lidos uma vez, quando o aparelho foi escolhido (`Device::limits`):
+        // sao imutaveis por dispositivo, e este bloco roda uma vez por forma e
+        // uma vez por filho de clip-path.
+        const VkPhysicalDeviceLimits& lim = device.limits();
         const double vw = vp.width ? vp.width : target.width();
         const double vh = vp.height ? vp.height : target.height();
         if (vw > lim.maxViewportDimensions[0] || vh > lim.maxViewportDimensions[1]) {

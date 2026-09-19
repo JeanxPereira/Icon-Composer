@@ -40,6 +40,15 @@
 #include "Source/RenderBox/IconRenderer.h"
 #include "Source/RenderBox/SystemFill.h"
 
+// So pelo id do processo, que e o que torna o diretorio temporario unico por
+// processo (ver TempBundle). `<process.h>` e nao `<windows.h>`: este ultimo
+// define `near` como macro e apaga o `near()` declarado logo abaixo.
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -121,8 +130,15 @@ const char* appearanceName(icf::Appearance a) {
 class TempBundle {
 public:
     explicit TempBundle(const std::string& document) {
+        // O PID entra no nome. O caminho era funcao apenas do documento, e
+        // `remove_all` abre o construtor -- duas suites rodando ao mesmo tempo
+        // nesta maquina escolheriam o MESMO diretorio e uma apagaria o fixture
+        // da outra no meio do caso dela. Com o pid os dois processos nao se
+        // encontram, e o `remove_all` continua limpando o que uma execucao
+        // anterior abandonou.
         dir_ = fs::temp_directory_path() /
-               ("ic-fill-" + std::to_string(std::hash<std::string>{}(document)));
+               ("ic-fill-" + std::to_string(processId()) + "-" +
+                std::to_string(std::hash<std::string>{}(document)));
         std::error_code ec;
         fs::remove_all(dir_, ec);
         fs::create_directories(dir_ / "Assets", ec);
@@ -141,6 +157,13 @@ public:
     const fs::path& path() const { return dir_; }
 
 private:
+    static unsigned long processId() {
+#ifdef _WIN32
+        return static_cast<unsigned long>(::_getpid());
+#else
+        return static_cast<unsigned long>(::getpid());
+#endif
+    }
     static void write(const fs::path& p, const std::string& text) {
         std::FILE* f = std::fopen(p.string().c_str(), "wb");
         if (!f) return;

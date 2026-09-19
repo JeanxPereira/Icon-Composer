@@ -124,6 +124,7 @@ Result<Device> Device::create(DeviceOptions options) {
                 d.physical_ = candidate;
                 d.queueFamily_ = i;
                 d.name_ = props.deviceName;
+                d.limits_ = props.limits;   // imutaveis: lidas aqui, nunca de novo
             }
             break;
         }
@@ -184,7 +185,7 @@ Device::Device(Device&& other) noexcept
     : api_(std::move(other.api_)),
       instance_(other.instance_), physical_(other.physical_), device_(other.device_),
       queue_(other.queue_), pool_(other.pool_), queueFamily_(other.queueFamily_),
-      name_(std::move(other.name_)) {
+      name_(std::move(other.name_)), limits_(other.limits_) {
     other.instance_ = VK_NULL_HANDLE;
     other.physical_ = VK_NULL_HANDLE;
     other.device_ = VK_NULL_HANDLE;
@@ -203,6 +204,7 @@ Device& Device::operator=(Device&& other) noexcept {
         pool_ = other.pool_;
         queueFamily_ = other.queueFamily_;
         name_ = std::move(other.name_);
+        limits_ = other.limits_;
         other.instance_ = VK_NULL_HANDLE;
         other.physical_ = VK_NULL_HANDLE;
         other.device_ = VK_NULL_HANDLE;

@@ -86,6 +86,14 @@ public:
     // machines this is the first question, so it is not decoration.
     const std::string& name() const { return name_; }
 
+    // The chosen adapter's limits, read once while choosing it. They are
+    // immutable for the life of a physical device, and the caller that needs
+    // them (`CoveragePass::draw`, checking the offset viewport against
+    // `maxViewportDimensions` / `viewportBoundsRange`) runs once per shape and
+    // once per clip-path child -- a driver round trip per shape for numbers
+    // that cannot have changed.
+    const VkPhysicalDeviceLimits& limits() const { return limits_; }
+
     // Records a one-shot command buffer, submits it, and waits on a fence. Every
     // headless operation in this tower is built on this one primitive.
     Result<void> submitAndWait(const std::function<void(VkCommandBuffer)>& record);
@@ -106,6 +114,7 @@ private:
     VkCommandPool pool_ = VK_NULL_HANDLE;
     std::uint32_t queueFamily_ = 0;
     std::string name_;
+    VkPhysicalDeviceLimits limits_{};   // see limits()
 };
 
 // The Vulkan result code, spelled the way the header spells it. A number in an
