@@ -5,6 +5,7 @@
 
 #include "Source/RenderBox/BlurKernel.h"
 #include "Source/RenderBox/DistanceField.h"
+#include "Source/RenderBox/Parallel.h"
 
 namespace rb {
 namespace {
@@ -48,7 +49,10 @@ std::vector<float> translate(const std::vector<float>& src, std::uint32_t w, std
         pre[t * 4 + 3] = a;
     }
 
-    for (std::uint32_t y = 0; y < h; ++y) {
+    // Split by destination row: `pre` is finished and read-only from here, and
+    // every iteration writes only its own four floats.
+    parallelRanges(h, texels * 24, [&](std::size_t y0, std::size_t y1) {
+    for (std::uint32_t y = static_cast<std::uint32_t>(y0); y < static_cast<std::uint32_t>(y1); ++y) {
         for (std::uint32_t x = 0; x < w; ++x) {
             // Where this destination pixel came FROM.
             const double sxf = static_cast<double>(x) - dx;
@@ -77,6 +81,7 @@ std::vector<float> translate(const std::vector<float>& src, std::uint32_t w, std
             for (int c = 0; c < 3; ++c) o[c] = a > 0.0 ? static_cast<float>(acc[c] / a) : 0.0f;
         }
     }
+    });
     return out;
 }
 
@@ -178,29 +183,43 @@ std::vector<float> shadowRingMask(const std::vector<float>& art, std::uint32_t w
 
     const int w = static_cast<int>(width);
     const int h = static_cast<int>(height);
+    const int n = std::max(w, h);
 
     // Seeds are the texels OUTSIDE the silhouette. Everything else starts at
     // infinity and the transform brings it down to its true distance.
-    std::vector<double> f(static_cast<std::size_t>(std::max(w, h)));
-    std::vector<double> d(static_cast<std::size_t>(std::max(w, h)));
-    std::vector<int> v(static_cast<std::size_t>(std::max(w, h)) + 1);
-    std::vector<double> z(static_cast<std::size_t>(std::max(w, h)) + 2);
     std::vector<double> sq(texels);
     for (std::size_t t = 0; t < texels; ++t) {
         sq[t] = art[t * 4 + 3] >= 0.5f ? kEdtInf : 0.0;
     }
 
-    for (int x = 0; x < w; ++x) {
-        for (int y = 0; y < h; ++y) f[static_cast<std::size_t>(y)] = sq[static_cast<std::size_t>(y) * w + x];
-        edtSquared1d(f, d, v, z, h);
-        for (int y = 0; y < h; ++y) sq[static_cast<std::size_t>(y) * w + x] = d[static_cast<std::size_t>(y)];
-    }
-    for (int y = 0; y < h; ++y) {
-        double* row = &sq[static_cast<std::size_t>(y) * w];
-        for (int x = 0; x < w; ++x) f[static_cast<std::size_t>(x)] = row[x];
-        edtSquared1d(f, d, v, z, w);
-        for (int x = 0; x < w; ++x) row[x] = d[static_cast<std::size_t>(x)];
-    }
+    // ONE COLUMN, THEN ONE ROW, PER WORKER -- the same split `edt2d` makes for
+    // the same reason: `edtSquared1d` is a pure function of the line it is
+    // handed, and no line reads another's cells. The envelope's scratch
+    // (`f`, `d`, `v`, `z`) moves inside the worker so it is not shared, which
+    // is the whole of what changes here. No number does.
+    parallelRanges(static_cast<std::size_t>(w), texels * 8, [&](std::size_t x0, std::size_t x1) {
+        std::vector<double> f(static_cast<std::size_t>(n));
+        std::vector<double> d(static_cast<std::size_t>(n));
+        std::vector<int> v(static_cast<std::size_t>(n) + 1);
+        std::vector<double> z(static_cast<std::size_t>(n) + 2);
+        for (int x = static_cast<int>(x0); x < static_cast<int>(x1); ++x) {
+            for (int y = 0; y < h; ++y) f[static_cast<std::size_t>(y)] = sq[static_cast<std::size_t>(y) * w + x];
+            edtSquared1d(f, d, v, z, h);
+            for (int y = 0; y < h; ++y) sq[static_cast<std::size_t>(y) * w + x] = d[static_cast<std::size_t>(y)];
+        }
+    });
+    parallelRanges(static_cast<std::size_t>(h), texels * 8, [&](std::size_t y0, std::size_t y1) {
+        std::vector<double> f(static_cast<std::size_t>(n));
+        std::vector<double> d(static_cast<std::size_t>(n));
+        std::vector<int> v(static_cast<std::size_t>(n) + 1);
+        std::vector<double> z(static_cast<std::size_t>(n) + 2);
+        for (int y = static_cast<int>(y0); y < static_cast<int>(y1); ++y) {
+            double* row = &sq[static_cast<std::size_t>(y) * w];
+            for (int x = 0; x < w; ++x) f[static_cast<std::size_t>(x)] = row[x];
+            edtSquared1d(f, d, v, z, w);
+            for (int x = 0; x < w; ++x) row[x] = d[static_cast<std::size_t>(x)];
+        }
+    });
 
     std::vector<float> mask(texels, 0.0f);
     for (int y = 0; y < h; ++y) {

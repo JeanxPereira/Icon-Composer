@@ -3,6 +3,8 @@
 // below it is this project's own algorithm and is not.
 #include "Source/RenderBox/DistanceField.h"
 
+#include "Source/RenderBox/Parallel.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -342,15 +344,27 @@ constexpr double kEdtInf = 1e20;
 // index. Column pass then row pass, which is what makes the composition exact
 // rather than separable-approximate: after the column pass each column holds
 // the true 1D answer, and the row pass takes the lower envelope of those.
+//
+// BOTH PASSES RUN ON SEVERAL THREADS, AND NOT ONE NUMBER MOVES.
+//
+// The first pass reads column `x` and writes column `x`; the second reads row
+// `y` and writes row `y`. No cell is read by one line and written by another,
+// there is no accumulator, and `edtSquared1d` is a pure function of the line
+// it is handed -- so a column computed on a worker thread is the SAME
+// `double`, bit for bit, as the one computed here, because it is the same
+// arithmetic in the same order over the same inputs. The only thing the split
+// changes is which core runs it.
+//
+// The scratch the envelope needs (`f`, `d`, `v`, `z`, `arg`) used to be
+// allocated once for the whole transform and is now allocated once per WORKER,
+// which is what makes it unshared. The cost of that is one allocation per
+// thread per pass against a sweep of a million texels, and the alternative --
+// one shared buffer -- would be a data race and a wrong answer, not a slower
+// one.
 void edt2d(const std::vector<char>& seed, int w, int h, std::vector<double>& sq,
            std::vector<int>& site) {
     const std::size_t texels = static_cast<std::size_t>(w) * h;
     const int n = std::max(w, h);
-    std::vector<double> f(static_cast<std::size_t>(n));
-    std::vector<double> d(static_cast<std::size_t>(n));
-    std::vector<int> v(static_cast<std::size_t>(n) + 1);
-    std::vector<double> z(static_cast<std::size_t>(n) + 2);
-    std::vector<int> arg(static_cast<std::size_t>(n));
 
     sq.assign(texels, 0.0);
     site.assign(texels, -1);
@@ -360,27 +374,46 @@ void edt2d(const std::vector<char>& seed, int w, int h, std::vector<double>& sq,
 
     for (std::size_t t = 0; t < texels; ++t) sq[t] = seed[t] ? 0.0 : kEdtInf;
 
-    for (int x = 0; x < w; ++x) {
-        for (int y = 0; y < h; ++y) f[static_cast<std::size_t>(y)] = sq[static_cast<std::size_t>(y) * w + x];
-        edtSquared1d(f, d, v, z, h, &arg);
-        for (int y = 0; y < h; ++y) {
-            const std::size_t t = static_cast<std::size_t>(y) * w + x;
-            sq[t] = d[static_cast<std::size_t>(y)];
-            siteY[t] = d[static_cast<std::size_t>(y)] >= kEdtInf ? -1 : arg[static_cast<std::size_t>(y)];
+    // The envelope makes two sweeps over a line and the caller copies the line
+    // in and out, which is a handful of operations per element either way:
+    // eight is the estimate, in the same unit every other call site uses.
+    const std::size_t pass = texels * 8;
+
+    parallelRanges(static_cast<std::size_t>(w), pass, [&](std::size_t x0, std::size_t x1) {
+        std::vector<double> f(static_cast<std::size_t>(n));
+        std::vector<double> d(static_cast<std::size_t>(n));
+        std::vector<int> v(static_cast<std::size_t>(n) + 1);
+        std::vector<double> z(static_cast<std::size_t>(n) + 2);
+        std::vector<int> arg(static_cast<std::size_t>(n));
+        for (int x = static_cast<int>(x0); x < static_cast<int>(x1); ++x) {
+            for (int y = 0; y < h; ++y) f[static_cast<std::size_t>(y)] = sq[static_cast<std::size_t>(y) * w + x];
+            edtSquared1d(f, d, v, z, h, &arg);
+            for (int y = 0; y < h; ++y) {
+                const std::size_t t = static_cast<std::size_t>(y) * w + x;
+                sq[t] = d[static_cast<std::size_t>(y)];
+                siteY[t] = d[static_cast<std::size_t>(y)] >= kEdtInf ? -1 : arg[static_cast<std::size_t>(y)];
+            }
         }
-    }
-    for (int y = 0; y < h; ++y) {
-        double* row = &sq[static_cast<std::size_t>(y) * w];
-        for (int x = 0; x < w; ++x) f[static_cast<std::size_t>(x)] = row[x];
-        edtSquared1d(f, d, v, z, w, &arg);
-        for (int x = 0; x < w; ++x) {
-            const std::size_t t = static_cast<std::size_t>(y) * w + x;
-            row[x] = d[static_cast<std::size_t>(x)];
-            const int sx = arg[static_cast<std::size_t>(x)];
-            const int sy = siteY[static_cast<std::size_t>(y) * w + sx];
-            site[t] = sy < 0 ? -1 : sy * w + sx;
+    });
+    parallelRanges(static_cast<std::size_t>(h), pass, [&](std::size_t y0, std::size_t y1) {
+        std::vector<double> f(static_cast<std::size_t>(n));
+        std::vector<double> d(static_cast<std::size_t>(n));
+        std::vector<int> v(static_cast<std::size_t>(n) + 1);
+        std::vector<double> z(static_cast<std::size_t>(n) + 2);
+        std::vector<int> arg(static_cast<std::size_t>(n));
+        for (int y = static_cast<int>(y0); y < static_cast<int>(y1); ++y) {
+            double* row = &sq[static_cast<std::size_t>(y) * w];
+            for (int x = 0; x < w; ++x) f[static_cast<std::size_t>(x)] = row[x];
+            edtSquared1d(f, d, v, z, w, &arg);
+            for (int x = 0; x < w; ++x) {
+                const std::size_t t = static_cast<std::size_t>(y) * w + x;
+                row[x] = d[static_cast<std::size_t>(x)];
+                const int sx = arg[static_cast<std::size_t>(x)];
+                const int sy = siteY[static_cast<std::size_t>(y) * w + sx];
+                site[t] = sy < 0 ? -1 : sy * w + sx;
+            }
         }
-    }
+    });
 }
 }  // namespace
 
@@ -533,7 +566,15 @@ FieldImage fieldFromInsideMask(const std::vector<char>& inside,
     constexpr int kFootSearch = 2;
     const int half = ss / 2;
 
-    for (int y = 0; y < H; ++y) {
+    // ONE ROW PER WORKER, AND NOTHING SHARED. Every iteration below writes the
+    // four floats of ITS OWN pixel and reads only `inside`, `band`, `sOff`,
+    // `bnx`, `bny`, `sqIn`, `sqOut`, `siteIn` and `siteOut`, all of which are
+    // finished and const from here on. Splitting the outer loop therefore
+    // cannot change a single float: each pixel is computed by the same
+    // expression over the same inputs, only on another core.
+    parallelRanges(static_cast<std::size_t>(H), static_cast<std::size_t>(W) * H * 8,
+                   [&](std::size_t y0, std::size_t y1) {
+    for (int y = static_cast<int>(y0); y < static_cast<int>(y1); ++y) {
         for (int x = 0; x < W; ++x) {
             const int mx = x * ss + half;
             const int my = y * ss + half;
@@ -689,6 +730,7 @@ FieldImage fieldFromInsideMask(const std::vector<char>& inside,
             p[3] = static_cast<float>(cov < 0.0 ? 0.0 : (cov > 1.0 ? 1.0 : cov));
         }
     }
+    });
 
     // `[INF]` THE NORMAL COMES OFF THE FIELD, NOT OFF THE LATTICE. OURS, AND
     // MEASURED RATHER THAN ARGUED.
@@ -736,7 +778,16 @@ FieldImage fieldFromInsideMask(const std::vector<char>& inside,
         const auto D = [&](int xx, int yy) {
             return static_cast<double>(base[(static_cast<std::size_t>(yy) * W + xx) * 4]);
         };
-        for (int y = 1; y + 1 < H; ++y) {
+        // Also one row per worker, and it is unshared for a reason worth
+        // saying out loud: this pass READS channel 0 of a 3x3 and WRITES
+        // channels 1 and 2 of the centre. Reads and writes never touch the
+        // same float, so no row can see a neighbour half-written -- which is
+        // what makes it safe to split and what would stop being true the day
+        // somebody made it write `p[0]`.
+        const int rows = H > 2 ? H - 2 : 0;
+        parallelRanges(static_cast<std::size_t>(rows), static_cast<std::size_t>(W) * H * 6,
+                       [&](std::size_t r0, std::size_t r1) {
+        for (int y = static_cast<int>(r0) + 1; y < static_cast<int>(r1) + 1; ++y) {
             for (int x = 1; x + 1 < W; ++x) {
                 const double d00 = D(x - 1, y - 1), d01 = D(x, y - 1), d02 = D(x + 1, y - 1);
                 const double d10 = D(x - 1, y), d12 = D(x + 1, y);
@@ -750,6 +801,7 @@ FieldImage fieldFromInsideMask(const std::vector<char>& inside,
                 p[2] = static_cast<float>(gy / len);
             }
         }
+        });
     }
     return img;
 }

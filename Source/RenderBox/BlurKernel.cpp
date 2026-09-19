@@ -1,4 +1,5 @@
 #include "Source/RenderBox/BlurKernel.h"
+#include "Source/RenderBox/Parallel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -87,14 +88,25 @@ constexpr double kBlurReduce2Variance = 0.765625;
 constexpr std::uint32_t kBlurMinReducedSide = 8;
 
 // One separable pass over PREMULTIPLIED RGBA, in place, with clamped edges.
+//
+// BOTH HALVES ARE SPLIT BY ROW, AND THE SUM INSIDE A PIXEL IS UNTOUCHED. The
+// horizontal half reads `img` and writes `tmp`; the vertical half reads `tmp`
+// and writes `img`. Neither ever reads the buffer it is writing, so a row on a
+// worker thread sees exactly what it saw serially. The `acc[4]` accumulation
+// -- the one place in here where floating point ORDER decides the last bit --
+// is inside a single pixel and stays sequential; nothing is summed ACROSS
+// threads, which is what would have changed the answer.
 void blurPass(std::vector<float>& img, std::uint32_t width, std::uint32_t height, double sigma) {
     const std::vector<double> kernel = blurKernel(sigma);
     if (kernel.empty()) return;
     const int halfWidth = static_cast<int>(kernel.size() / 2);
     const std::size_t texels = static_cast<std::size_t>(width) * height;
+    // Four channels and one multiply-add per kernel tap.
+    const std::size_t work = texels * kernel.size() * 4;
 
     std::vector<float> tmp(texels * 4, 0.0f);
-    for (std::uint32_t y = 0; y < height; ++y) {
+    parallelRanges(height, work, [&](std::size_t y0, std::size_t y1) {
+    for (std::uint32_t y = static_cast<std::uint32_t>(y0); y < static_cast<std::uint32_t>(y1); ++y) {
         for (std::uint32_t x = 0; x < width; ++x) {
             double acc[4] = {0, 0, 0, 0};
             for (int i = -halfWidth; i <= halfWidth; ++i) {
@@ -107,8 +119,10 @@ void blurPass(std::vector<float>& img, std::uint32_t width, std::uint32_t height
             for (int c = 0; c < 4; ++c) o[c] = static_cast<float>(acc[c]);
         }
     }
+    });
 
-    for (std::uint32_t y = 0; y < height; ++y) {
+    parallelRanges(height, work, [&](std::size_t y0, std::size_t y1) {
+    for (std::uint32_t y = static_cast<std::uint32_t>(y0); y < static_cast<std::uint32_t>(y1); ++y) {
         for (std::uint32_t x = 0; x < width; ++x) {
             double acc[4] = {0, 0, 0, 0};
             for (int i = -halfWidth; i <= halfWidth; ++i) {
@@ -121,6 +135,7 @@ void blurPass(std::vector<float>& img, std::uint32_t width, std::uint32_t height
             for (int c = 0; c < 4; ++c) o[c] = static_cast<float>(acc[c]);
         }
     }
+    });
 }
 
 // `[BIN]` The reduced size is `(d + factor - 1) / factor` -- `0xFEE04`-`0xFEE08`
