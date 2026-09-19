@@ -5,6 +5,7 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "CMAKE_CXX_COMPILER": "g++" } },
     { "name": "mingw-asan", "inherits": "mingw", "binaryDir": "build/mingw-asan",
       "cacheVariables": { "IC_SANITIZE": "ON" } },
+    { "name": "mingw-b", "inherits": "mingw", "binaryDir": "build/mingw-b" },
     { "name": "msvc", "generator": "Ninja", "binaryDir": "build/msvc",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "CMAKE_CXX_COMPILER": "cl" } },
     { "name": "release", "generator": "Ninja", "binaryDir": "build/release",
@@ -13,6 +14,7 @@
   "buildPresets": [
     { "name": "mingw", "configurePreset": "mingw" },
     { "name": "mingw-asan", "configurePreset": "mingw-asan" },
+    { "name": "mingw-b", "configurePreset": "mingw-b" },
     { "name": "msvc", "configurePreset": "msvc" },
     { "name": "release", "configurePreset": "release" }
   ],
