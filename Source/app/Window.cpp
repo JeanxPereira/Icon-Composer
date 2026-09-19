@@ -223,6 +223,19 @@ struct State {
         // coordenador: `drainExport` renderiza `session->bundle()`, e uma
         // fila que sobrevivesse a troca escreveria PNGs do documento novo com
         // os nomes pedidos para o antigo -- sem um pixel na tela explicando.
+        //
+        // MAS ELA NAO MORRE CALADA (revisao 19/09, M5). Ate aqui a troca
+        // limpava os quatro contadores e o `sheet` do documento antigo ia
+        // junto: a pasta ficava com 3 de 6 PNGs e nenhum "Wrote 3 of 6" nunca
+        // aparecia. O abandono e um fato que a pessoa precisa saber, entao ele
+        // passa por `fail()` como qualquer outro -- e `open()`/`newDocument`
+        // limpam `trouble` ANTES de chamar `adopt`, entao esta frase sobrevive
+        // a troca em vez de ser apagada por ela.
+        if (!exportQueue.empty()) {
+            fail("export abandoned at " + std::to_string(exportDone) + " of " +
+                 std::to_string(exportTotal) + ": the document changed, and the queue renders the "
+                 "document it was asked about");
+        }
         exportQueue.clear();
         exportTotal = exportDone = exportFailures = 0;
         exportAnnounced = false;
