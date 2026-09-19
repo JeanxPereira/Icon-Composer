@@ -433,20 +433,32 @@ struct State {
     }
 };
 
-// O PISO E O TETO DAS DUAS LARGURAS, APLICADOS QUANDO A JANELA MUDA DE TAMANHO
-// (revisao 19/09, I2).
+// O TETO DE METADE DA JANELA, APLICADO QUANDO A JANELA MUDA DE TAMANHO
+// (revisao 19/09, I2 e N5).
 //
-// `DockBuilderSplitNode` guarda uma RAZAO e o no redimensiona junto com a
-// janela, entao `defaultLayout` sozinho nao pode ter piso nem teto: ele roda
-// uma vez. O que segura os quatro numeros `[BIN]` de minimo e maximo e esta
-// funcao. `DockBuilderSetNodeSize` escreve `Size` E `SizeRef` e poe a
-// autoridade no no (imgui.cpp:20792), que e exatamente o que faz o split
-// recalcular a partir do valor grampeado no quadro seguinte.
+// O QUE ESTE COMENTARIO DIZIA E A SONDA DERRUBOU. Ate 19/09 ele afirmava que
+// "`DockBuilderSplitNode` guarda uma RAZAO e o no redimensiona junto com a
+// janela", e que sem esta funcao a sidebar iria sozinha a ~587 pt numa janela
+// de 1920. Medido: ela fica em 329 pt em 1080, em 1920 e em 700. O ramo de
+// `DockNodeTreeUpdatePosSize` que vale para esta arvore e o 3
+// (`imgui.cpp:20329`), o de tamanho ABSOLUTO, porque o irmao de cada painel
+// carrega o no central -- quem absorve a mudanca da janela e o canvas. A conta
+// esta no cabecalho de `Source/IconComposerKit/WindowLayout.h`.
 //
-// SO NA MUDANCA DE TAMANHO DA JANELA, e isto e a diferenca entre um grampo e
-// uma briga: arrastar o divisor para 600 pt e uma escolha da pessoa e nao e
-// desfeita no quadro seguinte. O que nao pode e a janela crescer e levar a
-// sidebar a 587 pt sozinha.
+// ENTAO O QUE SOBRA AQUI E UM GRAMPO SO, E ELE E REAL: metade do espaco. Sem
+// ele, a 700 pt medidos o canvas fica com 32 px; com ele, com 165,5. Quem faz
+// isso e `kPanelShareMax`, que e um `[DEC]` deste projeto -- nao um dos `[BIN]`
+// do alvo.
+//
+// E O QUE SAIU DAQUI, DE PROPOSITO: o intervalo `[min, max]` medido. Com
+// largura absoluta ele nao tinha como morder contra a janela; a UNICA coisa
+// que ele alcancava era desfazer o arrasto da pessoa -- arrastar o divisor
+// para 600 pt e redimensionar devolvia 480 --, que e justamente o que o
+// comentario prometia nao fazer. `capPanelShare` so ENCOLHE, entao um divisor
+// arrastado fica onde a pessoa o pos enquanto couber na metade.
+//
+// `DockBuilderSetNodeSize` escreve `Size` E `SizeRef` e poe a autoridade no no
+// (imgui.cpp:20792), que e o que faz o valor sobreviver ao quadro seguinte.
 void clampDockedWidths() {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     if (!vp) return;
@@ -455,13 +467,24 @@ void clampDockedWidths() {
     // como `g_dropTarget`, e pela mesma razao: ha exatamente uma janela.
     static float appliedAt = -1.0f;
     if (std::fabs(total - appliedAt) < 0.5f) return;
+
+    // E ELE SO E LATCHEADO DEPOIS DE TER SIDO APLICADO (revisao 19/09, N7).
+    // Ate aqui `appliedAt = total` era a linha seguinte ao teste, antes de as
+    // janelas serem procuradas: num quadro em que os nos de dock ainda nao
+    // existem -- `FindWindowByName` devolve null -- o tamanho ficava
+    // registrado como grampeado e o grampo DAQUELE tamanho nunca rodava.
+    // Benigno enquanto `defaultLayout` entrega numeros dentro do intervalo;
+    // deixa de ser no primeiro `imgui.ini` que restaure um painel fora dele.
+    ImGuiWindow* layers = ImGui::FindWindowByName(ick::kLayersWindow);
+    ImGuiWindow* inspector = ImGui::FindWindowByName(ick::kInspectorWindow);
+    if (!layers || !layers->DockNode || !inspector || !inspector->DockNode) return;
+    ImGuiDockNode* layersNode = layers->DockNode;
+    ImGuiDockNode* inspectorNode = inspector->DockNode;
+    if (!(layersNode->Size.x > 0.0f) || !(layersNode->Size.y > 0.0f)) return;
+    if (!(inspectorNode->Size.x > 0.0f) || !(inspectorNode->Size.y > 0.0f)) return;
     appliedAt = total;
 
-    auto clampOne = [](const char* window, float want) {
-        ImGuiWindow* w = ImGui::FindWindowByName(window);
-        if (!w || !w->DockNode) return;
-        ImGuiDockNode* node = w->DockNode;
-        if (!(node->Size.x > 0.0f) || !(node->Size.y > 0.0f)) return;
+    auto capOne = [](ImGuiDockNode* node, float want) {
         // Meio pixel de folga: `Size.x` passou por uma razao e uma
         // multiplicacao, e reescrever o no por 1e-4 pt seria um `SizeRef` novo
         // por quadro sem nada mudando na tela.
@@ -469,17 +492,11 @@ void clampDockedWidths() {
         ImGui::DockBuilderSetNodeSize(node->ID, ImVec2(want, node->Size.y));
     };
 
-    ImGuiWindow* layers = ImGui::FindWindowByName(ick::kLayersWindow);
-    const float sidebarNow =
-        (layers && layers->DockNode) ? layers->DockNode->Size.x : ick::kSidebarIdeal;
-    const float sidebar = ick::clampSidebarWidth(sidebarNow, total);
-    clampOne(ick::kLayersWindow, sidebar);
-    // O inspetor e grampeado contra o que SOBRA depois da sidebar grampeada --
-    // a mesma conta de `defaultLayout`, e nao contra a janela inteira.
-    ImGuiWindow* inspector = ImGui::FindWindowByName(ick::kInspectorWindow);
-    const float inspectorNow =
-        (inspector && inspector->DockNode) ? inspector->DockNode->Size.x : ick::kInspectorIdeal;
-    clampOne(ick::kInspectorWindow, ick::clampInspectorWidth(inspectorNow, total - sidebar));
+    const float sidebar = ick::capPanelShare(layersNode->Size.x, total);
+    capOne(layersNode, sidebar);
+    // O inspetor e medido contra o que SOBRA depois da sidebar grampeada -- a
+    // mesma conta de `defaultLayout`, e nao contra a janela inteira.
+    capOne(inspectorNode, ick::capPanelShare(inspectorNode->Size.x, total - sidebar));
 }
 
 struct LayersPanel : Onyx::App::IPanel {
@@ -620,21 +637,27 @@ struct DiagnosticsPanel : Onyx::App::IPanel {
 // e cosmetica: numa janela de 1601 pt aquilo dava 320 / 448, isto e, o
 // inspetor saia quase 120 pt largo demais.
 //
-// E O PISO E O TETO PRECISAM DE DUAS COISAS, nao de uma (revisao 19/09, I2).
-// `DockBuilderSplitNode` pede uma RAZAO, e a razao e calculada UMA vez, com a
-// `WorkSize` do primeiro layout; o no de dock redimensiona proporcionalmente
-// com a janela depois disso. O grampo que ficava aqui -- `clamp(ideal, lo,
-// hi)` -- era um no-op, porque o ideal ja esta dentro do intervalo nos dois
-// paineis: numa janela que abre com 1080 pt a sidebar saia com 330 (certo), e
-// maximizada para 1920 ela virava ~587, acima do teto de 480 que o comentario
-// afirmava estar aplicado. Entao:
+// O QUE ESTA CHAMADA DECIDE, E SO ELA (revisao 19/09, I2 e N5). A razao aqui e
+// calculada UMA vez, com a `WorkSize` do primeiro layout -- e, ao contrario do
+// que este comentario dizia ate 19/09, o no de dock NAO a persegue depois
+// disso. A sonda da re-revisao mediu o ramo 3 de `DockNodeTreeUpdatePosSize`
+// (`imgui.cpp:20329`): como o irmao de cada painel carrega o no central, os
+// dois ficam com largura ABSOLUTA e quem absorve a janela e o canvas. Sem
+// grampo nenhum, a sidebar mede 329 pt em 1080, 329 em 1920 e 329 em 700 -- o
+// "maximizada para 1920 ela virava ~587" que estava escrito aqui e falso.
 //
-//   1. AQUI, a razao inicial, derivada da largura em pontos -- e o grampo de
-//      metade da janela e o unico que pode morder nesta chamada;
-//   2. e em `clampDockedWidths`, chamado quando a JANELA muda de tamanho, que
-//      e o momento em que a razao empurraria o painel para fora do intervalo
-//      medido. Sem (2) as quatro constantes de minimo e maximo continuam
-//      decorativas.
+// Isso NAO torna estas linhas decorativas, e a diferenca importa: o ganho
+// delas e a LARGURA INICIAL. Derivar a razao do ideal medido da 330 pt a 1080,
+// contra os 216 que os 20% herdados davam -- e essa largura e a que o painel
+// vai carregar pela sessao inteira, justamente porque o no nao a refaz.
+//
+// O que os quatro numeros de minimo e maximo fazem, dito sem enfeite: eles sao
+// o intervalo do alvo escrito em volta do ideal, e com o ideal dentro dele nao
+// movem um pixel hoje. Nao ha um segundo momento em que eles mordam -- a
+// tentativa de faze-los morder no redimensionamento so conseguia desfazer o
+// arrasto do divisor, e saiu. `clampDockedWidths` ficou com o unico grampo que
+// age de verdade, o de metade do espaco (`kPanelShareMax`, um `[DEC]` nosso),
+// e ele so encolhe.
 //
 // O QUE EU NAO APLIQUEI, DE PROPOSITO: `Window.minContentSize` do alvo e
 // 1284x704, e este editor roda numa maquina cujo monitor retrato tem 1080 de
