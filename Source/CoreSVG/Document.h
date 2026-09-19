@@ -45,6 +45,28 @@ struct ViewBox {
     double x = 0, y = 0, width = 0, height = 0;
 };
 
+// A CAIXA DE USUÁRIO DE UM SVG, LIDA SOZINHA.
+//
+// `SvgDocument::parse` estabelece essa caixa para depois construir as formas,
+// os gradientes, os clips e os filtros. Quem só precisa saber ONDE a arte fica
+// -- o hit-test do canvas, que pergunta isso de cada asset -- não precisa de
+// nada disso, e pagar a construção inteira para ler quatro números seria pagar
+// o documento todo por um atributo.
+//
+// Esta é a MESMA regra, EXTRAÍDA do corpo de `parse`, que passou a chamá-la --
+// e não uma segunda leitura escrita ao lado. A regra tem um caso que não é
+// óbvio (a falta de `viewBox` NÃO é a falta de espaço de usuário: SVG 1.1 §7.7
+// manda cair em `0 0 width height`), e duas cópias dela seriam duas que param
+// de concordar no dia em que esse fallback mudar.
+//
+// Nada (`nullopt`) quando a raiz não é um `<svg>`, quando o `viewBox` não traz
+// quatro números, ou quando, na falta dele, não há um `width`/`height` em
+// unidades de usuário de onde inferir a caixa. Nesses casos não há caixa a
+// afirmar, e quem pergunta tem de ter um caminho para isso.
+std::optional<ViewBox> readViewBox(const Element& root);
+// O mesmo a partir dos bytes do arquivo: lê o XML e PARA aí.
+std::optional<ViewBox> readViewBox(std::string_view svg);
+
 enum class FillRule { NonZero, EvenOdd };
 
 enum class GradientKind { Linear, Radial };

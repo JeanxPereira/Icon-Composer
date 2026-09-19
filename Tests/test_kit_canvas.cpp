@@ -1231,3 +1231,106 @@ TEST_CASE(canvas_selection_rect_follows_the_zoom_and_the_pan) {
     CHECK(!canvasFrame(gui, *s, view).selectionDrawn);
     CHECK_EQ(gui.errors(), std::uint64_t{0});
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 15. A CAIXA DE CADA ARTE, LIDA UMA VEZ -- E RELIDA QUANDO A ARTE MUDA
+//
+// O hit-test precisa do retângulo de TODAS as camadas a cada clique, e o
+// retângulo sai da caixa da arte. O caminho ingênuo -- abrir o SVG por camada
+// por clique -- é IO e parse dentro do laço de eventos, num documento que
+// chega a 194 camadas. O cache da `Session` é o que o evita, e o que este caso
+// cobra é que ele de fato evite: `assetBoxReads()` conta aberturas de arquivo,
+// e o número NÃO pode crescer com o número de perguntas.
+//
+// A segunda metade cobra o contrário, que é onde um cache erra: importar um
+// arquivo por cima e a caixa guardada continuar sendo a da arte VELHA. Não
+// basta o contador ter mexido -- o caso exige que a CAIXA tenha mudado.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+fs::path makeBoxBundle(const std::string& name, const char* artSvg) {
+    const fs::path dir = fs::temp_directory_path() / ("ic-canvas-box-" + name + ".icon");
+    fs::remove_all(dir);
+    fs::create_directories(dir / "Assets");
+    // Duas camadas apontando para a MESMA arte -- o caso comum, que é o que
+    // uma especialização por aparência produz -- mais uma que aponta para um
+    // arquivo que não existe: o corpus tem referências penduradas (2 em 55
+    // bundles) e elas não podem sumir nem lançar.
+    std::ofstream(dir / "icon.json", std::ios::binary) << R"({
+  "fill" : "automatic",
+  "groups" : [
+    { "name" : "g", "layers" : [
+      { "name" : "a", "image-name" : "art.svg" },
+      { "name" : "b", "image-name" : "art.svg" },
+      { "name" : "c", "image-name" : "pendurada.svg" } ] } ] })";
+    std::ofstream(dir / "Assets" / "art.svg", std::ios::binary) << artSvg;
+    return dir;
+}
+}  // namespace
+
+TEST_CASE(session_reads_each_asset_box_once_and_rereads_it_when_the_asset_changes) {
+    const fs::path dir = makeBoxBundle("cache", R"(<svg viewBox="0 0 512 512"/>)");
+    auto s = ick::Session::open(dir);
+    REQUIRE(s.has_value());
+    CHECK_EQ(s->assetBoxReads(), std::uint64_t{0});   // nada é lido ao abrir
+
+    const icf::svg::ViewBox* box = s->assetViewBox("art.svg");
+    REQUIRE(box != nullptr);
+    CHECK(near(static_cast<float>(box->width), 512.0f, 0.001f));
+    CHECK_EQ(s->assetBoxReads(), std::uint64_t{1});
+
+    // ── O CUSTO NÃO CRESCE COM OS CLIQUES ───────────────────────────────────
+    // Cem perguntas pela mesma arte, que é o que cinquenta cliques num
+    // documento de duas camadas fariam. Uma leitura, a primeira, e mais
+    // nenhuma.
+    for (int i = 0; i < 100; ++i) {
+        const icf::svg::ViewBox* again = s->assetViewBox("art.svg");
+        REQUIRE(again != nullptr);
+        CHECK(near(static_cast<float>(again->width), 512.0f, 0.001f));
+    }
+    CHECK_EQ(s->assetBoxReads(), std::uint64_t{1});
+
+    // A REFERÊNCIA PENDURADA: nada, e sem lançar. E o "nada" também fica
+    // guardado -- senão ela seria uma ida ao disco por camada por clique,
+    // exatamente o custo que este cache existe para não ter.
+    CHECK(s->assetViewBox("pendurada.svg") == nullptr);
+    CHECK_EQ(s->assetBoxReads(), std::uint64_t{2});
+    for (int i = 0; i < 50; ++i) CHECK(s->assetViewBox("pendurada.svg") == nullptr);
+    CHECK_EQ(s->assetBoxReads(), std::uint64_t{2});
+
+    // Um nome vazio não é uma pergunta e não abre nada.
+    CHECK(s->assetViewBox("") == nullptr);
+    CHECK_EQ(s->assetBoxReads(), std::uint64_t{2});
+
+    // ── IMPORTAR POR CIMA INVALIDA, E A CAIXA MUDA DE VERDADE ───────────────
+    // O import NÃO passa pela Session (Window.cpp e PanelInspectorAsset.cpp
+    // chamam `bundle().importAsset` direto), então este é o caminho real, e é
+    // o que a geração de `IconBundle` existe para cobrir.
+    const fs::path outra = fs::temp_directory_path() / "ic-canvas-box-nova" / "art.svg";
+    fs::remove_all(outra.parent_path());
+    fs::create_directories(outra.parent_path());
+    std::ofstream(outra, std::ios::binary) << R"(<svg viewBox="0 0 256 128"/>)";
+    CHECK_EQ(s->bundle().importAsset(outra), std::string(""));
+
+    const icf::svg::ViewBox* novo = s->assetViewBox("art.svg");
+    REQUIRE(novo != nullptr);
+    // A CAIXA, e não o contador: 512x512 era a de antes, e uma invalidação que
+    // não invalidasse devolveria aquela.
+    CHECK(near(static_cast<float>(novo->width), 256.0f, 0.001f));
+    CHECK(near(static_cast<float>(novo->height), 128.0f, 0.001f));
+    CHECK(s->assetBoxReads() > std::uint64_t{2});   // releu
+
+    // E volta a não custar: a releitura é uma, não uma por pergunta.
+    const std::uint64_t depois = s->assetBoxReads();
+    for (int i = 0; i < 50; ++i) CHECK(s->assetViewBox("art.svg") != nullptr);
+    CHECK_EQ(s->assetBoxReads(), depois);
+}
+
+// Uma arte sem caixa nenhuma -- `<svg/>`, que é o que os outros casos deste
+// arquivo escrevem -- responde `nullptr`, e é isso que mantém o comportamento
+// de hoje (a caixa assumida como o canvas inteiro) para quem não tem `viewBox`.
+TEST_CASE(session_asset_box_is_absent_when_the_art_declares_none) {
+    auto s = ick::Session::open(makeBoxBundle("sem-caixa", "<svg/>"));
+    REQUIRE(s.has_value());
+    CHECK(s->assetViewBox("art.svg") == nullptr);
+    CHECK_EQ(s->assetBoxReads(), std::uint64_t{1});
+}

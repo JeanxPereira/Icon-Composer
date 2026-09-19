@@ -3,8 +3,10 @@
 #include "Source/IconComposerKit/ViewModel.h"
 
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <string>
+#include <system_error>
 #include <utility>
 
 namespace ick {
@@ -33,6 +35,38 @@ std::optional<Session> Session::create(const fs::path& dir) {
     f << "{\n  \"fill\" : \"automatic\",\n  \"groups\" : [\n\n  ]\n}";
     f.close();
     return open(dir);
+}
+
+// A caixa de uma arte, do disco. Nada aqui é um segundo leitor de XML:
+// `icf::svg::readViewBox` é a mesma regra que `SvgDocument::parse` usa, e ler
+// um `.png` por este caminho simplesmente não encontra um `<svg>` e devolve
+// nada, que é o que "não tenho caixa a afirmar" quer dizer.
+static std::optional<icf::svg::ViewBox> readBoxOf(const fs::path& art) {
+    std::error_code ec;
+    if (!fs::is_regular_file(art, ec)) return std::nullopt;
+    std::ifstream f(art, std::ios::binary);
+    if (!f) return std::nullopt;
+    const std::string bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    return icf::svg::readViewBox(bytes);
+}
+
+const icf::svg::ViewBox* Session::assetViewBox(std::string_view imageName) const {
+    if (imageName.empty()) return nullptr;
+    // A INVALIDAÇÃO, e é uma comparação de inteiro -- não um `stat` por
+    // consulta, que devolveria o custo por quadro que o cache existe para
+    // tirar. Ver IconBundle.h, `assetsGeneration`.
+    const std::uint64_t gen = bundle_.assetsGeneration();
+    if (gen != assetBoxesGeneration_) {
+        assetBoxes_.clear();
+        assetBoxesGeneration_ = gen;
+    }
+    auto it = assetBoxes_.find(imageName);
+    if (it == assetBoxes_.end()) {
+        ++assetBoxReads_;
+        it = assetBoxes_.emplace(std::string(imageName),
+                                 readBoxOf(bundle_.assetPath(imageName))).first;
+    }
+    return it->second ? &*it->second : nullptr;
 }
 
 template <class F>

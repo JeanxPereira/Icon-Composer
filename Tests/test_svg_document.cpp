@@ -747,3 +747,60 @@ TEST_CASE(a_clip_path_the_walk_never_draws_through_is_still_collected) {
     // The collapsed group still draws nothing, and the clip's rect is not a shape.
     CHECK_EQ(d->shapes.size(), std::size_t(1));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A CAIXA LIDA SOZINHA É A MESMA QUE `parse` ESTABELECE
+//
+// `readViewBox` existe para que o hit-test do canvas não tenha de construir um
+// documento inteiro -- formas, gradientes, clips, filtros -- para descobrir
+// onde a arte fica. A única coisa que pode dar errado numa extração dessas é
+// ela DIVERGIR da original, e é precisamente isso que os casos abaixo cobram:
+// cada um pergunta às duas e exige a mesma resposta, incluindo as recusas.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+// A caixa das duas leituras, exigida idêntica, e devolvida para o caso conferir
+// os números. `nullopt` quando as duas recusaram -- que também é um acordo.
+std::optional<ViewBox> agreedBox(const std::string& svg) {
+    const auto alone = readViewBox(svg);
+    const auto whole = SvgDocument::parse(svg);
+    CHECK_EQ(alone.has_value(), whole.has_value());
+    if (!alone || !whole) return std::nullopt;
+    CHECK(std::abs(alone->x - whole->viewBox.x) < 1e-9);
+    CHECK(std::abs(alone->y - whole->viewBox.y) < 1e-9);
+    CHECK(std::abs(alone->width - whole->viewBox.width) < 1e-9);
+    CHECK(std::abs(alone->height - whole->viewBox.height) < 1e-9);
+    return alone;
+}
+}  // namespace
+
+TEST_CASE(read_view_box_alone_answers_what_parse_would_have_answered) {
+    // O caso comum, e um `viewBox` que NÃO começa na origem nem é quadrado --
+    // os dois desvios que o canvas assumia não existirem.
+    const auto square = agreedBox(R"(<svg viewBox="0 0 1024 1024"><path d="M0 0 L1 1"/></svg>)");
+    REQUIRE(square.has_value());
+    CHECK(std::abs(square->width - 1024.0) < 1e-9);
+
+    const auto offset = agreedBox(R"(<svg viewBox="-12 8 300 120"/>)");
+    REQUIRE(offset.has_value());
+    CHECK(std::abs(offset->x + 12.0) < 1e-9);
+    CHECK(std::abs(offset->y - 8.0) < 1e-9);
+    CHECK(std::abs(offset->width - 300.0) < 1e-9);
+    CHECK(std::abs(offset->height - 120.0) < 1e-9);
+
+    // SEM `viewBox` a caixa vem de `width`/`height` (SVG 1.1 §7.7), `px`
+    // incluído -- a regra que a extração não podia perder pelo caminho.
+    const auto implied = agreedBox(R"(<svg width="640px" height="480"/>)");
+    REQUIRE(implied.has_value());
+    CHECK(std::abs(implied->x) < 1e-9);
+    CHECK(std::abs(implied->width - 640.0) < 1e-9);
+    CHECK(std::abs(implied->height - 480.0) < 1e-9);
+
+    // E AS RECUSAS, que importam tanto quanto: quem pergunta a caixa de um
+    // asset precisa poder ouvir "não tenho", e as duas têm de dizer isso nos
+    // mesmos casos.
+    CHECK(!agreedBox(R"(<svg viewBox="0 0 10"/>)").has_value());        // três números
+    CHECK(!agreedBox(R"(<svg/>)").has_value());                          // nada de onde inferir
+    CHECK(!agreedBox(R"(<svg width="50%" height="50%"/>)").has_value()); // unidade não lida
+    CHECK(!agreedBox(R"(<nao-svg viewBox="0 0 10 10"/>)").has_value());  // raiz errada
+    CHECK(!readViewBox(std::string_view("<svg viewBox=")).has_value());  // nem XML é
+}

@@ -24,12 +24,14 @@
 // operations (`importAsset`, `saveAs`) need them. Reading through them is
 // ordinary; WRITING to the tree through them is the one way to break both
 // invariants at once, and no caller in this editor does it.
+#include "Source/CoreSVG/Document.h"
 #include "Source/IconComposerFoundation/Edit.h"
 #include "Source/IconComposerFoundation/IconBundle.h"
 #include "Source/IconComposerKit/Tile.h"
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -169,6 +171,33 @@ public:
     std::string save();
     std::string saveAs(const std::filesystem::path& dir);
 
+    // ─── A CAIXA DE CADA ARTE, LIDA UMA VEZ POR `image-name` ────────────────
+    //
+    // O hit-test do canvas precisa do retângulo de TODAS as camadas a cada
+    // clique -- um documento do corpus chega a 194 --, e o retângulo de uma
+    // camada é a caixa da arte colocada pela `position`. Abrir e analisar o
+    // SVG de cada camada para responder a um clique é o caminho ingênuo, e é
+    // inaceitável: é IO e parse por camada, dentro do laço de eventos.
+    //
+    // Então a leitura acontece UMA VEZ por `image-name` e fica aqui. Duas
+    // camadas que apontam para a mesma arte -- o caso comum, é o que uma
+    // especialização por aparência é -- custam uma leitura só, e o clique
+    // seguinte não custa nenhuma. `assetBoxReads()` é esse número, exposto
+    // para que um teste possa cobrá-lo em vez de acreditar nele.
+    //
+    // `nullptr` QUANDO NÃO HÁ CAIXA A AFIRMAR: o nome é vazio, o arquivo não
+    // existe (o corpus tem referências penduradas -- 55 bundles, 2 delas), não
+    // é um SVG que este leitor abra, ou é um `.png`, que não tem `viewBox`.
+    // Quem pergunta cai no que o canvas fazia antes -- a caixa assumida como o
+    // canvas inteiro --, que é uma aproximação e não um desaparecimento. O
+    // `nullopt` também é GUARDADO: sem isso uma referência pendurada seria uma
+    // ida ao disco por camada por clique, que é justamente o custo que este
+    // cache existe para não ter.
+    const icf::svg::ViewBox* assetViewBox(std::string_view imageName) const;
+    // Quantos arquivos foram abertos desde que esta Session existe. Não cresce
+    // com o número de cliques -- cresce com o número de artes distintas.
+    std::uint64_t assetBoxReads() const { return assetBoxReads_; }
+
     std::optional<icf::NodePath> selection;
     icf::Context scope;
     ViewContext view;
@@ -204,6 +233,16 @@ private:
     void reindexSelectionAfterInsert(icf::NodePath path);
 
     icf::IconBundle bundle_;
+    // `mutable` porque `assetViewBox` é uma PERGUNTA -- o documento não muda
+    // ao ser perguntado, e o hit-test roda sobre uma Session const. O
+    // `std::less<>` transparente é o que deixa procurar por `string_view` sem
+    // construir uma `std::string` a cada consulta.
+    mutable std::map<std::string, std::optional<icf::svg::ViewBox>, std::less<>> assetBoxes_;
+    // A geração de `Assets/` que `assetBoxes_` descreve. Quando a do bundle
+    // passa desta, alguém importou por cima e o que está guardado é a caixa da
+    // arte antiga (IconBundle.h, `assetsGeneration`).
+    mutable std::uint64_t assetBoxesGeneration_ = 0;
+    mutable std::uint64_t assetBoxReads_ = 0;
     std::vector<Command> undo_;
     std::vector<Command> redo_;
     std::size_t cleanDepth_ = 0;

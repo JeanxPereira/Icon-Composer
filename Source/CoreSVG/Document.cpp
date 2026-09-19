@@ -1219,10 +1219,10 @@ std::optional<Transform> parseTransform(std::string_view text) {
     return any ? std::optional<Transform>(result) : std::nullopt;
 }
 
-std::optional<SvgDocument> SvgDocument::parse(std::string_view svg) {
-    auto xml = parseXml(svg);
-    if (!xml) return std::nullopt;
-    if (xml->root.name != "svg") return std::nullopt;
+// Declared in Document.h, where the note about extracting it lives. `parse`
+// below is the other caller, and the only reason there are two.
+std::optional<ViewBox> readViewBox(const Element& root) {
+    if (root.name != "svg") return std::nullopt;
 
     // NO `viewBox` IS NOT NO USER SPACE. This line used to refuse such a
     // document, with the comment "every coordinate is meaningless" -- and that
@@ -1239,15 +1239,14 @@ std::optional<SvgDocument> SvgDocument::parse(std::string_view svg) {
     // this comment says which of the two it is. A document with neither a
     // `viewBox` nor a `width`/`height` is still refused: then there really is
     // no user space to infer.
-    SvgDocument doc;
-    const std::string* vb = xml->root.attribute("viewBox");
+    const std::string* vb = root.attribute("viewBox");
     if (vb) {
         const auto n = numbers(*vb);
         if (n.size() != 4) return std::nullopt;
-        doc.viewBox = {n[0], n[1], n[2], n[3]};
+        return ViewBox{n[0], n[1], n[2], n[3]};
     } else {
-        const std::string* ws = xml->root.attribute("width");
-        const std::string* hs = xml->root.attribute("height");
+        const std::string* ws = root.attribute("width");
+        const std::string* hs = root.attribute("height");
         if (!ws || !hs) return std::nullopt;
         // `width` is a LENGTH, not a bare number: `1000px` is the ordinary
         // spelling and `numbers()` returns nothing for it, because the `p`
@@ -1266,8 +1265,27 @@ std::optional<SvgDocument> SvgDocument::parse(std::string_view svg) {
         const auto w = lengthOf(*ws);
         const auto h = lengthOf(*hs);
         if (!w || !h) return std::nullopt;
-        doc.viewBox = {0.0, 0.0, *w, *h};
+        return ViewBox{0.0, 0.0, *w, *h};
     }
+}
+
+std::optional<ViewBox> readViewBox(std::string_view svg) {
+    auto xml = parseXml(svg);
+    if (!xml) return std::nullopt;
+    return readViewBox(xml->root);
+}
+
+std::optional<SvgDocument> SvgDocument::parse(std::string_view svg) {
+    auto xml = parseXml(svg);
+    if (!xml) return std::nullopt;
+    if (xml->root.name != "svg") return std::nullopt;
+
+    SvgDocument doc;
+    // The rule, and the reason it is not written twice, are in Document.h.
+    const auto box = readViewBox(xml->root);
+    if (!box) return std::nullopt;
+    doc.viewBox = *box;
+
     Builder b;
     b.collectStyles(xml->root);
     b.collectFilters(xml->root);
