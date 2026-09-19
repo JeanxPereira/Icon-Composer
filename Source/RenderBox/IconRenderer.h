@@ -283,6 +283,18 @@ PathGlobals placeOnCanvas(const icf::svg::ViewBox& box, const LayerPlacement& p,
 PlacementRect artPlacementRect(const icf::svg::ViewBox& box, const LayerPlacement& p,
                                std::uint32_t size);
 
+// O mesmo para arte RASTER: a caixa em que `placeRaster` larga a imagem, em
+// pixels do alvo. A aritmética é a de `artPlacementRect` com a largura e a
+// altura da imagem no lugar da extensão do `viewBox` -- ver a nota junto da
+// definição, em IconRenderer.cpp.
+//
+// Declarada aqui desde 19/09 porque ela é o ORÁCULO do hit-test de uma camada
+// `.png` (`ick::canvasLayerRect`), do mesmo jeito que `artPlacementRect` é o de
+// uma camada SVG: duas cópias da mesma aritmética são duas que param de
+// concordar, e o caso do canvas cobra contra esta em vez de contra si mesmo.
+PlacementRect rasterPlacementRect(std::uint32_t imgW, std::uint32_t imgH, const LayerPlacement& p,
+                                  std::uint32_t size);
+
 // A resolved fill turned into what the compositor paints with, against
 // `shapeRect`.
 //

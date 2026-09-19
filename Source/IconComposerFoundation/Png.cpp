@@ -152,6 +152,24 @@ int paeth(int a, int b, int c) {
 
 }  // namespace
 
+bool pngSize(const std::uint8_t* data, std::size_t size, std::uint32_t& width,
+             std::uint32_t& height) {
+    static const std::uint8_t kSig[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    // 8 da assinatura + 8 do cabeçalho do chunk + 13 do corpo do IHDR.
+    if (!data || size < 8 + 8 + 13 || std::memcmp(data, kSig, 8) != 0) return false;
+    // A especificação exige que o IHDR seja o PRIMEIRO chunk, então não há
+    // varredura: se não está aqui, o arquivo não é um PNG legal e a resposta
+    // certa é "não tenho caixa a afirmar".
+    if (std::memcmp(data + 12, "IHDR", 4) != 0) return false;
+    if (be32at(data + 8) < 13) return false;
+    const std::uint32_t w = be32at(data + 16);
+    const std::uint32_t h = be32at(data + 20);
+    if (w == 0 || h == 0) return false;
+    width = w;
+    height = h;
+    return true;
+}
+
 DecodedPng decodePng(const std::uint8_t* data, std::size_t size) {
     DecodedPng out;
     static const std::uint8_t kSig[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};

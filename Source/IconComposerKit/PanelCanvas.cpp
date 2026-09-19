@@ -62,11 +62,12 @@
 // existe. E o retangulo desenhado e o alvo do clique, os dois saidos de
 // `canvasLayerRect` (Panels.h).
 //
-// A caixa de cada camada e o `viewBox` da arte, lido uma vez por `image-name`
-// e guardado na Session -- o clique nao abre arquivo. O que continua
-// aproximado, por escolha e nao por esquecimento, esta dito em Panels.h: caixa
-// nao e cobertura, entao um anel ainda e pego no buraco, e fechar essa
-// diferenca custaria o render por camada que a spec proibe aqui.
+// A caixa de cada camada e o `viewBox` da arte -- ou, num `.png`, a largura e
+// a altura do IHDR --, lida uma vez por `image-name` e guardada na Session: o
+// clique nao abre arquivo. O que continua aproximado, por escolha e nao por
+// esquecimento, esta dito em Panels.h: caixa nao e cobertura, entao um anel
+// ainda e pego no buraco, e fechar essa diferenca custaria o render por camada
+// que a spec proibe aqui.
 //
 // THE DIAGNOSTICS PANEL IS WHAT KEEPS THE PICTURE FROM LYING (spec 13/09 §6)
 // --------------------------------------------------------------------------

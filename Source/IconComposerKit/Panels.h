@@ -281,22 +281,34 @@ CanvasRect canvasIntersect(CanvasRect a, CanvasRect b);
 // 194 -- não abre arquivo nenhum. Era esse custo, e não a dificuldade, que
 // mantinha a caixa assumida como o canvas inteiro até 19/09.
 //
-// Sem caixa a afirmar -- referência pendurada, `.png`, SVG sem `viewBox` nem
-// `width`/`height` -- vale o canvas inteiro, que é o que este código fazia para
-// todo mundo antes. A arte some da tela nesses casos, mas não some do
-// documento, e um retângulo grande demais escolhe melhor que retângulo nenhum.
+// A ARTE RASTER TEM CAIXA TAMBÉM, e desde 19/09 ela é lida. Um `.png` não tem
+// `viewBox`, mas tem um IHDR, e o retângulo que o renderer usa para colocar um
+// raster é `rb::rasterPlacementRect(imgW, imgH, ...)` -- a MESMA aritmética de
+// `artPlacementRect` com a largura e a altura da imagem no lugar da extensão
+// da caixa. `Session::assetViewBox` devolve `{0, 0, w, h}` para um PNG, lidos
+// pelos 24 primeiros bytes do arquivo (`icf::pngSize`), e nada mais aqui muda.
+//
+// Sem caixa a afirmar -- referência pendurada, SVG sem `viewBox` nem
+// `width`/`height`, PNG que não abre -- vale o canvas inteiro, que é o que este
+// código fazia para todo mundo antes. A arte some da tela nesses casos, mas não
+// some do documento, e um retângulo grande demais escolhe melhor que retângulo
+// nenhum.
 //
 // `[INF]` O QUE CONTINUA APROXIMADO, E FOI ESCOLHIDO ASSIM -- NÃO ESQUECIDO:
-// CAIXA NÃO É COBERTURA. Com o `viewBox` certo o retângulo para de ser maior
-// que a arte, mas continua sendo um RETÂNGULO: numa arte vazada -- um anel --
-// o clique ainda pega a camada no buraco, onde ela não pintou pixel nenhum.
-// Responder "esta camada tem cobertura NESTE PONTO" com precisão exige a
-// cobertura, isto é, um render por camada por clique, que é exatamente o que a
-// spec 13/09 §6 recusa no canvas ("zoom não é render").
+// CAIXA NÃO É COBERTURA. Com a caixa certa o retângulo para de ser maior que a
+// arte, mas continua sendo um RETÂNGULO: numa arte vazada -- um anel, ou um PNG
+// com a borda transparente -- o clique ainda pega a camada no buraco, onde ela
+// não pintou pixel nenhum. Responder "esta camada tem cobertura NESTE PONTO"
+// com precisão exige a cobertura, isto é, um render por camada por clique, que
+// é exatamente o que a spec 13/09 §6 recusa no canvas ("zoom não é render").
 //
-// Quem ler isto depois: a diferença que sobra é conhecida e o preço de fechá-la
-// foi pesado e recusado. "Consertar" o anel custa o render por camada; não é um
-// descuido esperando conserto barato.
+// E A LIÇÃO DESTE PARÁGRAFO, que ele mesmo errou até 19/09: até a revisão final
+// ele listava o anel como o ÚNICO resíduo e declarava "um render por camada"
+// como o preço de fechá-lo. Mas as camadas `.png` -- 60 dos 209 assets do
+// corpus, 29 % -- continuavam com o canvas inteiro, e o preço de consertá-LAS
+// nunca foi um render: era `rb::rasterPlacementRect`, que já existia, mais 24
+// bytes de IHDR. O preço declarado era o preço de OUTRO caso. O que sobra hoje
+// é o anel, e esse preço é o render por camada, medido contra a mesma spec.
 
 // O retângulo de um nó em pixels de tela. `topLeft` é o canto do canvas na tela
 // e `side` é o lado dele (`size * zoom`) -- os dois números que o zoom e o pan

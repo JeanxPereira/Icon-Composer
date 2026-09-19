@@ -209,30 +209,6 @@ std::vector<float> placeRaster(const icf::DecodedPng& img, const LayerPlacement&
     return out;
 }
 
-// The box `placeRaster` drops the art into, in target pixels -- the raster's
-// answer to `artPlacementRect`, which does the same for a viewBox.
-//
-// It sits HERE, against `placeRaster`, for the reason `artPlacementRect`'s own
-// comment gives: the art's box and the art's pixels have to agree, and two
-// copies of the same arithmetic in two places is how they stop agreeing. The
-// three lines below are `placeRaster`'s own `w`, `h`, `left`, `top` and `k`,
-// with nothing added.
-//
-// It exists because the translucency's `bounds` is a rect, and until this front
-// the only art that reached the translucency had a viewBox to give it one.
-PlacementRect rasterPlacementRect(std::uint32_t imgW, std::uint32_t imgH,
-                                  const LayerPlacement& p, std::uint32_t size) {
-    const double k = static_cast<double>(size) / kCanvasPoints;
-    const double w = imgW * p.scale, h = imgH * p.scale;
-    PlacementRect r;
-    r.x = ((kCanvasPoints - w) * 0.5 + p.translateX) * k;
-    r.y = ((kCanvasPoints - h) * 0.5 + p.translateY) * k;
-    r.width = w * k;
-    r.height = h * k;
-    return r;
-}
-
-
 // A document colour as four floats. The grey spaces carry two components
 // (luminance, alpha) and the RGB spaces four, and `Values.h` deliberately does
 // not normalise the two into one shape -- that is a rendering decision, and
@@ -481,6 +457,35 @@ const char* const kGlassVectorFieldNote =
     "aparece no desenho (em stem.svg, 3,22 px de diferenca por isso). `[OBS]` A GRADE do alvo "
     "continua nao lida (TXRTexture, e os tres botoes de ICRRenderingParameters.SDFGeneration em "
     "0xA46E0), entao uma amostra por pixel e escolha deste projeto, medida e nao lida.";
+
+// The box `placeRaster` drops the art into, in target pixels -- the raster's
+// answer to `artPlacementRect`, which does the same for a viewBox.
+//
+// It sits beside `artPlacementRect`, for the reason that one's own comment
+// gives: the art's box and the art's pixels have to agree, and two copies of
+// the same arithmetic in two places is how they stop agreeing. The three lines
+// below are `placeRaster`'s own `w`, `h`, `left`, `top` and `k`, with nothing
+// added.
+//
+// It exists because the translucency's `bounds` is a rect, and until this front
+// the only art that reached the translucency had a viewBox to give it one.
+//
+// E DESDE 19/09 ELA E DECLARADA NO CABECALHO (era interna a este arquivo),
+// porque ganhou um segundo consumidor fora dele: o hit-test do canvas para uma
+// camada `.png` (`ick::canvasLayerRect`), cujo caso cobra contra ESTA funcao em
+// vez de contra si mesmo -- exatamente o que os casos 12 e 16 de
+// test_kit_canvas.cpp ja fazem com `artPlacementRect`.
+PlacementRect rasterPlacementRect(std::uint32_t imgW, std::uint32_t imgH,
+                                  const LayerPlacement& p, std::uint32_t size) {
+    const double k = static_cast<double>(size) / kCanvasPoints;
+    const double w = imgW * p.scale, h = imgH * p.scale;
+    PlacementRect r;
+    r.x = ((kCanvasPoints - w) * 0.5 + p.translateX) * k;
+    r.y = ((kCanvasPoints - h) * 0.5 + p.translateY) * k;
+    r.width = w * k;
+    r.height = h * k;
+    return r;
+}
 
 PlacementRect artPlacementRect(const icf::svg::ViewBox& box, const LayerPlacement& p,
                                std::uint32_t size) {

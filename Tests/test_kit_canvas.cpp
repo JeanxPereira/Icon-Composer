@@ -27,6 +27,7 @@
 #include "check.h"
 #include "Source/IconComposerFoundation/Edit.h"
 #include "Source/IconComposerFoundation/Json.h"
+#include "Source/IconComposerFoundation/Png.h"
 #include "Source/IconComposerKit/Headless.h"
 #include "Source/IconComposerKit/Panels.h"
 #include "Source/IconComposerKit/RenderCoordinator.h"
@@ -1365,7 +1366,86 @@ fs::path makeSmallArtBundle(const std::string& name, const char* viewBox) {
         << "<svg viewBox=\"" << viewBox << "\"/>";
     return dir;
 }
+
+// Uma arte RASTER de verdade: um PNG produzido por `icf::encodePng`, não um
+// arquivo forjado. O que a caixa tem de responder é a largura e a altura do
+// IHDR, e o encoder é quem as escreve.
+fs::path makeRasterBundle(const std::string& name, std::uint32_t w, std::uint32_t h) {
+    const fs::path dir = fs::temp_directory_path() / ("ic-canvas-raster-" + name + ".icon");
+    fs::remove_all(dir);
+    fs::create_directories(dir / "Assets");
+    std::ofstream(dir / "icon.json", std::ios::binary) << R"({
+  "fill" : "automatic",
+  "groups" : [ { "name" : "g", "layers" : [
+    { "name" : "arte", "image-name" : "arte.png" } ] } ] })";
+    const std::vector<float> pixels(static_cast<std::size_t>(w) * h * 4u, 1.0f);
+    const std::vector<std::uint8_t> png = icf::encodePng(pixels, w, h);
+    std::ofstream f(dir / "Assets" / "arte.png", std::ios::binary);
+    f.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+    return dir;
+}
 }  // namespace
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UMA CAMADA `.png` TEM CAIXA (revisão 19/09, I4).
+//
+// Até aqui `Session::assetViewBox` respondia `nullptr` para todo raster -- um
+// PNG não tem `viewBox` --, e `canvasLayerRect` caía no canvas INTEIRO. São 60
+// dos 209 assets do corpus (29 %): para essas camadas o defeito que a T10
+// anuncia ter consertado continuava inteiro, e o parágrafo de Panels.h que
+// lista "o que continua aproximado" não as mencionava.
+//
+// O oráculo é `rb::rasterPlacementRect`, que é o que o renderer usa para
+// colocar um raster -- cobrado contra ELA, não contra uma segunda cópia da
+// aritmética aqui.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_CASE(canvas_click_reads_the_box_of_a_png_layer) {
+    auto s = ick::Session::open(makeRasterBundle("retangulo", 256, 128));
+    REQUIRE(s.has_value());
+
+    constexpr float kSide = static_cast<float>(rb::kCanvasPoints);   // 1 pixel = 1 ponto
+    const ick::CanvasVec tl{0.0f, 0.0f};
+    const icf::Context ctx;
+    const icf::NodePath arte{std::size_t{0}, std::size_t{0}};
+
+    const ick::CanvasRect r = ick::canvasLayerRect(*s, arte, ctx, tl, kSide);
+    const rb::PlacementRect o = rb::rasterPlacementRect(
+        256u, 128u, rb::LayerPlacement{1.0, 0.0, 0.0},
+        static_cast<std::uint32_t>(rb::kCanvasPoints));
+    CHECK(near(r.x0, static_cast<float>(o.x), 0.01f));
+    CHECK(near(r.y0, static_cast<float>(o.y), 0.01f));
+    CHECK(near(r.x1, static_cast<float>(o.x + o.width), 0.01f));
+    CHECK(near(r.y1, static_cast<float>(o.y + o.height), 0.01f));
+    // E os números, escritos, para o caso não passar contra um oráculo quebrado:
+    // 256 centrados em 1024 vão de 384 a 640; 128 vão de 448 a 576.
+    CHECK(near(r.x0, 384.0f, 0.01f));
+    CHECK(near(r.x1, 640.0f, 0.01f));
+    CHECK(near(r.y0, 448.0f, 0.01f));
+    CHECK(near(r.y1, 576.0f, 0.01f));
+
+    auto at = [&](float x, float y) {
+        return ick::canvasLayerAt(*s, ctx, tl, kSide, ick::CanvasVec{x, y});
+    };
+    // O CLIQUE DO CENÁRIO DO LAUDO: dentro do canvas e fora da arte. Com a
+    // aproximação antiga todos estes acertavam.
+    CHECK(!at(100.0f, 512.0f).has_value());
+    CHECK(!at(512.0f, 100.0f).has_value());
+    CHECK(!at(380.0f, 512.0f).has_value());
+    CHECK(!at(512.0f, 444.0f).has_value());
+    // E o que tem de continuar acertando, senão "errar sempre" passaria por
+    // conserto.
+    REQUIRE(at(512.0f, 512.0f).has_value());
+    CHECK(*at(512.0f, 512.0f) == arte);
+    REQUIRE(at(390.0f, 512.0f).has_value());
+
+    // O PREÇO: uma leitura por arte, a mesma do caminho SVG. Um PNG não custa
+    // um render por camada -- custa os 24 bytes do IHDR de um arquivo que o
+    // cache já abria.
+    CHECK_EQ(s->assetBoxReads(), std::uint64_t{1});
+    at(1.0f, 1.0f);
+    at(512.0f, 512.0f);
+    CHECK_EQ(s->assetBoxReads(), std::uint64_t{1});
+}
 
 TEST_CASE(canvas_click_misses_a_layer_whose_art_is_smaller_than_the_canvas) {
     auto s = ick::Session::open(makeSmallArtBundle("meia", "0 0 512 512"));

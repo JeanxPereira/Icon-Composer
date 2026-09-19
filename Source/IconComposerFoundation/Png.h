@@ -57,6 +57,25 @@ std::string writePng(const std::string& path, const std::vector<float>& pixels,
 // two files are a gap in this reader. It is refused BY NAME rather than decoded
 // wrongly, and the count is written down so it cannot hide.
 
+// A LARGURA E A ALTURA DO IHDR, SEM DECODIFICAR UM PIXEL.
+//
+// Existe porque um `.png` não tem `viewBox`, e sem uma caixa o hit-test do
+// canvas dava o canvas INTEIRO para toda camada de arte raster -- 60 dos 209
+// assets do corpus (29 %). O retângulo que o renderer usa para essas camadas é
+// `rb::rasterPlacementRect(imgW, imgH, ...)`, e este par é o `imgW`/`imgH`
+// dele. O IHDR é o primeiro chunk depois da assinatura (a especificação exige
+// que seja), então isto lê 24 bytes e para: o preço de responder pela arte
+// raster não é um render por camada, é este.
+//
+// Devolve false quando a assinatura não bate, quando o IHDR é curto demais, ou
+// quando a área é zero -- os mesmos três casos em que `decodePng` recusa por
+// esta parte do arquivo. Diferente de `decodePng`, NÃO recusa por profundidade
+// de bits, tipo de cor ou entrelaçamento: a caixa de um PNG Adam7 é a mesma
+// caixa, e recusá-la aqui devolveria o canvas inteiro para um arquivo cujo
+// tamanho está escrito em claro.
+bool pngSize(const std::uint8_t* data, std::size_t size, std::uint32_t& width,
+             std::uint32_t& height);
+
 struct DecodedPng {
     std::uint32_t width = 0;
     std::uint32_t height = 0;

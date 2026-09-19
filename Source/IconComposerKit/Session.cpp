@@ -1,7 +1,9 @@
 #include "Source/IconComposerKit/Session.h"
 
+#include "Source/IconComposerFoundation/Png.h"
 #include "Source/IconComposerKit/ViewModel.h"
 
+#include <cstdint>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -38,15 +40,36 @@ std::optional<Session> Session::create(const fs::path& dir) {
 }
 
 // A caixa de uma arte, do disco. Nada aqui é um segundo leitor de XML:
-// `icf::svg::readViewBox` é a mesma regra que `SvgDocument::parse` usa, e ler
-// um `.png` por este caminho simplesmente não encontra um `<svg>` e devolve
-// nada, que é o que "não tenho caixa a afirmar" quer dizer.
+// `icf::svg::readViewBox` é a mesma regra que `SvgDocument::parse` usa.
+//
+// E A ARTE RASTER TAMBÉM TEM CAIXA (revisão 19/09, I4). Até aqui um `.png`
+// caía no ramo do `<svg>`, não encontrava nada, e a camada ficava com o canvas
+// INTEIRO como retângulo -- 60 dos 209 assets do corpus (29 %), para os quais
+// o defeito que a T10 anuncia ter consertado ("o clique pega a camada antes de
+// o cursor tocar a arte") continuava inteiro. O oráculo exato já existia:
+// `rb::rasterPlacementRect(imgW, imgH, placement, size)` é a aritmética que o
+// renderer usa para colocar o raster, e ela é a mesma de `artPlacementRect`
+// com `width`/`height` no lugar da extensão do `viewBox`. Então a caixa de um
+// PNG é `{0, 0, w, h}` e o resto do canvas não muda uma linha.
+//
+// O PREÇO, MEDIDO E NÃO ESTIMADO: zero IO a mais. O arquivo já era lido
+// inteiro por esta função -- o ramo do SVG precisa dos bytes --, e
+// `icf::pngSize` olha os 24 primeiros. `Session::assetBoxReads()` não muda: ele
+// conta artes distintas, não consultas. O parágrafo de Panels.h dizia que
+// fechar esta aproximação custaria "um render por camada"; custou isto.
 static std::optional<icf::svg::ViewBox> readBoxOf(const fs::path& art) {
     std::error_code ec;
     if (!fs::is_regular_file(art, ec)) return std::nullopt;
     std::ifstream f(art, std::ios::binary);
     if (!f) return std::nullopt;
     const std::string bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    std::uint32_t w = 0, h = 0;
+    if (icf::pngSize(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size(), w, h)) {
+        // `x`/`y` zero e não uma escolha: um raster não tem origem própria, e o
+        // retângulo depende só da EXTENSÃO da caixa de qualquer maneira (ver a
+        // nota de `canvasLayerRect` sobre o `box.x` que se cancela).
+        return icf::svg::ViewBox{0.0, 0.0, static_cast<double>(w), static_cast<double>(h)};
+    }
     return icf::svg::readViewBox(bytes);
 }
 

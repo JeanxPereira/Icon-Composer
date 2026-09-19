@@ -185,9 +185,15 @@ public:
     // seguinte não custa nenhuma. `assetBoxReads()` é esse número, exposto
     // para que um teste possa cobrá-lo em vez de acreditar nele.
     //
+    // UM `.png` TAMBÉM RESPONDE (revisão 19/09, I4). Ele não tem `viewBox`,
+    // mas tem largura e altura no IHDR, e é exatamente delas que
+    // `rb::rasterPlacementRect` -- a colocação que o renderer usa para arte
+    // raster -- tira o retângulo. A resposta é `{0, 0, w, h}`, e ela custa os
+    // 24 primeiros bytes de um arquivo que esta função já lia inteiro.
+    //
     // `nullptr` QUANDO NÃO HÁ CAIXA A AFIRMAR: o nome é vazio, o arquivo não
-    // existe (o corpus tem referências penduradas -- 55 bundles, 2 delas), não
-    // é um SVG que este leitor abra, ou é um `.png`, que não tem `viewBox`.
+    // existe (o corpus tem referências penduradas -- 55 bundles, 2 delas), ou
+    // não é nem um SVG que este leitor abra nem um PNG com IHDR legível.
     // Quem pergunta cai no que o canvas fazia antes -- a caixa assumida como o
     // canvas inteiro --, que é uma aproximação e não um desaparecimento. O
     // `nullopt` também é GUARDADO: sem isso uma referência pendurada seria uma
