@@ -184,7 +184,23 @@ std::optional<RenderResult> SharedScheduler::poll(int lane) {
     return out;
 }
 
-void SharedScheduler::pump() {
+bool SharedScheduler::tryLease() {
+    // Recolher ANTES de responder: um resultado que só faltava ser colhido não
+    // é um render em voo, e recusar por causa dele deixaria a exportação
+    // esperando um quadro por nada. `drain` não submete, então o dispositivo
+    // não escapa para uma raia entre esta linha e a próxima.
+    drain();
+    if (inFlight_) return false;
+    leased_ = true;
+    return true;
+}
+
+void SharedScheduler::endLease() {
+    leased_ = false;
+    pump();
+}
+
+void SharedScheduler::drain() {
     while (auto r = real_.poll()) {
         // De quem é. `inFlight_` vazio só acontece com um resultado que
         // sobreviveu a uma troca de documento; ele vai para a raia do canvas,
@@ -194,6 +210,14 @@ void SharedScheduler::pump() {
         inFlight_.reset();
         ready_[owner].push_back(std::move(*r));
     }
+}
+
+void SharedScheduler::pump() {
+    drain();
+    // O DISPOSITIVO ESTÁ ARRENDADO À EXPORTAÇÃO: nada é submetido. Os pedidos
+    // ficam em `waiting_` -- o contrato da raia já é "um pendente, o mais novo
+    // descarta o anterior" -- e saem no `endLease`.
+    if (leased_) return;
     if (inFlight_) return;
     // A PRIORIDADE É DO CANVAS: é o que a pessoa está olhando. A miniatura
     // espera, e o relógio dela conta a espera.

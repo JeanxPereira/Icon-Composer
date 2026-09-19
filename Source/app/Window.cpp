@@ -57,9 +57,22 @@ struct State {
     // thread principal (ver `drainExport`), e não por um `RenderScheduler`:
     // aquele canal é de UM render de cada vez e o mais novo descarta o
     // anterior (Ports.h), que é exatamente o contrário de uma fila de seis
-    // que tem de sair inteira. O `JobQueue` serializa a raia, então dois
-    // renders nunca dividem o dispositivo -- e aqui nem há dois, porque este
-    // roda entre quadros.
+    // que tem de sair inteira -- e o PNG sai dos FLOATS do render (Export.h),
+    // que `RenderResult` não carrega.
+    //
+    // E PORTANTO A EXCLUSÃO TEM DE SER PEDIDA, NÃO SUPOSTA. Até 19/09 este
+    // comentário dizia que "o `JobQueue` serializa a raia, então dois renders
+    // nunca dividem o dispositivo -- e aqui nem há dois, porque este roda
+    // entre quadros". As duas metades eram falsas: o `JobQueue` serializa a
+    // raia DELE e não a thread do frame, e "entre quadros" descreve a posição
+    // no código, não exclusão mútua -- o job é assíncrono e atravessa quadros
+    // (é por isso que `~JobScheduler` espera em `!working_`). Clicar Export
+    // com uma miniatura em voo punha um render de 1024 px nesta thread por
+    // cima de um de 128 px num worker, sobre o MESMO `rb::Device`, cujo
+    // `VkCommandPool` e cuja `VkQueue` são de sincronização externa.
+    //
+    // `drainExport` agora arrenda o dispositivo do multiplexador
+    // (`SharedScheduler::tryLease`, Renditions.h) antes de tocar nele.
     rb::Device* device = nullptr;
     std::unique_ptr<OnyxTextureSink> sink;
     std::unique_ptr<JobScheduler> scheduler;
@@ -138,20 +151,32 @@ struct State {
     }
 
     void drainExport() {
-        if (exportQueue.empty() || !session || !device) return;
+        if (exportQueue.empty() || !session || !device || !mux) return;
         ick::ExportSheetState& sheet = session->exportSheet;
         const std::string stem = ick::exportStem(*session);
         const icf::Context ctx = exportQueue.front();
         const std::string name = ick::exportFileName(stem, ctx, exportSize);
+        const std::string doing = "Exporting " + std::to_string(exportDone + 1) + " of " +
+                                  std::to_string(exportTotal) + ": " + name;
         if (!exportAnnounced) {
-            sheet.status = "Exporting " + std::to_string(exportDone + 1) + " of " +
-                           std::to_string(exportTotal) + ": " + name;
+            sheet.status = doing;
             exportAnnounced = true;
             return;
         }
 
+        // O DISPOSITIVO É UM SÓ E O AGENDADOR PODE ESTAR NELE (revisão 19/09,
+        // C1). O arrendamento não espera: com um render em voo a exportação
+        // fica parada este quadro, DIZENDO que está parada e por quê, e tenta
+        // de novo no seguinte. Um mutex aqui congelaria a janela pelos
+        // segundos que o job segura o dispositivo.
+        if (!mux->tryLease()) {
+            sheet.status = doing + " — waiting for a render in flight";
+            return;
+        }
         ick::ExportFile made =
             ick::renderExportFile(*device, session->bundle(), stem, exportSize, ctx);
+        mux->endLease();
+        sheet.status = doing;
         std::string why = made.error;
         if (why.empty()) why = writeBytes(exportDir / made.name, made.png);
         if (!why.empty()) {

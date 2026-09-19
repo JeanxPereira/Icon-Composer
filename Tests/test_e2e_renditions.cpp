@@ -539,3 +539,89 @@ TEST_CASE(e2e_renditions_the_shared_scheduler_keeps_the_canvas_in_front) {
     CHECK_EQ(thumb->size, std::uint32_t{128});
     CHECK_EQ(real.asks.size(), std::size_t{3});
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// O TERCEIRO CONSUMIDOR DO DISPOSITIVO: A EXPORTAÇÃO (revisão 19/09, C1).
+//
+// `State::drainExport` renderiza na THREAD DO FRAME, chamando `rb::renderIcon`
+// direto -- ela não pode virar uma raia porque o PNG sai dos floats e
+// `RenderResult` só carrega 8 bits (Export.h). Enquanto isso o `JobScheduler`
+// pode estar com `renderNow` numa thread do `JobQueue`, sobre o MESMO
+// `rb::Device`, cujo `VkCommandPool` e cuja `VkQueue` são objetos de
+// sincronização EXTERNA pela especificação Vulkan. Clicar Export com uma
+// miniatura em voo alcançava esse uso concorrente.
+//
+// O QUE ESTE CASO COBRA é o mecanismo que o impede, e as duas metades dele:
+//
+//   1. com render em voo, `tryLease` RECUSA -- e recusa sem bloquear, que é a
+//      diferença entre isto e um `std::mutex` em volta do dispositivo (o job o
+//      segura por segundos, e a janela congelaria muda);
+//   2. com o arrendamento de pé, NENHUMA raia submete -- senão a exclusão
+//      valeria só para o render que já estava rodando, e um pedido do canvas
+//      nascido no meio da exportação recriaria a corrida.
+//
+// `Source/app` não é linkado por `ic_tests`, então `drainExport` em si não tem
+// caso; o que dá para cobrar é o portão que ela atravessa, e é ele que carrega
+// a correção.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_CASE(e2e_renditions_the_export_leases_the_device_instead_of_sharing_it) {
+    FakeScheduler real;
+    ick::SharedScheduler mux(real);
+    ick::RenderScheduler& canvas = mux.canvasLane();
+    ick::RenderScheduler& thumbs = mux.thumbnailLane();
+
+    const fs::path dir = makeBundle("arrendamento");
+    auto s = ick::Session::open(dir);
+    REQUIRE(s.has_value());
+    auto ask = [&](ick::RenderScheduler& lane, std::uint64_t version, std::uint32_t size) {
+        icf::Context ctx;
+        ctx.appearance = size == 128u ? icf::Appearance::Dark : icf::Appearance::Light;
+        lane.request(ick::RenderRequest{version, s->bundle().clone(), ctx, size, ick::TileRect{}, size});
+    };
+
+    // Com o dispositivo livre, a exportação o pega e o devolve.
+    CHECK(!mux.leased());
+    REQUIRE(mux.tryLease());
+    CHECK(mux.leased());
+    mux.endLease();
+    CHECK(!mux.leased());
+
+    // UM RENDER EM VOO RECUSA O ARRENDAMENTO. Este é o caso do laudo: o
+    // `CanvasPanel` submeteu no começo do quadro e o `DiagnosticsPanel` chama
+    // `drainExport` no fim do MESMO quadro.
+    ask(canvas, 1, 512);
+    CHECK_EQ(real.asks.size(), std::size_t{1});
+    CHECK(!mux.tryLease());
+    CHECK(!mux.leased());
+    // E recusar não é engolir o pedido de ninguém: a miniatura continua na fila.
+    ask(thumbs, 1, 128);
+    CHECK_EQ(real.asks.size(), std::size_t{1});
+
+    // Terminado o render, o dispositivo é arrendável -- e `tryLease` recolhe o
+    // resultado antes de responder, para não recusar por causa de um resultado
+    // que só faltava ser colhido.
+    real.answer(0);
+    REQUIRE(mux.tryLease());
+    CHECK_EQ(real.asks.size(), std::size_t{1});   // recolher não submete
+    auto got = canvas.poll();
+    REQUIRE(got.has_value());
+    CHECK_EQ(got->size, std::uint32_t{512});
+
+    // ENQUANTO A EXPORTAÇÃO SEGURA O DISPOSITIVO, nada sai -- nem o pedido que
+    // já estava esperando, nem um novo.
+    ask(canvas, 2, 512);
+    CHECK_EQ(real.asks.size(), std::size_t{1});
+    CHECK(!canvas.poll().has_value());
+    CHECK(!thumbs.poll().has_value());
+    CHECK_EQ(real.asks.size(), std::size_t{1});
+
+    // Devolvido, a fila anda outra vez, e na ordem de sempre: o canvas na frente.
+    mux.endLease();
+    CHECK_EQ(real.asks.size(), std::size_t{2});
+    CHECK_EQ(real.asks[1].size, std::uint32_t{512});
+    CHECK_EQ(real.asks[1].version, std::uint64_t{2});
+    real.answer(1);
+    REQUIRE(canvas.poll().has_value());
+    CHECK_EQ(real.asks.size(), std::size_t{3});
+    CHECK_EQ(real.asks[2].size, std::uint32_t{128});
+}

@@ -165,6 +165,41 @@ std::vector<RenditionGroup> renditionGroups(icf::Idiom idiom);
 // registra o painel do canvas ANTES do da barra. O pior caso que sobra é o
 // canvas esperar UMA miniatura, que é um render de 128 px -- uma fração do de
 // 512 que ele mesmo pede.
+//
+// ─── E UM TERCEIRO CONSUMIDOR, QUE NÃO É UMA RAIA: A EXPORTAÇÃO ──────────────
+//
+// `State::drainExport` (Source/app/Window.cpp) renderiza NA THREAD DO FRAME,
+// chamando `rb::renderIcon` direto. Ela não pode virar uma raia deste
+// multiplexador por uma razão escrita: o PNG sai dos FLOATS do render
+// (`Export.h` -- "os floats do render vão DIRETO para `encodePng`"), e
+// `RenderResult` (Ports.h) só carrega 8 bits. Passar por `RenderResult` daria
+// hoje os mesmos bytes e amanhã uma igualdade que depende de coincidência.
+//
+// O DEFEITO QUE ISTO CONSERTA (revisão de 19/09, C1). `JobScheduler` roda
+// `renderNow(device_, ...)` numa thread do `JobQueue`, sobre o MESMO
+// `rb::Device` que a exportação usa. `rb::Device` tem UM `VkCommandPool` e UMA
+// `VkQueue` e nenhum mutex, e os dois são objetos de sincronização EXTERNA pela
+// especificação Vulkan: dois usos concorrentes são comportamento indefinido.
+// Clicar Export com uma miniatura em voo alcançava exatamente isso. O
+// comentário que estava ao lado de `State::device` afirmava o contrário -- "o
+// `JobQueue` serializa a raia, então dois renders nunca dividem o dispositivo"
+// --, e o `JobQueue` serializa a raia DELE, não a thread do frame.
+//
+// POR QUE UM ARRENDAMENTO E NÃO UM `std::mutex` EM VOLTA DO DISPOSITIVO. Um
+// mutex faria a thread do frame ESPERAR pelo job, que segura o dispositivo por
+// segundos -- a janela congelaria sem desenhar, que é a regressão de 15/09 que
+// a T2 evitou de propósito ao drenar a fila um item por quadro. `tryLease` não
+// espera: quando há render em voo ela devolve false, e o quadro segue
+// normalmente (o app diz na barra por que a exportação está parada e tenta de
+// novo no quadro seguinte).
+//
+// O ARRENDAMENTO É EXATO porque o mux é a única porta do dispositivo. Um
+// resultado só chega a `real_.poll()` depois de o `Work` do job ter terminado
+// (OnyxPorts.cpp: `done_` é escrito no callback `Done`, que roda na thread
+// principal, DEPOIS do `Work`), então `inFlight_` falso quer dizer que nenhuma
+// thread está no dispositivo. E enquanto o arrendamento está de pé, `pump()`
+// não submete: os pedidos das duas raias esperam em `waiting_` e saem no
+// `endLease`.
 class SharedScheduler {
 public:
     explicit SharedScheduler(RenderScheduler& real) : real_(real) {}
@@ -173,6 +208,15 @@ public:
 
     RenderScheduler& canvasLane() { return canvas_; }
     RenderScheduler& thumbnailLane() { return thumbs_; }
+
+    // "O dispositivo é meu até eu devolver." `false` quer dizer "há um render
+    // em voo, tente no próximo quadro" -- nunca bloqueia. Recolhe antes de
+    // responder o que já terminou, para não recusar por causa de um resultado
+    // que só faltava ser colhido.
+    bool tryLease();
+    // Devolve o dispositivo e deixa sair o que ficou esperando.
+    void endLease();
+    bool leased() const { return leased_; }
 
 private:
     // 0 = canvas (prioridade), 1 = miniaturas. Uma classe com função virtual
@@ -187,6 +231,9 @@ private:
     };
     void request(int lane, RenderRequest r);
     std::optional<RenderResult> poll(int lane);
+    // Recolhe de `real_` o que já terminou. Não submete nada -- é a metade que
+    // `tryLease` pode rodar sem entregar o dispositivo a uma raia.
+    void drain();
     void pump();
 
     RenderScheduler& real_;
@@ -195,6 +242,7 @@ private:
     std::optional<RenderRequest> waiting_[2];
     std::vector<RenderResult> ready_[2];
     std::optional<int> inFlight_;
+    bool leased_ = false;
 };
 
 // ─── AS MINIATURAS ───────────────────────────────────────────────────────────
