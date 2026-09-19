@@ -7,14 +7,9 @@
 #include <string>
 #include <utility>
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <objbase.h>
-#include <shobjidl.h>
-#else
+// O seletor de pasta e do Onyx desde 19/09 (`SystemOpenFolderDialog`), entao
+// nada de COM mora mais aqui -- este arquivo voltou a ser so a ponte.
 #include <Onyx/App/UIHelpers.h>
-#endif
 
 namespace icapp {
 
@@ -202,64 +197,38 @@ std::optional<ick::RenderResult> SyncScheduler::poll() {
     return r;
 }
 
-std::filesystem::path SystemOpenBundleDialog(std::string* why) {
+std::filesystem::path SystemOpenBundleDialog(const std::filesystem::path& startIn,
+                                             std::string* why) {
     if (why) why->clear();
-#ifdef _WIN32
-    // GLFW already put the main thread in an apartment (`glfwInit` calls
-    // CoInitializeEx), so this returns S_FALSE rather than doing the work --
-    // which still has to be balanced. RPC_E_CHANGED_MODE would mean someone
-    // chose the other model: COM is up either way, so the dialog goes ahead
-    // and only the CoUninitialize is skipped.
-    const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    const bool balance = SUCCEEDED(init);
+    namespace fs = std::filesystem;
 
-    std::filesystem::path out;
-    IFileOpenDialog* dialog = nullptr;
-    // The explicit IID rather than IID_PPV_ARGS: `__uuidof` is a compiler
-    // extension and this file is built by both g++ and cl.
-    const HRESULT made = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                          IID_IFileOpenDialog, reinterpret_cast<void**>(&dialog));
-    if (FAILED(made)) {
-        // The silent branch that made this port indistinguishable from a
-        // cancel. It has never been seen to fire -- a probe of everything up
-        // to `Show()` passes on this machine both with a virgin apartment and
-        // with GLFW's -- and that is exactly why it has to SAY so if it ever
-        // does, instead of answering "" like a person who changed their mind.
-        char buf[96];
-        std::snprintf(buf, sizeof buf, "the folder picker could not be created (HRESULT 0x%08lX)",
-                      static_cast<unsigned long>(made));
-        if (why) *why = buf;
+    // ONDE O SELETOR ABRE E O QUE DECIDE SE ELE SERVE. Medido 19/09: o
+    // seletor reabria DENTRO do ultimo bundle, entao a lista mostrava so o
+    // `Assets/` do proprio bundle e o `.icon` nao estava na tela para ser
+    // escolhido -- "nao da pra abrir a porra do icon" dito de novo, por outro
+    // motivo. Um pacote e escolhivel quando o PAI dele e o que esta listado.
+    Onyx::App::FolderDialogOptions options;
+    options.title = "Open a .icon bundle";
+    options.startIn = startIn;
+    // Um balde de MRU so deste pedido: sem GUID, todo dialogo do processo
+    // divide um so, e um Save As em outro canto passa a decidir onde este
+    // abre.
+    options.mruKey = "icon-composer/open-bundle";
+
+    fs::path picked = Onyx::App::SystemOpenFolderDialog(options, why);
+    if (picked.empty()) return picked;   // cancelou, ou `why` ja diz o que houve
+
+    // PERDAO DE UM NIVEL. A pessoa que entra no bundle para "ver se e esse" e
+    // aperta Selecionar pasta escolhe `Assets/`, ou o proprio bundle depois de
+    // entrar nele. Um editor que responde "isto nao e um .icon" a quem estava
+    // com o dedo em cima do documento certo esta tecnicamente correto e
+    // praticamente inutil.
+    std::error_code ec;
+    if (!fs::exists(picked / "icon.json", ec)) {
+        const fs::path up = picked.parent_path();
+        if (!up.empty() && fs::exists(up / "icon.json", ec)) return up;
     }
-    if (SUCCEEDED(made)) {
-        DWORD options = 0;
-        if (SUCCEEDED(dialog->GetOptions(&options))) {
-            // FORCEFILESYSTEM keeps the answer to something SIGDN_FILESYSPATH
-            // can name -- without it the picker also offers This PC and the
-            // libraries, which have no path on disk.
-            dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM);
-        }
-        dialog->SetTitle(L"Open a .icon bundle");
-        // No owner window, as Onyx's own dialogs pass none.
-        if (SUCCEEDED(dialog->Show(nullptr))) {
-            IShellItem* item = nullptr;
-            if (SUCCEEDED(dialog->GetResult(&item))) {
-                PWSTR wide = nullptr;
-                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &wide)) && wide) {
-                    out = std::filesystem::path(wide);
-                    CoTaskMemFree(wide);
-                }
-                item->Release();
-            }
-        }
-        dialog->Release();
-    }
-    if (balance) CoUninitialize();
-    return out;
-#else
-    // No folder picker here yet: the caller reduces a file to the bundle that
-    // holds it, which is what this app did on every platform before.
-    return std::filesystem::path(SystemOpenFileDialog({{"Icon Composer document", {"json"}}}));
-#endif
+    return picked;
 }
 
 }  // namespace icapp

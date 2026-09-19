@@ -87,16 +87,23 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r);
 // A probe of this function's COM path, everything up to `Show()`, passes both
 // with a virgin apartment and with the one GLFW has already entered.
 //
-// Onyx's `SystemOpenFileDialog` cannot answer this question: it is
-// `GetOpenFileNameA` with OFN_FILEMUSTEXIST (Source/App/Platform/
-// SystemFileDialog.cpp on the dddce38 checkout), and a `.icon` is a DIRECTORY
-// (spec 13/09 §4) -- clicking the bundle only walks into it, so the only way
-// through was to know that `icon.json` inside it names the bundle. On Windows
-// this is IFileOpenDialog with FOS_PICKFOLDERS, which returns the folder
-// itself; elsewhere it falls back to Onyx's file dialog and the caller reduces
-// the pick to its parent. The result is a `path` and not a `string` because
-// the wide name the shell hands back converts to `path` exactly, with no
-// code page in between.
-std::filesystem::path SystemOpenBundleDialog(std::string* why = nullptr);
+// The picker itself is now Onyx's (`SystemOpenFolderDialog`, UIHelpers.h) --
+// asking for a DIRECTORY is not an icon problem, it is every host whose
+// document is a bundle. What stays here is the part that is about `.icon`:
+//
+// `startIn` is the folder whose CONTENTS the dialog lists, and it decides
+// whether this dialog is usable at all. Pass the PARENT of a bundle, never a
+// bundle: a picker opened inside one lists that bundle's own contents, and
+// the bundle is then not on screen to be chosen. Measured 19/09 against
+// exactly that failure. Empty means "wherever this dialog was last".
+//
+// And the one-level forgiveness: a pick that is not a bundle but whose PARENT
+// is one (`Assets/`, the folder someone lands on after stepping in to look)
+// opens the bundle instead of being refused.
+//
+// `why` separates the two ways of answering empty. A cancel leaves it empty
+// too; a failure before the dialog is even shown writes the reason there.
+std::filesystem::path SystemOpenBundleDialog(const std::filesystem::path& startIn = {},
+                                             std::string* why = nullptr);
 
 }  // namespace icapp

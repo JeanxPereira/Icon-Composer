@@ -64,6 +64,9 @@ struct State {
     // used to answer "" for a cancel and for a COM failure alike, and the two
     // are indistinguishable to whoever is clicking.
     std::string trouble;
+    // A pasta que continha o ultimo bundle aberto -- onde o seletor deve
+    // abrir da proxima vez. Ver `act()`.
+    fs::path lastParent;
 
     // The coordinator is recreated with the session because it caches the last
     // request it made; keeping it across a document would have it waiting for
@@ -81,6 +84,7 @@ struct State {
             return;
         }
         trouble.clear();
+        lastParent = dir.parent_path();
         adopt(std::move(s));
     }
     void close() { adopt(std::nullopt); }
@@ -99,7 +103,15 @@ struct State {
         }
         if (a.open) {
             std::string why;
-            const fs::path p = SystemOpenBundleDialog(&why);
+            // ONDE O SELETOR ABRE. O PAI do bundle, nunca o bundle: dentro
+            // dele a lista mostra o `Assets/` e o `.icon` nao esta na tela
+            // para ser escolhido (OnyxPorts.h). Com um documento aberto, o
+            // vizinho dele e o palpite certo -- os `.icon` de uma pessoa
+            // moram juntos. Sem documento, o ultimo lugar de onde abrimos; e
+            // sem isso, vazio, que deixa o dialogo lembrar sozinho.
+            fs::path startIn = lastParent;
+            if (session) startIn = session->bundle().path().parent_path();
+            const fs::path p = SystemOpenBundleDialog(startIn, &why);
             if (!p.empty()) {
                 open(bundleDirOf(p));
             } else if (!why.empty()) {
