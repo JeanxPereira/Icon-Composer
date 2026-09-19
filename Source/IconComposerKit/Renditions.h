@@ -291,7 +291,8 @@ struct RenditionThumb {
 class RenditionThumbnails {
 public:
     // `size` é o lado da miniatura em pixels. 128 e não 512: a barra desenha
-    // ~96 pt por item, e um render de 128 custa uma fração do de 512.
+    // 92 pt por item (`kTile`, PanelRenditions.cpp), e um render de 128 custa
+    // uma fração do de 512.
     RenditionThumbnails(RenderScheduler& scheduler, TextureSink& sink, std::uint32_t size = 128);
     ~RenditionThumbnails();
     RenditionThumbnails(const RenditionThumbnails&) = delete;

@@ -277,13 +277,36 @@ ExportSheetStats drawExportSheet(Session& s, MenuActions& a) {
     ImGui::SameLine();
     // FECHAR NÃO CANCELA, e o rótulo não promete que cancela. A fila é do app
     // e já está andando; um botão "Cancel" que deixasse os PNGs restantes
-    // aparecendo na pasta depois seria pior do que este.
-    if (ImGui::Button("Close")) {
+    // aparecendo na pasta depois seria pior do que este. E o que a exportação
+    // está fazendo continua na tela depois daqui: com o modal fechado, a barra
+    // do canvas desenha `sheet.status` (PanelCanvas.cpp).
+    bool close = ImGui::Button("Close");
+    st.closeAt = centreOfLastItem();
+    st.controls.push_back(MenuItemInfo{"Close", true, st.closeAt});
+
+    // ESCAPE FECHA TAMBÉM, e o motivo pelo qual não fechava não é o que a
+    // revisão de 19/09 supôs (M2).
+    //
+    // O laudo atribuiu isso ao `OpenPopup` por quadro da linha 181 -- "qualquer
+    // fechamento que não passe pelo botão Close é desfeito no quadro seguinte".
+    // Medido no imgui desta árvore, não é: `NavUpdateCancelRequest`
+    // (imgui.cpp:15039) fecha popup e menu e EXCLUI explicitamente
+    // `ImGuiWindowFlags_Modal`, e nem chegaria lá sem
+    // `ImGuiConfigFlags_NavEnableKeyboard`, que este processo não liga. ImGui
+    // nunca fechou este modal; não havia fechamento a ser desfeito.
+    //
+    // Então o Escape é nosso, e é aqui: um modal cuja única saída é acertar um
+    // botão de 50 px é uma armadilha para quem abriu por engano. `IsKeyPressed`
+    // com repeat desligado, e só com o modal em foco -- um modal tem o foco
+    // exclusivo, mas a condição diz isso em vez de supor.
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+        ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        close = true;
+    }
+    if (close) {
         sheet.open = false;
         ImGui::CloseCurrentPopup();
     }
-    st.closeAt = centreOfLastItem();
-    st.controls.push_back(MenuItemInfo{"Close", true, st.closeAt});
 
     ImGui::EndPopup();
     return st;

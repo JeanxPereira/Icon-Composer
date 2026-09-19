@@ -440,6 +440,17 @@ TEST_CASE(e2e_renditions_thumbnails_are_rendered_one_at_a_time) {
         CHECK_EQ(thumbs.stale(), std::size_t{3});
         CHECK(!first.note.empty());
         CHECK(first.note.find("rendering") != std::string::npos);
+        // E O ITEM DIZ QUE É ELE. `RenditionInfo::pending` era escrito e não
+        // era lido por ninguém (revisão 19/09, M3): o cabeçalho o descreve como
+        // parte do relato e nada o cobrava, então ele podia estar errado desde
+        // sempre. Exatamente um item em voo, porque é um render de cada vez, e
+        // é o da SELECIONADA, que é a primeira pedida.
+        std::size_t inFlight = 0;
+        for (const ick::RenditionInfo& i : first.drawn) inFlight += i.pending ? 1u : 0u;
+        CHECK_EQ(inFlight, std::size_t{1});
+        for (const ick::RenditionInfo& i : first.drawn) {
+            if (i.pending) CHECK(i.selected);
+        }
 
         // MAIS UM QUADRO NÃO É MAIS UM PEDIDO. Um painel que pedisse por quadro
         // afogaria o canvas sozinho.
@@ -460,6 +471,9 @@ TEST_CASE(e2e_renditions_thumbnails_are_rendered_one_at_a_time) {
         sched.answer();
         const ick::RenditionStats done = barFrame(gui, *s, &thumbs);
         CHECK_EQ(thumbs.stale(), std::size_t{0});
+        // Nada em voo: `pending` desce, senão ele seria um campo que só sabe
+        // dizer "sim".
+        for (const ick::RenditionInfo& i : done.drawn) CHECK(!i.pending);
         CHECK_EQ(sink.live, 3);
         // Nada mais é pedido: as três respondem a versão atual do documento.
         barFrame(gui, *s, &thumbs);

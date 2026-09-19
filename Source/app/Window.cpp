@@ -201,7 +201,13 @@ struct State {
         const std::size_t wrote = exportDone - exportFailures;
         sheet.status = "Wrote " + std::to_string(wrote) + " of " + std::to_string(exportTotal) +
                        " to " + exportDir.string();
-        if (exportFailures == 0) trouble.clear();
+        // E `trouble` NAO E APAGADO AQUI (revisao 19/09, M6). A politica "o
+        // sucesso apaga a queixa anterior" esta escrita para `save`/`saveAs` e
+        // e sobre a MESMA operacao: gravar de novo, e conseguir, e a resposta
+        // exata para "isto ja passou". Uma exportacao bem-sucedida nao responde
+        // isso sobre um `Ctrl+S` que falhou por disco cheio -- o documento
+        // continua nao salvo e o titulo continua com o asterisco, e apagar a
+        // linha vermelha diria que nao.
     }
 
     // The coordinator is recreated with the session because it caches the last

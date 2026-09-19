@@ -396,6 +396,48 @@ TEST_CASE(e2e_export_progress_stays_on_the_canvas_bar_after_close) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ESCAPE FECHA O MODAL (revisão 19/09, M2).
+//
+// E a causa não era a que o laudo supôs. Ele atribuiu o Escape inerte ao
+// `OpenPopup` por quadro de `Export.cpp` -- "qualquer fechamento que não passe
+// pelo botão Close é desfeito no quadro seguinte". Medido no imgui desta
+// árvore: `NavUpdateCancelRequest` (imgui.cpp:15039) fecha popup e menu e
+// EXCLUI explicitamente `ImGuiWindowFlags_Modal`, e nem chegaria lá sem
+// `ImGuiConfigFlags_NavEnableKeyboard`, que nem o headless nem o app ligam.
+// ImGui nunca fechou este modal; não havia fechamento sendo desfeito. O
+// sintoma era real, a causa era outra, e o conserto é tratar o Escape aqui.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_CASE(e2e_export_escape_closes_the_sheet) {
+    const fs::path dir = makeBundle("escape");
+    auto s = ick::Session::open(dir);
+    REQUIRE(s.has_value());
+    ick::HeadlessImGui gui(1440.0f, 1000.0f);
+    ick::MenuActions actions;
+    const auto draw = [&] { return frame(gui, *s, actions); };
+
+    s->exportSheet.open = true;
+    draw();
+    REQUIRE(draw().sheet.open);
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddKeyEvent(ImGuiKey_Escape, true);
+    draw();
+    io.AddKeyEvent(ImGuiKey_Escape, false);
+    const Frame after = draw();
+    CHECK(!after.sheet.open);
+    CHECK(!s->exportSheet.open);
+    // E ELE NÃO RESSUSCITA. É esta linha que cobriria a causa que o laudo
+    // supôs, se ela existisse.
+    CHECK(!draw().sheet.open);
+    CHECK(!draw().sheet.open);
+    CHECK(!s->exportSheet.open);
+
+    // E o Escape não pede exportação nenhuma: fechar não é exportar.
+    CHECK(!actions.exportImage);
+    CHECK_EQ(gui.errors(), std::uint64_t{0});
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // (c) A LISTA DE CONTEXTOS É A DO NOSSO MODELO, NARROWED PELO DOCUMENTO
 // ─────────────────────────────────────────────────────────────────────────────
 TEST_CASE(export_offers_only_the_contexts_the_document_can_tell_apart) {
