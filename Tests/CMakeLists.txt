@@ -72,6 +72,7 @@ target_include_directories(ic_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # regression.
 if(TARGET IconComposerKit)
     target_sources(ic_tests PRIVATE test_kit_idiom.cpp test_kit_canvas.cpp test_kit_layers.cpp test_kit_inspector.cpp
+                                    test_kit_layout.cpp
                                     test_e2e_inspector.cpp test_e2e_layers.cpp
                                     test_e2e_renditions.cpp
                                     test_e2e_import_save_duplicate.cpp

@@ -5,6 +5,7 @@
 #include "Source/IconComposerKit/RenderCoordinator.h"
 #include "Source/IconComposerKit/Renditions.h"
 #include "Source/IconComposerKit/Session.h"
+#include "Source/IconComposerKit/WindowLayout.h"
 #include "Source/app/OnyxPorts.h"
 
 #include <Onyx/App/App.h>
@@ -16,6 +17,7 @@
 #include "imgui_internal.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -388,6 +390,55 @@ struct State {
     }
 };
 
+// O PISO E O TETO DAS DUAS LARGURAS, APLICADOS QUANDO A JANELA MUDA DE TAMANHO
+// (revisao 19/09, I2).
+//
+// `DockBuilderSplitNode` guarda uma RAZAO e o no redimensiona junto com a
+// janela, entao `defaultLayout` sozinho nao pode ter piso nem teto: ele roda
+// uma vez. O que segura os quatro numeros `[BIN]` de minimo e maximo e esta
+// funcao. `DockBuilderSetNodeSize` escreve `Size` E `SizeRef` e poe a
+// autoridade no no (imgui.cpp:20792), que e exatamente o que faz o split
+// recalcular a partir do valor grampeado no quadro seguinte.
+//
+// SO NA MUDANCA DE TAMANHO DA JANELA, e isto e a diferenca entre um grampo e
+// uma briga: arrastar o divisor para 600 pt e uma escolha da pessoa e nao e
+// desfeita no quadro seguinte. O que nao pode e a janela crescer e levar a
+// sidebar a 587 pt sozinha.
+void clampDockedWidths() {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    if (!vp) return;
+    const float total = vp->WorkSize.x;
+    // O tamanho de janela em que o grampo ja foi aplicado. Um por processo,
+    // como `g_dropTarget`, e pela mesma razao: ha exatamente uma janela.
+    static float appliedAt = -1.0f;
+    if (std::fabs(total - appliedAt) < 0.5f) return;
+    appliedAt = total;
+
+    auto clampOne = [](const char* window, float want) {
+        ImGuiWindow* w = ImGui::FindWindowByName(window);
+        if (!w || !w->DockNode) return;
+        ImGuiDockNode* node = w->DockNode;
+        if (!(node->Size.x > 0.0f) || !(node->Size.y > 0.0f)) return;
+        // Meio pixel de folga: `Size.x` passou por uma razao e uma
+        // multiplicacao, e reescrever o no por 1e-4 pt seria um `SizeRef` novo
+        // por quadro sem nada mudando na tela.
+        if (std::fabs(want - node->Size.x) < 1.0f) return;
+        ImGui::DockBuilderSetNodeSize(node->ID, ImVec2(want, node->Size.y));
+    };
+
+    ImGuiWindow* layers = ImGui::FindWindowByName(ick::kLayersWindow);
+    const float sidebarNow =
+        (layers && layers->DockNode) ? layers->DockNode->Size.x : ick::kSidebarIdeal;
+    const float sidebar = ick::clampSidebarWidth(sidebarNow, total);
+    clampOne(ick::kLayersWindow, sidebar);
+    // O inspetor e grampeado contra o que SOBRA depois da sidebar grampeada --
+    // a mesma conta de `defaultLayout`, e nao contra a janela inteira.
+    ImGuiWindow* inspector = ImGui::FindWindowByName(ick::kInspectorWindow);
+    const float inspectorNow =
+        (inspector && inspector->DockNode) ? inspector->DockNode->Size.x : ick::kInspectorIdeal;
+    clampOne(ick::kInspectorWindow, ick::clampInspectorWidth(inspectorNow, total - sidebar));
+}
+
 struct LayersPanel : Onyx::App::IPanel {
     explicit LayersPanel(State& s) : st(s) {}
     void Draw() override {
@@ -503,6 +554,9 @@ struct DiagnosticsPanel : Onyx::App::IPanel {
         // panels after it drawing against state that changed under them.
         // `advanceFrame` likewise belongs after every upload this frame made.
         st.sink->advanceFrame();
+        // Depois de todo painel ter desenhado: os nos de dock ja existem e ja
+        // foram redimensionados por este quadro.
+        clampDockedWidths();
         st.act();
         // DEPOIS de `act()`, que e quem enfileira: assim o primeiro item ja
         // tem o quadro do anuncio neste mesmo frame, e nao no seguinte.
@@ -515,20 +569,29 @@ struct DiagnosticsPanel : Onyx::App::IPanel {
 };
 
 // `[BIN]` As larguras dos dois paineis sao as do alvo, lidas em 19/09 de
-// `WindowLayoutConstants` no slice `IconComposerKit.arm64`
-// (`Docs/Laudos/2026-09-19-renditions-e-mirroring.md` §4.2): a sidebar quer
-// 330 pt, entre 250 e 480; o inspetor quer 330 pt -- que e tambem o minimo
-// dele --, ate 500.
+// `WindowLayoutConstants` (laudo §4.2) e transcritas em
+// `Source/IconComposerKit/WindowLayout.h`, que e onde a aritmetica mora e onde
+// ela e testada.
 //
 // Elas eram percentuais herdados do `sfsymview`, 20% e 28%, e a diferenca nao
 // e cosmetica: numa janela de 1601 pt aquilo dava 320 / 448, isto e, o
-// inspetor saia quase 120 pt largo demais. E, por serem percentuais, os dois
-// paineis nao tinham piso nem teto -- a janela encolhendo, a sidebar passava
-// abaixo dos 250 do alvo sem resistencia.
+// inspetor saia quase 120 pt largo demais.
 //
-// `DockBuilderSplitNode` pede uma RAZAO, nao pixels, entao a razao e derivada
-// da largura que existe, e o grampo acontece antes da divisao. A do inspetor
-// e contra o que SOBROU depois da sidebar, que e onde ela e aplicada.
+// E O PISO E O TETO PRECISAM DE DUAS COISAS, nao de uma (revisao 19/09, I2).
+// `DockBuilderSplitNode` pede uma RAZAO, e a razao e calculada UMA vez, com a
+// `WorkSize` do primeiro layout; o no de dock redimensiona proporcionalmente
+// com a janela depois disso. O grampo que ficava aqui -- `clamp(ideal, lo,
+// hi)` -- era um no-op, porque o ideal ja esta dentro do intervalo nos dois
+// paineis: numa janela que abre com 1080 pt a sidebar saia com 330 (certo), e
+// maximizada para 1920 ela virava ~587, acima do teto de 480 que o comentario
+// afirmava estar aplicado. Entao:
+//
+//   1. AQUI, a razao inicial, derivada da largura em pontos -- e o grampo de
+//      metade da janela e o unico que pode morder nesta chamada;
+//   2. e em `clampDockedWidths`, chamado quando a JANELA muda de tamanho, que
+//      e o momento em que a razao empurraria o painel para fora do intervalo
+//      medido. Sem (2) as quatro constantes de minimo e maximo continuam
+//      decorativas.
 //
 // O QUE EU NAO APLIQUEI, DE PROPOSITO: `Window.minContentSize` do alvo e
 // 1284x704, e este editor roda numa maquina cujo monitor retrato tem 1080 de
@@ -544,29 +607,17 @@ void defaultLayout(ImGuiID dockspaceId) {
     const ImVec2 work = ImGui::GetMainViewport()->WorkSize;
     ImGui::DockBuilderSetNodeSize(dockspaceId, work);
 
-    // `[BIN]` §4.2 do laudo de 19/09.
-    constexpr float kSidebarIdeal = 330.0f, kSidebarMin = 250.0f, kSidebarMax = 480.0f;
-    constexpr float kInspectorIdeal = 330.0f, kInspectorMin = 330.0f, kInspectorMax = 500.0f;
-
     const float total = work.x > 1.0f ? work.x : 1.0f;
-    // Numa janela estreita demais para os dois minimos, a razao ainda tem de
-    // caber: o grampo final e a metade do que existe, para nenhum dos dois
-    // engolir o canvas inteiro.
-    auto ratio = [](float want, float lo, float hi, float span) {
-        const float px = std::clamp(want, lo, hi);
-        const float r = px / (span > 1.0f ? span : 1.0f);
-        return std::clamp(r, 0.05f, 0.5f);
-    };
+    const float sidebar = ick::clampSidebarWidth(ick::kSidebarIdeal, total);
+    // Contra o que sobrou, nao contra a janela inteira.
+    const float afterLeft = total - sidebar;
+    const float inspector = ick::clampInspectorWidth(ick::kInspectorIdeal, afterLeft);
 
     ImGuiID centre = dockspaceId;
     const ImGuiID left = ImGui::DockBuilderSplitNode(
-        centre, ImGuiDir_Left, ratio(kSidebarIdeal, kSidebarMin, kSidebarMax, total), nullptr,
-        &centre);
-    // Contra o que sobrou, nao contra a janela inteira.
-    const float afterLeft = total - std::clamp(kSidebarIdeal, kSidebarMin, kSidebarMax);
+        centre, ImGuiDir_Left, ick::dockRatio(sidebar, total), nullptr, &centre);
     const ImGuiID right = ImGui::DockBuilderSplitNode(
-        centre, ImGuiDir_Right, ratio(kInspectorIdeal, kInspectorMin, kInspectorMax, afterLeft),
-        nullptr, &centre);
+        centre, ImGuiDir_Right, ick::dockRatio(inspector, afterLeft), nullptr, &centre);
     // A BARRA DE RENDITIONS, ACIMA DO CANVAS (T4). É onde o alvo a põe, e é a
     // única posição em que ela não disputa largura com a sidebar nem com o
     // inspetor: os seis itens são uma FILA, e uma fila quer o eixo comprido.
