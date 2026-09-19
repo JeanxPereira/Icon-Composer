@@ -120,7 +120,14 @@ MenuStats drawMenuBar(Session& s, MenuActions& a) {
         // a document edited and then fully undone offers nothing to save.
         if (b.item("Save", "Ctrl+S", s.isDirty())) a.save = true;
         if (b.item("Save As…", "Ctrl+Shift+S")) a.saveAs = true;
-        b.item("Export Icon as Image…", nullptr, false, kRound5);
+        // O ITEM DEIXOU DE SER CINZA (T2). Ele não exporta: abre o modal
+        // (`Export.h`), que é onde o tamanho, os contextos e o destino são
+        // escolhidos. Sem atalho impresso, pela regra do topo deste arquivo --
+        // nada medido diz qual o alvo usa, e a terceira posição de `MenuItem`
+        // desenha um acorde sem ligar nada.
+        if (b.item("Export Icon as Image…", nullptr, !s.exportSheet.open)) {
+            s.exportSheet.open = true;
+        }
         ImGui::Separator();
         if (b.item("Close", "Ctrl+W")) a.close = true;
         if (b.item("Quit", "Ctrl+Q")) a.quit = true;

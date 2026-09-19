@@ -5,6 +5,7 @@
 # things a window provides -- a texture upload and a render thread -- arrive
 # through Ports.h, implemented in Source/app.
 add_library(IconComposerKit STATIC
+    Export.cpp
     Headless.cpp
     MenuBar.cpp
     PanelCanvas.cpp

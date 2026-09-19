@@ -98,6 +98,32 @@ struct ViewContext {
     float settledSeconds = 0.0f;
 };
 
+// O QUE O MODAL DE EXPORTAÇÃO ESTÁ MOSTRANDO (T2).
+//
+// Mora aqui, ao lado de `selection` e `scope`, porque é o mesmo tipo de coisa:
+// estado de quem está olhando, que precisa sobreviver ao quadro e não pertence
+// ao documento. `MenuActions` não serve -- ele é zerado a cada quadro, e um
+// modal que esquecesse o que foi marcado assim que a pessoa soltasse o mouse
+// não seria um modal.
+//
+// `chosen` é um BIT POR CONTEXTO OFERECIDO, na ordem de `exportContexts()`, e
+// não quatro booleanos com nome: a lista dos contextos cresce sozinha quando o
+// documento ganha uma especialização, e cresceria de novo no dia em que alguém
+// ler `ICRRenderingParameters.ClearMode` e o `Clear` virar um render de
+// verdade. Um campo por aparência teria de ser reescrito nesse dia.
+struct ExportSheetState {
+    bool open = false;
+    std::uint32_t size = 512;
+    std::vector<unsigned char> chosen;
+    // A última frase do app sobre esta exportação -- o progresso enquanto ela
+    // corre, o resumo quando acaba. Vazia antes da primeira.
+    std::string status;
+    // Há uma exportação em curso. O botão Export fica cinza enquanto isto
+    // vale, para a fila do app não receber um segundo lote por cima do
+    // primeiro.
+    bool busy = false;
+};
+
 class Session {
 public:
     static std::optional<Session> open(const std::filesystem::path& bundleDir);
@@ -146,6 +172,7 @@ public:
     std::optional<icf::NodePath> selection;
     icf::Context scope;
     ViewContext view;
+    ExportSheetState exportSheet;
 
 private:
     struct Command {

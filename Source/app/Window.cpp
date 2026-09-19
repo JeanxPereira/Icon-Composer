@@ -1,5 +1,6 @@
 #include "Source/app/Window.h"
 
+#include "Source/IconComposerKit/Export.h"
 #include "Source/IconComposerKit/Panels.h"
 #include "Source/IconComposerKit/RenderCoordinator.h"
 #include "Source/IconComposerKit/Session.h"
@@ -14,6 +15,7 @@
 #include "imgui_internal.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <memory>
 #include <optional>
@@ -21,6 +23,7 @@
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace icapp {
 namespace {
@@ -49,6 +52,14 @@ struct State {
     // do nothing.
     GLFWwindow* window = nullptr;
     std::optional<ick::Session> session;
+    // O MESMO dispositivo que o agendador usa. A exportação renderiza na
+    // thread principal (ver `drainExport`), e não por um `RenderScheduler`:
+    // aquele canal é de UM render de cada vez e o mais novo descarta o
+    // anterior (Ports.h), que é exatamente o contrário de uma fila de seis
+    // que tem de sair inteira. O `JobQueue` serializa a raia, então dois
+    // renders nunca dividem o dispositivo -- e aqui nem há dois, porque este
+    // roda entre quadros.
+    rb::Device* device = nullptr;
     std::unique_ptr<OnyxTextureSink> sink;
     std::unique_ptr<JobScheduler> scheduler;
     std::unique_ptr<ick::RenderCoordinator> coordinator;
@@ -84,11 +95,91 @@ struct State {
     // abrir da proxima vez. Ver `act()`.
     fs::path lastParent;
 
+    // ---- A EXPORTACAO, COMO FILA E NAO COMO LACO --------------------------
+    //
+    // POR QUE NAO UM `for` COM SEIS RENDERS DENTRO DE `act()`. Um render de
+    // 1024 px com vidro leva DEZENAS de segundos (RenderView::lastRenderSeconds
+    // existe por causa do 15/09), e seis deles num laco sao minutos com a
+    // janela parada e nada na tela dizendo por que. A fila e drenada UM POR
+    // QUADRO, e cada item custa dois quadros de proposito:
+    //
+    //   1. o quadro do ANUNCIO -- `status` recebe "Exporting 3 of 6: <nome>",
+    //      o modal desenha essa frase, e `drainExport` volta sem renderizar;
+    //   2. o quadro do TRABALHO -- o render acontece, e a janela congela por
+    //      ele, mas congela DEPOIS de ter dito o que esta fazendo.
+    //
+    // Sem o primeiro quadro a frase seria escrita e o render comecaria antes
+    // de qualquer pixel dela chegar a tela: a pessoa veria a frase do item
+    // ANTERIOR durante a espera do atual, que e pior do que nao ter frase.
+    std::vector<icf::Context> exportQueue;   // o que falta, em ordem
+    std::size_t exportDone = 0, exportTotal = 0, exportFailures = 0;
+    std::uint32_t exportSize = 512;
+    fs::path exportDir;
+    bool exportAnnounced = false;
+
+    // Grava os bytes. Devolve o motivo de nao ter conseguido, ou vazio.
+    static std::string writeBytes(const fs::path& path, const std::vector<std::uint8_t>& bytes) {
+        std::FILE* f = std::fopen(path.string().c_str(), "wb");
+        if (!f) return "could not open " + path.string();
+        const std::size_t n = bytes.empty() ? 0 : std::fwrite(bytes.data(), 1, bytes.size(), f);
+        const bool bad = std::ferror(f) != 0 || n != bytes.size();
+        std::fclose(f);
+        if (bad) return "could not write " + path.string();
+        return {};
+    }
+
+    void drainExport() {
+        if (exportQueue.empty() || !session || !device) return;
+        ick::ExportSheetState& sheet = session->exportSheet;
+        const std::string stem = ick::exportStem(*session);
+        const icf::Context ctx = exportQueue.front();
+        const std::string name = ick::exportFileName(stem, ctx, exportSize);
+        if (!exportAnnounced) {
+            sheet.status = "Exporting " + std::to_string(exportDone + 1) + " of " +
+                           std::to_string(exportTotal) + ": " + name;
+            exportAnnounced = true;
+            return;
+        }
+
+        ick::ExportFile made =
+            ick::renderExportFile(*device, session->bundle(), stem, exportSize, ctx);
+        std::string why = made.error;
+        if (why.empty()) why = writeBytes(exportDir / made.name, made.png);
+        if (!why.empty()) {
+            ++exportFailures;
+            fail("export " + made.name + ": " + why);
+        }
+        // O que foi desenhado sem ter sido medido continua indo para o
+        // stderr, como no `icrender`: uma nota nao e uma falha e nao pode
+        // pintar a barra de vermelho, mas tambem nao pode sumir.
+        for (const auto& n : made.notes) {
+            std::fprintf(stderr, "iconcomposer: [OBS] %s: %s\n", made.name.c_str(), n.c_str());
+        }
+
+        exportQueue.erase(exportQueue.begin());
+        ++exportDone;
+        exportAnnounced = false;
+        if (!exportQueue.empty()) return;
+
+        sheet.busy = false;
+        const std::size_t wrote = exportDone - exportFailures;
+        sheet.status = "Wrote " + std::to_string(wrote) + " of " + std::to_string(exportTotal) +
+                       " to " + exportDir.string();
+        if (exportFailures == 0) trouble.clear();
+    }
+
     // The coordinator is recreated with the session because it caches the last
     // request it made; keeping it across a document would have it waiting for
     // an answer about a document that is gone.
     void adopt(std::optional<ick::Session> s) {
         coordinator.reset();
+        // A FILA DE EXPORTACAO MORRE COM O DOCUMENTO, pela mesma razao que o
+        // coordenador: `drainExport` renderiza `session->bundle()`, e uma
+        // fila que sobrevivesse a troca escreveria PNGs do documento novo com
+        // os nomes pedidos para o antigo -- sem um pixel na tela explicando.
+        exportQueue.clear();
+        exportTotal = exportDone = exportFailures = 0;
+        exportAnnounced = false;
         session = std::move(s);
         if (session) coordinator = std::make_unique<ick::RenderCoordinator>(*scheduler, *sink);
     }
@@ -193,6 +284,52 @@ struct State {
                 }
             }
         }
+        // EXPORTAR A IMAGEM (T2). O modal ja escolheu o tamanho e os
+        // contextos; falta o DESTINO, que e um dialogo, e portanto e daqui
+        // (Regra 2). O plano veio no pedido e nao e relido do modal: entre o
+        // clique e o retorno do dialogo a pessoa pode ter mexido nas caixas.
+        if (a.exportImage && session) {
+            ick::ExportSheetState& sheet = session->exportSheet;
+            if (!exportQueue.empty()) {
+                // Ja ha um lote andando. O modal desabilita Export enquanto
+                // `busy`, entao chegar aqui e um caminho que nao deveria
+                // existir -- e um lote perdido em silencio seria pior.
+                sheet.status = "An export is already running.";
+            } else if (a.exportPlan.contexts.empty() || a.exportPlan.size == 0) {
+                sheet.status = "Nothing to export.";
+                sheet.busy = false;
+            } else {
+                Onyx::App::FolderDialogOptions options;
+                options.title = "Export icon as image";
+                // Ao lado do bundle: e onde os arquivos de uma pessoa moram.
+                options.startIn = session->bundle().path().parent_path();
+                // Balde de MRU proprio, pela mesma razao do seletor de bundle:
+                // sem chave, um Save As em outro canto decide onde este abre.
+                options.mruKey = "icon-composer/export-image";
+                std::string why;
+                const fs::path dir = Onyx::App::SystemOpenFolderDialog(options, &why);
+                if (dir.empty()) {
+                    sheet.busy = false;
+                    if (why.empty()) {
+                        // Cancelar nao e falhar: nao pinta a barra de vermelho.
+                        sheet.status = "Export cancelled.";
+                    } else {
+                        fail("export: " + why);
+                        sheet.status = "export: " + why;
+                    }
+                } else {
+                    exportDir = dir;
+                    exportSize = a.exportPlan.size;
+                    exportQueue = a.exportPlan.contexts;
+                    exportTotal = exportQueue.size();
+                    exportDone = 0;
+                    exportFailures = 0;
+                    exportAnnounced = false;
+                    sheet.busy = true;
+                    sheet.status = "Exporting 1 of " + std::to_string(exportTotal) + "…";
+                }
+            }
+        }
         if (a.close) close();
         if (a.quit) quit = true;
     }
@@ -238,6 +375,12 @@ struct CanvasPanel : Onyx::App::IPanel {
             // replace the texture the canvas is about to show (spec 13/09 §6).
             st.coordinator->tick(*st.session);
             ick::drawCanvas(*st.session, st.coordinator->view(), st.actions, st.trouble);
+            // FORA da janela do canvas, de proposito: um popup nasce no stack
+            // de IDs de quem o abre, e este modal cobre a janela inteira --
+            // ele nao e do canvas, so e pedido pelo menu que o canvas
+            // desenha. Chamado aqui porque este painel e o unico que existe
+            // com documento aberto e sem o qual o menu tambem nao existiria.
+            ick::drawExportSheet(*st.session, st.actions);
         } else {
             // With no document the Kit's menu bar has nothing to hang from, so
             // the empty canvas carries the two items that can still be acted on.
@@ -299,6 +442,9 @@ struct DiagnosticsPanel : Onyx::App::IPanel {
         // `advanceFrame` likewise belongs after every upload this frame made.
         st.sink->advanceFrame();
         st.act();
+        // DEPOIS de `act()`, que e quem enfileira: assim o primeiro item ja
+        // tem o quadro do anuncio neste mesmo frame, e nao no seguinte.
+        st.drainExport();
         st.title();
         if (st.quit && st.window) glfwSetWindowShouldClose(st.window, 1);
     }
@@ -415,6 +561,8 @@ int run(const fs::path& initial) {
 
     State state;
     state.window = window.getGLFWwindow();
+    // O dispositivo da exportacao e o mesmo do agendador -- ver `State::device`.
+    state.device = &*device;
     state.sink = std::make_unique<OnyxTextureSink>(window.vkContext());
     state.scheduler = std::make_unique<JobScheduler>(window.workspace().Jobs(), *device);
 

@@ -137,8 +137,30 @@ struct RenderView {
 // channel already existed for `open`/`save`/`saveAs`; it was simply never
 // spelled for anything but the bar, and the asset panel said so in a comment
 // instead of using it.
+// O QUE UMA EXPORTAÇÃO PEDE, montado pelo modal e cumprido pelo app.
+//
+// Regra 2 outra vez: o Kit renderiza e CODIFICA (`Export.h`,
+// `renderExportFile`), mas não escolhe pasta e não escreve arquivo. O plano é
+// o pedido inteiro -- o tamanho e os contextos, na ordem em que o modal os
+// desenhou -- e o app pergunta ONDE e grava, um por quadro.
+struct ExportPlan {
+    std::uint32_t size = 512;
+    // Um PNG por contexto. Nunca sai vazio daqui: o botão Export é cinza sem
+    // nenhum contexto marcado.
+    std::vector<icf::Context> contexts;
+};
+
 struct MenuActions {
     bool newDocument = false, open = false, save = false, saveAs = false, close = false, quit = false;
+
+    // ---- exportar a imagem (T2) -------------------------------------------
+    // O pedido carrega o plano CONSIGO, pela mesma razão que `importInto`
+    // carrega o nó: `State::act()` roda depois do quadro, e entre o clique em
+    // Export e o retorno do diálogo de pasta a pessoa pode ter mexido nas
+    // caixas do modal. Um pedido que dissesse só "exporte" gravaria o que
+    // estivesse marcado quando o diálogo fechasse.
+    bool exportImage = false;
+    ExportPlan exportPlan;
 
     // ---- importar um asset por dialogo ------------------------------------
     // `importInto` E O PEDIDO, NAO A SELECAO. `State::act()` roda DEPOIS do
