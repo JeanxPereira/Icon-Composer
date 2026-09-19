@@ -159,7 +159,11 @@ ick::InspectorStats inspectorFrame(ick::HeadlessImGui& gui, ick::Session& s, icf
     gui.newFrame();
     ImGui::SetNextWindowPos(ImVec2(0, 0));
     ImGui::SetNextWindowSize(ImVec2(420, 1400));
-    ick::InspectorStats st = ick::drawInspector(s);
+    // O canal do Kit para o app, descartado aqui: nenhum caso deste arquivo
+    // pede dialogo, e o botao que pede tem caso proprio
+    // (test_e2e_import_save_duplicate.cpp).
+    ick::MenuActions actions;
+    ick::InspectorStats st = ick::drawInspector(s, actions);
     gui.render();
     return st;
 }
