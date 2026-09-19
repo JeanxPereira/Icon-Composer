@@ -246,6 +246,13 @@ struct Section {
     void write(std::string_view prop, icf::json::Value v, bool coalesce) {
         s.setProperty(path, prop, s.scope, std::move(v), coalesce);
     }
+
+    // "Esta propriedade nao tem valor sob este escopo" -- a mesma porta que o
+    // botao de remover override usa (:224), exposta para as secoes cujo
+    // proprio CONTROLE tem uma posicao que significa ausencia. Hoje so a de
+    // espelhamento: o tri-estado dela tem "herdado", e herdado nao e um valor
+    // a escrever, e a falta de um.
+    void erase(std::string_view prop) { s.setProperty(path, prop, s.scope, std::nullopt); }
 };
 
 // ---- the families, one file each ------------------------------------------

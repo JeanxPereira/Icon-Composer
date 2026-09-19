@@ -508,18 +508,32 @@ TEST_CASE(e2e_inspector_a_real_click_on_each_mirroring_position_writes_what_it_p
     // as duas posições não podem estar trocadas.
     CHECK_EQ(mirrorLexeme(*s, layer, base), icf::json::write(mirroring(false)));
 
-    // ---- "Inherited" REMOVE a sub-chave, não escreve `false` ----------------
+    // ---- "Inherited" REMOVE A PROPRIEDADE, não escreve `false` nem `{ }` ----
+    //
+    // A decisão mudou depois que este caso foi escrito, e mudou para menos:
+    // "Inherited" apagava a sub-chave e deixava `"asset-mirroring" : { }`.
+    // Um objeto vazio e uma chave ausente resolvem para o MESMO valor efetivo
+    // -- os dois dizem "olhe mais acima" --, então o objeto vazio é membro que
+    // o documento não carregava, carregando informação nenhuma: num nó que
+    // nunca teve a chave, escolher "Inherited" ADICIONARIA bytes sem sentido,
+    // e o portão de round-trip byte-exato veria. Sob escopo não-Base seria
+    // pior ainda: uma entrada na lista de especialização que não diz nada.
+    //
+    // O que este caso afirma é portanto a ausência, e afirma junto que ela é
+    // ausência DE VERDADE -- nem a chave, nem a lista de especialização dela.
     const ImVec2 atInherited = locate(gui, *s, layer, base, inherited);
     REQUIRE(atInherited.x != 0.0f);
     clickAt(gui, *s, layer, base, atInherited);
-    CHECK_EQ(mirrorLexeme(*s, layer, base),
-             icf::json::write(icf::json::Value::object(std::vector<icf::json::Value::Member>{})));
+    CHECK_EQ(mirrorLexeme(*s, layer, base), std::string("<ausente>"));
     {
-        const icf::json::Value* v = resolved(*s, layer, "asset-mirroring", base);
-        REQUIRE(v != nullptr);
-        CHECK(v->kind() == icf::json::Value::Kind::Object);
-        CHECK(v->find("mirrorable") == nullptr);   // removida, não posta a false
+        const icf::json::Value* node = icf::nodeAt(s->root(), layer);
+        REQUIRE(node != nullptr);
+        CHECK(node->find("asset-mirroring") == nullptr);
+        CHECK(node->find("asset-mirroring-specializations") == nullptr);
     }
+    // E o documento volta a ser o que era antes de qualquer clique: o nó nunca
+    // teve a chave, e nenhum byte sobrou dela.
+    CHECK_EQ(bytes(*s), before);
     CHECK_EQ(gui.errors(), std::uint64_t{0});
 }
 

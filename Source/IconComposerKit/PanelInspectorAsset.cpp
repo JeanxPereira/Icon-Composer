@@ -63,6 +63,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -235,16 +236,35 @@ Mirror readMirror(const icf::json::Value* v) {
     return m->boolean() ? Mirror::On : Mirror::Off;
 }
 
-// `[BIN]` the encoder is a KEYED container over one `Bool?` (§3.3), so the
-// absent case is the object with the member left out -- which is what Swift's
-// synthesised `encodeIfPresent` writes for `nil`. "Inherited" therefore REMOVES
-// `mirrorable`; it does not write `false`, and those two are different
-// documents with different meanings.
-icf::json::Value mirrorToJson(Mirror m) {
+// `[BIN]` the encoder is a KEYED container over one `Bool?` (§3.3), so `false`
+// and "no member" are different documents with different meanings, and the
+// control has to be able to write both.
+//
+// AND "INHERITED" REMOVES THE WHOLE PROPERTY, not just the member. `[INF]`,
+// and the reasoning is a rejection of the other reading, so it is written
+// down. Swift's synthesised `encodeIfPresent` would emit `{ }` for an
+// `AssetMirroring` whose `mirrorable` is `nil` -- true of the ENCODER, and it
+// says nothing about whether the target ever puts such an object on a node.
+// Nothing decides it from outside either: `asset-mirroring` occurs ZERO times
+// in the 145 documents (laudo 19/09 §3.6), so the corpus has no opinion.
+//
+// What decides it is what the two cost. `{ }` and an absent key resolve to
+// the SAME effective value -- `readMirror` answers `Inherited` for both, and
+// the fold below reaches past both -- so `{ }` is a member the document did
+// not carry, carrying no information. On a node that never had the key,
+// picking "Inherited" would ADD bytes that mean nothing, and the byte-exact
+// round-trip gate would see it. Under a non-Base scope it is worse: an entry
+// in the specialization list that says nothing.
+//
+// So: `Off`/`On` write the object; `Inherited` writes `nullopt`, which is the
+// same door `setProperty` already uses for "this scope has no value of its
+// own". If someone later reads a document where the target itself wrote
+// `{ }`, `readMirror` already answers it correctly -- this is about what WE
+// write, not about what we accept.
+std::optional<icf::json::Value> mirrorToJson(Mirror m) {
+    if (m == Mirror::Inherited) return std::nullopt;
     std::vector<icf::json::Value::Member> members;
-    if (m != Mirror::Inherited) {
-        members.emplace_back("mirrorable", icf::json::Value::boolean(m == Mirror::On));
-    }
+    members.emplace_back("mirrorable", icf::json::Value::boolean(m == Mirror::On));
     return icf::json::Value::object(std::move(members));
 }
 
@@ -283,9 +303,10 @@ void assetMirroring(Section& x) {
         // not say `inherited` / `fixed` / `mirror`.
         if (ImGui::RadioButton("Inherited", now == Mirror::Inherited)) next = Mirror::Inherited;
         ImGui::SetItemTooltip(
-            "No decision of its own: 'mirrorable' is left out of the object, and the value in "
-            "force comes from further up, with the document's Implicit Asset Mirroring at the "
-            "root of the chain. Picking this REMOVES the member; it does not write false.");
+            "No decision of its own: the value in force comes from further up, with the "
+            "document's Implicit Asset Mirroring at the root of the chain. Picking this REMOVES "
+            "this node's entry; it does not write false, and it does not leave an empty object "
+            "behind.");
         if (ImGui::RadioButton("Does not mirror", now == Mirror::Off)) next = Mirror::Off;
         ImGui::SetItemTooltip(
             "Writes {\"mirrorable\": false}: this node keeps its artwork as authored in a "
@@ -295,7 +316,13 @@ void assetMirroring(Section& x) {
             "Writes {\"mirrorable\": true}: this node's asset is flipped for right-to-left "
             "languages.");
 
-        if (next != now) x.write("asset-mirroring", mirrorToJson(next), false);
+        if (next != now) {
+            if (std::optional<icf::json::Value> value = mirrorToJson(next)) {
+                x.write("asset-mirroring", std::move(*value), false);
+            } else {
+                x.erase("asset-mirroring");
+            }
+        }
 
         // The arithmetic of the chain, shown because the tri-state is the only
         // control in this panel whose displayed position does NOT tell you what
@@ -306,6 +333,19 @@ void assetMirroring(Section& x) {
             "The fold is 'own value, or else the inherited one' (laudo 19/09 sec. 3.4), and the "
             "root of the chain is the document's Implicit Asset Mirroring. That a layer inherits "
             "from its GROUP rather than from the document directly is inference, not a reading.");
+
+        // AND THE PART THAT WOULD OTHERWISE BE A LIE BY SILENCE. Every other
+        // live control in this inspector moves a pixel; this one does not,
+        // because nothing in the renderer reads mirroring -- grep
+        // `Source/RenderBox` for it and there is no hit. The document it
+        // writes is correct and the canvas is unchanged, and a person who
+        // toggles a control and sees nothing is entitled to be told which of
+        // the two it is.
+        ImGui::TextDisabled("the canvas does not show this yet");
+        ImGui::SetItemTooltip(
+            "The document is written correctly and the renderer does not read mirroring at all "
+            "yet, so nothing on the canvas changes. This says so rather than letting the control "
+            "look broken.");
     }
     x.end();
 }
