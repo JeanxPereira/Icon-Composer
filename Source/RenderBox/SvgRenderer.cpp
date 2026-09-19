@@ -135,7 +135,7 @@ PathGlobals fitViewBox(const icf::svg::ViewBox& box, std::uint32_t width,
 // publico incapaz de fazer o que a biblioteca faz por dentro, e o proximo
 // chamador teria de recopiar estas linhas para contornar a recusa. A recusa
 // por `<filter>` (a chamada a `isPartialTarget` mais abaixo, hoje na linha
-// 349) e outra coisa: la o alcance nao e conhecido, aqui ele e.
+// 371) e outra coisa: la o alcance nao e conhecido, aqui ele e.
 Result<RenderedImage> renderSvg(Device& device, const icf::svg::SvgDocument& doc,
                                 RenderOptions options) {
     return renderSvgPlaced(
@@ -332,6 +332,28 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
                    doc.shapes[end].filterInstance == shape.filterInstance) {
                 ++end;
             }
+            // A REFERENCIA PENDURADA E PERGUNTADA PRIMEIRO, e a ordem e o
+            // conteudo da mensagem. Com a recusa de viewport na frente, um
+            // `filterId` que nao resolve num alvo parcial era anunciado como
+            // "filtro SVG em render de viewport" -- verdade sobre o alvo,
+            // falsidade sobre a forma, que nao tem filtro nenhum para recusar.
+            // Nenhum pixel muda (ela nao desenha nos dois casos); o que muda e
+            // o que o laudo diz.
+            auto def = doc.filters.find(shape.filterId);
+            if (def == doc.filters.end()) {
+                // The reader names a dangling reference and never marks the
+                // shape, so this cannot be reached from a parsed document. It is
+                // here because `renderSvgPlaced` is public and takes a document
+                // anyone can build.
+                for (std::size_t k = i; k < end; ++k) {
+                    out.skipped.push_back({k, doc.shapes[k].element,
+                                           "filter url(#" + shape.filterId +
+                                               ") nao resolve para nenhum filter do documento"});
+                }
+                i = end - 1;
+                continue;
+            }
+
             // O FILTRO E RECUSADO NUM BUFFER PARCIAL, e isso e diferente em
             // ESPECIE dos outros sitios desta frente.
             //
@@ -354,21 +376,6 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
                          " na borda do buffer, e a margem dele sai do conteudo do SVG, que a"
                          " conta da margem ainda nao le -- nao desenhado, para nao desenhar"
                          " errado (spec 2026-09-16)"});
-                }
-                i = end - 1;
-                continue;
-            }
-
-            auto def = doc.filters.find(shape.filterId);
-            if (def == doc.filters.end()) {
-                // The reader names a dangling reference and never marks the
-                // shape, so this cannot be reached from a parsed document. It is
-                // here because `renderSvgPlaced` is public and takes a document
-                // anyone can build.
-                for (std::size_t k = i; k < end; ++k) {
-                    out.skipped.push_back({k, doc.shapes[k].element,
-                                           "filter url(#" + shape.filterId +
-                                               ") nao resolve para nenhum filter do documento"});
                 }
                 i = end - 1;
                 continue;

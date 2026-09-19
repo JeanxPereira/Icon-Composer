@@ -261,7 +261,7 @@ aparece em `RenderedIcon::shapeGaps`, com o motivo por escrito; o gate
 (`viewport_refuses_an_svg_filter_by_name_instead_of_clamping_it`) procura essa
 recusa por nome em vez de comparar pixel. `[ART]` **Medido em 18/09**
 (`grep -rl` sobre `References/corpus/**/*.svg`): a recusa é por NOME de
-`<filter>` (`SvgRenderer.cpp:349`), e é esse o predicado que decide a
+`<filter>` (`SvgRenderer.cpp:371`), e é esse o predicado que decide a
 exposição dela — **9** SVGs do corpus têm `<filter>`, em três documentos
 (`Bunn__PiStats__pistats`, `PDF-Archiver__PDF-Archiver__AppIcon`,
 `rileytestut__Delta__MicrochipIcon`); **5**, todos dentro dos mesmos três
