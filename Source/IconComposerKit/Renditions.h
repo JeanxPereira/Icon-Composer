@@ -128,9 +128,25 @@ std::string renditionUnsupportedReason(rb::Rendition r);
 // A rendition que a barra marca para uma aparência do documento: a medida
 // (`defaultRenditionFor`), e quando essa não é desenhável aqui, a primeira
 // SUPORTADA que lê a mesma fatia. Para `tinted` isso troca o `Clear Light`
-// medido por `Tinted Light` -- a única substituição, e ela some no dia em que
-// `ClearMode` for lido.
-rb::Rendition renditionForAppearance(icf::Appearance a);
+// medido por `Tinted Light` -- a única substituição por este motivo, e ela some
+// no dia em que `ClearMode` for lido.
+//
+// O IDIOMA ENTRA AQUI, E ENTROU POR UM DEFEITO. Sem ele, em watchOS com
+// aparência `dark` a resposta era `Dark`, que `renditionValidFor` exclui dessa
+// plataforma: a barra desenhava UM item e não marcava NENHUM, quebrando o
+// invariante que `test_e2e_renditions.cpp` escreve ("exatamente uma marcada:
+// nenhuma deixaria a pessoa sem saber o que está na tela grande"). A resposta
+// agora é sempre uma rendition que a plataforma TEM -- em watchOS, a única que
+// ela tem. O preço disso está dito em `drawRenditions`: a fatia que o canvas
+// mostra pode não ser a que a rendition marcada nomeia, e a barra diz isso na
+// nota em vez de mostrar a imagem da vizinha.
+rb::Rendition renditionForAppearance(icf::Appearance a, icf::Idiom idiom);
+
+// A fatia do documento que um `appearance` do canvas lê. `[BIN]` `0x10AEF4`
+// (FillResolve.cpp) põe `base` e `light` no MESMO braço, então as duas são uma
+// chave só -- é o que faz a miniatura da rendition marcada e o render do canvas
+// serem o mesmo pedido num documento em `base`.
+icf::Appearance canvasSliceOf(icf::Appearance a);
 
 // `[BIN]` `Rendition.displayGrouped` (`0x4202C`): três pares, `[0,1] [4,5]
 // [2,3]`, filtrados por `renditionValidFor`. Em watchOS sobra um grupo de um.

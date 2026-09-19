@@ -625,3 +625,66 @@ TEST_CASE(e2e_renditions_the_export_leases_the_device_instead_of_sharing_it) {
     CHECK_EQ(real.asks.size(), std::size_t{3});
     CHECK_EQ(real.asks[2].size, std::uint32_t{128});
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WATCHOS COM `dark` OU `tinted` (revisão 19/09, I3).
+//
+// O caso acima só exercitava watchOS com a aparência `base`, que é justamente o
+// caso em que a conta fecha sozinha. Com `dark`, `renditionForAppearance` dava
+// `Dark` -- uma rendition que `[BIN]` `Platform.validRenditions` EXCLUI dessa
+// plataforma --, então:
+//
+//   * nenhum item ficava marcado, quebrando o invariante que o caso
+//     `..._the_bar_and_the_appearance_combo_agree` escreve com todas as
+//     letras ("exatamente UMA marcada");
+//   * e a miniatura desenhada era a do contexto `light`, enquanto o canvas
+//     mostrava `dark` -- a imagem da vizinha, sem dizer.
+//
+// O que a barra faz agora: marca a única rendition que a plataforma tem, pede a
+// miniatura da fatia que o CANVAS está mostrando, e diz na nota que essa fatia
+// não tem rendition nesta plataforma. Alcançável por dois combos do canvas.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_CASE(e2e_renditions_watchos_marks_one_and_shows_the_canvas_slice_in_dark_and_tinted) {
+    const fs::path dir = makeBundle("watchos-escuro");
+    auto s = ick::Session::open(dir);
+    REQUIRE(s.has_value());
+    ick::HeadlessImGui gui(1440.0f, 900.0f);
+    s->view.context.idiom = icf::Idiom::WatchOS;
+
+    struct Case { icf::Appearance appearance; const char* slice; };
+    const Case kCases[] = {
+        {icf::Appearance::Base, "light"},     // a fatia de `base` É `light` (`[BIN]` 0x10AEF4)
+        {icf::Appearance::Light, "light"},
+        {icf::Appearance::Dark, "dark"},
+        {icf::Appearance::Tinted, "tinted"},
+    };
+    for (const Case& c : kCases) {
+        s->view.context.appearance = c.appearance;
+        FakeScheduler sched;
+        FakeSink sink;
+        ick::RenditionThumbnails thumbs(sched, sink, 128);
+        const ick::RenditionStats st = barFrame(gui, *s, &thumbs);
+
+        // A forma medida não muda com a aparência: um item, um grupo.
+        CHECK_EQ(st.drawn.size(), std::size_t{1});
+        CHECK_EQ(labels(st), std::string("Default"));
+        // EXATAMENTE UMA MARCADA -- era zero em `dark` e em `tinted`.
+        std::size_t marked = 0;
+        for (const ick::RenditionInfo& i : st.drawn) marked += i.selected ? 1u : 0u;
+        CHECK_EQ(marked, std::size_t{1});
+        CHECK_EQ(selectedLabel(st), std::string("Default"));
+
+        // E A MINIATURA PEDIDA É A DO CANVAS. Um só pedido, e no contexto que
+        // a tela grande está mostrando -- não o `light` do nome da rendition.
+        REQUIRE(sched.asks.size() == std::size_t{1});
+        CHECK_EQ(std::string(icf::appearanceToString(sched.asks[0].context.appearance)),
+                 std::string(c.slice));
+        CHECK(sched.asks[0].context.idiom == icf::Idiom::WatchOS);
+        CHECK_EQ(thumbs.stale(), std::size_t{1});
+
+        // A DIVERGÊNCIA ESTÁ DITA quando ela existe, e só então.
+        const bool divergent = std::string(c.slice) != std::string("light");
+        CHECK_EQ(st.note.find("has no rendition for") != std::string::npos, divergent);
+    }
+    CHECK_EQ(gui.errors(), std::uint64_t{0});
+}

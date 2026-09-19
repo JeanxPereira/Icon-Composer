@@ -129,17 +129,37 @@ std::string renditionUnsupportedReason(rb::Rendition r) {
     return {};
 }
 
-rb::Rendition renditionForAppearance(icf::Appearance a) {
+icf::Appearance canvasSliceOf(icf::Appearance a) {
+    // `[BIN]` `0x10AEF4`: `cmp w8, #2` com `b.lo` sem sinal põe `base` e
+    // `light` no mesmo braço. Uma chave só, então.
+    return a == icf::Appearance::Base ? icf::Appearance::Light : a;
+}
+
+rb::Rendition renditionForAppearance(icf::Appearance a, icf::Idiom idiom) {
+    // Desenhável POR ESTE MOTOR e válida NESTA PLATAFORMA. As duas condições,
+    // porque a barra só pode marcar um item que ela desenhou.
+    auto offered = [&](rb::Rendition r) {
+        return renditionSupported(r) && renditionValidFor(r, idiom);
+    };
     const rb::Rendition measured = defaultRenditionFor(a);
-    if (renditionSupported(measured)) return measured;
-    // A medida não é desenhável aqui (só acontece com `tinted`, cujo padrão
-    // medido é `Clear Light`). A substituta é a primeira SUPORTADA que lê a
-    // mesma fatia -- derivada, não escolhida: no dia em que `ClearMode` for
-    // lido, `renditionSupported(Clear Light)` passa a ser verdadeiro e esta
-    // linha deixa de ser alcançada.
+    if (offered(measured)) return measured;
+    // A medida não serve. A substituta é a primeira OFERECIDA que lê a mesma
+    // fatia -- derivada, não escolhida: no dia em que `ClearMode` for lido,
+    // `renditionSupported(Clear Light)` passa a ser verdadeiro e o caso
+    // `tinted` deixa de cair aqui.
     const icf::Appearance slice = rb::sourceAppearance(measured);
     for (rb::Rendition r : kAllRenditions) {
-        if (renditionSupported(r) && rb::sourceAppearance(r) == slice) return r;
+        if (offered(r) && rb::sourceAppearance(r) == slice) return r;
+    }
+    // NENHUMA RENDITION DESTA PLATAFORMA LÊ ESSA FATIA. Hoje isto é exatamente
+    // watchOS com `dark` ou `tinted`: `[BIN]` `Platform.validRenditions` diz
+    // que a plataforma tem uma só, e o combo de aparência do canvas continua
+    // podendo pôr o documento em qualquer fatia. A barra marca a única que a
+    // plataforma tem -- marcar nada é a resposta errada, porque deixa a pessoa
+    // sem saber o que está na tela grande -- e `drawRenditions` põe a
+    // divergência na nota.
+    for (rb::Rendition r : kAllRenditions) {
+        if (offered(r)) return r;
     }
     return measured;
 }
@@ -372,20 +392,39 @@ RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs) {
     RenditionStats st;
     const icf::Idiom idiom = s.view.context.idiom;
     const std::vector<RenditionGroup> groups = renditionGroups(idiom);
-    const rb::Rendition current = renditionForAppearance(s.view.context.appearance);
+    const rb::Rendition current = renditionForAppearance(s.view.context.appearance, idiom);
+    // A FATIA QUE O CANVAS ESTÁ MOSTRANDO, que é a pergunta que a miniatura
+    // marcada tem de responder.
+    const icf::Context canvasContext{canvasSliceOf(s.view.context.appearance), idiom};
+    // E se ela É a fatia que a rendition marcada nomeia. Fora do watchOS isto é
+    // sempre verdade (`renditionForAppearance` devolve a rendition cuja
+    // `sourceAppearance` é essa fatia); em watchOS com `dark` ou `tinted` não
+    // é, porque a plataforma tem uma rendition só.
+    const bool sliceHasARendition =
+        rb::sourceAppearance(current) == canvasContext.appearance;
+
+    // O CONTEXTO DE CADA ITEM. A MARCADA MOSTRA O QUE ESTÁ NA TELA GRANDE, e
+    // não o que o nome dela diz: em watchOS/`dark` a única rendition é
+    // `Default`, cuja fatia é `light`, e desenhar o render `light` embaixo de
+    // um canvas escuro é mostrar a imagem da vizinha -- exatamente a mentira
+    // que os itens cinzas existem para não contar. O nome continua sendo o
+    // medido; a nota diz que a fatia é outra.
+    auto contextOf = [&](rb::Rendition r, bool selected) {
+        return selected ? canvasContext : renditionContext(r, idiom);
+    };
 
     // OS CONTEXTOS QUE ESTA BARRA VAI MOSTRAR, o selecionado primeiro: é a
     // ordem em que as miniaturas são pedidas, e é por isso que a que a pessoa
     // acabou de escolher é a primeira a aparecer.
     std::vector<icf::Context> want;
-    auto pushContext = [&](rb::Rendition r) {
-        const icf::Context c = renditionContext(r, idiom);
+    auto pushContext = [&](icf::Context c) {
         if (std::find(want.begin(), want.end(), c) == want.end()) want.push_back(c);
     };
-    if (renditionValidFor(current, idiom) && renditionSupported(current)) pushContext(current);
+    if (renditionValidFor(current, idiom) && renditionSupported(current)) pushContext(canvasContext);
     for (const RenditionGroup& g : groups) {
         for (std::size_t i = 0; i < g.count; ++i) {
-            if (renditionSupported(g.items[i])) pushContext(g.items[i]);
+            if (!renditionSupported(g.items[i])) continue;
+            pushContext(contextOf(g.items[i], g.items[i] == current));
         }
     }
     // O TICK VEM ANTES DO DESENHO, exatamente como o coordenador do canvas
@@ -411,7 +450,7 @@ RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs) {
             const rb::Rendition r = g.items[i];
             const bool enabled = renditionSupported(r);
             const bool selected = (r == current);
-            const icf::Context ctx = renditionContext(r, idiom);
+            const icf::Context ctx = contextOf(r, selected);
             // SÓ A SUPORTADA GANHA A ARTE, e `&& enabled` é a linha inteira do
             // motivo: a miniatura é chaveada por CONTEXTO, e `Clear Dark` cai
             // no mesmo `tinted` de `Tinted Light`. Sem esta condição os três
@@ -488,6 +527,14 @@ RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs) {
                           std::string(icf::appearanceToString(rb::sourceAppearance(r))) +
                           "` slice, so clicking it puts the canvas -- and the Appearance "
                           "combo -- there.";
+                    if (selected && !sliceHasARendition) {
+                        tip += "\nThe canvas is on the `" +
+                               std::string(icf::appearanceToString(canvasContext.appearance)) +
+                               "` slice, which " + std::string(idiomLabel(idiom)) +
+                               " has no rendition for (`[BIN]` Platform.validRenditions). The "
+                               "thumbnail above is that slice -- what is on the big screen -- "
+                               "and not this rendition's own.";
+                    }
                     if (thumb && !thumb->error.empty()) tip += "\nLast render failed: " + thumb->error;
                     else if (thumb && thumb->lastRenderSeconds >= 0.0)
                         tip += "\nThumbnail rendered in " + secondsText(thumb->lastRenderSeconds) + ".";
@@ -529,13 +576,23 @@ RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs) {
         } else if (thumbs->stale() > 0) {
             st.note = std::to_string(thumbs->stale()) + " thumbnail(s) queued behind the canvas";
         } else {
-            const RenditionThumb* t = thumbs->find(renditionContext(current, idiom));
+            const RenditionThumb* t = thumbs->find(canvasContext);
             st.note = std::to_string(want.size()) + " rendition(s) at " +
                       std::to_string(thumbs->size()) + " px";
             if (t && t->lastRenderSeconds >= 0.0) {
                 st.note += ", last " + secondsText(t->lastRenderSeconds);
             }
         }
+    }
+    // A FATIA DO CANVAS NÃO TEM RENDITION NESTA PLATAFORMA, dito em vez de
+    // escondido. Hoje só acontece em watchOS: `[BIN]` `Platform.validRenditions`
+    // dá a ela uma rendition só, e o combo de aparência do canvas continua
+    // podendo pôr o documento em `dark` ou `tinted`. Sem esta frase a barra
+    // marcaria `Default` mostrando uma imagem escura e não diria por quê.
+    if (!sliceHasARendition) {
+        st.note += " · " + std::string(idiomLabel(idiom)) + " has no rendition for the `" +
+                   std::string(icf::appearanceToString(canvasContext.appearance)) +
+                   "` slice the canvas is on; the marked thumbnail is that slice";
     }
     ImGui::TextDisabled("%s", st.note.c_str());
     if (st.disabled > 0) {
