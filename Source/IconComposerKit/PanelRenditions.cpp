@@ -528,12 +528,17 @@ RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs) {
                           "` slice, so clicking it puts the canvas -- and the Appearance "
                           "combo -- there.";
                     if (selected && !sliceHasARendition) {
+                        // O TOOLTIP DIZ O FATO; A PROCEDÊNCIA FICA AQUI. Quem
+                        // lê isto é quem está usando o editor, e `[BIN]` é
+                        // marcação nossa -- ela diz de onde o fato veio, não o
+                        // que ele é. O fato: `[BIN]` `Platform.validRenditions`
+                        // (`0x3A248`, laudo 19/09 §2.7) é a tabela que exclui
+                        // esta rendition desta plataforma.
                         tip += "\nThe canvas is on the `" +
                                std::string(icf::appearanceToString(canvasContext.appearance)) +
                                "` slice, which " + std::string(idiomLabel(idiom)) +
-                               " has no rendition for (`[BIN]` Platform.validRenditions). The "
-                               "thumbnail above is that slice -- what is on the big screen -- "
-                               "and not this rendition's own.";
+                               " has no rendition for. The thumbnail above is that slice -- "
+                               "what is on the big screen -- and not this rendition's own.";
                     }
                     if (thumb && !thumb->error.empty()) tip += "\nLast render failed: " + thumb->error;
                     else if (thumb && thumb->lastRenderSeconds >= 0.0)
