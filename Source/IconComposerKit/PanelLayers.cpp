@@ -297,6 +297,7 @@ RowResult drawRow(Session& s, icf::NodePath path, LayersStats& st, Pending& pend
     bool visible = !(hidden && hidden->kind() == icf::json::Value::Kind::Bool && hidden->boolean());
     right -= rowH;
     ImGui::SetCursorScreenPos(ImVec2(right, rowPos.y));
+    const ImVec2 visibleAt = ImGui::GetCursorScreenPos();
     if (ImGui::Checkbox("##visible", &visible)) {
         // Visible again REMOVES this scope's entry instead of writing `false`:
         // The checkbox writes the boolean it asserts, it does not remove the key.
@@ -310,21 +311,34 @@ RowResult drawRow(Session& s, icf::NodePath path, LayersStats& st, Pending& pend
     ImGui::SetItemTooltip("Toggle visibility");
 
     bool glassOn = false;
+    ImVec2 glassAt{0.0f, 0.0f};
     if (isLayer) {
         const icf::json::Value* glass = icf::resolve(*node, "glass", icf::Context{});
         bool on = glass && glass->kind() == icf::json::Value::Kind::Bool && glass->boolean();
         glassOn = on;
         right -= toggleW;
         ImGui::SetCursorScreenPos(ImVec2(right, rowPos.y));
+        glassAt = ImGui::GetCursorScreenPos();
         if (ImGui::Checkbox("##glass", &on)) {
             s.setProperty(path, "glass", icf::Context{}, icf::json::Value::boolean(on));
         }
+        // DEPOIS do Checkbox, nao antes. `on` e passado por referencia e o
+        // ImGui o vira no lugar quando o clique acontece, entao ler antes dava
+        // o valor VELHO no mesmo frame em que `visible` -- lido depois, logo
+        // abaixo -- ja dava o novo. Os dois interruptores da mesma linha
+        // relatavam em tempos diferentes.
+        glassOn = on;
         ImGui::SetItemTooltip("Enable or disable glass effects on this layer");
     }
 
     // O inventario da linha, gravado depois dos dois interruptores e antes do
     // nome, que e o ultimo pedaco que pode mudar (Panels.h, `RowInfo`).
-    st.drawn.push_back(RowInfo{title, isLayer, visible, glassOn, selected});
+    const float half = rowH * 0.5f;
+    st.drawn.push_back(RowInfo{title, isLayer, visible, glassOn, selected,
+                               ImVec2(rowPos.x + half, rowPos.y + half),
+                               ImVec2(visibleAt.x + half, visibleAt.y + half),
+                               glassAt.x > 0.0f ? ImVec2(glassAt.x + half, glassAt.y + half)
+                                                : ImVec2(0.0f, 0.0f)});
 
     // The name, or the field that is replacing it. Everything left of the
     // toggles belongs to it.

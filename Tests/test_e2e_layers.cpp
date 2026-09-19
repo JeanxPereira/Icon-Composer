@@ -317,3 +317,153 @@ TEST_CASE(e2e_layers_selection_follows_the_node_not_the_index) {
         CHECK(!row(st, "a2")->selected);
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CLIQUE DE VERDADE, SEM TOCAR NO SISTEMA
+//
+// Tudo acima chama a Session do jeito que o painel a chama. Isso prova a
+// escrita e NÃO prova o controle: entre o pixel e a escrita existe o retângulo
+// do item, a ordem em que ele é submetido e o `AllowOverlap` da linha inteira
+// -- e já houve um defeito exatamente aí, um `Selectable` por cima de um
+// `TreeNodeEx` que fazia o clique na parte vazia da linha não fazer nada.
+//
+// Aqui o clique é um clique: o painel grava onde desenhou cada item
+// (`RowInfo::visibleAt` e companhia) e o caso injeta os eventos de mouse do
+// ImGui naquele ponto. É a fila de eventos do contexto headless -- nenhum
+// cursor do sistema se move, nenhuma janela rouba foco, e isto roda dentro da
+// suíte como qualquer outro caso.
+//
+// Um clique são três quadros, e são três porque o ImGui é assim: no primeiro o
+// ponteiro chega e o item vira o "hovered"; no segundo o botão desce; no
+// terceiro ele sobe, e é no terceiro que um `Checkbox` dispara.
+namespace {
+
+ick::LayersStats clickAt(ick::HeadlessImGui& gui, ick::Session& s, ImVec2 at) {
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(at.x, at.y);
+    layersFrame(gui, s);
+    io.AddMouseButtonEvent(0, true);
+    layersFrame(gui, s);
+    io.AddMouseButtonEvent(0, false);
+    layersFrame(gui, s);
+    // E UM QUADRO A MAIS, que e o que a pessoa ve. No modo imediato a SELECAO
+    // so aparece no quadro seguinte: `drawRow` le `s.selection` no topo e o
+    // `Selectable` so a move depois que a linha ja foi desenhada. O quadro do
+    // soltar mostra o estado de antes do clique; este mostra o de depois.
+    // O ponteiro sai de cima junto, para o proximo clique nao comecar pousado
+    // sobre o item anterior.
+    io.AddMousePosEvent(-1.0f, -1.0f);
+    return layersFrame(gui, s);
+}
+
+bool hiddenOf(const ick::Session& s, icf::NodePath p) {
+    const icf::json::Value* node = icf::nodeAt(s.root(), p);
+    if (!node) return false;
+    const icf::json::Value* v = icf::resolve(*node, "hidden", icf::Context{});
+    return v && v->kind() == icf::json::Value::Kind::Bool && v->boolean();
+}
+
+bool glassOf(const ick::Session& s, icf::NodePath p) {
+    const icf::json::Value* node = icf::nodeAt(s.root(), p);
+    if (!node) return false;
+    const icf::json::Value* v = icf::resolve(*node, "glass", icf::Context{});
+    return v && v->kind() == icf::json::Value::Kind::Bool && v->boolean();
+}
+
+}  // namespace
+
+TEST_CASE(e2e_layers_a_real_click_on_the_visibility_box_hides_the_layer) {
+    const fs::path dir = makeBundle("clique-visivel");
+    auto s = ick::Session::open(dir);
+    REQUIRE(s.has_value());
+    ick::HeadlessImGui gui(1440.0f, 1000.0f);
+
+    const icf::NodePath a1{std::size_t{0}, std::size_t{0}};
+
+    // Um quadro para o painel dizer onde as coisas ficaram.
+    const ick::LayersStats laid = layersFrame(gui, *s);
+    const ick::RowInfo* r = row(laid, "a1");
+    REQUIRE(r != nullptr);
+    REQUIRE(r->visibleAt.x > 0.0f);
+    CHECK(!hiddenOf(*s, a1));
+
+    // O CLIQUE. Nada mais muda entre as duas leituras.
+    const ick::LayersStats after = clickAt(gui, *s, r->visibleAt);
+    CHECK(hiddenOf(*s, a1));            // o documento
+    const ick::RowInfo* r2 = row(after, "a1");
+    REQUIRE(r2 != nullptr);
+    CHECK(!r2->visible);                // e a linha, que voltou a desenhar
+    CHECK_EQ(gui.errors(), std::uint64_t{0});
+
+    // UM CLIQUE, UM UNDO. Um interruptor que empilhasse dois comandos pediria
+    // dois Ctrl+Z para desfazer um clique.
+    REQUIRE(s->canUndo());
+    REQUIRE(s->undo());
+    CHECK(!hiddenOf(*s, a1));
+
+    // E de volta: clicar outra vez esconde de novo, entao o controle nao e de
+    // mao unica.
+    const ick::LayersStats again = clickAt(gui, *s, r->visibleAt);
+    CHECK(hiddenOf(*s, a1));
+    REQUIRE(row(again, "a1") != nullptr);
+    CHECK(!row(again, "a1")->visible);
+}
+
+TEST_CASE(e2e_layers_a_real_click_on_the_glass_box_only_touches_that_layer) {
+    const fs::path dir = makeBundle("clique-vidro");
+    auto s = ick::Session::open(dir);
+    REQUIRE(s.has_value());
+    ick::HeadlessImGui gui(1440.0f, 1000.0f);
+
+    const icf::NodePath a1{std::size_t{0}, std::size_t{0}};
+    const icf::NodePath a2{std::size_t{0}, std::size_t{1}};
+
+    const ick::LayersStats laid = layersFrame(gui, *s);
+    const ick::RowInfo* r = row(laid, "a1");
+    REQUIRE(r != nullptr);
+    REQUIRE(r->glassAt.x > 0.0f);
+
+    const ick::LayersStats after = clickAt(gui, *s, r->glassAt);
+    CHECK(glassOf(*s, a1));
+    CHECK(!glassOf(*s, a2));        // a vizinha nao foi junto
+    CHECK(!hiddenOf(*s, a1));       // nem o interruptor ao lado
+    REQUIRE(row(after, "a1") != nullptr);
+    CHECK(row(after, "a1")->glass);
+
+    // O GRUPO NAO TEM ESSE INTERRUPTOR, e a linha dele diz isso com um ponto
+    // que nao existe -- um teste que clicasse ali estaria clicando no vazio.
+    const ick::RowInfo* g = row(after, "Alpha");
+    REQUIRE(g != nullptr);
+    CHECK_EQ(g->glassAt.x, 0.0f);
+}
+
+TEST_CASE(e2e_layers_a_real_click_on_the_row_selects_and_the_box_does_not) {
+    const fs::path dir = makeBundle("clique-selecao");
+    auto s = ick::Session::open(dir);
+    REQUIRE(s.has_value());
+    ick::HeadlessImGui gui(1440.0f, 1000.0f);
+
+    const icf::NodePath a2{std::size_t{0}, std::size_t{1}};
+    s->selection = icf::NodePath{std::size_t{0}, std::size_t{0}};   // a1
+
+    const ick::LayersStats laid = layersFrame(gui, *s);
+    const ick::RowInfo* second = row(laid, "a2");
+    REQUIRE(second != nullptr);
+
+    // Clicar no CORPO da linha seleciona.
+    const ick::LayersStats sel = clickAt(gui, *s, second->rowAt);
+    REQUIRE(s->selection.has_value());
+    CHECK(*s->selection == a2);
+    REQUIRE(row(sel, "a2") != nullptr);
+    CHECK(row(sel, "a2")->selected);
+
+    // Clicar no INTERRUPTOR de outra linha alterna aquela linha e NAO move a
+    // selecao -- e o `AllowOverlap` que faz os dois conviverem, e sem ele um
+    // dos dois come o outro.
+    const ick::RowInfo* first = row(sel, "a1");
+    REQUIRE(first != nullptr);
+    clickAt(gui, *s, first->visibleAt);
+    CHECK(hiddenOf(*s, icf::NodePath{std::size_t{0}, std::size_t{0}}));
+    REQUIRE(s->selection.has_value());
+    CHECK(*s->selection == a2);   // continua onde estava
+}

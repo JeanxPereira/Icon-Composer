@@ -32,6 +32,24 @@ struct RowInfo {
     bool visible = true;    // o estado do interruptor de visibilidade
     bool glass = false;     // o do vidro; sempre false num grupo, que nao o tem
     bool selected = false;
+
+    // ONDE CADA COISA FOI DESENHADA, em pixels de tela, para quem precisa
+    // CLICAR nela.
+    //
+    // Um teste que chama `setProperty` prova a escrita e nao prova o
+    // interruptor: entre o pixel e a escrita ha o retangulo do controle, a
+    // ordem em que ele e submetido e o `AllowOverlap` da linha inteira, e ja
+    // houve um defeito exatamente ai -- um `Selectable` por cima de um
+    // `TreeNodeEx` fazia o clique na parte vazia da linha nao fazer nada.
+    // Com o centro de cada item gravado, o teste injeta o evento de mouse do
+    // ImGui nesse ponto e a coisa exercida e o controle, nao a funcao embaixo
+    // dele. Nada disso toca o sistema: e a fila de eventos do ImGui, no
+    // contexto headless.
+    //
+    // `{0,0}` num grupo para o vidro, que ele nao desenha.
+    ImVec2 rowAt{0.0f, 0.0f};
+    ImVec2 visibleAt{0.0f, 0.0f};
+    ImVec2 glassAt{0.0f, 0.0f};
 };
 
 struct LayersStats {
