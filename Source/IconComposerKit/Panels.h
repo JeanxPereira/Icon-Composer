@@ -22,6 +22,13 @@ inline constexpr const char* kLayersWindow = "Layers";
 inline constexpr const char* kCanvasWindow = "Canvas";
 inline constexpr const char* kInspectorWindow = "Inspector##ic";
 inline constexpr const char* kDiagnosticsWindow = "Diagnostics";
+// A barra de renditions (T4) -- o `RenditionBar`/`AppIconGrid` do alvo. Janela
+// PRÓPRIA e não um pedaço do canvas: o alvo a desenha fora dele, e aqui isso
+// também é o que deixa a pessoa fechá-la quando o documento é pesado e as
+// miniaturas não valem o render. Tudo o que ela é mora em `Renditions.h`; só o
+// nome fica aqui, junto dos outros quatro, porque é ele que `defaultLayout`
+// (Source/app/Window.cpp) ancora.
+inline constexpr const char* kRenditionsWindow = "Renditions";
 
 // UMA LINHA DA ARVORE, como ela foi PARA A TELA. Contagem nao distingue "a
 // arvore esta certa" de "a arvore tem o numero certo de linhas erradas": depois

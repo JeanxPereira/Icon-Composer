@@ -14,6 +14,7 @@ add_library(IconComposerKit STATIC
     PanelInspectorDocument.cpp
     PanelInspectorEffects.cpp
     PanelLayers.cpp
+    PanelRenditions.cpp
     Ports.cpp
     RenderCoordinator.cpp
     SelfTest.cpp

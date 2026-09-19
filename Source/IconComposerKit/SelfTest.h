@@ -29,6 +29,12 @@ namespace ick {
 struct SelfTestReport {
     int frames = 0;
     std::size_t groups = 0, layers = 0, sections = 0, diagnostics = 0;
+    // A BARRA DE RENDITIONS (T4): quantos itens ela desenhou e quantos deles
+    // chegaram a ter miniatura. Os dois números, e não um: a suíte exercita a
+    // fila das miniaturas com um agendador FALSO, e este é o único lugar onde
+    // ela passa por um dispositivo de verdade. `renditions` sem
+    // `renditionThumbs` é a forma na tela e nenhum pixel atrás dela.
+    std::size_t renditions = 0, renditionThumbs = 0;
     bool textured = false;
     bool bytesRoundTripped = false;
     std::uint64_t imguiErrors = 0;

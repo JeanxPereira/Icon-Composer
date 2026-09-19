@@ -3,6 +3,7 @@
 #include "Source/IconComposerKit/Export.h"
 #include "Source/IconComposerKit/Panels.h"
 #include "Source/IconComposerKit/RenderCoordinator.h"
+#include "Source/IconComposerKit/Renditions.h"
 #include "Source/IconComposerKit/Session.h"
 #include "Source/app/OnyxPorts.h"
 
@@ -62,7 +63,15 @@ struct State {
     rb::Device* device = nullptr;
     std::unique_ptr<OnyxTextureSink> sink;
     std::unique_ptr<JobScheduler> scheduler;
+    // DOIS CONSUMIDORES, UM AGENDADOR (T4). O canal do `RenderScheduler` é de
+    // um resultado por vez e `JobScheduler` é UMA raia e UM dispositivo: um
+    // segundo `JobScheduler` no mesmo `JobQueue` renderizaria em paralelo no
+    // mesmo `rb::Device`, e dois consumidores no mesmo `poll()` roubariam o
+    // resultado um do outro em silêncio. O multiplexador (Renditions.h) dá uma
+    // `RenderScheduler` virtual para cada um, com a prioridade no canvas.
+    std::unique_ptr<ick::SharedScheduler> mux;
     std::unique_ptr<ick::RenderCoordinator> coordinator;
+    std::unique_ptr<ick::RenditionThumbnails> thumbs;
     ick::MenuActions actions;
     Onyx::App::App* app = nullptr;
     bool quit = false;
@@ -173,6 +182,10 @@ struct State {
     // an answer about a document that is gone.
     void adopt(std::optional<ick::Session> s) {
         coordinator.reset();
+        // Pela MESMA razão do coordenador: as miniaturas guardam a versão do
+        // documento que cada textura responde, e uma barra que sobrevivesse à
+        // troca mostraria o ícone anterior ao lado do novo.
+        thumbs.reset();
         // A FILA DE EXPORTACAO MORRE COM O DOCUMENTO, pela mesma razao que o
         // coordenador: `drainExport` renderiza `session->bundle()`, e uma
         // fila que sobrevivesse a troca escreveria PNGs do documento novo com
@@ -181,7 +194,10 @@ struct State {
         exportTotal = exportDone = exportFailures = 0;
         exportAnnounced = false;
         session = std::move(s);
-        if (session) coordinator = std::make_unique<ick::RenderCoordinator>(*scheduler, *sink);
+        if (session) {
+            coordinator = std::make_unique<ick::RenderCoordinator>(mux->canvasLane(), *sink);
+            thumbs = std::make_unique<ick::RenditionThumbnails>(mux->thumbnailLane(), *sink);
+        }
     }
     void open(const fs::path& dir) {
         auto s = ick::Session::open(dir);
@@ -413,6 +429,27 @@ struct CanvasPanel : Onyx::App::IPanel {
     State& st;
 };
 
+// A BARRA DE RENDITIONS (T4). Painel próprio, ancorado acima do canvas em
+// `defaultLayout`: o alvo a desenha fora do canvas, e uma janela própria é
+// também o que deixa fechá-la num documento pesado, quando as miniaturas não
+// valem o render.
+struct RenditionsPanel : Onyx::App::IPanel {
+    explicit RenditionsPanel(State& s) : st(s) {}
+    void Draw() override {
+        if (st.session) {
+            // `thumbs` pode faltar num caminho sem sessão; a barra aceita nulo
+            // e desenha a forma sem os pixels, dizendo isso na nota.
+            ick::drawRenditions(*st.session, st.thumbs.get());
+        } else {
+            ImGui::Begin(ick::kRenditionsWindow);
+            ImGui::TextDisabled("No document");
+            ImGui::End();
+        }
+    }
+    std::string_view getName() const override { return ick::kRenditionsWindow; }
+    State& st;
+};
+
 struct InspectorPanel : Onyx::App::IPanel {
     explicit InspectorPanel(State& s) : st(s) {}
     void Draw() override {
@@ -505,8 +542,21 @@ void defaultLayout(ImGuiID dockspaceId) {
     const ImGuiID right = ImGui::DockBuilderSplitNode(
         centre, ImGuiDir_Right, ratio(kInspectorIdeal, kInspectorMin, kInspectorMax, afterLeft),
         nullptr, &centre);
+    // A BARRA DE RENDITIONS, ACIMA DO CANVAS (T4). É onde o alvo a põe, e é a
+    // única posição em que ela não disputa largura com a sidebar nem com o
+    // inspetor: os seis itens são uma FILA, e uma fila quer o eixo comprido.
+    //
+    // `[DEC]` A altura. `WindowLayoutConstants` (laudo 19/09 §4.2) tem nove
+    // constantes e nenhuma é da barra, então 190 pt é derivado do que ela
+    // desenha -- miniatura de 92, botão de título, a linha do relógio e as
+    // margens --, não medido. Em pixels e não em razão, pela mesma lição das
+    // larguras logo acima: uma razão não tem piso, e numa janela alta a barra
+    // engoliria o canvas.
+    const float top190 = std::clamp(190.0f / (work.y > 1.0f ? work.y : 1.0f), 0.08f, 0.4f);
+    const ImGuiID top = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Up, top190, nullptr, &centre);
     const ImGuiID bottom = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down, 0.22f, nullptr, &centre);
     ImGui::DockBuilderDockWindow(ick::kLayersWindow, left);
+    ImGui::DockBuilderDockWindow(ick::kRenditionsWindow, top);
     ImGui::DockBuilderDockWindow(ick::kCanvasWindow, centre);
     ImGui::DockBuilderDockWindow(ick::kInspectorWindow, right);
     // "Log" is Onyx's and this tree does not create it, but it is worth
@@ -565,6 +615,9 @@ int run(const fs::path& initial) {
     state.device = &*device;
     state.sink = std::make_unique<OnyxTextureSink>(window.vkContext());
     state.scheduler = std::make_unique<JobScheduler>(window.workspace().Jobs(), *device);
+    // O multiplexador vive tanto quanto o agendador, e não por documento: ele
+    // não guarda nada do documento, só de quem é o render em voo.
+    state.mux = std::make_unique<ick::SharedScheduler>(*state.scheduler);
 
     // DROPPING A `.icon` ON THE WINDOW OPENS IT. Onyx installs an EMPTY drop
     // callback of its own (`Source/App/Window.cpp:191` on the dddce38
@@ -660,6 +713,14 @@ int run(const fs::path& initial) {
 #endif
         app.addPanel(std::make_unique<LayersPanel>(state));
         app.addPanel(std::make_unique<CanvasPanel>(state));
+        // DEPOIS do canvas, e isto é a prioridade em ato. O multiplexador
+        // (Renditions.h) põe o canvas na frente quando as DUAS filas estão
+        // cheias, mas não interrompe um render em voo -- com a raia livre,
+        // quem pede primeiro sai primeiro. O coordenador do canvas pede dentro
+        // de `CanvasPanel::Draw`, e o tick das miniaturas dentro de
+        // `drawRenditions`; nesta ordem o pedido de 512 px sai antes do de 128
+        // em todo quadro em que os dois nascem juntos.
+        app.addPanel(std::make_unique<RenditionsPanel>(state));
         app.addPanel(std::make_unique<InspectorPanel>(state));
         app.addPanel(std::make_unique<DiagnosticsPanel>(state));
         if (!initial.empty()) state.open(initial);

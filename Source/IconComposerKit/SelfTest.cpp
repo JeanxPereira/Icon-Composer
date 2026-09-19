@@ -3,6 +3,7 @@
 #include "Source/IconComposerKit/Headless.h"
 #include "Source/IconComposerKit/Panels.h"
 #include "Source/IconComposerKit/RenderCoordinator.h"
+#include "Source/IconComposerKit/Renditions.h"
 #include "Source/IconComposerKit/Session.h"
 #include "imgui.h"
 
@@ -45,12 +46,13 @@ struct Frame {
     InspectorStats inspector;
     CanvasStats canvas;
     DiagnosticsStats diagnostics;
+    RenditionStats renditions;
 };
 
 // One whole frame of the editor, laid out the way the window lays it out. The
 // coordinator ticks BEFORE the frame: it may create or replace the canvas
 // texture, and the canvas draws whatever `view()` holds by then (spec 13/09 §6).
-Frame frame(HeadlessImGui& gui, Session& s, RenderCoordinator& c) {
+Frame frame(HeadlessImGui& gui, Session& s, RenderCoordinator& c, RenditionThumbnails& thumbs) {
     Frame f;
     MenuActions actions;
     c.tick(s);
@@ -59,8 +61,15 @@ Frame frame(HeadlessImGui& gui, Session& s, RenderCoordinator& c) {
     ImGui::SetNextWindowSize(ImVec2(280, 900));
     f.layers = drawLayers(s);
     ImGui::SetNextWindowPos(ImVec2(280, 0));
-    ImGui::SetNextWindowSize(ImVec2(840, 700));
+    ImGui::SetNextWindowSize(ImVec2(840, 500));
     f.canvas = drawCanvas(s, c.view(), actions);
+    // A BARRA, NA ORDEM DA JANELA: o painel do canvas e registrado ANTES do
+    // dela (Source/app/Window.cpp), e e essa ordem que poe o pedido de 512 px
+    // na frente do de 128 quando os dois nascem no mesmo quadro. Um script que
+    // desenhasse a barra primeiro exercitaria uma ordem que a janela nao tem.
+    ImGui::SetNextWindowPos(ImVec2(280, 500));
+    ImGui::SetNextWindowSize(ImVec2(840, 200));
+    f.renditions = drawRenditions(s, &thumbs);
     ImGui::SetNextWindowPos(ImVec2(280, 700));
     ImGui::SetNextWindowSize(ImVec2(840, 200));
     f.diagnostics = drawDiagnostics(s, c.view());
@@ -69,6 +78,15 @@ Frame frame(HeadlessImGui& gui, Session& s, RenderCoordinator& c) {
     f.inspector = drawInspector(s, actions);
     gui.render();
     return f;
+}
+
+// Quantos itens da barra PODEM ter miniatura: os que este motor sabe desenhar
+// (Renditions.h). Os cinzas nao pedem render nenhum, e contar com eles faria o
+// laco abaixo esperar para sempre por pixels que ninguem pediu.
+std::size_t countEnabled(const RenditionStats& st) {
+    std::size_t n = 0;
+    for (const RenditionInfo& i : st.drawn) n += i.enabled ? 1u : 0u;
+    return n;
 }
 
 }  // namespace
@@ -97,9 +115,17 @@ SelfTestReport runSelfTest(const fs::path& bundleDir, RenderScheduler& scheduler
         return r;
     }
     HeadlessImGui gui;
-    RenderCoordinator coord(scheduler, sink);
+    // DOIS CONSUMIDORES, UM AGENDADOR -- a mesma montagem da janela
+    // (Source/app/Window.cpp): o canal do `RenderScheduler` e de um resultado
+    // por vez, e dois leitores do mesmo `poll()` roubariam o resultado um do
+    // outro. Aqui isso importa mais do que na janela, porque o agendador do
+    // selftest e SINCRONO: sem o multiplexador, o resultado da miniatura
+    // chegaria ao coordenador do canvas e seria descartado em silencio.
+    SharedScheduler mux(scheduler);
+    RenderCoordinator coord(mux.canvasLane(), sink);
+    RenditionThumbnails thumbs(mux.thumbnailLane(), sink);
 
-    Frame f = frame(gui, *s, coord);
+    Frame f = frame(gui, *s, coord, thumbs);
     r.frames = 1;
     r.groups = f.layers.groups;
     r.layers = f.layers.layers;
@@ -112,7 +138,7 @@ SelfTestReport runSelfTest(const fs::path& bundleDir, RenderScheduler& scheduler
         return r;
     }
     s->selection = target;
-    f = frame(gui, *s, coord);
+    f = frame(gui, *s, coord, thumbs);
     ++r.frames;
     r.sections = f.inspector.sections;
 
@@ -120,14 +146,14 @@ SelfTestReport runSelfTest(const fs::path& bundleDir, RenderScheduler& scheduler
     // specialization list and the undo has to take it back out (spec 13/09 §4.3).
     s->setProperty(target, "opacity", icf::Context{icf::Appearance::Dark, icf::Idiom::Base},
                    icf::json::Value::number(0.5));
-    f = frame(gui, *s, coord);
+    f = frame(gui, *s, coord, thumbs);
     ++r.frames;
     if (!s->undo()) {
         r.failure = "undo had nothing to undo";
         r.imguiErrors = gui.errors();
         return r;
     }
-    f = frame(gui, *s, coord);
+    f = frame(gui, *s, coord, thumbs);
     ++r.frames;
     const std::string saved = s->save();
     if (!saved.empty()) {
@@ -142,7 +168,7 @@ SelfTestReport runSelfTest(const fs::path& bundleDir, RenderScheduler& scheduler
     // Settle: the render is answered on a later frame, so the canvas gets a few
     // to show it (spec 13/09 §6 -- the latest wins, and it arrives when it does).
     for (int i = 0; i < frames; ++i) {
-        f = frame(gui, *s, coord);
+        f = frame(gui, *s, coord, thumbs);
         ++r.frames;
         if (f.canvas.textured) {
             r.textured = true;
@@ -150,6 +176,19 @@ SelfTestReport runSelfTest(const fs::path& bundleDir, RenderScheduler& scheduler
         }
     }
     r.diagnostics = f.diagnostics.rows;
+    // A barra desenha na hora; as miniaturas dela chegam uma por quadro, atras
+    // do canvas. Mais alguns quadros para que o numero relatado seja o que a
+    // pessoa veria depois de um segundo olhando -- e nao um zero que so diz
+    // que o script foi rapido demais.
+    for (int i = 0; i < frames; ++i) {
+        f = frame(gui, *s, coord, thumbs);
+        ++r.frames;
+        std::size_t drawnThumbs = 0;
+        for (const RenditionInfo& it : f.renditions.drawn) drawnThumbs += it.textured ? 1u : 0u;
+        r.renditions = f.renditions.drawn.size();
+        r.renditionThumbs = drawnThumbs;
+        if (drawnThumbs > 0 && drawnThumbs == countEnabled(f.renditions)) break;
+    }
     r.imguiErrors = gui.errors();
     return r;
 }
@@ -157,7 +196,8 @@ SelfTestReport runSelfTest(const fs::path& bundleDir, RenderScheduler& scheduler
 std::string describe(const SelfTestReport& r) {
     std::ostringstream o;
     o << "selftest: " << r.frames << " frame(s), " << r.groups << " group(s), " << r.layers << " layer(s), "
-      << r.sections << " inspector section(s), " << r.diagnostics << " diagnostic row(s); "
+      << r.sections << " inspector section(s), " << r.diagnostics << " diagnostic row(s), "
+      << r.renditions << " rendition(s) with " << r.renditionThumbs << " thumbnail(s); "
       << "textured " << (r.textured ? "yes" : "no") << "; bytes round-tripped "
       << (r.bytesRoundTripped ? "yes" : "NO") << "; imgui errors " << r.imguiErrors;
     if (!r.failure.empty()) o << "; FAILED: " << r.failure;
