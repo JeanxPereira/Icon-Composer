@@ -466,6 +466,31 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
                               "resolution stretched. Diagnostics says which ceiling refused it.");
     }
 
+    // A EXPORTACAO CONTINUA DEPOIS DO `Close`, ENTAO ELA TEM DE APARECER FORA
+    // DO MODAL (revisao 19/09, I5).
+    //
+    // `Close` nao cancela -- o rotulo nao promete que cancela e a fila e do
+    // app --, mas ate aqui `sheet.status` so era desenhado DENTRO do modal
+    // (Export.cpp). Fechar no meio de um lote de seis a 1024 px dava dez
+    // segundos de janela travando a cada dois quadros com NADA na tela
+    // dizendo por que: "Exporting 3 of 6: <nome>" e "Wrote 5 of 6 to <pasta>"
+    // iam para um campo que ninguem desenhava. So as FALHAS apareciam, pela
+    // linha vermelha logo abaixo -- e um lote que so fala quando quebra e a
+    // regressao de 15/09 outra vez.
+    //
+    // Aqui, e nao um segundo modal: e a barra onde "rendering..." e
+    // "stretched" ja moram, e um lote que continua nao e uma decisao a tomar.
+    // Com o modal ABERTO ele desenha a mesma frase, entao esta e a que sobra
+    // quando ele fecha -- e nao vermelha, porque progresso nao e alarme. A
+    // ultima frase de um lote e um recibo e fica: `MenuBar.cpp` a apaga quando
+    // a proxima exportacao abre o modal.
+    if (!s.exportSheet.open && !s.exportSheet.status.empty()) {
+        st.exportStatus = elide(s.exportSheet.status, 96);
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", st.exportStatus.c_str());
+        ImGui::SetItemTooltip("%s", s.exportSheet.status.c_str());
+    }
+
     // A FALHA DE ESCRITA, ONDE A PESSOA ESTA OLHANDO.
     //
     // Medido 18/09 (laudo §4.2): `State::act()` mandava o motivo de `save`, de

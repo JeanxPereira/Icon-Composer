@@ -127,6 +127,12 @@ MenuStats drawMenuBar(Session& s, MenuActions& a) {
         // desenha um acorde sem ligar nada.
         if (b.item("Export Icon as Image…", nullptr, !s.exportSheet.open)) {
             s.exportSheet.open = true;
+            // O RECIBO DO LOTE ANTERIOR SAI DA BARRA AQUI, e só aqui. Desde
+            // 19/09 a barra do canvas mostra `status` com o modal fechado
+            // (PanelCanvas.cpp, I5), então "Wrote 5 of 6 to …" fica na tela
+            // depois que o modal some -- que é o ponto. O que não pode é ele
+            // ficar ao lado do progresso do lote SEGUINTE.
+            if (!s.exportSheet.busy) s.exportSheet.status.clear();
         }
         ImGui::Separator();
         if (b.item("Close", "Ctrl+W")) a.close = true;

@@ -373,6 +373,11 @@ struct CanvasStats {
     // INTEIRO e do painel de Diagnostics (`DiagnosticsStats::trouble`); esta
     // aqui e a que garante que a pessoa OLHANDO o canvas ve que houve falha.
     std::string trouble;
+    // A FRASE DA EXPORTACAO COM O MODAL FECHADO, elidida, como ela foi para a
+    // barra. Vazia com o modal aberto (ele desenha a mesma frase) e vazia
+    // quando nao ha frase. Ver `drawCanvas`: `Close` nao cancela, e um lote
+    // que continua sem nada na tela e a regressao de 15/09.
+    std::string exportStatus;
 };
 
 // `trouble` E DO APP E CHEGA POR PARAMETRO (Regra 2). `State::trouble` mora em

@@ -319,6 +319,76 @@ TEST_CASE(e2e_export_is_greyed_with_nothing_ticked) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// UMA EXPORTAÇÃO QUE CONTINUA DEPOIS DO `Close` TEM UM PIXEL NA TELA
+// (revisão 19/09, I5).
+//
+// `Close` não cancela -- o rótulo não promete que cancela e a fila é do app --,
+// mas o único lugar em que `sheet.status` era desenhado era DENTRO do modal.
+// Fechar no meio de um lote de seis a 1024 px dava dez segundos de janela
+// travando a cada dois quadros com nada na tela dizendo por quê: "Exporting 3
+// of 6: …" e "Wrote 5 of 6 to …" iam para um campo que ninguém desenhava, e só
+// as FALHAS apareciam (pela linha vermelha). É nominalmente a regressão de
+// 15/09 que `RenderView::lastRenderSeconds` existe para não repetir.
+//
+// O clique no Close é um CLIQUE, pelo mesmo motivo dos outros casos daqui: um
+// teste que escrevesse `s->exportSheet.open = false` passaria com o botão
+// desligado, que é metade do que se está afirmando.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_CASE(e2e_export_progress_stays_on_the_canvas_bar_after_close) {
+    const fs::path dir = makeBundle("fechado");
+    auto s = ick::Session::open(dir);
+    REQUIRE(s.has_value());
+    ick::HeadlessImGui gui(1440.0f, 1000.0f);
+    ick::MenuActions actions;
+    const auto draw = [&] { return frame(gui, *s, actions); };
+
+    s->exportSheet.open = true;
+    draw();
+    Frame f = draw();
+    REQUIRE(f.sheet.open);
+
+    // O LOTE EM ANDAMENTO, como o app o deixa: `busy` e a frase do item atual
+    // (Window.cpp, `State::drainExport`).
+    const std::string doing = "Exporting 3 of 6: ic-e2e-export-fechado-dark-square-1024.png";
+    s->exportSheet.busy = true;
+    s->exportSheet.status = doing;
+    f = draw();
+    // Com o modal aberto a frase é dele, e a barra não a repete: o modal cobre
+    // a janela inteira e dois textos iguais seriam dois.
+    CHECK_EQ(f.sheet.status, doing);
+    CHECK_EQ(f.canvas.exportStatus, std::string());
+
+    // CLICAR Close.
+    REQUIRE(f.sheet.closeAt.x > 0.0f);
+    const Frame after = clickAt(draw, f.sheet.closeAt);
+    CHECK(!after.sheet.open);
+    CHECK(!s->exportSheet.open);
+    // A FILA CONTINUA -- fechar não cancela --, e agora ela fala na barra do
+    // canvas, que é onde `rendering…`, `stretched` e a linha vermelha moram.
+    CHECK(s->exportSheet.busy);
+    CHECK_EQ(after.canvas.exportStatus, doing);
+
+    // E O RESUMO TAMBÉM: é a única frase que diz quantos PNGs foram parar na
+    // pasta, e ela chega depois que o modal já fechou.
+    s->exportSheet.busy = false;
+    s->exportSheet.status = "Wrote 5 of 6 to C:/tmp/pasta";
+    const Frame done = draw();
+    CHECK_EQ(done.canvas.exportStatus, std::string("Wrote 5 of 6 to C:/tmp/pasta"));
+
+    // ABRIR O MODAL OUTRA VEZ APAGA O RECIBO. Um recibo que ficasse ao lado do
+    // progresso do lote seguinte seria duas exportações na mesma linha.
+    const ick::MenuItemInfo* fileTitle = find(done.canvas.menu.titles, "File");
+    REQUIRE(fileTitle != nullptr);
+    const Frame opened = clickAt(draw, fileTitle->at);
+    const ick::MenuItemInfo* item = find(opened.canvas.menu.drawn, "Export Icon as Image…");
+    REQUIRE(item != nullptr);
+    const Frame reopened = clickAt(draw, item->at);
+    CHECK(reopened.sheet.open);
+    CHECK_EQ(s->exportSheet.status, std::string());
+    CHECK_EQ(gui.errors(), std::uint64_t{0});
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // (c) A LISTA DE CONTEXTOS É A DO NOSSO MODELO, NARROWED PELO DOCUMENTO
 // ─────────────────────────────────────────────────────────────────────────────
 TEST_CASE(export_offers_only_the_contexts_the_document_can_tell_apart) {
