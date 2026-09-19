@@ -11,6 +11,7 @@
 #include "Source/IconComposerKit/Session.h"
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -235,6 +236,46 @@ CanvasVec canvasClampPan(CanvasVec pan, float availW, float availH, float sidePx
 CanvasRect canvasImageRect(CanvasVec pan, float sidePx, float zoom);
 CanvasRect canvasIntersect(CanvasRect a, CanvasRect b);
 
+// ─── A SELEÇÃO, QUE É GEOMETRIA DE TELA E NUNCA UM RENDER ────────────────────
+//
+// Spec 13/09 §6 já decidiu a forma e a marcou `[INF]`: "o retângulo da camada
+// selecionada, calculado do `viewBox` do SVG mais `position`, na régua
+// `kCanvasPoints` do `IconRenderer`". As duas funções abaixo são essa régua, e
+// são as MESMAS duas coisas: o retângulo que o canvas desenha é o alvo que o
+// clique acerta, porque os dois saem de `canvasLayerRect`. Duas cópias da
+// aritmética seriam duas que param de concordar.
+//
+// `[INF]` A APROXIMAÇÃO, DITA EM VEZ DE ESCONDIDA: o `viewBox` NÃO é lido. Lê-lo
+// custaria abrir e analisar o SVG de cada camada (`icf::svg::SvgDocument::parse`,
+// um XML inteiro) -- IO e parse por camada, num documento que chega a 194 delas,
+// para responder a um movimento do mouse. Então a caixa da arte é assumida como
+// o canvas inteiro (`viewBox 0 0 1024 1024`, o mais comum do corpus: 36 dos 149
+// SVGs), e o retângulo é essa caixa colocada exatamente como `rb::placeOnCanvas`
+// a coloca -- centrada, escalada por `position.scale`, movida por
+// `position.translation`, composta com a `position` do grupo.
+//
+// O QUE ISSO CUSTA: numa arte cujo `viewBox` é menor ou não é quadrado o
+// retângulo é MAIOR que a arte, e o clique pega a camada um pouco antes de o
+// cursor tocar um pixel dela. Numa arte vazada -- um anel -- o clique pega a
+// camada no buraco. Responder "esta camada tem cobertura neste ponto" com
+// precisão exige a cobertura, isto é, um render por camada, que é justamente o
+// que a spec §6 proíbe no canvas ("zoom não é render").
+
+// O retângulo de um nó em pixels de tela. `topLeft` é o canto do canvas na tela
+// e `side` é o lado dele (`size * zoom`) -- os dois números que o zoom e o pan
+// movem, e é por isso que o retângulo os acompanha sem uma segunda cópia da
+// transformação. Vazio (`empty()`) quando o nó não existe.
+CanvasRect canvasLayerRect(const icf::json::Value& root, icf::NodePath path, icf::Context ctx,
+                           CanvasVec topLeft, float side);
+
+// A camada sob um ponto da tela: a MAIS ACIMA cujo retângulo o contenha, ou
+// nada quando o ponto está no vazio. O array corre da frente para trás (o
+// render o percorre ao contrário, IconRenderer.cpp:776 e :1008), então a
+// primeira que acerta é a de cima. Um nó escondido não é candidato: clicar num
+// pixel que não existe não pode escolher quem não o pintou.
+std::optional<icf::NodePath> canvasLayerAt(const icf::json::Value& root, icf::Context ctx,
+                                           CanvasVec topLeft, float side, CanvasVec point);
+
 // ─── O LADRILHO (spec 2026-09-16, "O que o Kit faz") ─────────────────────────
 //
 // Quanto tempo o pan e o zoom precisam ficar parados antes de um pedido sair.
@@ -272,6 +313,17 @@ struct CanvasStats {
     // frame. Espelha `RenderView::refined`, que ate 18/09 era escrito pelo
     // coordenador e lido por ninguem.
     bool stretchedNotice = false;
+    // O RETANGULO DA CAMADA SELECIONADA, COMO ELE FOI PARA A TELA, pelo mesmo
+    // motivo de `RowInfo::rowAt`: entre "a Session tem uma selecao" e "a pessoa
+    // ve ONDE ela esta" existe a transformacao de vista, e so o retangulo
+    // desenhado prova que ela acompanha o zoom e o pan em vez de deslizar. E e
+    // ele tambem que o teste de clique usa como alvo -- o que se desenha e o
+    // que se acerta.
+    //
+    // `selectionDrawn` e falso quando nao ha selecao, quando ela e um grupo (o
+    // canvas so enquadra camada) ou quando o no sumiu.
+    bool selectionDrawn = false;
+    CanvasRect selection;
     // A LINHA VERMELHA, EXATAMENTE COMO ELA FOI PARA A TELA -- elidida, que e
     // o que a barra cabe. Vazia quando nao havia nada a dizer. O texto
     // INTEIRO e do painel de Diagnostics (`DiagnosticsStats::trouble`); esta

@@ -22,7 +22,9 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <optional>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -466,4 +468,259 @@ TEST_CASE(e2e_layers_a_real_click_on_the_row_selects_and_the_box_does_not) {
     CHECK(hiddenOf(*s, icf::NodePath{std::size_t{0}, std::size_t{0}}));
     REQUIRE(s->selection.has_value());
     CHECK(*s->selection == a2);   // continua onde estava
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CLICAR NO ÍCONE ESCOLHE A CAMADA -- E A ÁRVORE ACENDE
+//
+// Os casos acima clicam na árvore. Este clica no CANVAS, que até 19/09 não
+// selecionava nada, e cobra as duas pontas do caminho de volta:
+//
+//   1. o clique sobre a arte de uma camada escolhe AQUELA, e não a vizinha;
+//   2. a linha correspondente da ÁRVORE acende no mesmo gesto.
+//
+// A (2) é o que não se pode supor. Os dois painéis compartilham
+// `Session::selection` e portanto "deveria funcionar de graça" -- mas "de
+// graça" é uma previsão, e um canvas que guardasse a escolha num estático seu,
+// ou que a escrevesse depois de a árvore já ter desenhado, passaria na (1)
+// inteira com a árvore apagada. Por isso o quadro deste caso desenha OS DOIS
+// painéis, e o que se lê é `LayersStats::drawn`.
+//
+// O ALVO DO CLIQUE NÃO É CALCULADO AQUI. Ele é lido de `CanvasStats::selection`
+// -- o retângulo que o painel diz ter desenhado -- com a camada selecionada
+// pela árvore antes. Um alvo recalculado neste arquivo provaria que o clique
+// concorda com a aritmética deste arquivo; lido do painel, o que se prova é
+// que o que a pessoa VÊ é o que ela ACERTA.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+
+// Duas camadas pequenas em lados opostos, e NADA no meio: é o vazio do meio
+// que faz "clicar no vazio limpa" ser uma afirmação sobre um pixel real.
+const char* kPlaced = R"({
+  "supported-platforms" : { "squares" : "shared" },
+  "fill" : "automatic",
+  "groups" : [
+    { "name" : "Esq",
+      "layers" : [
+        { "name" : "esquerda", "image-name" : "art.svg",
+          "position" : { "scale" : 0.25, "translation-in-points" : [ -256, 0 ] } } ] },
+    { "name" : "Dir",
+      "layers" : [
+        { "name" : "direita", "image-name" : "art.svg",
+          "position" : { "scale" : 0.25, "translation-in-points" : [ 256, 0 ] } } ] }
+  ] })";
+
+fs::path makePlacedBundle(const std::string& name) {
+    const fs::path dir = fs::temp_directory_path() / ("ic-e2e-canvas-" + name);
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir / "Assets", ec);
+    writeFile(dir / "icon.json", kPlaced);
+    writeFile(dir / "Assets" / "art.svg",
+              "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1024 1024\">"
+              "<path d=\"M0 0 L1024 0 L1024 1024 L0 1024 Z\" fill=\"#3366cc\"/></svg>");
+    return dir;
+}
+
+// Um render que já chegou. Nenhum dispositivo: `AddImage` só guarda o id numa
+// draw command, e nada aqui a consome.
+ick::RenderView landed() {
+    ick::RenderView v;
+    v.texture = static_cast<ImTextureID>(4242);
+    v.width = 512;
+    v.height = 512;
+    v.gridSize = 512;
+    v.drawn = 2;
+    v.total = 2;
+    return v;
+}
+
+struct BothStats {
+    ick::CanvasStats canvas;
+    ick::LayersStats layers;
+};
+
+// UM QUADRO COM OS DOIS PAINÉIS, lado a lado e sem se tocarem. A ordem é a da
+// janela real: o canvas primeiro (é ele que carrega a barra de menu), a árvore
+// depois -- e é justamente essa ordem que faz a pergunta valer, porque uma
+// escrita tardia do canvas ficaria invisível na árvore do mesmo quadro.
+BothStats bothFrame(ick::HeadlessImGui& gui, ick::Session& s, const ick::RenderView& view) {
+    BothStats out;
+    ick::MenuActions actions;
+    gui.newFrame();
+    ImGui::SetNextWindowPos(ImVec2(400, 0));
+    ImGui::SetNextWindowSize(ImVec2(840, 700));
+    out.canvas = ick::drawCanvas(s, view, actions);
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(ImVec2(320, 900));
+    out.layers = ick::drawLayers(s);
+    gui.render();
+    return out;
+}
+
+// O mesmo arnês de `clickAt`, sobre os dois painéis: chegar, apertar, soltar,
+// e um quadro a mais -- o que a pessoa vê depois do clique.
+BothStats clickCanvasAt(ick::HeadlessImGui& gui, ick::Session& s, const ick::RenderView& view,
+                        ImVec2 at) {
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(at.x, at.y);
+    bothFrame(gui, s, view);
+    io.AddMouseButtonEvent(0, true);
+    bothFrame(gui, s, view);
+    io.AddMouseButtonEvent(0, false);
+    bothFrame(gui, s, view);
+    io.AddMousePosEvent(-1.0f, -1.0f);
+    return bothFrame(gui, s, view);
+}
+
+ImVec2 centreOf(const ick::CanvasRect& r) {
+    return ImVec2((r.x0 + r.x1) * 0.5f, (r.y0 + r.y1) * 0.5f);
+}
+
+// Onde o painel desenhou o retângulo de `p`: seleciona pela árvore, desenha,
+// lê. Deixa a seleção onde estava antes de perguntar.
+ick::CanvasRect rectOf(ick::HeadlessImGui& gui, ick::Session& s, const ick::RenderView& view,
+                       icf::NodePath p) {
+    const std::optional<icf::NodePath> was = s.selection;
+    s.selection = p;
+    const ick::CanvasStats st = bothFrame(gui, s, view).canvas;
+    s.selection = was;
+    return st.selectionDrawn ? st.selection : ick::CanvasRect{};
+}
+
+bool inside(const ick::CanvasRect& clip, ImVec2 p) {
+    return p.x > clip.x0 && p.x < clip.x1 && p.y > clip.y0 && p.y < clip.y1;
+}
+
+}  // namespace
+
+TEST_CASE(e2e_canvas_a_real_click_on_the_art_selects_that_layer_and_lights_the_tree) {
+    const fs::path dir = makePlacedBundle("clique");
+    auto s = ick::Session::open(dir);
+    REQUIRE(s.has_value());
+    ick::HeadlessImGui gui(1440.0f, 1000.0f);
+    const ick::RenderView view = landed();
+
+    const icf::NodePath esquerda{std::size_t{0}, std::size_t{0}};
+    const icf::NodePath direita{std::size_t{1}, std::size_t{0}};
+
+    // Um quadro para o canvas assentar no Fit e dizer onde as coisas ficaram.
+    const BothStats laid = bothFrame(gui, *s, view);
+    REQUIRE(!laid.canvas.selectionDrawn);            // nada selecionado ainda
+    const ick::CanvasRect clip = laid.canvas.clip;
+
+    const ick::CanvasRect re = rectOf(gui, *s, view, esquerda);
+    const ick::CanvasRect rd = rectOf(gui, *s, view, direita);
+    REQUIRE(!re.empty());
+    REQUIRE(!rd.empty());
+    REQUIRE(re.x1 < rd.x0);                          // as duas artes não se tocam
+    const ImVec2 ce = centreOf(re), cd = centreOf(rd);
+    REQUIRE(inside(clip, ce));
+    REQUIRE(inside(clip, cd));
+
+    // Nada selecionado quando o clique começa.
+    s->selection.reset();
+    REQUIRE(bothFrame(gui, *s, view).layers.drawn.size() == 4);
+
+    // ── O CLIQUE SOBRE A ARTE DA ESQUERDA ───────────────────────────────────
+    const BothStats first = clickCanvasAt(gui, *s, view, ce);
+    REQUIRE(s->selection.has_value());
+    CHECK(*s->selection == esquerda);                 // o modelo
+    CHECK(first.canvas.selectionDrawn);               // o canvas enquadrou
+    REQUIRE(row(first.layers, "esquerda") != nullptr);
+    CHECK(row(first.layers, "esquerda")->selected);   // E A ÁRVORE ACENDEU
+    REQUIRE(row(first.layers, "direita") != nullptr);
+    CHECK(!row(first.layers, "direita")->selected);
+    CHECK_EQ(gui.errors(), std::uint64_t{0});
+
+    // ── A OUTRA ARTE, para que o verde acima não seja "seleciona sempre a
+    // primeira". A escolha muda, na árvore também.
+    const BothStats second = clickCanvasAt(gui, *s, view, cd);
+    REQUIRE(s->selection.has_value());
+    CHECK(*s->selection == direita);
+    REQUIRE(row(second.layers, "direita") != nullptr);
+    CHECK(row(second.layers, "direita")->selected);
+    CHECK(!row(second.layers, "esquerda")->selected);
+
+    // ── O VAZIO LIMPA ───────────────────────────────────────────────────────
+    // O meio da praça, entre as duas artes: pixel de canvas que camada nenhuma
+    // cobre.
+    const ImVec2 vazio((re.x1 + rd.x0) * 0.5f, ce.y);
+    REQUIRE(inside(clip, vazio));
+    const BothStats cleared = clickCanvasAt(gui, *s, view, vazio);
+    CHECK(!s->selection.has_value());
+    CHECK(!cleared.canvas.selectionDrawn);
+    for (const ick::RowInfo& r : cleared.layers.drawn) CHECK(!r.selected);
+    CHECK_EQ(gui.errors(), std::uint64_t{0});
+
+    // ── E O ALVO ANDA COM O ZOOM ────────────────────────────────────────────
+    // O retângulo é geometria de tela, então a 300% ele está noutro lugar --
+    // e é no lugar NOVO que o clique tem de acertar. Um alvo que continuasse
+    // valendo no lugar velho seria um overlay desenhado a partir de uma
+    // segunda cópia da transformação.
+    s->view.zoomRequest = 3.0f;
+    for (int i = 0; i < 80; ++i) bothFrame(gui, *s, view);
+    const ick::CanvasRect rd2 = rectOf(gui, *s, view, direita);
+    REQUIRE(!rd2.empty());
+    CHECK(rd2.width() > rd.width() * 2.0f);          // cresceu de verdade
+    const ImVec2 cd2 = centreOf(rd2);
+    REQUIRE(inside(clip, cd2));
+
+    s->selection.reset();
+    const BothStats zoomed = clickCanvasAt(gui, *s, view, cd2);
+    REQUIRE(s->selection.has_value());
+    CHECK(*s->selection == direita);
+    REQUIRE(row(zoomed.layers, "direita") != nullptr);
+    CHECK(row(zoomed.layers, "direita")->selected);
+
+    // E o ponto VELHO, que agora não é a arte da direita, não a escolhe.
+    s->selection.reset();
+    clickCanvasAt(gui, *s, view, cd);
+    CHECK(!(s->selection.has_value() && *s->selection == direita));
+    CHECK_EQ(gui.errors(), std::uint64_t{0});
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ARRASTAR NÃO É CLICAR
+//
+// O mesmo botão esquerdo faz o pan. Se qualquer soltar contasse como escolha,
+// arrastar o ícone para o lado mudaria a seleção ao largar -- e a pessoa nunca
+// pediu isso. O que separa os dois é "soltou onde apertou", e este caso arrasta
+// de propósito por cima de uma arte e cobra que a seleção NÃO se mexeu.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_CASE(e2e_canvas_a_drag_pans_and_does_not_change_the_selection) {
+    const fs::path dir = makePlacedBundle("arrasto");
+    auto s = ick::Session::open(dir);
+    REQUIRE(s.has_value());
+    ick::HeadlessImGui gui(1440.0f, 1000.0f);
+    const ick::RenderView view = landed();
+
+    const icf::NodePath esquerda{std::size_t{0}, std::size_t{0}};
+    bothFrame(gui, *s, view);
+    const ick::CanvasRect rd = rectOf(gui, *s, view, icf::NodePath{std::size_t{1}, std::size_t{0}});
+    REQUIRE(!rd.empty());
+
+    // A seleção começa na ESQUERDA, e o arrasto acaba sobre a arte da direita.
+    s->selection = esquerda;
+    const float panBefore = s->view.panTargetX;
+
+    ImGuiIO& io = ImGui::GetIO();
+    const ImVec2 from = centreOf(rd);
+    io.AddMousePosEvent(from.x - 90.0f, from.y);
+    bothFrame(gui, *s, view);
+    io.AddMouseButtonEvent(0, true);
+    bothFrame(gui, *s, view);
+    for (int i = 1; i <= 9; ++i) {
+        io.AddMousePosEvent(from.x - 90.0f + static_cast<float>(i) * 10.0f, from.y);
+        bothFrame(gui, *s, view);
+    }
+    io.AddMouseButtonEvent(0, false);
+    const BothStats after = bothFrame(gui, *s, view);
+
+    CHECK(s->view.panTargetX > panBefore + 50.0f);    // o arrasto de fato panejou
+    REQUIRE(s->selection.has_value());
+    CHECK(*s->selection == esquerda);                 // e não escolheu nada
+    REQUIRE(row(after.layers, "esquerda") != nullptr);
+    CHECK(row(after.layers, "esquerda")->selected);
+    CHECK_EQ(gui.errors(), std::uint64_t{0});
 }

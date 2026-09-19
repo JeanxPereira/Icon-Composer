@@ -50,6 +50,20 @@
 // forty, and they are pure. Transcribing them cost nothing and kept the Kit
 // buildable with `-DIC_BUILD_UI=OFF`.
 //
+// E DESDE 19/09 O CANVAS SELECIONA (spec 13/09 §1, rodada 4)
+// --------------------------------------------------------------------------
+// Ate aqui o caminho era de mao unica: a arvore escolhia uma camada e o canvas
+// a enquadrava. Clicar no icone nao escolhia nada, o que num editor de icones e
+// a operacao mais obvia que existe.
+//
+// O clique escreve em `Session::selection`, a MESMA que a arvore le -- nao ha
+// uma segunda selecao, entao nao ha o que sincronizar: a linha acende e o
+// painel rola ate ela no quadro seguinte sem que este arquivo saiba que aquele
+// existe. E o retangulo desenhado e o alvo do clique, os dois saidos de
+// `canvasLayerRect` (Panels.h), onde tambem esta escrito o que a regra tem de
+// grosseiro e por que responder melhor exigiria o render que a spec proibe
+// aqui.
+//
 // THE DIAGNOSTICS PANEL IS WHAT KEEPS THE PICTURE FROM LYING (spec 13/09 §6)
 // --------------------------------------------------------------------------
 // `skipped`, `shapeGaps` and `notes` go to the screen for the same reason
@@ -71,6 +85,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <initializer_list>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -131,6 +146,81 @@ CanvasRect canvasIntersect(CanvasRect a, CanvasRect b) {
                  std::min(a.x1, b.x1), std::min(a.y1, b.y1)};
     if (r.empty()) return CanvasRect{r.x0, r.y0, r.x0, r.y0};
     return r;
+}
+
+namespace {
+
+// A `position` de um no sob o contexto que o CANVAS renderiza -- nao o escopo
+// do inspetor: o retangulo tem de enquadrar a arte que esta na tela.
+icf::Position positionOf(const icf::json::Value* node, icf::Context ctx) {
+    icf::Position p;
+    if (!node) return p;
+    if (const icf::json::Value* pv = icf::resolve(*node, "position", ctx)) {
+        if (auto read = icf::positionFrom(*pv)) p = *read;
+    }
+    return p;
+}
+
+bool hiddenUnder(const icf::json::Value& node, icf::Context ctx) {
+    const icf::json::Value* v = icf::resolve(node, "hidden", ctx);
+    return v && v->kind() == icf::json::Value::Kind::Bool && v->boolean();
+}
+
+const std::vector<icf::json::Value>* arrayAt(const icf::json::Value& owner, const char* key) {
+    const icf::json::Value* v = owner.find(key);
+    if (!v || v->kind() != icf::json::Value::Kind::Array) return nullptr;
+    return &v->elements();
+}
+
+}  // namespace
+
+CanvasRect canvasLayerRect(const icf::json::Value& root, icf::NodePath path, icf::Context ctx,
+                           CanvasVec topLeft, float side) {
+    const icf::json::Value* node = icf::nodeAt(root, path);
+    if (!node || !path.group || !(side > 0.0f)) return CanvasRect{};
+
+    // COMPOSTA COM A DO GRUPO, que e o que o render faz (`compose`,
+    // IconRenderer.cpp:571). Um retangulo que ignorasse o grupo cairia fora da
+    // arte em todo documento cujo grupo carrega uma `position`.
+    icf::Position p = positionOf(node, ctx);
+    if (path.layer) {
+        const icf::Position g =
+            positionOf(icf::nodeAt(root, icf::NodePath{path.group, std::nullopt}), ctx);
+        p.translation.x = g.scale * p.translation.x + g.translation.x;
+        p.translation.y = g.scale * p.translation.y + g.translation.y;
+        p.scale = g.scale * p.scale;
+    }
+
+    // `rb::placeOnCanvas` com `w == h == kCanvasPoints` (ver a nota no header):
+    // a caixa centrada, escalada, e entao movida -- so que em pixels de tela,
+    // que e a mesma coisa vezes `side / kCanvasPoints`.
+    const float pointsToPixels = side / static_cast<float>(rb::kCanvasPoints);
+    const float half = side * static_cast<float>(p.scale) * 0.5f;
+    const float cx = topLeft.x + side * 0.5f + static_cast<float>(p.translation.x) * pointsToPixels;
+    const float cy = topLeft.y + side * 0.5f + static_cast<float>(p.translation.y) * pointsToPixels;
+    return CanvasRect{cx - half, cy - half, cx + half, cy + half};
+}
+
+std::optional<icf::NodePath> canvasLayerAt(const icf::json::Value& root, icf::Context ctx,
+                                           CanvasVec topLeft, float side, CanvasVec point) {
+    const std::vector<icf::json::Value>* groups = arrayAt(root, "groups");
+    if (!groups) return std::nullopt;
+    for (std::size_t g = 0; g < groups->size(); ++g) {
+        const icf::json::Value& group = (*groups)[g];
+        if (hiddenUnder(group, ctx)) continue;
+        const std::vector<icf::json::Value>* layers = arrayAt(group, "layers");
+        if (!layers) continue;
+        for (std::size_t l = 0; l < layers->size(); ++l) {
+            if (hiddenUnder((*layers)[l], ctx)) continue;
+            const icf::NodePath path{g, l};
+            const CanvasRect r = canvasLayerRect(root, path, ctx, topLeft, side);
+            if (r.empty()) continue;
+            if (point.x >= r.x0 && point.x <= r.x1 && point.y >= r.y0 && point.y <= r.y1) {
+                return path;
+            }
+        }
+    }
+    return std::nullopt;
 }
 
 std::uint32_t canvasTileSize(std::uint32_t baseSize, float zoom) {
@@ -291,28 +381,6 @@ std::size_t zoomBar(Session& s) {
     return 4;
 }
 
-// The selection rectangle, on the renderer's own ruler: a square of the whole
-// canvas scaled by `position.scale`, moved by `position.translation` measured in
-// `rb::kCanvasPoints` from the canvas CENTRE with +y DOWN (doc 03 §22).
-void drawSelectionOverlay(const Session& s, ImDrawList* dl, ImVec2 topLeft, float side) {
-    const icf::json::Value* node = icf::nodeAt(s.root(), *s.selection);
-    if (!node) return;
-
-    icf::Position p;
-    // Resolved under the context the CANVAS renders, not the inspector's scope:
-    // the rectangle has to frame the art that is on screen.
-    if (const icf::json::Value* pv = icf::resolve(*node, "position", s.view.context)) {
-        if (auto read = icf::positionFrom(*pv)) p = *read;
-    }
-
-    const float pointsToPixels = side / static_cast<float>(rb::kCanvasPoints);
-    const float half = side * static_cast<float>(p.scale) * 0.5f;
-    const ImVec2 centre(topLeft.x + side * 0.5f + static_cast<float>(p.translation.x) * pointsToPixels,
-                        topLeft.y + side * 0.5f + static_cast<float>(p.translation.y) * pointsToPixels);
-    dl->AddRect(ImVec2(centre.x - half, centre.y - half), ImVec2(centre.x + half, centre.y + half),
-                IM_COL32(80, 160, 255, 255), 0.0f, 0, 2.0f);
-}
-
 // A FRASE ELIDIDA QUE CABE NUMA BARRA. O motivo de uma falha de escrita e uma
 // linha do sistema de arquivos -- caminho inteiro mais a mensagem do
 // `error_code` -- e vai facil a duzentos caracteres. Inteira na barra ela
@@ -430,13 +498,29 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
 
     // Left OR middle drag pans, which is what Onyx's viewer accepts
     // (ImageViewer.cpp:199-200). Left as well as middle because a middle button
-    // is the one control a trackpad does not have, and the canvas has no other
-    // use for a left drag -- selection happens in the Layers panel.
+    // is the one control a trackpad does not have.
     ImGui::InvisibleButton("##canvas", ImVec2(availW, availH),
                            ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
     const bool hovered = ImGui::IsItemHovered();
     const bool active = ImGui::IsItemActive();
     ImGuiIO& io = ImGui::GetIO();
+
+    // ── UM CLIQUE, QUE NAO E UM ARRASTO ─────────────────────────────────────
+    // O botao esquerdo faz as duas coisas, e o que as separa e "soltou onde
+    // apertou". A folga e de dois pixels e nao de zero: o pan comeca com
+    // QUALQUER movimento (`IsMouseDragging(.., 0.0f)` logo abaixo), entao
+    // exigir imobilidade perfeita faria o tremor de uma mao perder a selecao,
+    // e dois pixels de pan a mais ninguem ve. `MouseDragMaxDistanceSqr` zera
+    // no aperto (imgui.cpp:10908) e acumula enquanto o botao esta em baixo,
+    // entao no quadro do soltar ele e o afastamento MAXIMO do gesto inteiro --
+    // um arrasto de ida e volta nao passa por clique.
+    //
+    // A ESCOLHA fica para depois do ease: ela precisa do canto e do lado que o
+    // pan e o zoom deste quadro produzem, e eles so existem umas linhas abaixo.
+    constexpr float kClickSlackSqr = 4.0f;
+    const bool clicked = ImGui::IsItemDeactivated() &&
+                         ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+                         io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] <= kClickSlackSqr;
 
     // One path into the view transform, used by the wheel, the combo and the
     // three zoom buttons alike.
@@ -511,6 +595,22 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
     st.painted = canvasIntersect(st.image, st.clip);
     st.zoom = v.zoom;
 
+    // O lado do CANVAS INTEIRO na tela. E nele que a arte e colocada -- um
+    // ladrilho e um pedaco DESSA praca, e nao muda onde a camada esta -- e
+    // portanto e a regua da selecao tambem.
+    const float fullSide = sidePx * v.zoom;
+
+    // ── O CLIQUE ESCOLHE A CAMADA ───────────────────────────────────────────
+    // Escrito em `Session::selection`, que e a MESMA que a arvore le: nao ha
+    // uma "selecao do canvas". A arvore acende a linha e rola ate ela no
+    // quadro seguinte (`PanelLayers.cpp`, `scrollToSelection`), sem que nada
+    // aqui saiba que ela existe. Vazio limpa, porque `canvasLayerAt` devolve
+    // nada e essa nada e a atribuicao.
+    if (clicked) {
+        s.selection = canvasLayerAt(s.root(), s.view.context, CanvasVec{tl.x, tl.y}, fullSide,
+                                    CanvasVec{io.MousePos.x, io.MousePos.y});
+    }
+
     // ── O LADRILHO, SO COM O PAN E O ZOOM PARADOS ───────────────────────────
     // Spec 2026-09-16, "O que o Kit faz": nao ha pedido por quadro. Durante um
     // arrasto a chave mudaria a cada quadro e o agendador so descartaria
@@ -566,7 +666,6 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
     // E e por aqui que a espera funciona: a grade vem do render que esta na
     // tela, nao do que foi pedido, entao o ladrilho velho fica ancorado na
     // imagem e acompanha o pan; um zoom o estica ate o novo chegar.
-    const float fullSide = sidePx * v.zoom;
     if (view.texture != ImTextureID_Invalid && view.width > 0) {
         const float grid = view.gridSize > 0 ? static_cast<float>(view.gridSize)
                                              : static_cast<float>(view.width);
@@ -577,11 +676,25 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
                        a.y + static_cast<float>(view.height) * perTexel);
         dl->AddImage(view.texture, a, b);
         st.textured = true;
+    }
 
-        // O lado do CANVAS INTEIRO na tela, que e o que este overlay recebia
-        // quando a textura era o canvas: ele mede em `rb::kCanvasPoints` sobre
-        // o canvas, e um ladrilho nao muda onde a camada esta.
-        if (s.selection && s.selection->layer) drawSelectionOverlay(s, dl, tl, fullSide);
+    // ── O RETANGULO DA CAMADA SELECIONADA ───────────────────────────────────
+    // FORA do bloco da textura: a selecao e geometria, nao pixels. Enquanto o
+    // primeiro render esta a caminho a camada ja tem um lugar, e esconder a
+    // moldura ate a textura chegar seria esconder a unica coisa que o canvas
+    // sabe responder sem um render.
+    //
+    // E DESENHADO DO MESMO `canvasLayerRect` QUE O CLIQUE ACERTA, de proposito:
+    // o que a pessoa ve e o alvo, sempre. Dentro do recorte, como tudo aqui.
+    if (s.selection && s.selection->layer) {
+        const CanvasRect r =
+            canvasLayerRect(s.root(), *s.selection, s.view.context, CanvasVec{tl.x, tl.y}, fullSide);
+        if (!r.empty()) {
+            dl->AddRect(ImVec2(r.x0, r.y0), ImVec2(r.x1, r.y1), IM_COL32(80, 160, 255, 255), 0.0f, 0,
+                        2.0f);
+            st.selectionDrawn = true;
+            st.selection = r;
+        }
     }
 
     // The provisional mark: these pixels are not the answer to what the context

@@ -25,10 +25,15 @@
 // test_kit_idiom.cpp: `-DIC_BUILD_UI=OFF` has no Kit to link and must stay
 // green.
 #include "check.h"
+#include "Source/IconComposerFoundation/Edit.h"
+#include "Source/IconComposerFoundation/Json.h"
 #include "Source/IconComposerKit/Headless.h"
 #include "Source/IconComposerKit/Panels.h"
 #include "Source/IconComposerKit/RenderCoordinator.h"
 #include "Source/IconComposerKit/Session.h"
+// O ORACULO DA SELECAO: a regua do retangulo e a do render, e o caso 12 a cobra
+// contra `rb::artPlacementRect` e `rb::compose` em vez de contra si mesma.
+#include "Source/RenderBox/IconRenderer.h"
 
 #include "imgui.h"
 
@@ -993,4 +998,236 @@ TEST_CASE(canvas_says_when_the_pixels_are_the_base_stretched) {
     const ick::CanvasStats again = canvasFrame(gui, *s, fine);
     CHECK(!again.stretchedNotice);
     CHECK_EQ(frameVertices(), vtxQuiet);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 12. A SELEÇÃO: O RETÂNGULO ESTÁ ONDE O RENDER PÕE A ARTE
+//
+// A régua da seleção não é uma segunda opinião sobre onde a camada está: é a
+// do `IconRenderer`, e este caso a cobra contra a função do próprio renderer
+// (`rb::artPlacementRect`, IconRenderer.cpp:485), com o `viewBox` que a
+// aproximação do canvas assume (`0 0 1024 1024`, Panels.h). Um retângulo que
+// esquecesse o `scale`, invertesse o sinal do `y` ou medisse do canto em vez
+// do centro passa por qualquer teste escrito contra si mesmo e falha aqui.
+//
+// E A COMPOSIÇÃO COM O GRUPO junto, pelo mesmo oráculo (`rb::compose`): a
+// primeira versão deste overlay lia só a `position` da camada, e num documento
+// cujo grupo carrega uma -- 5 dos 271 do corpus -- ela emoldurava um lugar
+// onde a arte não está.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+
+// O documento dos casos de seleção: duas camadas em lados opostos do canvas,
+// pequenas o bastante para NÃO se tocarem, mais uma que cobre tudo por baixo
+// delas. Ordem do array = frente para trás, então `Front` está por cima.
+const char* kPlacedDoc = R"({
+  "supported-platforms" : { "squares" : "shared" },
+  "fill" : "automatic",
+  "groups" : [
+    { "name" : "Front",
+      "layers" : [
+        { "name" : "esquerda", "image-name" : "art.svg",
+          "position" : { "scale" : 0.25, "translation-in-points" : [ -256, 0 ] } } ] },
+    { "name" : "Back",
+      "layers" : [
+        { "name" : "direita", "image-name" : "art.svg",
+          "position" : { "scale" : 0.25, "translation-in-points" : [ 256, 0 ] } },
+        { "name" : "fundo", "image-name" : "art.svg",
+          "position" : { "scale" : 1.0, "translation-in-points" : [ 0, 0 ] } } ] }
+  ] })";
+
+fs::path makePlacedBundle(const std::string& name) {
+    const fs::path dir = fs::temp_directory_path() / ("ic-canvas-placed-" + name + ".icon");
+    fs::remove_all(dir);
+    fs::create_directories(dir / "Assets");
+    std::ofstream(dir / "icon.json", std::ios::binary) << kPlacedDoc;
+    std::ofstream(dir / "Assets" / "art.svg", std::ios::binary) << "<svg/>";
+    return dir;
+}
+
+ick::CanvasVec centreOf(const ick::CanvasRect& r) {
+    return ick::CanvasVec{(r.x0 + r.x1) * 0.5f, (r.y0 + r.y1) * 0.5f};
+}
+
+}  // namespace
+
+TEST_CASE(canvas_selection_rect_is_where_the_renderer_places_the_art) {
+    auto s = ick::Session::open(makePlacedBundle("regua"));
+    REQUIRE(s.has_value());
+
+    // A grade do oráculo é a do canvas, para que um pixel de tela seja um
+    // ponto de canvas e os dois números sejam diretamente comparáveis.
+    constexpr std::uint32_t kSize = static_cast<std::uint32_t>(rb::kCanvasPoints);
+    const icf::svg::ViewBox box{0.0, 0.0, rb::kCanvasPoints, rb::kCanvasPoints};
+    const ick::CanvasVec tl{0.0f, 0.0f};
+
+    auto oracle = [&](const rb::LayerPlacement& p) {
+        const rb::PlacementRect r = rb::artPlacementRect(box, p, kSize);
+        return ick::CanvasRect{static_cast<float>(r.x), static_cast<float>(r.y),
+                               static_cast<float>(r.x + r.width),
+                               static_cast<float>(r.y + r.height)};
+    };
+    auto agrees = [&](const ick::CanvasRect& a, const ick::CanvasRect& b) {
+        CHECK(near(a.x0, b.x0, 0.01f));
+        CHECK(near(a.y0, b.y0, 0.01f));
+        CHECK(near(a.x1, b.x1, 0.01f));
+        CHECK(near(a.y1, b.y1, 0.01f));
+    };
+
+    const icf::NodePath esquerda{std::size_t{0}, std::size_t{0}};
+    agrees(ick::canvasLayerRect(s->root(), esquerda, icf::Context{}, tl,
+                                static_cast<float>(kSize)),
+           oracle(rb::LayerPlacement{0.25, -256.0, 0.0}));
+
+    // A camada de baixo é o canvas inteiro: exatamente a praça, sem folga.
+    const icf::NodePath fundo{std::size_t{1}, std::size_t{1}};
+    const ick::CanvasRect all =
+        ick::canvasLayerRect(s->root(), fundo, icf::Context{}, tl, static_cast<float>(kSize));
+    agrees(all, oracle(rb::LayerPlacement{1.0, 0.0, 0.0}));
+    agrees(all, ick::CanvasRect{0.0f, 0.0f, static_cast<float>(kSize), static_cast<float>(kSize)});
+
+    // ── A COMPOSIÇÃO COM O GRUPO ────────────────────────────────────────────
+    // O grupo `Back` ganha uma posição própria, e o retângulo da camada tem de
+    // ser o da placa COMPOSTA -- `rb::compose`, que é o que o render usa.
+    icf::json::Value pos = icf::json::Value::object(
+        {{"scale", icf::json::Value::number(0.5)},
+         {"translation-in-points",
+          icf::json::Value::array(
+              {icf::json::Value::number(120.0), icf::json::Value::number(-40.0)})}});
+    s->setProperty(icf::NodePath{std::size_t{1}, std::nullopt}, "position", icf::Context{},
+                   std::move(pos));
+
+    const icf::NodePath direita{std::size_t{1}, std::size_t{0}};
+    agrees(ick::canvasLayerRect(s->root(), direita, icf::Context{}, tl, static_cast<float>(kSize)),
+           oracle(rb::compose(rb::LayerPlacement{0.5, 120.0, -40.0},
+                              rb::LayerPlacement{0.25, 256.0, 0.0})));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 13. QUAL CAMADA O PONTO ESCOLHE
+//
+// A de cima que o contenha, e o array corre da frente para trás -- a mesma
+// ordem que a árvore lista. Uma escolha que andasse na ordem do RENDER (que
+// percorre o array ao contrário) devolveria a de baixo, e o defeito seria
+// invisível em qualquer documento de uma camada só.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_CASE(canvas_point_picks_the_topmost_layer_that_contains_it) {
+    auto s = ick::Session::open(makePlacedBundle("escolha"));
+    REQUIRE(s.has_value());
+
+    constexpr float kSide = static_cast<float>(rb::kCanvasPoints);
+    const ick::CanvasVec tl{0.0f, 0.0f};
+    const icf::Context ctx;
+    auto at = [&](float x, float y) {
+        return ick::canvasLayerAt(s->root(), ctx, tl, kSide, ick::CanvasVec{x, y});
+    };
+
+    const icf::NodePath esquerda{std::size_t{0}, std::size_t{0}};
+    const icf::NodePath direita{std::size_t{1}, std::size_t{0}};
+    const icf::NodePath fundo{std::size_t{1}, std::size_t{1}};
+
+    // O centro de cada arte pequena escolhe a SUA, e não a que está por baixo
+    // e cobre o canvas inteiro.
+    const ick::CanvasVec ce = centreOf(ick::canvasLayerRect(s->root(), esquerda, ctx, tl, kSide));
+    REQUIRE(at(ce.x, ce.y).has_value());
+    CHECK(*at(ce.x, ce.y) == esquerda);
+
+    const ick::CanvasVec cd = centreOf(ick::canvasLayerRect(s->root(), direita, ctx, tl, kSide));
+    REQUIRE(at(cd.x, cd.y).has_value());
+    CHECK(*at(cd.x, cd.y) == direita);
+
+    // Um ponto que só a camada de fundo cobre: o canto de cima, longe das duas.
+    REQUIRE(at(8.0f, 8.0f).has_value());
+    CHECK(*at(8.0f, 8.0f) == fundo);
+
+    // FORA DA PRAÇA: nada. É isto que faz "clicar no vazio limpa".
+    CHECK(!at(-40.0f, kSide * 0.5f).has_value());
+    CHECK(!at(kSide + 40.0f, kSide * 0.5f).has_value());
+
+    // ESCONDIDA NÃO É CANDIDATA. Escondida a de cima, o mesmo ponto passa a
+    // escolher a que está por baixo dela -- e não coisa nenhuma.
+    s->setProperty(esquerda, "hidden", icf::Context{}, icf::json::Value::boolean(true));
+    REQUIRE(at(ce.x, ce.y).has_value());
+    CHECK(*at(ce.x, ce.y) == fundo);
+
+    // E o grupo inteiro escondido leva as camadas dele junto.
+    s->setProperty(icf::NodePath{std::size_t{1}, std::nullopt}, "hidden", icf::Context{},
+                   icf::json::Value::boolean(true));
+    CHECK(!at(ce.x, ce.y).has_value());
+    CHECK(!at(cd.x, cd.y).has_value());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 14. O RETÂNGULO ACOMPANHA O ZOOM E O PAN, E NÃO DESLIZA
+//
+// A afirmação é uma razão, não um par de coordenadas: onde o retângulo está
+// DENTRO da praça do ícone não pode depender da magnificação nem do pan. Uma
+// segunda cópia da transformação -- um overlay que multiplicasse pelo zoom mas
+// esquecesse o pan, ou que usasse o lado da TEXTURA em vez do canvas -- passa
+// no quadro do Fit e escorrega em todos os outros, e é exatamente essa a
+// diferença que esta razão mede.
+//
+// Roda o `drawCanvas` de verdade e lê `CanvasStats::selection`, que é o
+// retângulo que foi para a tela.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_CASE(canvas_selection_rect_follows_the_zoom_and_the_pan) {
+    auto s = ick::Session::open(makePlacedBundle("segue"));
+    REQUIRE(s.has_value());
+    ick::HeadlessImGui gui;
+    const ick::RenderView view = landed(512);
+
+    s->selection = icf::NodePath{std::size_t{0}, std::size_t{0}};   // esquerda
+
+    // Onde o retângulo está dentro da praça, em unidades da praça.
+    struct Ratio { float x0, y0, w; };
+    auto ratioOf = [](const ick::CanvasStats& st) {
+        const float side = st.image.width();
+        return Ratio{(st.selection.x0 - st.image.x0) / side,
+                     (st.selection.y0 - st.image.y0) / side, st.selection.width() / side};
+    };
+
+    const ick::CanvasStats fitted = canvasFrame(gui, *s, view);
+    REQUIRE(fitted.selectionDrawn);
+    const Ratio r0 = ratioOf(fitted);
+    // A arte tem `scale` 0,25, então ela ocupa um quarto da praça -- e esta é
+    // a única constante literal aqui, para que a razão não possa ser apenas
+    // igual a si mesma em três medidas erradas.
+    CHECK(near(r0.w, 0.25f, 0.002f));
+
+    // ZOOM a 400%, assentado.
+    s->view.zoomRequest = 4.0f;
+    for (int i = 0; i < 80; ++i) canvasFrame(gui, *s, view);
+    const ick::CanvasStats zoomed = canvasFrame(gui, *s, view);
+    REQUIRE(zoomed.selectionDrawn);
+    CHECK(near(zoomed.zoom, 4.0f, 0.001f));
+    // Cresceu junto com a praça...
+    CHECK(near(zoomed.selection.width(), fitted.selection.width() * (zoomed.zoom / fitted.zoom),
+               0.05f));
+    // ...e continua no mesmo lugar DENTRO dela.
+    const Ratio r1 = ratioOf(zoomed);
+    CHECK(near(r1.x0, r0.x0, 0.002f));
+    CHECK(near(r1.y0, r0.y0, 0.002f));
+    CHECK(near(r1.w, r0.w, 0.002f));
+
+    // PAN, assentado. A praça anda; o retângulo tem de andar exatamente o
+    // mesmo tanto.
+    s->view.panTargetX -= 60.0f;
+    s->view.panTargetY += 35.0f;
+    for (int i = 0; i < 80; ++i) canvasFrame(gui, *s, view);
+    const ick::CanvasStats panned = canvasFrame(gui, *s, view);
+    REQUIRE(panned.selectionDrawn);
+    CHECK(!near(panned.image.x0, zoomed.image.x0, 1.0f));   // o pan de fato mexeu
+    CHECK(near(panned.selection.x0 - zoomed.selection.x0, panned.image.x0 - zoomed.image.x0, 0.05f));
+    CHECK(near(panned.selection.y0 - zoomed.selection.y0, panned.image.y0 - zoomed.image.y0, 0.05f));
+    const Ratio r2 = ratioOf(panned);
+    CHECK(near(r2.x0, r0.x0, 0.002f));
+    CHECK(near(r2.y0, r0.y0, 0.002f));
+
+    // SEM SELEÇÃO não há retângulo -- e um grupo também não tem um: o canvas
+    // enquadra camada.
+    s->selection.reset();
+    CHECK(!canvasFrame(gui, *s, view).selectionDrawn);
+    s->selection = icf::NodePath{std::size_t{0}, std::nullopt};
+    CHECK(!canvasFrame(gui, *s, view).selectionDrawn);
+    CHECK_EQ(gui.errors(), std::uint64_t{0});
 }
