@@ -1075,14 +1075,14 @@ TEST_CASE(canvas_selection_rect_is_where_the_renderer_places_the_art) {
     };
 
     const icf::NodePath esquerda{std::size_t{0}, std::size_t{0}};
-    agrees(ick::canvasLayerRect(s->root(), esquerda, icf::Context{}, tl,
+    agrees(ick::canvasLayerRect(*s, esquerda, icf::Context{}, tl,
                                 static_cast<float>(kSize)),
            oracle(rb::LayerPlacement{0.25, -256.0, 0.0}));
 
     // A camada de baixo é o canvas inteiro: exatamente a praça, sem folga.
     const icf::NodePath fundo{std::size_t{1}, std::size_t{1}};
     const ick::CanvasRect all =
-        ick::canvasLayerRect(s->root(), fundo, icf::Context{}, tl, static_cast<float>(kSize));
+        ick::canvasLayerRect(*s, fundo, icf::Context{}, tl, static_cast<float>(kSize));
     agrees(all, oracle(rb::LayerPlacement{1.0, 0.0, 0.0}));
     agrees(all, ick::CanvasRect{0.0f, 0.0f, static_cast<float>(kSize), static_cast<float>(kSize)});
 
@@ -1098,7 +1098,7 @@ TEST_CASE(canvas_selection_rect_is_where_the_renderer_places_the_art) {
                    std::move(pos));
 
     const icf::NodePath direita{std::size_t{1}, std::size_t{0}};
-    agrees(ick::canvasLayerRect(s->root(), direita, icf::Context{}, tl, static_cast<float>(kSize)),
+    agrees(ick::canvasLayerRect(*s, direita, icf::Context{}, tl, static_cast<float>(kSize)),
            oracle(rb::compose(rb::LayerPlacement{0.5, 120.0, -40.0},
                               rb::LayerPlacement{0.25, 256.0, 0.0})));
 }
@@ -1119,7 +1119,7 @@ TEST_CASE(canvas_point_picks_the_topmost_layer_that_contains_it) {
     const ick::CanvasVec tl{0.0f, 0.0f};
     const icf::Context ctx;
     auto at = [&](float x, float y) {
-        return ick::canvasLayerAt(s->root(), ctx, tl, kSide, ick::CanvasVec{x, y});
+        return ick::canvasLayerAt(*s, ctx, tl, kSide, ick::CanvasVec{x, y});
     };
 
     const icf::NodePath esquerda{std::size_t{0}, std::size_t{0}};
@@ -1128,11 +1128,11 @@ TEST_CASE(canvas_point_picks_the_topmost_layer_that_contains_it) {
 
     // O centro de cada arte pequena escolhe a SUA, e não a que está por baixo
     // e cobre o canvas inteiro.
-    const ick::CanvasVec ce = centreOf(ick::canvasLayerRect(s->root(), esquerda, ctx, tl, kSide));
+    const ick::CanvasVec ce = centreOf(ick::canvasLayerRect(*s, esquerda, ctx, tl, kSide));
     REQUIRE(at(ce.x, ce.y).has_value());
     CHECK(*at(ce.x, ce.y) == esquerda);
 
-    const ick::CanvasVec cd = centreOf(ick::canvasLayerRect(s->root(), direita, ctx, tl, kSide));
+    const ick::CanvasVec cd = centreOf(ick::canvasLayerRect(*s, direita, ctx, tl, kSide));
     REQUIRE(at(cd.x, cd.y).has_value());
     CHECK(*at(cd.x, cd.y) == direita);
 
@@ -1333,4 +1333,131 @@ TEST_CASE(session_asset_box_is_absent_when_the_art_declares_none) {
     REQUIRE(s.has_value());
     CHECK(s->assetViewBox("art.svg") == nullptr);
     CHECK_EQ(s->assetBoxReads(), std::uint64_t{1});
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 16. O CLIQUE PARA DE PEGAR A CAMADA ANTES DE TOCAR A ARTE
+//
+// Este é o caso que mostra que a aproximação saiu. Até 19/09 a caixa de cada
+// camada era assumida como o canvas inteiro, então numa arte cujo `viewBox` é
+// MENOR o retângulo era maior que a arte e o clique acertava a camada com o
+// cursor ainda no vazio. Com o `viewBox` lido, o mesmo clique erra.
+//
+// CUIDADO QUE ESTE CASO EXIGE, e que quase o fez nascer inútil: todos os
+// outros fixtures deste arquivo gravam `<svg/>`, que não tem caixa nenhuma e
+// portanto cai no fallback do canvas inteiro -- um caso escrito sobre eles
+// ficaria verde sem provar nada. A arte aqui tem `viewBox` de verdade, e a
+// sensibilidade foi medida: com a leitura da caixa desligada, este caso
+// reprova.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+// Uma camada só, sem nada por baixo: assim "errar" é `nullopt` e não "acertou
+// a de baixo", que seria um verde por outro motivo.
+fs::path makeSmallArtBundle(const std::string& name, const char* viewBox) {
+    const fs::path dir = fs::temp_directory_path() / ("ic-canvas-small-" + name + ".icon");
+    fs::remove_all(dir);
+    fs::create_directories(dir / "Assets");
+    std::ofstream(dir / "icon.json", std::ios::binary) << R"({
+  "fill" : "automatic",
+  "groups" : [ { "name" : "g", "layers" : [
+    { "name" : "arte", "image-name" : "pequena.svg" } ] } ] })";
+    std::ofstream(dir / "Assets" / "pequena.svg", std::ios::binary)
+        << "<svg viewBox=\"" << viewBox << "\"/>";
+    return dir;
+}
+}  // namespace
+
+TEST_CASE(canvas_click_misses_a_layer_whose_art_is_smaller_than_the_canvas) {
+    auto s = ick::Session::open(makeSmallArtBundle("meia", "0 0 512 512"));
+    REQUIRE(s.has_value());
+
+    constexpr float kSide = static_cast<float>(rb::kCanvasPoints);   // 1 pixel = 1 ponto
+    const ick::CanvasVec tl{0.0f, 0.0f};
+    const icf::Context ctx;
+    const icf::NodePath arte{std::size_t{0}, std::size_t{0}};
+
+    // O RETÂNGULO É O DA ARTE, e é cobrado contra a régua do render com a
+    // caixa de verdade: 512 centrados em 1024 vão de 256 a 768.
+    const ick::CanvasRect r = ick::canvasLayerRect(*s, arte, ctx, tl, kSide);
+    const rb::PlacementRect o =
+        rb::artPlacementRect(icf::svg::ViewBox{0.0, 0.0, 512.0, 512.0},
+                             rb::LayerPlacement{1.0, 0.0, 0.0},
+                             static_cast<std::uint32_t>(rb::kCanvasPoints));
+    CHECK(near(r.x0, static_cast<float>(o.x), 0.01f));
+    CHECK(near(r.y0, static_cast<float>(o.y), 0.01f));
+    CHECK(near(r.x1, static_cast<float>(o.x + o.width), 0.01f));
+    CHECK(near(r.y1, static_cast<float>(o.y + o.height), 0.01f));
+    CHECK(near(r.x0, 256.0f, 0.01f));
+    CHECK(near(r.x1, 768.0f, 0.01f));
+    // E NÃO é o canvas inteiro, que é o que a aproximação devolvia. Sem esta
+    // linha o caso passaria com a caixa velha.
+    CHECK(!near(r.x1 - r.x0, kSide, 1.0f));
+
+    auto at = [&](float x, float y) {
+        return ick::canvasLayerAt(*s, ctx, tl, kSide, ick::CanvasVec{x, y});
+    };
+
+    // ── O CLIQUE QUE ANTES ACERTAVA E AGORA ERRA ────────────────────────────
+    // (100, 512) está dentro do canvas -- e portanto dentro do retângulo que a
+    // aproximação desenhava, 0..1024 -- e fora da arte, que começa em 256.
+    CHECK(!at(100.0f, 512.0f).has_value());
+    // Logo antes da borda esquerda da arte, ainda no vazio.
+    CHECK(!at(250.0f, 512.0f).has_value());
+    // E os quatro cantos do canvas, todos fora de uma arte centrada.
+    CHECK(!at(4.0f, 4.0f).has_value());
+    CHECK(!at(kSide - 4.0f, 4.0f).has_value());
+    CHECK(!at(4.0f, kSide - 4.0f).has_value());
+    CHECK(!at(kSide - 4.0f, kSide - 4.0f).has_value());
+
+    // ── E O QUE TEM DE CONTINUAR ACERTANDO ──────────────────────────────────
+    // Senão "errar sempre" passaria por conserto.
+    REQUIRE(at(512.0f, 512.0f).has_value());
+    CHECK(*at(512.0f, 512.0f) == arte);
+    REQUIRE(at(260.0f, 512.0f).has_value());   // logo dentro da borda
+    CHECK(*at(260.0f, 512.0f) == arte);
+}
+
+// A outra metade da queixa: um `viewBox` NÃO QUADRADO. A aproximação errava
+// nos dois eixos de uma vez; aqui a arte ocupa a largura inteira e uma faixa
+// no meio, então um clique em cima acerta em x e erra em y.
+TEST_CASE(canvas_click_respects_a_non_square_view_box) {
+    auto s = ick::Session::open(makeSmallArtBundle("faixa", "0 0 1024 256"));
+    REQUIRE(s.has_value());
+
+    constexpr float kSide = static_cast<float>(rb::kCanvasPoints);
+    const ick::CanvasVec tl{0.0f, 0.0f};
+    const icf::Context ctx;
+    const icf::NodePath arte{std::size_t{0}, std::size_t{0}};
+
+    const ick::CanvasRect r = ick::canvasLayerRect(*s, arte, ctx, tl, kSide);
+    CHECK(near(r.x0, 0.0f, 0.01f));            // a largura inteira
+    CHECK(near(r.x1, kSide, 0.01f));
+    CHECK(near(r.y0, 384.0f, 0.01f));          // (1024 - 256) / 2
+    CHECK(near(r.y1, 640.0f, 0.01f));
+
+    auto at = [&](float x, float y) {
+        return ick::canvasLayerAt(*s, ctx, tl, kSide, ick::CanvasVec{x, y});
+    };
+    CHECK(!at(512.0f, 100.0f).has_value());    // acima da faixa
+    CHECK(!at(512.0f, 900.0f).has_value());    // abaixo dela
+    REQUIRE(at(512.0f, 512.0f).has_value());   // dentro
+    CHECK(*at(512.0f, 512.0f) == arte);
+    REQUIRE(at(8.0f, 512.0f).has_value());     // a faixa vai de borda a borda
+    CHECK(*at(8.0f, 512.0f) == arte);
+}
+
+// E uma arte SEM caixa continua valendo o canvas inteiro -- o fallback, que é
+// o que mantém os fixtures `<svg/>` deste arquivo e as referências penduradas
+// do corpus se comportando como antes, em vez de sumirem do hit-test.
+TEST_CASE(canvas_click_falls_back_to_the_whole_canvas_when_the_art_has_no_box) {
+    auto s = ick::Session::open(makePlacedBundle("fallback"));   // grava `<svg/>`
+    REQUIRE(s.has_value());
+    constexpr float kSide = static_cast<float>(rb::kCanvasPoints);
+    const ick::CanvasVec tl{0.0f, 0.0f};
+    const icf::NodePath fundo{std::size_t{1}, std::size_t{1}};
+    const ick::CanvasRect r = ick::canvasLayerRect(*s, fundo, icf::Context{}, tl, kSide);
+    CHECK(near(r.x0, 0.0f, 0.01f));
+    CHECK(near(r.y0, 0.0f, 0.01f));
+    CHECK(near(r.x1, kSide, 0.01f));
+    CHECK(near(r.y1, kSide, 0.01f));
 }

@@ -60,9 +60,13 @@
 // uma segunda selecao, entao nao ha o que sincronizar: a linha acende e o
 // painel rola ate ela no quadro seguinte sem que este arquivo saiba que aquele
 // existe. E o retangulo desenhado e o alvo do clique, os dois saidos de
-// `canvasLayerRect` (Panels.h), onde tambem esta escrito o que a regra tem de
-// grosseiro e por que responder melhor exigiria o render que a spec proibe
-// aqui.
+// `canvasLayerRect` (Panels.h).
+//
+// A caixa de cada camada e o `viewBox` da arte, lido uma vez por `image-name`
+// e guardado na Session -- o clique nao abre arquivo. O que continua
+// aproximado, por escolha e nao por esquecimento, esta dito em Panels.h: caixa
+// nao e cobertura, entao um anel ainda e pego no buraco, e fechar essa
+// diferenca custaria o render por camada que a spec proibe aqui.
 //
 // THE DIAGNOSTICS PANEL IS WHAT KEEPS THE PICTURE FROM LYING (spec 13/09 §6)
 // --------------------------------------------------------------------------
@@ -174,8 +178,9 @@ const std::vector<icf::json::Value>* arrayAt(const icf::json::Value& owner, cons
 
 }  // namespace
 
-CanvasRect canvasLayerRect(const icf::json::Value& root, icf::NodePath path, icf::Context ctx,
+CanvasRect canvasLayerRect(const Session& s, icf::NodePath path, icf::Context ctx,
                            CanvasVec topLeft, float side) {
+    const icf::json::Value& root = s.root();
     const icf::json::Value* node = icf::nodeAt(root, path);
     if (!node || !path.group || !(side > 0.0f)) return CanvasRect{};
 
@@ -191,18 +196,48 @@ CanvasRect canvasLayerRect(const icf::json::Value& root, icf::NodePath path, icf
         p.scale = g.scale * p.scale;
     }
 
-    // `rb::placeOnCanvas` com `w == h == kCanvasPoints` (ver a nota no header):
-    // a caixa centrada, escalada, e entao movida -- so que em pixels de tela,
-    // que e a mesma coisa vezes `side / kCanvasPoints`.
+    // A CAIXA DA ARTE, do cache da Session -- nenhum arquivo e aberto aqui
+    // (Session.h, `assetViewBox`). Sem caixa a afirmar vale o canvas inteiro,
+    // que e o que este codigo fazia para todas as camadas antes de 19/09.
+    double w = rb::kCanvasPoints;
+    double h = rb::kCanvasPoints;
+    if (const icf::json::Value* nameValue = icf::resolve(*node, "image-name", ctx)) {
+        if (nameValue->kind() == icf::json::Value::Kind::String) {
+            if (const icf::svg::ViewBox* box = s.assetViewBox(nameValue->rawString())) {
+                // O MESMO guarda de `rb::artPlacementRect`: uma caixa de lado
+                // zero nao encolhe o retangulo a nada, ela vale 1.
+                w = box->width > 0.0 ? box->width : 1.0;
+                h = box->height > 0.0 ? box->height : 1.0;
+            }
+        }
+    }
+
+    // `rb::placeOnCanvas`/`rb::artPlacementRect` com `size == kCanvasPoints`,
+    // transcrito -- e o caso 12 o cobra contra aquelas duas, nao contra si
+    // mesmo. Com `k == 1` a colocacao e: centrar a caixa ESCALADA na praca e
+    // entao mover pela translacao.
+    //
+    // `box.x`/`box.y` NAO entram, e isso nao e esquecimento: em
+    // `artPlacementRect` o `+ s*box.x` cancela exatamente o `- s*box.x` que
+    // `placeOnCanvas` pos em `m2`, entao o retangulo depende so da EXTENSAO da
+    // caixa. Uma arte com `viewBox "-50 -50 100 100"` cai no mesmo lugar que
+    // uma com `"0 0 100 100"`.
+    //
+    // Tudo isso em pixels de tela, que e a mesma coisa vezes
+    // `side / kCanvasPoints`.
     const float pointsToPixels = side / static_cast<float>(rb::kCanvasPoints);
-    const float half = side * static_cast<float>(p.scale) * 0.5f;
-    const float cx = topLeft.x + side * 0.5f + static_cast<float>(p.translation.x) * pointsToPixels;
-    const float cy = topLeft.y + side * 0.5f + static_cast<float>(p.translation.y) * pointsToPixels;
-    return CanvasRect{cx - half, cy - half, cx + half, cy + half};
+    const double scale = p.scale;
+    const double leftPoints = (rb::kCanvasPoints - w * scale) * 0.5 + p.translation.x;
+    const double topPoints = (rb::kCanvasPoints - h * scale) * 0.5 + p.translation.y;
+    const float x0 = topLeft.x + static_cast<float>(leftPoints) * pointsToPixels;
+    const float y0 = topLeft.y + static_cast<float>(topPoints) * pointsToPixels;
+    return CanvasRect{x0, y0, x0 + static_cast<float>(w * scale) * pointsToPixels,
+                      y0 + static_cast<float>(h * scale) * pointsToPixels};
 }
 
-std::optional<icf::NodePath> canvasLayerAt(const icf::json::Value& root, icf::Context ctx,
+std::optional<icf::NodePath> canvasLayerAt(const Session& s, icf::Context ctx,
                                            CanvasVec topLeft, float side, CanvasVec point) {
+    const icf::json::Value& root = s.root();
     const std::vector<icf::json::Value>* groups = arrayAt(root, "groups");
     if (!groups) return std::nullopt;
     for (std::size_t g = 0; g < groups->size(); ++g) {
@@ -213,7 +248,7 @@ std::optional<icf::NodePath> canvasLayerAt(const icf::json::Value& root, icf::Co
         for (std::size_t l = 0; l < layers->size(); ++l) {
             if (hiddenUnder((*layers)[l], ctx)) continue;
             const icf::NodePath path{g, l};
-            const CanvasRect r = canvasLayerRect(root, path, ctx, topLeft, side);
+            const CanvasRect r = canvasLayerRect(s, path, ctx, topLeft, side);
             if (r.empty()) continue;
             if (point.x >= r.x0 && point.x <= r.x1 && point.y >= r.y0 && point.y <= r.y1) {
                 return path;
@@ -607,7 +642,7 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
     // aqui saiba que ela existe. Vazio limpa, porque `canvasLayerAt` devolve
     // nada e essa nada e a atribuicao.
     if (clicked) {
-        s.selection = canvasLayerAt(s.root(), s.view.context, CanvasVec{tl.x, tl.y}, fullSide,
+        s.selection = canvasLayerAt(s, s.view.context, CanvasVec{tl.x, tl.y}, fullSide,
                                     CanvasVec{io.MousePos.x, io.MousePos.y});
     }
 
@@ -688,7 +723,7 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
     // o que a pessoa ve e o alvo, sempre. Dentro do recorte, como tudo aqui.
     if (s.selection && s.selection->layer) {
         const CanvasRect r =
-            canvasLayerRect(s.root(), *s.selection, s.view.context, CanvasVec{tl.x, tl.y}, fullSide);
+            canvasLayerRect(s, *s.selection, s.view.context, CanvasVec{tl.x, tl.y}, fullSide);
         if (!r.empty()) {
             dl->AddRect(ImVec2(r.x0, r.y0), ImVec2(r.x1, r.y1), IM_COL32(80, 160, 255, 255), 0.0f, 0,
                         2.0f);

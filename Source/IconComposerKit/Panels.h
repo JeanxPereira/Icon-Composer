@@ -274,27 +274,42 @@ CanvasRect canvasIntersect(CanvasRect a, CanvasRect b);
 // clique acerta, porque os dois saem de `canvasLayerRect`. Duas cópias da
 // aritmética seriam duas que param de concordar.
 //
-// `[INF]` A APROXIMAÇÃO, DITA EM VEZ DE ESCONDIDA: o `viewBox` NÃO é lido. Lê-lo
-// custaria abrir e analisar o SVG de cada camada (`icf::svg::SvgDocument::parse`,
-// um XML inteiro) -- IO e parse por camada, num documento que chega a 194 delas,
-// para responder a um movimento do mouse. Então a caixa da arte é assumida como
-// o canvas inteiro (`viewBox 0 0 1024 1024`, o mais comum do corpus: 36 dos 149
-// SVGs), e o retângulo é essa caixa colocada exatamente como `rb::placeOnCanvas`
-// a coloca -- centrada, escalada por `position.scale`, movida por
-// `position.translation`, composta com a `position` do grupo.
+// O `viewBox` É LIDO, e é por isso que estas funções recebem a `Session` e não
+// só a árvore. Ele não é lido AQUI: `Session::assetViewBox` o lê uma vez por
+// `image-name` e guarda (Session.h), então o hit-test -- que precisa do
+// retângulo de TODAS as camadas a cada clique, e um documento do corpus chega a
+// 194 -- não abre arquivo nenhum. Era esse custo, e não a dificuldade, que
+// mantinha a caixa assumida como o canvas inteiro até 19/09.
 //
-// O QUE ISSO CUSTA: numa arte cujo `viewBox` é menor ou não é quadrado o
-// retângulo é MAIOR que a arte, e o clique pega a camada um pouco antes de o
-// cursor tocar um pixel dela. Numa arte vazada -- um anel -- o clique pega a
-// camada no buraco. Responder "esta camada tem cobertura neste ponto" com
-// precisão exige a cobertura, isto é, um render por camada, que é justamente o
-// que a spec §6 proíbe no canvas ("zoom não é render").
+// Sem caixa a afirmar -- referência pendurada, `.png`, SVG sem `viewBox` nem
+// `width`/`height` -- vale o canvas inteiro, que é o que este código fazia para
+// todo mundo antes. A arte some da tela nesses casos, mas não some do
+// documento, e um retângulo grande demais escolhe melhor que retângulo nenhum.
+//
+// `[INF]` O QUE CONTINUA APROXIMADO, E FOI ESCOLHIDO ASSIM -- NÃO ESQUECIDO:
+// CAIXA NÃO É COBERTURA. Com o `viewBox` certo o retângulo para de ser maior
+// que a arte, mas continua sendo um RETÂNGULO: numa arte vazada -- um anel --
+// o clique ainda pega a camada no buraco, onde ela não pintou pixel nenhum.
+// Responder "esta camada tem cobertura NESTE PONTO" com precisão exige a
+// cobertura, isto é, um render por camada por clique, que é exatamente o que a
+// spec 13/09 §6 recusa no canvas ("zoom não é render").
+//
+// Quem ler isto depois: a diferença que sobra é conhecida e o preço de fechá-la
+// foi pesado e recusado. "Consertar" o anel custa o render por camada; não é um
+// descuido esperando conserto barato.
 
 // O retângulo de um nó em pixels de tela. `topLeft` é o canto do canvas na tela
 // e `side` é o lado dele (`size * zoom`) -- os dois números que o zoom e o pan
 // movem, e é por isso que o retângulo os acompanha sem uma segunda cópia da
 // transformação. Vazio (`empty()`) quando o nó não existe.
-CanvasRect canvasLayerRect(const icf::json::Value& root, icf::NodePath path, icf::Context ctx,
+//
+// A `Session` inteira, e não `root()`: o retângulo precisa da caixa da arte, e
+// ela vem do cache por `image-name` que a Session mantém. Foi esse o motivo de
+// trocar o parâmetro em vez de acrescentar um opcional ao fim -- um chamador
+// que esquecesse de passar a caixa compilaria e devolveria a resposta velha em
+// silêncio, e o sintoma seria "o clique às vezes pega a camada errada", que é
+// o defeito que esta assinatura existe para ter consertado.
+CanvasRect canvasLayerRect(const Session& s, icf::NodePath path, icf::Context ctx,
                            CanvasVec topLeft, float side);
 
 // A camada sob um ponto da tela: a MAIS ACIMA cujo retângulo o contenha, ou
@@ -302,7 +317,7 @@ CanvasRect canvasLayerRect(const icf::json::Value& root, icf::NodePath path, icf
 // render o percorre ao contrário, IconRenderer.cpp:776 e :1008), então a
 // primeira que acerta é a de cima. Um nó escondido não é candidato: clicar num
 // pixel que não existe não pode escolher quem não o pintou.
-std::optional<icf::NodePath> canvasLayerAt(const icf::json::Value& root, icf::Context ctx,
+std::optional<icf::NodePath> canvasLayerAt(const Session& s, icf::Context ctx,
                                            CanvasVec topLeft, float side, CanvasVec point);
 
 // ─── O LADRILHO (spec 2026-09-16, "O que o Kit faz") ─────────────────────────
