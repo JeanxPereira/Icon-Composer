@@ -126,7 +126,31 @@ std::string IconBundle::saveAs(const fs::path& dir) {
     fs::create_directories(dir / "Assets", ec);
     if (ec) return "could not create " + (dir / "Assets").string() + ": " + ec.message();
     for (const auto& a : assets_) {
-        fs::copy_file(dir_ / "Assets" / a, dir / "Assets" / a, fs::copy_options::overwrite_existing, ec);
+        const fs::path src = dir_ / "Assets" / a;
+        const fs::path dst = dir / "Assets" / a;
+        // MESMO DESTINO, MESMA ARTE: não há o que copiar, e copiar um arquivo
+        // sobre si mesmo é um erro em qualquer toolchain. Acontece num Save As
+        // para a pasta em que o documento já está, que é o que a caixa de
+        // gravação oferece por padrão.
+        if (src == dst) continue;
+        // APAGAR ANTES DE COPIAR, pela medição de `importAsset` logo abaixo:
+        // nesta toolchain (g++ 13.2.0, MinGW) `copy_options::overwrite_existing`
+        // é IGNORADA -- com o destino existente `copy_file` devolve false e
+        // deixa `ec` em `file_exists` (17), e os bytes antigos ficam. O conserto
+        // foi aplicado em `importAsset` em 19/09 e NÃO aqui, na função vizinha
+        // que usa a mesma flag.
+        //
+        // O DEFEITO ERA VISÍVEL E NÃO TINHA CASO: um segundo `Save As…` para a
+        // mesma pasta -- ou um Save As por cima de um bundle que já existe --
+        // devolvia "could not copy a.svg: File exists" e retornava ANTES de
+        // `writeAtomically(icon.json)`. O documento não era gravado, o título
+        // continuava com o asterisco, e as edições ficavam só na memória.
+        //
+        // Um destino ausente não é erro: `remove` devolve false e segue.
+        std::error_code rm;
+        fs::remove(dst, rm);
+        if (rm) return "could not replace " + a + ": " + rm.message();
+        fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
         if (ec) return "could not copy " + a + ": " + ec.message();
     }
     const std::string wrote = writeAtomically(dir / "icon.json", json::write(*tree_));

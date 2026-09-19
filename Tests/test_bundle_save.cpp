@@ -57,6 +57,59 @@ TEST_CASE(bundle_save_as_copies_assets_and_retargets) {
     CHECK_EQ(slurp(dst / "icon.json"), slurp(dir / "icon.json"));
 }
 
+// UM SEGUNDO `Save As…` PARA A MESMA PASTA GRAVA O DOCUMENTO.
+//
+// O caso vizinho (`bundle_import_asset_replaces_an_asset_that_is_already_there`)
+// já mede que `copy_options::overwrite_existing` é ignorada nesta toolchain. O
+// conserto tinha sido aplicado só em `importAsset`: `saveAs` continuava
+// devolvendo "could not copy a.svg: File exists" e retornava ANTES de escrever
+// `icon.json`, então o documento não era gravado -- o asterisco do título ficava
+// e as edições ficavam só na memória. Isso acontece em dois caminhos que uma
+// pessoa toma: Save As duas vezes para o mesmo destino, e Save As por cima de um
+// bundle que já existe.
+//
+// O caso afirma o que importa, que são os BYTES do destino, e não a ausência de
+// erro: um `saveAs` que reportasse sucesso e não escrevesse o `icon.json` é o
+// mesmo defeito com outra cara.
+TEST_CASE(bundle_save_as_twice_into_the_same_folder_writes_the_document) {
+    const fs::path dst = fs::temp_directory_path() / "ic-save-as-twice-dst.icon";
+    fs::remove_all(dst);
+
+    // PRIMEIRO documento para `dst`: destino vazio, o caminho que já funcionava.
+    const fs::path first = scratch("as-twice-a");
+    auto a = IconBundle::open(first);
+    REQUIRE(a.has_value());
+    CHECK_EQ(a->saveAs(dst), std::string(""));
+
+    // SEGUNDO documento para o MESMO `dst`, com uma arte de mesmo nome e bytes
+    // diferentes -- é o "Save As por cima de um bundle que já existe" que o
+    // diálogo de gravação permite. Aqui `overwrite_existing` era ignorada.
+    const fs::path second = scratch("as-twice-b");
+    std::ofstream(second / "Assets" / "a.svg", std::ios::binary | std::ios::trunc) << "<svg id='b'/>";
+    auto b = IconBundle::open(second);
+    REQUIRE(b.has_value());
+    json::Value* layer = nodeAt(b->json(), NodePath{0, 0});
+    REQUIRE(layer != nullptr);
+    setProperty(*layer, "glass", Context{}, json::Value::boolean(true));
+
+    CHECK_EQ(b->saveAs(dst), std::string(""));
+    // OS BYTES, e não só a ausência de erro: o `icon.json` tem de estar escrito
+    // (era ele que não era escrito) e a arte tem de ser a do segundo documento.
+    CHECK(fs::exists(dst / "Assets" / "a.svg"));
+    CHECK_EQ(slurp(dst / "Assets" / "a.svg"), std::string("<svg id='b'/>"));
+    CHECK(slurp(dst / "icon.json").find("\"glass\" : true") != std::string::npos);
+    CHECK_EQ(slurp(dst / "icon.json"), json::write(b->json()));
+
+    // E SALVAR POR CIMA DE SI MESMO -- Save As para a pasta em que o documento
+    // já está, que é o que o diálogo oferece por padrão -- não apaga a arte.
+    // `copy_file` com origem e destino EQUIVALENTES é erro em qualquer
+    // toolchain (foi isto que a sonda do laudo mediu como `File exists`), e um
+    // `remove` antes dele destruiria o asset em vez de copiá-lo.
+    CHECK_EQ(b->saveAs(dst), std::string(""));
+    CHECK(fs::exists(dst / "Assets" / "a.svg"));
+    CHECK_EQ(slurp(dst / "Assets" / "a.svg"), std::string("<svg id='b'/>"));
+}
+
 TEST_CASE(bundle_clone_is_deep) {
     const fs::path dir = scratch("clone");
     auto b = IconBundle::open(dir);
