@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -357,6 +358,36 @@ int run(const fs::path& initial) {
         // Onyx's generic panels are for game archives; ours replace them.
         app.setPanelVisible("Documents", false);
         app.setPanelVisible("Inspector", false);
+#ifdef ONYX_HAS_MENU_ENTRY_FILTER
+        // A barra do Onyx fica ACIMA da nossa e tem a cara de menu principal,
+        // entao o que esta nela e inerte aqui e pior do que ausente: e um
+        // convite. Tres entradas sao dessa especie, medidas 18/09 contra o
+        // checkout `dddce38`:
+        //
+        //   `Export`          -- glTF, DDS e Copy Hash, permanentemente
+        //                        cinzas, e o comentario do proprio Onyx diz
+        //                        que nunca tiveram corpo. Num editor de icone
+        //                        e ruido, e contradiz o nosso `File > Export
+        //                        Icon as Image...` logo abaixo.
+        //   `File > Close All`-- fecha documentos do Workspace e abas do
+        //                        DocumentWindow. Nao registramos nenhum
+        //                        documento la e escondemos o DocumentWindow,
+        //                        entao o item nao faz nada -- e parece o
+        //                        fechar do app, que e o nosso `File > Close`.
+        //   `File > Recent Files` -- os recentes do Onyx, rotulados com dica
+        //                        de jogo (GOW1/GOW2/GOWR) e abertos pelo
+        //                        Workspace. Para nos, lista vazia ou arquivos
+        //                        de outro app.
+        //
+        // `File > Open` fica (nos o reivindicamos acima), `File > Exit` fica
+        // (desde esta rodada ele fecha pela porta normal em vez de `exit(0)`),
+        // `Options` e `View` ficam, porque funcionam.
+        app.SetMenuEntryFilter([](std::string_view menu, std::string_view item) {
+            if (menu == "Export") return false;
+            if (menu == "File" && (item == "Close All" || item == "Recent Files")) return false;
+            return true;
+        });
+#endif
 #ifdef ONYX_HAS_DOCUMENT_WINDOW_VISIBILITY
         // And "Viewer" is not a panel, so `setPanelVisible` never reached it:
         // it is the DocumentWindow's own tab host, drawn straight from

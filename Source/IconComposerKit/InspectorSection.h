@@ -154,6 +154,9 @@ struct Section {
         const bool open = ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen);
         ++st.sections;
         if (!view.own) ++st.inherited;
+        // O inventario, gravado aqui porque aqui e o unico caminho (Panels.h,
+        // `SectionInfo`).
+        st.drawn.push_back(SectionInfo{label, std::string(prop), view.own, open});
         if (open) {
             // Said BEFORE the value, and whether or not this scope owns one: a
             // person about to move a control needs to know that the number under

@@ -71,7 +71,8 @@ target_include_directories(ic_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # corpus. Read which of the two the line says before calling anything a
 # regression.
 if(TARGET IconComposerKit)
-    target_sources(ic_tests PRIVATE test_kit_idiom.cpp test_kit_canvas.cpp test_kit_layers.cpp test_kit_inspector.cpp)
+    target_sources(ic_tests PRIVATE test_kit_idiom.cpp test_kit_canvas.cpp test_kit_layers.cpp test_kit_inspector.cpp
+                                    test_e2e_inspector.cpp test_e2e_layers.cpp)
     target_link_libraries(ic_tests PRIVATE IconComposer::Kit)
 endif()
 

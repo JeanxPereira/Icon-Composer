@@ -21,11 +21,25 @@ inline constexpr const char* kCanvasWindow = "Canvas";
 inline constexpr const char* kInspectorWindow = "Inspector##ic";
 inline constexpr const char* kDiagnosticsWindow = "Diagnostics";
 
+// UMA LINHA DA ARVORE, como ela foi PARA A TELA. Contagem nao distingue "a
+// arvore esta certa" de "a arvore tem o numero certo de linhas erradas": depois
+// de mover, renomear ou apagar um no, a pergunta e se o que aparece e o que o
+// documento diz, e so o conteudo da linha responde isso. `drawRow` e o unico
+// caminho por onde uma linha nasce, entao gravar la cobre todas.
+struct RowInfo {
+    std::string title;      // o nome que a pessoa le
+    bool layer = false;     // camada (true) ou grupo (false)
+    bool visible = true;    // o estado do interruptor de visibilidade
+    bool glass = false;     // o do vidro; sempre false num grupo, que nao o tem
+    bool selected = false;
+};
+
 struct LayersStats {
     std::size_t groups = 0, layers = 0;
     bool selectionChanged = false;
     std::size_t rows = 0;       // rows actually on screen: a closed group hides its layers
     std::size_t problems = 0;   // of those, rows drawn with a diagnostic (no art, or art gone)
+    std::vector<RowInfo> drawn;   // uma entrada por linha desenhada, de cima para baixo
 };
 LayersStats drawLayers(Session& s);
 
@@ -204,11 +218,27 @@ struct CanvasStats {
 };
 CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions);
 
+// O QUE UMA SECAO DO INSPETOR E, para quem precisa conferir de fora.
+//
+// O painel conta seções desde o inicio, e contagem nao distingue "a seção Fill
+// sumiu" de "a seção Shadow apareceu duas vezes". O nome distingue, e e o que
+// torna o inventario do inspetor uma coisa que um teste pode afirmar em vez de
+// uma lista que envelhece num comentario: `Section::begin` e o unico caminho
+// por onde uma seção nasce, entao gravar aqui cobre todas, inclusive as que
+// ainda nao existem.
+struct SectionInfo {
+    std::string label;   // o cabecalho que a pessoa le
+    std::string prop;    // a chave do documento que ela edita
+    bool own = false;    // o escopo atual tem entrada propria (nao herdada)
+    bool open = false;   // o cabecalho estava aberto, entao o corpo desenhou
+};
+
 struct InspectorStats {
     std::string title;
     std::size_t sections = 0;    // enabled sections drawn
     std::size_t inherited = 0;   // of those, marked as inherited under the scope
     std::size_t disabled = 0;    // sections drawn greyed, with the reason
+    std::vector<SectionInfo> drawn;   // uma entrada por `Section::begin`, em ordem
 };
 InspectorStats drawInspector(Session& s);
 

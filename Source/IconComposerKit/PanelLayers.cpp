@@ -309,9 +309,11 @@ RowResult drawRow(Session& s, icf::NodePath path, LayersStats& st, Pending& pend
     }
     ImGui::SetItemTooltip("Toggle visibility");
 
+    bool glassOn = false;
     if (isLayer) {
         const icf::json::Value* glass = icf::resolve(*node, "glass", icf::Context{});
         bool on = glass && glass->kind() == icf::json::Value::Kind::Bool && glass->boolean();
+        glassOn = on;
         right -= toggleW;
         ImGui::SetCursorScreenPos(ImVec2(right, rowPos.y));
         if (ImGui::Checkbox("##glass", &on)) {
@@ -319,6 +321,10 @@ RowResult drawRow(Session& s, icf::NodePath path, LayersStats& st, Pending& pend
         }
         ImGui::SetItemTooltip("Enable or disable glass effects on this layer");
     }
+
+    // O inventario da linha, gravado depois dos dois interruptores e antes do
+    // nome, que e o ultimo pedaco que pode mudar (Panels.h, `RowInfo`).
+    st.drawn.push_back(RowInfo{title, isLayer, visible, glassOn, selected});
 
     // The name, or the field that is replacing it. Everything left of the
     // toggles belongs to it.
