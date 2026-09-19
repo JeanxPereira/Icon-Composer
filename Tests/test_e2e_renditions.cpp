@@ -27,6 +27,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <new>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -638,6 +639,73 @@ TEST_CASE(e2e_renditions_the_export_leases_the_device_instead_of_sharing_it) {
     REQUIRE(canvas.poll().has_value());
     CHECK_EQ(real.asks.size(), std::size_t{3});
     CHECK_EQ(real.asks[2].size, std::uint32_t{128});
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// O ARRENDAMENTO SOBREVIVE A UM `throw` (revisão 19/09, N3).
+//
+// O caso acima cobra o portão com as duas chamadas casadas na mão. O que ele
+// NÃO pegava é a saída pelo meio: `State::drainExport` chamava
+// `renderExportFile` entre `tryLease()` e `endLease()`, e esse render aloca o
+// ladrilho inteiro a 1024 px -- `bad_alloc` é o escape que este projeto já
+// nomeia como o esperado dele, no `Work` do job (`OnyxPorts.cpp`). Com o par
+// cru, um `throw` ali deixava `leased_` de pé PARA SEMPRE: `pump()` nunca mais
+// submetia, o canvas e as miniaturas paravam de renderizar, e a única pista
+// era uma tela que não muda.
+//
+// `SharedScheduler::Lease` é o guarda que fecha isso, e é ele que este caso
+// exercita: o `throw` atravessa o escopo, o dispositivo volta, e a fila que
+// tinha ficado presa ANDA. A última metade é o que separa este caso de um que
+// só olhasse o booleano -- `leased_` falso sem `pump()` seria um editor
+// igualmente parado até o próximo pedido.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_CASE(e2e_renditions_a_throw_inside_the_export_gives_the_device_back) {
+    FakeScheduler real;
+    ick::SharedScheduler mux(real);
+    ick::RenderScheduler& canvas = mux.canvasLane();
+
+    const fs::path dir = makeBundle("arrendamento-lancou");
+    auto s = ick::Session::open(dir);
+    REQUIRE(s.has_value());
+    auto ask = [&](std::uint64_t version) {
+        icf::Context ctx;
+        canvas.request(
+            ick::RenderRequest{version, s->bundle().clone(), ctx, 512u, ick::TileRect{}, 512u});
+    };
+
+    // A exportação pega o dispositivo e o render lança.
+    bool threw = false;
+    try {
+        ick::SharedScheduler::Lease lease(mux);
+        REQUIRE(static_cast<bool>(lease));
+        CHECK(mux.leased());
+        throw std::bad_alloc{};
+    } catch (const std::bad_alloc&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(!mux.leased());
+
+    // E não é só o booleano: o dispositivo está mesmo utilizável de novo.
+    ask(1);
+    CHECK_EQ(real.asks.size(), std::size_t{1});
+    real.answer(0);
+    REQUIRE(canvas.poll().has_value());
+
+    // O OUTRO LADO DO GUARDA: um `Lease` que NÃO conseguiu o dispositivo não o
+    // devolve ao sair -- devolver o que não se pegou libertaria o render do
+    // vizinho no meio dele.
+    ask(2);
+    CHECK_EQ(real.asks.size(), std::size_t{2});
+    {
+        ick::SharedScheduler::Lease refused(mux);
+        CHECK(!static_cast<bool>(refused));
+    }
+    CHECK(!mux.leased());
+    // O pedido em voo continua em voo: nada foi resubmetido por cima dele.
+    CHECK_EQ(real.asks.size(), std::size_t{2});
+    real.answer(1);
+    REQUIRE(canvas.poll().has_value());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

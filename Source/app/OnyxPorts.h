@@ -34,9 +34,27 @@ private:
     Onyx::App::TexturePool pool_;
 };
 
-// One lane, one device: the JobQueue serialises the lane, so two renders never
-// share the device (spec 13/09 §6). The latest request replaces any earlier one
-// still pending.
+// One lane, one device -- and the lane is NOT the whole of the exclusion
+// (revisao 19/09, C1). The JobQueue serialises the renders OF THIS LANE: two
+// jobs of this scheduler never sit on the `rb::Device` at once. What it does
+// not do is exclude the SECOND consumer of that same device. The export
+// (`State::drainExport`, Source/app/Window.cpp) calls `rb::renderIcon` on the
+// FRAME thread, over this very `rb::Device`, whose `VkCommandPool` and
+// `VkQueue` are externally-synchronised objects; clicking Export with a
+// thumbnail in flight reached exactly that. Until 19/09 this header said "the
+// JobQueue serialises the lane, so two renders never share the device (spec
+// 13/09 §6)", and that sentence had been false since the export existed -- it
+// is the same claim the review caught next to `State::device`, left standing
+// here, on the class's own declaration.
+//
+// Today two renders really never share the device, but for the OPPOSITE
+// reason to the one the old sentence gave: not the JobQueue, the mux's LEASE.
+// It lives in `ick::SharedScheduler` (`Source/IconComposerKit/Renditions.h`):
+// `tryLease`/`endLease`, taken through the RAII `SharedScheduler::Lease`, and
+// the mux is the only door either consumer goes through -- while the lease is
+// up, `pump()` submits nothing to this scheduler at all.
+//
+// The latest request replaces any earlier one still pending.
 class JobScheduler : public ick::RenderScheduler {
 public:
     JobScheduler(Onyx::Services::JobQueue& jobs, rb::Device& device) : jobs_(jobs), device_(device) {}

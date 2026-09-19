@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <exception>
 #include <memory>
 #include <optional>
 #include <string_view>
@@ -171,13 +172,36 @@ struct State {
         // fica parada este quadro, DIZENDO que está parada e por quê, e tenta
         // de novo no seguinte. Um mutex aqui congelaria a janela pelos
         // segundos que o job segura o dispositivo.
-        if (!mux->tryLease()) {
-            sheet.status = doing + " — waiting for a render in flight";
-            return;
+        //
+        // E O ARRENDAMENTO DEVOLVE-SE SOZINHO (revisão 19/09, N3). Entre pegar
+        // e devolver corre `renderExportFile`, que a 1024 px aloca o ladrilho
+        // inteiro -- o MESMO escape que `OnyxPorts.cpp` já nomeia no `Work` do
+        // job ("`bad_alloc` é o escape que se espera de verdade aqui") e por
+        // causa do qual aquele lado tem um `struct Release` e um `try/catch`.
+        // Um `throw` aqui, com o par cru, deixava `leased_` de pé para sempre:
+        // `pump()` nunca mais submetia e o canvas e as miniaturas paravam de
+        // renderizar em silêncio. O `Lease` fecha o primeiro buraco por
+        // qualquer saída; o `catch` fecha o segundo, virando a exceção numa
+        // linha na tela em vez de num editor mudo.
+        ick::ExportFile made;
+        {
+            ick::SharedScheduler::Lease lease(*mux);
+            if (!lease) {
+                sheet.status = doing + " — waiting for a render in flight";
+                return;
+            }
+            try {
+                made = ick::renderExportFile(*device, session->bundle(), stem, exportSize, ctx);
+            } catch (const std::exception& e) {
+                made.context = ctx;
+                made.name = name;
+                made.error = std::string("o render lançou: ") + e.what();
+            } catch (...) {
+                made.context = ctx;
+                made.name = name;
+                made.error = "o render lançou algo que não é std::exception";
+            }
         }
-        ick::ExportFile made =
-            ick::renderExportFile(*device, session->bundle(), stem, exportSize, ctx);
-        mux->endLease();
         sheet.status = doing;
         std::string why = made.error;
         if (why.empty()) why = writeBytes(exportDir / made.name, made.png);

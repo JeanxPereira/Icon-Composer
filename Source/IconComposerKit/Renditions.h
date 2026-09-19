@@ -234,6 +234,38 @@ public:
     void endLease();
     bool leased() const { return leased_; }
 
+    // O ARRENDAMENTO COM DONO (revisão 19/09, N3).
+    //
+    // `tryLease`/`endLease` crus deixam o par a cargo de quem chama, e entre
+    // eles corre um render de 1024 px que ALOCA O LADRILHO INTEIRO. Este
+    // projeto já nomeou esse escape uma vez, no `Work` do job
+    // (`Source/app/OnyxPorts.cpp`): *"`renderNow` aloca o buffer inteiro do
+    // ladrilho, então `bad_alloc` é o escape que se espera de verdade aqui"* --
+    // e por isso o job tem um `struct Release` e um `try/catch`. O outro
+    // consumidor do mesmo dispositivo, `State::drainExport`, não tinha nem um
+    // nem outro: um `throw` entre as duas chamadas deixava `leased_` de pé
+    // PARA SEMPRE, `pump()` nunca mais submetia, e o canvas e as miniaturas
+    // paravam de renderizar EM SILÊNCIO -- sem uma frase na tela, porque a
+    // exceção também sumia.
+    //
+    // Por isso o arrendamento devolve-se sozinho, por qualquer saída. Um
+    // `Lease` que não conseguiu o dispositivo não segura nada e converte para
+    // `false`: o `if` que recusa e o guarda que devolve são o mesmo objeto, e
+    // não há como escrever um sem o outro.
+    class Lease {
+    public:
+        explicit Lease(SharedScheduler& mux) : mux_(mux.tryLease() ? &mux : nullptr) {}
+        ~Lease() {
+            if (mux_) mux_->endLease();
+        }
+        Lease(const Lease&) = delete;
+        Lease& operator=(const Lease&) = delete;
+        explicit operator bool() const { return mux_ != nullptr; }
+
+    private:
+        SharedScheduler* mux_ = nullptr;
+    };
+
 private:
     // 0 = canvas (prioridade), 1 = miniaturas. Uma classe com função virtual
     // não é agregado, então a raia tem construtor em vez de inicialização por
