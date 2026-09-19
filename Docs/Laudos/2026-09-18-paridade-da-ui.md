@@ -212,6 +212,44 @@ Para não ler a lista acima como "nada funciona":
 
 ---
 
+## 5.1. Adendo de 19/09 — a exportação nomeia SEIS renditions, e nós temos quatro aparências
+
+`[BIN]` Junto dos tipos de exportação, o binário carrega uma tabela compacta
+de nomes (blocos de 8 bytes, o resto em continuação logo abaixo — a forma
+que o Swift usa para nomes de caso de enum):
+
+```
+ExportableImage  … iOS   macOS   watchOS   iOS 
+… Default  Dark  TintedLi TintedDa ClearLig ClearDar … ght  rk  ht  k 
+```
+
+Remontado: as plataformas são **iOS, macOS, watchOS** (com `iOS` repetido
+logo depois, provavelmente o padrão), e as renditions são **seis**:
+
+| rendition | nosso `icf::Appearance` |
+|---|---|
+| `Default` | `Base` / `Light` |
+| `Dark` | `Dark` |
+| `TintedLight` | `Tinted`, metade clara |
+| `TintedDark` | `Tinted`, metade escura |
+| `ClearLight` | **não existe no nosso modelo** |
+| `ClearDark` | **não existe no nosso modelo** |
+
+Isto não contradiz o doc 01 §6, que mediu **quatro** valores para o predicado
+`appearance` no documento. São dois eixos diferentes: o documento especializa
+por quatro aparências; a UI **previsualiza e exporta** seis renditions, e as
+duas últimas nomeiam um modo — "Clear" — que o nosso modelo não tem nome para.
+`Tinted` também se divide em claro e escuro na saída, o que o predicado do
+documento não faz.
+
+**O que isso custa em paridade:** o combo de aparência deste editor oferece
+quatro entradas e o alvo oferece seis, então há dois estados do ícone que
+este editor não consegue mostrar de jeito nenhum. Antes de acrescentar as
+entradas, falta medir o que `Clear` faz no render — é pergunta para o
+binário, não para a UI, e é `[OBS]` até lá.
+
+---
+
 ## 6. O que este laudo NÃO fez
 
 - Não desmontou nenhum dos 168 tipos: o inventário é de **nome**, e nome dá
