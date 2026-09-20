@@ -20,8 +20,9 @@ VA == offset de arquivo).
 
 **Os 15 valores saíram, e eles descrevem uma gradação — dois passes de
 clarear/escurecer mais um de realce, cada um com força própria e matriz de cor
-própria. O que NÃO saiu é de onde vêm as máscaras que esses passes multiplicam,
-e sem elas os números não desenham.**
+própria. E as máscaras que esses passes multiplicam não estão neste binário:
+a caçada da §3 mostra que o `IconRendering` só COMPARA e SERIALIZA o
+`ClearMode`, nunca desenha com ele. Quem desenha é o QuartzCore, por CAFilter.**
 
 ---
 
@@ -153,45 +154,149 @@ depuração desligada. Não desmontei a testemunha de valor do `Optional`.
 
 ---
 
-## 3. O que este laudo NÃO fez, e é o que agora bloqueia
+## 3. A caçada ao consumidor — e ele não existe neste binário
 
-**Não achou o consumidor.** É o buraco, e ele é maior que o dos valores era:
+Este laudo nasceu, na manhã de 20/09, dizendo que o consumidor era o buraco. A
+caçada foi feita no mesmo dia, e a resposta é mais forte que "não achei": **em
+`IconRendering` 27.0-129 nada renderiza com o `ClearMode`.**
 
-* `ICRRenderingParameters.clearMode.getter` (`0x5FE74`) tem **0 sítios de
-  chamada** (`macho.py xref`). O leitor real é inline e lê `params + 0x120..0x1BD`
-  direto.
-* `GlobalConfiguration.usesCAFilterForClearMode` e
-  `layerUsesCAFilterForClearMode` (`0x2FA90`) também têm **0 sítios**.
-* Os símbolos que a trie tem com `ClearMode` no nome são, fora os 16 getters,
-  **só maquinário de `Codable` e de reflexão** — nenhum deles desenha.
-* `ICRRenderingMode` é uma classe ObjC (`0xCCCE8`) e nenhum seletor dela nomeia o
-  Clear; o único seletor com "clear" no nome é `forceClearBackground`
-  (`0x8E9C0`), que tem 1 chamador (`0xA560`, dentro da função de render
-  `0xA414`–`0xB104`) e é outra coisa — forçar fundo transparente, não o modo.
+### 3.1. A prova, e ela é independente de base
 
-**Logo as MÁSCARAS não foram lidas.** `DebugMode` nomeia `lighteningMask` e
-`darkeningMask`, então elas existem como imagens; de onde saem — que campo, que
-limiar, que contorno — não está neste laudo. E é isso que multiplica as forças
-acima. `[OBS]`
+Os cinco últimos campos são bytes em `+0x99`–`+0x9d`: `passOrder` seguido de
+quatro consecutivos. Um renderizador precisa de pelo menos `passOrder` (qual
+passe primeiro) e `debugMode`. Então a assinatura é **`LDRB` em quatro
+deslocamentos CONSECUTIVOS a partir do mesmo registrador-base, mais o byte em
+`x-1`** — que não depende de ONDE a struct está, e portanto pega também uma
+cópia na pilha, que é como o inlining do getter a deixaria.
 
-**Não foram lidos**, também: o `clearIconBlendMode` (`0xa6630` é o nome do campo,
-não o valor), o par `lightClearStartBrightness`/`lightClearEndBrightness` e o par
-escuro (`0xa22f0`–`0xa2390`), `chicletClear` (`0xa2018`) e `glyphsClear`
-(`0xa205a`), e `mitigatedChicletLightClear`/`mitigatedChicletDarkClear`
-(`0xa1730`, `0xa1750`). Os nomes estavam no laudo de 19/09; os valores continuam
-fora.
+`[BIN]` Varrendo o `__text` inteiro (`0x1890` + 570.776 bytes, funções
+delimitadas por `LC_FUNCTION_STARTS`), o padrão `+0x99` mais `+0x9a`–`+0x9d`
+ocorre em **duas** funções, e em nenhuma outra:
 
-**Não tocou em `Source/` nem em `Tests/`.**
+| função | o que é | como sei |
+|---|---|---|
+| `0x6D6B0` | `ClearMode.==` derivado | compara campo a campo dois operandos, 504 bytes, e a assinatura aparece **duas vezes** nela — uma por operando (`x8` e `x1`) |
+| `0x60588` | `ClearMode.encode(to:)` | 1 chamador (`0x60FC8`); as únicas chamadas que faz são `__swift_instantiateConcreteTypeFromMangledNameV2` e `__swift_project_boxed_opaque_existential_1`, e o existencial encaixotado é o `Encoder` |
+
+Uma varredura complementar por `LDR`/`LDRB` nos deslocamentos dos 15 campos, com
+base `0` e base `0x120`, concorda: **ninguém lê `params + 0x169`
+(`= 0x120 + 0x49`) nem `params + 0x1B9`**, isto é, também não há leitor inline
+pela base dos parâmetros.
+
+`[OBS]` O que a varredura não cobre: um leitor que só tocasse os `Double` — via
+`LDP`, que ela não decodifica — e nunca um dos bytes. Mas um renderizador que
+ignorasse `passOrder` e `lighteningUsesVCM` não saberia o que desenhar, então o
+risco residual é pequeno, e fica dito em vez de escondido.
+
+### 3.2. E não há shader de Clear
+
+`[BIN]` Nenhum kernel de `metallib-iconrendering/` nem de `metallib-renderbox/`
+(os `.ll` extraídos) tem "clear" no nome. O modo não tem shader próprio.
+
+### 3.3. Quem desenha é o QuartzCore, por CAFilter
+
+Os próprios campos já diziam, e fecham com o que o binário importa:
+
+* `drawByReference = true` ↔ o seletor
+  `drawLayerByReference:alpha:blendMode:flags:` (`0x8E840`);
+* `leaveChicletDarklightsToSystem = true` — a parte escura é **do sistema**,
+  dito no nome do campo;
+* `usesCAFilterForClearMode` e `layerUsesCAFilterForClearMode` — o modo tem um
+  caminho de CAFilter **no nome da bandeira**.
+
+`[BIN]` E `IconRendering` importa sete constantes do CAFilter. Mapeei os slots do
+`__got` pelos fixups encadeados (`LC_DYLD_CHAINED_FIXUPS`, 675 imports) e depois
+quem os carrega:
+
+```
+0xc5d08  _kCAFilterColorMatrix                 carregado em 0x4042C
+0xc5d10  _kCAFilterInputColorMatrix            0x40480, 0x40878
+0xc5d18  _kCAFilterInputPremultipliedValues    0x404AC
+0xc5d20  _kCAFilterPlusD                       0x40290
+0xc5d28  _kCAFilterPlusL                       0x40100
+0xc5d30  _kCAFilterScreenBlendMode             0x3FC6C
+0xc5d38  _kCAFilterVibrantColorMatrix          0x4081C
+```
+
+Os sete usos caem em **três** funções vizinhas: `0x3FAE4`–`0x40404` (a fábrica,
+que escolhe entre `PlusL`, `PlusD` e `Screen`), `0x40404`–`0x4062C` (monta um
+`colorMatrix`) e `0x406E8`–`0x40AD0` (monta o `vibrantColorMatrix`). A fábrica
+tem 3 chamadores e abre com `ldrb w8, [x0, #0x22] ; tbz w8, #0`.
+
+`[INF]` Esse `+0x22` é `GlobalConfiguration.drawMitigatedVersion`. A struct
+(descriptor `0xa32cc`) tem `layerUsesCAFilterForClearMode` medido em `+0x24`
+pelo getter `0x2FA90`, e os campos em ordem são `effectsAreEnabled`,
+`drawMitigatedVersion`, `forceEnableEnhancedGlass`, `layerUsesCAFilter…`,
+`usesCAFilter…` — quatro `Bool` de um byte, logo `+0x21`, `+0x22`, `+0x23`,
+`+0x24`, `+0x25`. **Esta fábrica é portanto o caminho MITIGADO** — é dela que
+saem `mitigatedChicletLightClear` e `mitigatedChicletDarkClear` — e não o
+principal.
+
+`[BIN]` De quebra isso fecha um `[OBS]` que `ChicletHighlights.h` deixou aberto:
+o "byte `ctx+0x21`, sem nome no metadado" que ela cita como o portão real dos
+realces é **`effectsAreEnabled`**.
+
+### 3.4. A conclusão da caçada
+
+**A máscara nunca esteve no `IconRendering` para ser achada.** O `ClearMode` é um
+bloco de parâmetros que este binário compara, serializa e **entrega** — e quem
+clareia, escurece e mistura é o compositor do sistema, o QuartzCore, com
+`colorMatrix` mais `PlusL`/`PlusD`. `lighteningMask` e `darkeningMask` do
+`DebugMode` não são imagens que o `IconRendering` gera: são os intermediários
+desse pipeline, do outro lado da fronteira.
 
 ---
 
-## 4. O que isto autoriza, e o que não
+## 4. O que continua faltando
 
-Autoriza: transcrever `ClearMode` como dados — os 15 valores acima são exatos e
-reproduzíveis pelos endereços — e reusar `rb::applyGlyphVCM` para as duas
-matrizes que estão ligadas.
+`[OBS]` A aritmética do `CA::OGL` que aplica esses filtros — agora sabidamente
+fora deste binário.
 
-**Não autoriza desenhar o Clear inteiro**, pelo mesmo motivo que o laudo de 19/09
-não autorizava, só que um degrau adiante: antes faltavam os números, agora falta
-a geometria que os números modulam. Uma máscara inventada seria a única peça
-inventada num caminho em que todo o resto é medido, e ela decidiria a imagem.
+**Não foram lidos**, ainda: o `clearIconBlendMode` (`0xa6630` é o nome do campo,
+não o valor), o par `lightClearStartBrightness`/`lightClearEndBrightness` e o par
+`chicletClear` (`0xa2018`) e `glyphsClear` (`0xa205a`), e
+`mitigatedChicletLightClear`/`mitigatedChicletDarkClear` (`0xa1730`, `0xa1750`).
+Os nomes estavam no laudo de 19/09; os valores continuam fora.
+
+Os pares `*ClearStartBrightness`/`*ClearEndBrightness`, que aquele laudo listava
+como não lidos, **saíram** — estão na §4.1 abaixo.
+
+**Não tocou em `Source/` nem em `Tests/`.**
+
+### 4.1. `ContourGradients`, de brinde e medido
+
+`[BIN]` Achado no caminho: `contourGradients` fica em `params + 0x308` (getter
+`0x69198`), tem 10 `Double` em sequência, e o construtor a preenche em
+`0x5ECFC`–`0x5ED2C` dos pools `0x986A0`–`0x986E0` mais o imediato
+`0x3FE8000000000000`:
+
+| | start | end |
+|---|---|---|
+| `lightTint` | 0,15 | 0,0 |
+| `darkTint` | 0,15 | 0,0 |
+| `lightClear` | **0,10** | **0,0** |
+| `darkClear` | **0,12** | **0,0** |
+| `fakeGlass` | 0,88 | 0,75 |
+
+Todo `end` é zero fora do `fakeGlass` — é uma rampa de brilho ao longo do
+contorno que morre. E o Clear tem o par dele, mais fraco que o do tint.
+
+---
+
+## 5. O que isto autoriza, e o que não
+
+Autoriza: transcrever `ClearMode` e `ContourGradients` como dados — os valores
+são exatos e reproduzíveis pelos endereços — e reusar `rb::applyGlyphVCM` para
+as duas matrizes que estão ligadas.
+
+**E autoriza procurar a aritmética no QuartzCore em vez de no `IconRendering`.**
+Isto não é uma substituição de fonte por conveniência: é o que a §3 mediu. O
+AquaKit decodificou exatamente esse binário, e o `_kCAFilterVibrantColorMatrix`
+que ele sela em `QuartzCore/YccMatrix.h` é **uma das sete constantes** que a
+§3.3 encontrou importadas aqui. Os dois lados nomeiam o mesmo símbolo.
+
+**Não autoriza** dizer que o AquaKit já tem o Clear. Ele tem o `YccMatrix`
+(`_kCAFilterVibrantColorMatrix`) e o material de vidro; não tem o encadeamento
+`colorMatrix` + `PlusL`/`PlusD` que o Clear pede, nem o `clearIconBlendMode`. O
+que mudou é a fronteira: a peça que falta está do outro lado dela, e do outro
+lado existe um repo que já mede aquele lado.
