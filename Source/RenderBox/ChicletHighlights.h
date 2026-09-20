@@ -233,6 +233,7 @@
 #include <string>
 #include <vector>
 
+#include "Source/RenderBox/ChicletShape.h"
 #include "Source/RenderBox/GlassSpecular.h"
 #include "Source/RenderBox/GradientOracle.h"
 #include "Source/RenderBox/PixelGrid.h"
@@ -286,10 +287,16 @@ const HighlightSlot* chicletHighlightSlots(std::size_t& count);
 // A pastilha e ABSOLUTA e so o buffer de `grid` e varrido: o contorno sai de
 // `grid.size` e o campo nasce com a origem de `grid`, entao o realce de um
 // pixel e o mesmo do render cheio (spec 2026-09-16, "Os sitios").
+//
+// `platform` e a mesma de `ChicletShape.h`: o realce nasce do contorno da
+// plataforma, entao no watchOS ele corre a borda do circulo e nao a de um
+// quadrado que nao esta la.
 std::size_t drawChicletHighlights(std::vector<float>& rgba, const PixelGrid& grid,
-                                  const SpecularArguments& args);
+                                  const SpecularArguments& args,
+                                  IconPlatform platform = IconPlatform::Main);
 std::size_t drawChicletHighlights(std::vector<float>& rgba, std::uint32_t size,
-                                  const SpecularArguments& args);
+                                  const SpecularArguments& args,
+                                  IconPlatform platform = IconPlatform::Main);
 
 // A frase que vai para `out.notes`: o que foi desenhado, com que conjunto, e o
 // que ficou por ler embaixo. `appearance` entra porque a classe medida e

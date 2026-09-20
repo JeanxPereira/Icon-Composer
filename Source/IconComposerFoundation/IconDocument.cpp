@@ -1,5 +1,7 @@
 #include "Source/IconComposerFoundation/IconDocument.h"
 
+#include <compare>
+#include <optional>
 #include <string>
 
 namespace icf {
@@ -42,38 +44,76 @@ std::string_view idiomToString(Idiom i) {
     return "base";
 }
 
-namespace {
-
-// How many predicate keys an entry constrains. The entry with the most of them
-// among those that match is the one that wins.
-int specificity(const json::Value& entry) {
-    int n = 0;
-    for (const char* key : {"idiom", "appearance", "localization", "language-direction"}) {
-        if (entry.find(key)) ++n;
+std::optional<Idiom> idiomParent(Idiom i) {
+    switch (i) {
+        case Idiom::Base: return std::nullopt;
+        case Idiom::Square: return Idiom::Base;
+        case Idiom::WatchOS: return Idiom::Base;
+        case Idiom::IOS: return Idiom::Square;
+        case Idiom::MacOS: return Idiom::Square;
     }
-    return n;
+    return std::nullopt;
 }
 
-// Does this entry's predicate hold in `ctx`?
+std::optional<Appearance> appearanceParent(Appearance a) {
+    if (a == Appearance::Base) return std::nullopt;
+    return Appearance::Base;
+}
+
+int idiomPrecedent(Idiom i) { return static_cast<int>(i); }
+int appearancePrecedent(Appearance a) { return static_cast<int>(a); }
+
+bool idiomCovers(Idiom slot, Idiom ctx) {
+    for (std::optional<Idiom> at = ctx; at; at = idiomParent(*at)) {
+        if (*at == slot) return true;
+    }
+    return false;
+}
+
+bool appearanceCovers(Appearance slot, Appearance ctx) {
+    for (std::optional<Appearance> at = ctx; at; at = appearanceParent(*at)) {
+        if (*at == slot) return true;
+    }
+    return false;
+}
+
+namespace {
+
+// O par que `SpecializationSlot.precedent` (`0xD55B8`) devolve, na ordem em que
+// `Precedent.<` (`0xD5A40`) compara: idiom primeiro, aparência desempatando.
+struct Precedent {
+    int idiom = 0;
+    int appearance = 0;
+
+    auto operator<=>(const Precedent&) const = default;
+};
+
+// O slot de uma entrada: o par `(idiom, appearance)` com `base` no lugar da
+// chave ausente, ou nada quando a entrada não pode casar contexto nenhum.
 //
 // `localization` and `language-direction` are declared by the binary and occur
 // in ZERO of the corpus's 1,740 specialization entries, so no context here can
 // satisfy one. An entry that carries either never matches -- which is the
 // conservative answer, and it is visible rather than silent: such an entry
-// simply never wins, and the property falls back.
-bool matches(const json::Value& entry, Context ctx) {
-    if (entry.find("localization") || entry.find("language-direction")) return false;
+// simply never wins, and the property falls back. O mesmo vale para uma grafia
+// que `*FromString` não reconhece: um `idiom` que este leitor não sabe ler não
+// pode ser tratado como "sem idiom", porque isso o promoveria ao default.
+std::optional<Context> slotOf(const json::Value& entry) {
+    if (entry.find("localization") || entry.find("language-direction")) return std::nullopt;
+    Context slot;
     if (const json::Value* a = entry.find("appearance")) {
-        if (a->kind() != json::Value::Kind::String) return false;
+        if (a->kind() != json::Value::Kind::String) return std::nullopt;
         auto want = appearanceFromString(a->rawString());
-        if (!want || *want != ctx.appearance) return false;
+        if (!want) return std::nullopt;
+        slot.appearance = *want;
     }
     if (const json::Value* i = entry.find("idiom")) {
-        if (i->kind() != json::Value::Kind::String) return false;
+        if (i->kind() != json::Value::Kind::String) return std::nullopt;
         auto want = idiomFromString(i->rawString());
-        if (!want || *want != ctx.idiom) return false;
+        if (!want) return std::nullopt;
+        slot.idiom = *want;
     }
-    return true;
+    return slot;
 }
 
 }  // namespace
@@ -84,15 +124,19 @@ const json::Value* resolve(const json::Value& owner, std::string_view property, 
     if (const json::Value* list = owner.find(listKey)) {
         if (list->kind() == json::Value::Kind::Array) {
             const json::Value* best = nullptr;
-            int bestScore = -1;
+            Precedent bestPrecedent;
             for (const auto& entry : list->elements()) {
                 if (entry.kind() != json::Value::Kind::Object) continue;
-                if (!matches(entry, ctx)) continue;
+                const std::optional<Context> slot = slotOf(entry);
+                if (!slot) continue;
+                if (!idiomCovers(slot->idiom, ctx.idiom)) continue;
+                if (!appearanceCovers(slot->appearance, ctx.appearance)) continue;
                 const json::Value* value = entry.find("value");
                 if (!value) continue;  // an override with nothing to override with
-                const int score = specificity(entry);
-                if (score > bestScore) {
-                    bestScore = score;
+                const Precedent precedent{idiomPrecedent(slot->idiom),
+                                          appearancePrecedent(slot->appearance)};
+                if (!best || precedent > bestPrecedent) {
+                    bestPrecedent = precedent;
                     best = value;
                 }
             }

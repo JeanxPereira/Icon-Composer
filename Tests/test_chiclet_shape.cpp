@@ -219,3 +219,66 @@ TEST_CASE(the_chiclet_radius_is_a_fixed_fraction_of_the_canvas) {
     CHECK(near(rb::chicletCornerRadius(512), 133.12, 1e-12));
     CHECK(near(rb::chicletCornerRadius(100), 26.0, 1e-12));
 }
+
+// ─── A PASTILHA DO WATCHOS E UM CIRCULO ──────────────────────────────────────
+//
+// `[BIN]` `ICRRenderingParameters.platformOverrides` (`0x5EB38`-`0x5EBA0`):
+// a entrada `1 = watchOS` tem `cornerRadius` 512,0 contra o canvas de 1024 e
+// `usesHalfPixelInset` verdadeiro. Metade do lado e o grampo de
+// `RB::clamp_corner_radii`, entao o canto come a aresta inteira.
+TEST_CASE(the_watchos_chiclet_is_the_circle_of_the_override) {
+    const auto main = rb::ChicletGeometry::of(1024, rb::IconPlatform::Main);
+    CHECK(near(main.origin, 0.0, 1e-12));
+    CHECK(near(main.side, 1024.0, 1e-12));
+    CHECK(near(main.radius, 266.24, 1e-12));
+
+    const auto watch = rb::ChicletGeometry::of(1024, rb::IconPlatform::WatchOS);
+    CHECK(near(watch.origin, 0.5, 1e-12));   // meio pixel por aresta
+    CHECK(near(watch.side, 1023.0, 1e-12));
+    CHECK(near(watch.radius, 512.0, 1e-12));
+
+    // E escala com o canvas pelo mesmo motivo que o 0,26: e uma fracao.
+    CHECK(near(rb::ChicletGeometry::of(256, rb::IconPlatform::WatchOS).radius, 128.0, 1e-12));
+
+    // So o relogio muda de forma. Os outros quatro idiomas sao a plataforma
+    // `main`, que nao tem override nenhum.
+    CHECK(rb::iconPlatformOf(icf::Idiom::WatchOS) == rb::IconPlatform::WatchOS);
+    for (auto i : {icf::Idiom::Base, icf::Idiom::Square, icf::Idiom::IOS, icf::Idiom::MacOS}) {
+        CHECK(rb::iconPlatformOf(i) == rb::IconPlatform::Main);
+    }
+}
+
+// A prova de que a forma mudou e de AREA, e ela tambem diz O QUE a forma NAO e.
+//
+// `[OBS]` O raio de meia aresta NAO produz um circulo de verdade: o canto e o
+// CONTINUO da Apple, e no regime `t == 0` (`room == 0`, o ramo misturado de
+// `continuousCornerParams`) ele fecha um pouco mais apertado que um arco --
+// 0,7822 do quadrado a 1024 contra os 0,7854 de pi/4, uma diferenca de 0,4%
+// que NAO e o meio pixel de recuo (esse custa so 0,2% em 1024). E a familia de
+// curva, e o laudo da geometria §2.2 ja tinha medido que o canto circular e
+// outra familia (o tipo 3 do `add_path`). Desenhar um arco aqui seria mais
+// redondo que o alvo e portanto outro pixel; o que esta desenhado e o que o
+// override de 512 atravessa na forma que o binario monta.
+TEST_CASE(the_watchos_clip_leaves_a_round_area_that_is_not_an_arc) {
+    constexpr std::uint32_t n = 256;
+    const auto cov = rb::chicletCoverage(n, rb::IconPlatform::WatchOS);
+    double sum = 0.0;
+    for (float c : cov) sum += c;
+    const double fraction = sum / (static_cast<double>(n) * n);
+    CHECK(near(fraction, 0.77761, 5e-4));   // medido; 1024 converge para 0,78219
+    CHECK(fraction < 3.14159265358979324 / 4.0);
+
+    // E e outra forma que a pastilha, nao a mesma com outro nome: 94% contra 78%.
+    const auto square = rb::chicletCoverage(n, rb::IconPlatform::Main);
+    double squareSum = 0.0;
+    for (float c : square) squareSum += c;
+    CHECK(near(squareSum / (static_cast<double>(n) * n), 0.93908, 5e-4));
+
+    // O meio da aresta de cima, que no quadrado e opaco, no relogio e a borda
+    // -- e cai em 0,5 EXATO, que e o meio pixel de `usesHalfPixelInset` se
+    // medindo sozinho: o contorno passa em y = 0,5 e corta a primeira linha ao
+    // meio.
+    const std::size_t midTop = static_cast<std::size_t>(n / 2);
+    CHECK(near(cov[midTop], 0.5, 1e-6));
+    CHECK(square[midTop] > 0.99f);
+}

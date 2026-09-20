@@ -662,6 +662,9 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
     // stayed green.
     std::vector<float> acc(texels * 4, 0.0f);
 
+    // Qual pastilha este contexto pede -- `ChicletShape.h`, `platformOverrides`.
+    const IconPlatform platform = iconPlatformOf(options.context.idiom);
+
     // ---- the background, before anything else --------------------------
     //
     // `[ART]` All 145 corpus documents carry a root `fill`, and until today
@@ -693,7 +696,12 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 // that keeps the ramp's parameter mapped to the canvas -- see
                 // `ChicletShape.h` for the reading, and `kBackgroundShapeNote`
                 // for what it leaves open.
-                clipToChiclet(acc, grid);
+                // E A FORMA E A DA PLATAFORMA, desde 20/09: `platformOverrides`
+                // da ao watchOS um raio de 512 num canvas de 1024 -- um circulo
+                // -- e meio pixel de recuo. Ate aqui todo idioma recortava ao
+                // mesmo quadrado de 0,26, que era a metade visual do "todo modo
+                // alem de Square vira um quadrado desalinhado".
+                clipToChiclet(acc, grid, platform);
                 out.backgroundPainted = true;
                 note(out.notes, kBackgroundShapeNote);
 
@@ -723,7 +731,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                     chicletArgs.sizeClass = options.sizeClass;
                     chicletArgs.pixelsPerPoint =
                         static_cast<double>(options.size) / kCanvasPoints;
-                    if (drawChicletHighlights(acc, grid, chicletArgs) > 0) {
+                    if (drawChicletHighlights(acc, grid, chicletArgs, platform) > 0) {
                         note(out.notes, chicletHighlightsNote(appearance, lum));
                     }
                 }

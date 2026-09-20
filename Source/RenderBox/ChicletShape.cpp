@@ -167,17 +167,48 @@ double chicletCornerRadius(std::uint32_t size) {
     return 266.24 * static_cast<double>(size) / 1024.0;
 }
 
-std::vector<float> chicletCoverage(const PixelGrid& g) {
+IconPlatform iconPlatformOf(icf::Idiom idiom) {
+    return idiom == icf::Idiom::WatchOS ? IconPlatform::WatchOS : IconPlatform::Main;
+}
+
+ChicletGeometry ChicletGeometry::of(std::uint32_t size, IconPlatform platform) {
+    const double s = static_cast<double>(size);
+    ChicletGeometry g;
+    if (platform == IconPlatform::WatchOS) {
+        // `[BIN]` §1.4: `cornerRadius` 512,0 contra o canvas de 1024 -- metade
+        // do lado, o que faz o canto comer a aresta inteira -- e
+        // `usesHalfPixelInset`, que tira meio pixel de cada aresta.
+        g.origin = 0.5;
+        g.side = s - 1.0;
+        g.radius = 512.0 * s / 1024.0;
+    } else {
+        g.origin = 0.0;
+        g.side = s;
+        g.radius = chicletCornerRadius(size);
+    }
+    if (g.side < 0.0) g.side = 0.0;
+    return g;
+}
+
+int chicletSubdivisions(double radius) {
+    return std::clamp(static_cast<int>(std::ceil(radius * 0.5)), 8, 96);
+}
+
+icf::svg::Path chicletOutline(const ChicletGeometry& g) {
+    return continuousRoundedRect(g.origin, g.origin, g.side, g.side, g.radius, g.radius);
+}
+
+std::vector<float> chicletCoverage(const PixelGrid& g, IconPlatform platform) {
     std::vector<float> cov(g.texels(), 0.0f);
     if (g.size == 0 || g.width == 0 || g.height == 0) return cov;
 
     // ABSOLUTO, e de proposito: a pastilha e a mesma forma no canvas inteiro,
     // e o buffer so decide QUAIS pixels dela sao escritos (spec 2026-09-16,
     // "Os sitios").
-    const double r = chicletCornerRadius(g.size);
-    const Path outline = continuousRoundedRect(0.0, 0.0, g.size, g.size, r, r);
+    const ChicletGeometry geom = ChicletGeometry::of(g.size, platform);
+    const Path outline = chicletOutline(geom);
 
-    const int perCubic = std::clamp(static_cast<int>(std::ceil(r * 0.5)), 8, 96);
+    const int perCubic = chicletSubdivisions(geom.radius);
     const std::vector<Point> poly = flatten(outline, perCubic);
     if (poly.size() < 3) return cov;
 
@@ -230,14 +261,14 @@ std::vector<float> chicletCoverage(const PixelGrid& g) {
     return cov;
 }
 
-std::vector<float> chicletCoverage(std::uint32_t size) {
-    return chicletCoverage(PixelGrid::full(size));
+std::vector<float> chicletCoverage(std::uint32_t size, IconPlatform platform) {
+    return chicletCoverage(PixelGrid::full(size), platform);
 }
 
-void clipToChiclet(std::vector<float>& acc, const PixelGrid& g) {
+void clipToChiclet(std::vector<float>& acc, const PixelGrid& g, IconPlatform platform) {
     const std::size_t texels = g.texels();
     if (acc.size() < texels * 4) return;
-    const std::vector<float> cov = chicletCoverage(g);
+    const std::vector<float> cov = chicletCoverage(g, platform);
     for (std::size_t i = 0; i < texels; ++i) {
         const float c = cov[i];
         if (c >= 1.0f) continue;
@@ -245,8 +276,8 @@ void clipToChiclet(std::vector<float>& acc, const PixelGrid& g) {
     }
 }
 
-void clipToChiclet(std::vector<float>& acc, std::uint32_t size) {
-    clipToChiclet(acc, PixelGrid::full(size));
+void clipToChiclet(std::vector<float>& acc, std::uint32_t size, IconPlatform platform) {
+    clipToChiclet(acc, PixelGrid::full(size), platform);
 }
 
 }  // namespace rb

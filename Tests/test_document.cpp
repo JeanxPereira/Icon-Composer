@@ -67,12 +67,69 @@ TEST_CASE(resolve_ignores_a_specialization_whose_appearance_differs) {
 // Two lists in the corpus carry an `appearance` entry beside an
 // `appearance`+`idiom` one. That is the only place specificity decides, and it
 // is the reason the rule is "most specific wins" rather than "first match wins".
+//
+// A SEGUNDA LINHA DESTE CASO PEDIA `"1"` ATE 20/09, e era o defeito escrito
+// como expectativa: ela afirmava que uma entrada `idiom: square` NAO alcanca um
+// contexto `macOS`. `[BIN]` `Idiom.parent` (`0x376F4`) diz o contrario --
+// `square` e o pai de `iOS` e de `macOS` -- e era por isso que todo modo alem
+// de Square caia no default e mostrava uma composicao que o autor nao escreveu.
 TEST_CASE(resolve_prefers_the_more_specific_predicate) {
     auto o = obj(R"({"opacity-specializations":[
         {"appearance":"dark","value":1},
         {"appearance":"dark","idiom":"square","value":2}]})");
     CHECK_EQ(text(resolve(o, "opacity", {Appearance::Dark, Idiom::Square})), std::string("2"));
-    CHECK_EQ(text(resolve(o, "opacity", {Appearance::Dark, Idiom::MacOS})), std::string("1"));
+    CHECK_EQ(text(resolve(o, "opacity", {Appearance::Dark, Idiom::MacOS})), std::string("2"));
+}
+
+// `[BIN]` A arvore de `Idiom.parent`, caso a caso: `0x157B68` da a `base` os
+// filhos `square` e `watchOS`, `0x157B38` da a `square` os filhos `iOS` e
+// `macOS`, e os tres ultimos nao tem filho nenhum.
+TEST_CASE(idiom_parent_is_the_measured_tree) {
+    CHECK(!icf::idiomParent(Idiom::Base).has_value());
+    CHECK_EQ(static_cast<int>(*icf::idiomParent(Idiom::Square)), static_cast<int>(Idiom::Base));
+    CHECK_EQ(static_cast<int>(*icf::idiomParent(Idiom::WatchOS)), static_cast<int>(Idiom::Base));
+    CHECK_EQ(static_cast<int>(*icf::idiomParent(Idiom::IOS)), static_cast<int>(Idiom::Square));
+    CHECK_EQ(static_cast<int>(*icf::idiomParent(Idiom::MacOS)), static_cast<int>(Idiom::Square));
+
+    // A familia alcanca os dois membros dela, e NAO alcanca o relogio -- que e
+    // irmao dela, nao filho.
+    CHECK(icf::idiomCovers(Idiom::Square, Idiom::IOS));
+    CHECK(icf::idiomCovers(Idiom::Square, Idiom::MacOS));
+    CHECK(!icf::idiomCovers(Idiom::Square, Idiom::WatchOS));
+    CHECK(!icf::idiomCovers(Idiom::IOS, Idiom::Square));
+    // `base` alcanca todo mundo: e por isso que a entrada sem predicado e o
+    // default, e nao por um caso a parte no laco.
+    for (auto i : {Idiom::Base, Idiom::Square, Idiom::IOS, Idiom::MacOS, Idiom::WatchOS}) {
+        CHECK(icf::idiomCovers(Idiom::Base, i));
+    }
+}
+
+// `[BIN]` `SpecializationSlot.Precedent.<` (`0xD5A40`) compara o componente 0
+// primeiro, e `SpecializationSlot.precedent` (`0xD55B8`) poe o IDIOM nele. Logo
+// uma entrada que nomeia so o idiom vence uma que nomeia so a aparencia -- o
+// que a contagem de chaves empatava, deixando ganhar a primeira da lista.
+TEST_CASE(resolve_lets_idiom_outrank_appearance) {
+    auto o = obj(R"({"opacity-specializations":[
+        {"appearance":"dark","value":1},
+        {"idiom":"square","value":2}]})");
+    CHECK_EQ(text(resolve(o, "opacity", {Appearance::Dark, Idiom::Square})), std::string("2"));
+    // E a ordem na lista nao decide: invertida, a resposta e a mesma.
+    auto p = obj(R"({"opacity-specializations":[
+        {"idiom":"square","value":2},
+        {"appearance":"dark","value":1}]})");
+    CHECK_EQ(text(resolve(p, "opacity", {Appearance::Dark, Idiom::Square})), std::string("2"));
+}
+
+// O membro vence a familia que o cobre, porque o precedente do idiom e o valor
+// cru do caso (`and x0,x0,#0xff`, `0x3A594`) e `macOS` (3) > `square` (1).
+TEST_CASE(resolve_prefers_the_member_over_the_family) {
+    auto o = obj(R"({"opacity-specializations":[
+        {"idiom":"square","value":1},
+        {"idiom":"macOS","value":2}]})");
+    CHECK_EQ(text(resolve(o, "opacity", {Appearance::Base, Idiom::MacOS})), std::string("2"));
+    CHECK_EQ(text(resolve(o, "opacity", {Appearance::Base, Idiom::IOS})), std::string("1"));
+    // O relogio nao e da familia, entao nenhuma das duas o alcanca.
+    CHECK(resolve(o, "opacity", {Appearance::Base, Idiom::WatchOS}) == nullptr);
 }
 
 // 190 of the 890 lists carry no unconstrained entry. A context that matches none

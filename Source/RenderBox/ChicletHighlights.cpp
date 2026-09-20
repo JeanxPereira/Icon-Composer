@@ -89,15 +89,15 @@ const HighlightSlot* buildChicletSlots(std::size_t& count) {
 //
 // A mesma subdivisao por cubica que `chicletCoverage` usa, para que a cobertura
 // que recorta o fundo e a que recorta os realces venham da MESMA poligonal.
-std::vector<FieldContour> chicletContours(std::uint32_t size) {
+std::vector<FieldContour> chicletContours(std::uint32_t size, IconPlatform platform) {
     using icf::svg::Path;
     using icf::svg::Point;
     using icf::svg::Segment;
     using icf::svg::SegmentKind;
 
-    const double r = chicletCornerRadius(size);
-    const Path outline = continuousRoundedRect(0.0, 0.0, size, size, r, r);
-    const int perCubic = std::clamp(static_cast<int>(std::ceil(r * 0.5)), 8, 96);
+    const ChicletGeometry geom = ChicletGeometry::of(size, platform);
+    const Path outline = chicletOutline(geom);
+    const int perCubic = chicletSubdivisions(geom.radius);
 
     FieldContour c;
     Point cur{0.0, 0.0};
@@ -206,13 +206,13 @@ ChicletAppearance classifyChicletAppearance(const ChicletLuminance& l, bool simp
 const HighlightSlot* chicletHighlightSlots(std::size_t& count) { return buildChicletSlots(count); }
 
 std::size_t drawChicletHighlights(std::vector<float>& rgba, const PixelGrid& grid,
-                                  const SpecularArguments& args) {
+                                  const SpecularArguments& args, IconPlatform platform) {
     const std::size_t n = grid.texels();
     if (grid.size == 0 || grid.width == 0 || grid.height == 0 || rgba.size() < n * 4) return 0;
 
     // O contorno e o do canvas inteiro; o campo e que nasce recortado, com a
     // origem do buffer, e amostra as linhas absolutas.
-    const std::vector<FieldContour> contours = chicletContours(grid.size);
+    const std::vector<FieldContour> contours = chicletContours(grid.size, platform);
     if (contours.empty()) return 0;
     // UMA AMOSTRA POR PIXEL, e aqui a escolha foi medida contra o gabarito e nao
     // herdada. Este campo e o unico do render cujo custo NAO cresce com o
@@ -303,8 +303,8 @@ std::size_t drawChicletHighlights(std::vector<float>& rgba, const PixelGrid& gri
 }
 
 std::size_t drawChicletHighlights(std::vector<float>& rgba, std::uint32_t size,
-                                  const SpecularArguments& args) {
-    return drawChicletHighlights(rgba, PixelGrid::full(size), args);
+                                  const SpecularArguments& args, IconPlatform platform) {
+    return drawChicletHighlights(rgba, PixelGrid::full(size), args, platform);
 }
 
 std::string chicletHighlightsNote(ChicletAppearance appearance, const ChicletLuminance& l) {

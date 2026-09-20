@@ -72,6 +72,7 @@
 #include <vector>
 
 #include "Source/CoreSVG/Path.h"
+#include "Source/IconComposerFoundation/IconDocument.h"
 #include "Source/RenderBox/PixelGrid.h"
 
 namespace rb {
@@ -110,6 +111,60 @@ icf::svg::Path continuousRoundedRect(double x, double y, double w, double h,
 // radius scales with the canvas without a second constant.
 double chicletCornerRadius(std::uint32_t size);
 
+// ─── A PLATAFORMA TROCA A FORMA, E O WATCHOS É UM CÍRCULO ────────────────────
+//
+// `[BIN]` `ICRRenderingParameters.platformOverrides` (`params + 0x248`) tem, nos
+// defaults de `0x5EB38`-`0x5EBA0`, DUAS entradas de 32 bytes, e o laudo
+// `Docs/Laudos/2026-09-15-chiclet-geometria.md` §1.4 as leu:
+//
+//     chave 1 = watchOS   cornerRadius 512,0   usesHalfPixelInset true
+//     chave 2 = tvOS      cornerRadius nil     aspectRatio 5/3
+//
+// `512,0` num canvas de 1024 é metade do lado: o canto contínuo come a aresta
+// inteira e **a pastilha do watchOS é um círculo**. A tabela é consultada em
+// `0x42A24` e o que ela não cobre cai no `defaultChicletCornerRadius`, isto é,
+// **a plataforma `main` -- onde iOS e macOS vivem -- não tem override nenhum**.
+//
+// Até 20/09 nada disto estava ligado: `renderIcon` recortava TODO idioma ao
+// mesmo chiclet de 0,26, então o ícone de watchOS saía quadrado. Era a metade
+// visual do defeito que `icf::resolve` era a outra (IconDocument.h).
+//
+// `tvOS` não está aqui, e a ausência é a afirmação: ele quer um canvas 5/3 e
+// `icf::Idiom` não tem um caso que chegue nele -- um enum com um caso que
+// nenhum documento alcança seria forma sem leitor.
+enum class IconPlatform { Main, WatchOS };
+
+// `[ART]` A ponte entre o vocabulário do arquivo e o da tabela. `watchOS` é o
+// único idioma que a tabela nomeia; os outros quatro são `main` -- e isso é
+// leitura, não medição, porque `Base` e `Square` não existem do outro lado (a
+// mesma fronteira que `ick::renditionValidFor` já declara).
+IconPlatform iconPlatformOf(icf::Idiom idiom);
+
+// O retângulo e o raio que a plataforma resolve, em pixels da grade de `size`.
+//
+// `[BIN]` `0x422BC`-`0x422DC`: `d15 = 2 × (0,5 / escala)` é subtraído do lado
+// -- meio PIXEL por aresta -- e só quando `usesHalfPixelInset` do override está
+// ligado, que hoje é só o watchOS (byte `+0x19` da entrada).
+struct ChicletGeometry {
+    double origin = 0.0;  // o canto superior esquerdo, em pixels
+    double side = 0.0;
+    double radius = 0.0;
+
+    static ChicletGeometry of(std::uint32_t size, IconPlatform platform = IconPlatform::Main);
+};
+
+// O contorno dessa geometria. Uma função só, porque a cobertura que recorta o
+// fundo e os contornos que alimentam os realces têm de sair da MESMA poligonal.
+//
+// `[BIN]` `continuousRoundedRect` já grampeia o raio a meia aresta
+// (`RB::clamp_corner_radii`, `0x80DEC`), então o 512 do watchOS contra um lado
+// encolhido de meio pixel fecha sozinho, sem um clamp inventado aqui.
+icf::svg::Path chicletOutline(const ChicletGeometry& g);
+
+// Quantos segmentos por cúbica esse raio pede. Sai daqui para que a cobertura e
+// os realces subdividam igual.
+int chicletSubdivisions(double radius);
+
 // Coverage of the chiclet over the BUFFER of `g`, row major, one float per
 // pixel in [0, 1]. Antialiased: a pixel the outline crosses gets the fraction
 // of itself that is inside.
@@ -119,17 +174,23 @@ double chicletCornerRadius(std::uint32_t size);
 // coordenada absoluta `(x + g.originX) + 0.5` (spec 2026-09-16, "O invariante
 // que governa o desenho"). Com `PixelGrid::full(size)` sai exatamente a
 // cobertura de antes.
-std::vector<float> chicletCoverage(const PixelGrid& g);
+//
+// `platform` escolhe a forma (ver `IconPlatform`); o default é `Main`, que é a
+// pastilha de sempre, float a float.
+std::vector<float> chicletCoverage(const PixelGrid& g, IconPlatform platform = IconPlatform::Main);
 
 // A mesma cobertura sobre o canvas inteiro. Fica porque um chamador que so tem
 // a resolucao nao precisa montar uma grade para dizer "tudo".
-std::vector<float> chicletCoverage(std::uint32_t size);
+std::vector<float> chicletCoverage(std::uint32_t size,
+                                   IconPlatform platform = IconPlatform::Main);
 
 // Multiplies a PREMULTIPLIED RGBA accumulator by that coverage, in place.
 //
 // Premultiplied is why all four channels are scaled and not just alpha: in that
 // form the colour carries its own alpha and a partial pixel has to dim in step.
-void clipToChiclet(std::vector<float>& acc, const PixelGrid& g);
-void clipToChiclet(std::vector<float>& acc, std::uint32_t size);
+void clipToChiclet(std::vector<float>& acc, const PixelGrid& g,
+                   IconPlatform platform = IconPlatform::Main);
+void clipToChiclet(std::vector<float>& acc, std::uint32_t size,
+                   IconPlatform platform = IconPlatform::Main);
 
 }  // namespace rb
