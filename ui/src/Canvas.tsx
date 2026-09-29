@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Sym } from "./Sym";
 import { Platform, Rendition, RENDITIONS } from "./doc";
+import { Frame } from "./core";
 
 // Centro da janela: a barra de ferramentas do alvo (inventario §2), o canvas
 // (§4) e a barra de rendicoes no rodape (§5).
@@ -19,10 +20,9 @@ export const BACKGROUNDS = [
 
 type Props = {
   title: string;
-  image: string | null;
+  frame: Frame | null;
   busy: boolean;
   error: string;
-  renderMs: number | null;
   thumbs: Record<string, string>;
   rendition: Rendition;
   onRendition: (r: Rendition) => void;
@@ -47,11 +47,6 @@ export function Canvas(p: Props) {
   const [hoverRendition, setHoverRendition] = useState<Rendition | null>(null);
   const caption = RENDITIONS.find((r) => r.id === (hoverRendition ?? p.rendition))!.label;
   const iconPx = Math.round(512 * p.zoom);
-
-  const bgStyle =
-    p.background.kind === "image"
-      ? { backgroundImage: `url("/apple/backgrounds/${p.background.file}")` }
-      : { background: p.background.tone === "dark" ? "#1e1e20" : "#f2f2f4" };
 
   return (
     <section className="center">
@@ -149,13 +144,13 @@ export function Canvas(p: Props) {
         </div>
       </div>
 
-      <div className="stage" style={bgStyle}>
+      <div className="stage">
         <div className="stage-scroll">
           {p.error ? (
             <pre className="error">{p.error}</pre>
-          ) : p.image ? (
+          ) : p.frame ? (
             <div className="icon-wrap" style={{ width: iconPx, height: iconPx }}>
-              <img className="icon" src={p.image} alt="" />
+              <FrameView frame={p.frame} />
               {p.grid && (
                 <img
                   className="grid-overlay"
@@ -171,7 +166,7 @@ export function Canvas(p: Props) {
           )}
         </div>
 
-        {p.image && (
+        {p.frame && (
           <div className="rendition-bar">
             <div className="rgroup">
               <span className="rcaption">{p.platforms.map((x) => (x === "iOS" ? "iOS, macOS" : x)).join(" · ")}</span>
@@ -208,9 +203,24 @@ export function Canvas(p: Props) {
           </div>
         )}
         <div className="stage-status">
-          {p.busy ? "renderizando…" : p.renderMs !== null ? `${Math.round(p.renderMs)} ms` : ""}
+          {p.frame ? `núcleo · ${p.frame.ms.toFixed(1)} ms${p.busy ? " · …" : ""}` : p.busy ? "renderizando…" : ""}
         </div>
       </div>
     </section>
   );
+}
+
+// O quadro do nucleo, pintado como veio: RGBA8, sem PNG no caminho.
+function FrameView({ frame }: { frame: Frame }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const c = ref.current;
+    if (!c) return;
+    if (c.width !== frame.width || c.height !== frame.height) {
+      c.width = frame.width;
+      c.height = frame.height;
+    }
+    c.getContext("2d")!.putImageData(frame.image, 0, 0);
+  }, [frame]);
+  return <canvas ref={ref} className="icon" />;
 }

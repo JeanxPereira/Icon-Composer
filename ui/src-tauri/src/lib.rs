@@ -1,9 +1,12 @@
-// Passo 1 da casca Tauri: o nucleo C++ continua sendo o `icrender`, chamado
-// como processo. O Rust aqui e so a ponte -- nenhum pixel e calculado deste
-// lado. O passo 2 troca a chamada por um processo persistente (`icserver`)
-// que mantem o cache de render quente entre edicoes.
+// A casca Tauri e so a ponte para o nucleo C++: nenhum pixel e calculado
+// deste lado. O canvas fala com o `icserver` (core.rs), um processo persistente
+// que guarda o dispositivo e o cache de render; `render_bundle` (o `icrender`
+// por chamada) fica para o que ainda nao migrou.
+
+mod core;
 
 use base64::Engine;
+use core::{Core, CoreState};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -121,12 +124,71 @@ async fn render_bundle(
     })
 }
 
+fn with_core<T>(
+    state: &CoreState,
+    f: impl FnOnce(&mut Core) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut guard = state.0.lock().map_err(|_| "o nucleo travou".to_string())?;
+    if guard.is_none() {
+        *guard = Some(Core::spawn(core_bin(), mingw_bin())?);
+    }
+    let result = f(guard.as_mut().unwrap());
+    // Um processo que caiu nao volta sozinho: o proximo comando abre outro.
+    if result.is_err() {
+        *guard = None;
+    }
+    result
+}
+
+#[tauri::command]
+async fn core_open(state: tauri::State<'_, CoreState>, path: String) -> Result<(), String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || with_core(&s, |c| c.open(&path)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn core_set_doc(state: tauri::State<'_, CoreState>, json: String) -> Result<(), String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || with_core(&s, |c| c.set_doc(&json)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+// O quadro volta como bytes crus (`ipc::Response`): o front recebe um
+// ArrayBuffer, sem PNG e sem base64 no caminho.
+#[tauri::command]
+async fn core_render(
+    state: tauri::State<'_, CoreState>,
+    size: u32,
+    appearance: String,
+    idiom: String,
+    tile: [i64; 4],
+) -> Result<tauri::ipc::Response, String> {
+    let s = state.inner().clone();
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        with_core(&s, |c| c.render(size, &appearance, &idiom, tile))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![open_document, read_asset, render_bundle])
+        .manage(CoreState::default())
+        .invoke_handler(tauri::generate_handler![
+            open_document,
+            read_asset,
+            render_bundle,
+            core_open,
+            core_set_doc,
+            core_render
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -19,14 +19,9 @@
         "minHeight": 620,
         "decorations": false,
         "center": true,
-        "transparent": true,
+        "transparent": false,
         "theme": "Light",
-        "shadow": true,
-        "windowEffects": {
-          "effects": [
-            "mica"
-          ]
-        }
+        "shadow": true
       }
     ],
     "security": {

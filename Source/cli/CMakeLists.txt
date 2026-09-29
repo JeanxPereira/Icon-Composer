@@ -26,3 +26,9 @@ add_library(IconComposer::RenderCliLib ALIAS ic_render_lib)
 
 add_executable(icrender render_main.cpp)
 target_link_libraries(icrender PRIVATE IconComposer::RenderCliLib)
+
+# icserver e o nucleo como processo persistente para a casca Tauri (ui/): abre
+# o dispositivo uma vez e guarda o RenderCache entre quadros. Protocolo no topo
+# de server_main.cpp.
+add_executable(icserver server_main.cpp)
+target_link_libraries(icserver PRIVATE IconComposer::RenderCliLib)

@@ -1,0 +1,133 @@
+// O nucleo C++ como processo persistente (`icserver`, protocolo no topo de
+// Source/cli/server_main.cpp). Um processo por app: ele guarda o dispositivo
+// Vulkan e o cache de render entre quadros. O Rust so passa comandos e bytes;
+// nenhum pixel e calculado deste lado.
+
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::PathBuf;
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::{Arc, Mutex};
+
+pub struct Core {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+#[derive(Default, Clone)]
+pub struct CoreState(pub Arc<Mutex<Option<Core>>>);
+
+fn read_line(r: &mut BufReader<ChildStdout>) -> Result<String, String> {
+    let mut s = String::new();
+    let n = r.read_line(&mut s).map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("o icserver fechou".into());
+    }
+    Ok(s.trim_end().to_string())
+}
+
+impl Core {
+    pub fn spawn(bin: PathBuf, mingw: PathBuf) -> Result<Core, String> {
+        let exe = bin.join("icserver.exe");
+        let mut cmd = Command::new(&exe);
+        let path_var = std::env::var_os("PATH").unwrap_or_default();
+        let mut paths = vec![mingw];
+        paths.extend(std::env::split_paths(&path_var));
+        cmd.env("PATH", std::env::join_paths(paths).map_err(|e| e.to_string())?);
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("nao consegui abrir {}: {e}", exe.display()))?;
+        let stdin = child.stdin.take().ok_or("sem stdin")?;
+        let mut stdout = BufReader::with_capacity(1 << 20, child.stdout.take().ok_or("sem stdout")?);
+        let hello = read_line(&mut stdout)?;
+        if hello != "ready" {
+            return Err(format!("icserver: {hello}"));
+        }
+        Ok(Core { child, stdin, stdout })
+    }
+
+    fn send(&mut self, line: &str) -> Result<(), String> {
+        self.stdin
+            .write_all(format!("{line}\n").as_bytes())
+            .and_then(|_| self.stdin.flush())
+            .map_err(|e| e.to_string())
+    }
+
+    fn expect_ok(&mut self) -> Result<(), String> {
+        let r = read_line(&mut self.stdout)?;
+        if r == "ok" {
+            Ok(())
+        } else {
+            Err(r.trim_start_matches("err ").to_string())
+        }
+    }
+
+    pub fn open(&mut self, path: &str) -> Result<(), String> {
+        self.send(&format!("open {path}"))?;
+        self.expect_ok()
+    }
+
+    pub fn set_doc(&mut self, json: &str) -> Result<(), String> {
+        self.stdin
+            .write_all(format!("doc {}\n", json.len()).as_bytes())
+            .and_then(|_| self.stdin.write_all(json.as_bytes()))
+            .and_then(|_| self.stdin.flush())
+            .map_err(|e| e.to_string())?;
+        self.expect_ok()
+    }
+
+    // Devolve 24 bytes de cabecalho (w, h, originX, originY: u32/i32 LE; ms: f64
+    // LE) seguidos do RGBA8. O front le com um DataView, sem base64 nem PNG.
+    pub fn render(
+        &mut self,
+        size: u32,
+        appearance: &str,
+        idiom: &str,
+        tile: [i64; 4],
+    ) -> Result<Vec<u8>, String> {
+        let a = if appearance.is_empty() { "-" } else { appearance };
+        let i = if idiom.is_empty() { "-" } else { idiom };
+        self.send(&format!(
+            "render {size} {a} {i} {} {} {} {}",
+            tile[0], tile[1], tile[2], tile[3]
+        ))?;
+        let head = read_line(&mut self.stdout)?;
+        let f: Vec<&str> = head.split(' ').collect();
+        if f.first() != Some(&"frame") || f.len() < 7 {
+            return Err(head.trim_start_matches("err ").to_string());
+        }
+        let parse = |s: &str| s.parse::<f64>().map_err(|e| e.to_string());
+        let (w, h, ox, oy, ms, n) = (
+            parse(f[1])? as u32,
+            parse(f[2])? as u32,
+            parse(f[3])? as i32,
+            parse(f[4])? as i32,
+            parse(f[5])?,
+            parse(f[6])? as usize,
+        );
+        let mut out = Vec::with_capacity(24 + n);
+        out.extend_from_slice(&w.to_le_bytes());
+        out.extend_from_slice(&h.to_le_bytes());
+        out.extend_from_slice(&ox.to_le_bytes());
+        out.extend_from_slice(&oy.to_le_bytes());
+        out.extend_from_slice(&ms.to_le_bytes());
+        out.resize(24 + n, 0);
+        self.stdout
+            .read_exact(&mut out[24..])
+            .map_err(|e| e.to_string())?;
+        Ok(out)
+    }
+}
+
+impl Drop for Core {
+    fn drop(&mut self) {
+        let _ = self.send("quit");
+        let _ = self.child.wait();
+    }
+}

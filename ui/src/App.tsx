@@ -5,14 +5,14 @@ import { Sidebar } from "./Sidebar";
 import { Background, Canvas, EffectsMode } from "./Canvas";
 import { Inspector, Pane } from "./Inspector";
 import { Node, Platform, Rendition, RENDITIONS, Selection, supportedPlatforms } from "./doc";
+import { coreOpen, Frame, frameToDataUrl, requestFrame } from "./core";
 import "./App.css";
 
 type Opened = { name: string; json: string; assets: string[] };
-type Rendered = { png: string; report: string };
 
-// O canvas pede 1024 e mostra em 512 x zoom: nitido ate 200 %.
-const CANVAS_RENDER = 1024;
 const THUMB = 128;
+// Acima disto o canvas estica; o proximo passo e pedir so o ladrilho visivel.
+const MAX_CANVAS_PX = 2048;
 
 export default function App() {
   const [path, setPath] = useState<string | null>(null);
@@ -28,16 +28,17 @@ export default function App() {
   const [grid, setGrid] = useState(false);
   const [zoom, setZoom] = useState(1);
 
-  const [image, setImage] = useState<string | null>(null);
+  const [frame, setFrame] = useState<Frame | null>(null);
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [renderMs, setRenderMs] = useState<number | null>(null);
 
   const load = useCallback(async (p: string) => {
     try {
       const d = await invoke<Opened>("open_document", { path: p });
       const parsed = JSON.parse(d.json) as Node;
+      await coreOpen(p);
+      setFrame(null);
       setPath(p);
       setDocName(d.name);
       setDoc(parsed);
@@ -58,50 +59,42 @@ export default function App() {
 
   const appearanceOf = (r: Rendition) => RENDITIONS.find((x) => x.id === r)!.appearance;
 
-  // O render do canvas.
+  // O canvas: o nucleo renderiza no tamanho dos pixels da tela (512 x zoom x
+  // densidade), entao o zoom e um render novo, nao uma textura esticada.
   useEffect(() => {
     if (!path) return;
-    let live = true;
+    let alive = true;
+    const size = Math.min(MAX_CANVAS_PX, Math.round(512 * zoom * window.devicePixelRatio));
     setBusy(true);
-    const t0 = performance.now();
-    invoke<Rendered>("render_bundle", {
-      path,
-      size: CANVAS_RENDER,
-      idiom: platform,
-      appearance: appearanceOf(rendition),
-    })
-      .then((r) => {
-        if (!live) return;
-        setImage(r.png);
-        setRenderMs(performance.now() - t0);
+    requestFrame("canvas", { size, appearance: appearanceOf(rendition), idiom: platform })
+      .then((f) => {
+        if (!alive) return;
+        setFrame(f);
         setError("");
       })
-      .catch((e) => live && setError(String(e)))
-      .finally(() => live && setBusy(false));
+      .catch((e) => alive && e !== "substituido" && setError(String(e)))
+      .finally(() => alive && setBusy(false));
     return () => {
-      live = false;
+      alive = false;
     };
-  }, [path, platform, rendition]);
+  }, [path, platform, rendition, zoom]);
 
-  // As miniaturas da barra de rendicoes: as tres aparencias na plataforma
-  // corrente, e as plataformas na aparencia corrente.
+  // As miniaturas da barra de rendicoes, do mesmo nucleo, depois do canvas.
   useEffect(() => {
     if (!path || !doc) return;
-    let live = true;
+    let alive = true;
     setThumbs({});
     const jobs: [string, string, string][] = [
       ...RENDITIONS.map((r) => [`r:${r.id}`, platform, r.appearance] as [string, string, string]),
-      ...supportedPlatforms(doc).map(
-        (pl) => [`p:${pl}`, pl, appearanceOf(rendition)] as [string, string, string],
-      ),
+      ...supportedPlatforms(doc).map((pl) => [`p:${pl}`, pl, appearanceOf(rendition)] as [string, string, string]),
     ];
     for (const [key, idiom, appearance] of jobs) {
-      invoke<Rendered>("render_bundle", { path, size: THUMB, idiom, appearance })
-        .then((r) => live && setThumbs((t) => ({ ...t, [key]: r.png })))
+      requestFrame(`thumb:${key}`, { size: THUMB, idiom, appearance })
+        .then((f) => alive && setThumbs((t) => ({ ...t, [key]: frameToDataUrl(f) })))
         .catch(() => {});
     }
     return () => {
-      live = false;
+      alive = false;
     };
   }, [path, doc, platform, rendition]);
 
@@ -116,8 +109,15 @@ export default function App() {
     return () => window.removeEventListener("wheel", onWheel);
   }, []);
 
+  // O fundo do viewport cobre a JANELA INTEIRA; a barra lateral e o inspetor
+  // sao vidro fosco sobre ele, como no alvo.
+  const backdrop =
+    background.kind === "image"
+      ? { backgroundImage: `url("/apple/backgrounds/${background.file}")` }
+      : { background: background.tone === "dark" ? "#1e1e20" : "#f2f2f4" };
+
   return (
-    <div className={`window${sidebarHidden ? " no-sidebar" : ""}`}>
+    <div className={`window${sidebarHidden ? " no-sidebar" : ""}`} style={backdrop}>
       {!sidebarHidden && (
         <Sidebar
           path={path}
@@ -130,10 +130,9 @@ export default function App() {
       )}
       <Canvas
         title={docName || "Icon Composer"}
-        image={image}
+        frame={frame}
         busy={busy}
         error={error}
-        renderMs={renderMs}
         thumbs={thumbs}
         rendition={rendition}
         onRendition={setRendition}
@@ -152,14 +151,7 @@ export default function App() {
         sidebarHidden={sidebarHidden}
         onToggleSidebar={() => setSidebarHidden(false)}
       />
-      <Inspector
-        doc={doc}
-        selection={selection}
-        rendition={rendition}
-        platform={platform}
-        pane={pane}
-        onPane={setPane}
-      />
+      <Inspector doc={doc} selection={selection} rendition={rendition} platform={platform} pane={pane} onPane={setPane} />
     </div>
   );
 }

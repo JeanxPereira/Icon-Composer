@@ -9,7 +9,8 @@
   --accent: #0a63e3;
   --accent-text: #ffffff;
   --sep: rgba(0, 0, 0, 0.08);
-  --panel: rgba(243, 243, 245, 0.55);
+  --panel: rgba(250, 249, 248, 0.52);
+  --glass: blur(40px) saturate(1.7);
   --box: rgba(0, 0, 0, 0.035);
   --box-strong: rgba(0, 0, 0, 0.06);
   --control: rgba(255, 255, 255, 0.78);
@@ -27,8 +28,7 @@ body,
 #root {
   margin: 0;
   height: 100%;
-  /* a Mica do Windows 11 fica ATRAS da pagina: nada aqui pode ser opaco */
-  background: transparent;
+  background: #2a2a2e;
   overflow: hidden;
 }
 
@@ -67,11 +67,15 @@ button:disabled {
 
 /* ---- a janela: tres colunas ------------------------------------------ */
 
+/* O fundo do viewport cobre a janela INTEIRA (estilo inline vindo do App);
+   barra lateral, barra de ferramentas e inspetor sao vidro fosco sobre ele. */
 .window {
   display: grid;
   grid-template-columns: 300px 1fr 300px;
   height: 100%;
-  background: transparent;
+  background-color: #2a2a2e;
+  background-size: cover;
+  background-position: center;
 }
 
 .window.no-sidebar {
@@ -84,7 +88,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   background: var(--panel);
-  backdrop-filter: blur(30px) saturate(1.4);
+  backdrop-filter: var(--glass);
   border-right: 1px solid var(--sep);
   min-width: 0;
 }
@@ -240,7 +244,6 @@ button:disabled {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: var(--panel);
 }
 
 .toolbar {
@@ -250,6 +253,8 @@ button:disabled {
   gap: 8px;
   padding: 0 12px 0 20px;
   flex: none;
+  background: var(--panel);
+  backdrop-filter: var(--glass);
   border-bottom: 1px solid var(--sep);
 }
 
@@ -374,8 +379,6 @@ button:disabled {
   position: relative;
   flex: 1;
   min-height: 0;
-  background-size: cover;
-  background-position: center;
 }
 
 .stage-scroll {
@@ -493,7 +496,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   background: var(--panel);
-  backdrop-filter: blur(30px) saturate(1.4);
+  backdrop-filter: var(--glass);
   border-left: 1px solid var(--sep);
   min-width: 0;
 }
