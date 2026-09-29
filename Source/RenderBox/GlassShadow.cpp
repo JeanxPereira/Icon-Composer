@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
+#include <utility>
 
 #include "Source/RenderBox/BlurKernel.h"
 #include "Source/RenderBox/DistanceField.h"
@@ -22,9 +24,8 @@ namespace {
 // truncation -- `ceil(2.8 * sigma)` as the binary does it, against the `3.0`
 // this copy used to write. The edge rule and the premultiplication are unchanged
 // and their reasons are in both headers.
-std::vector<float> gaussian(const std::vector<float>& src, std::uint32_t w, std::uint32_t h,
-                            double sigma) {
-    return blurPremultipliedRgba(src, w, h, sigma);
+void gaussian(std::vector<float>& img, std::uint32_t w, std::uint32_t h, double sigma) {
+    blurPremultipliedRgbaInPlace(img, w, h, sigma);
 }
 
 // The translation of step 2, by a possibly fractional number of pixels.
@@ -35,19 +36,19 @@ std::vector<float> gaussian(const std::vector<float>& src, std::uint32_t w, std:
 // resampling is an artefact of working on a raster. It is named here rather than
 // passed off as a transcription. It costs nothing whenever the offset lands on
 // whole pixels, which `s * 32` does at every power-of-two target size.
-std::vector<float> translate(const std::vector<float>& src, std::uint32_t w, std::uint32_t h,
+// It takes its input BY VALUE and premultiplies it in place: the only caller
+// hands over a buffer it is done with.
+std::vector<float> translate(std::vector<float> pre, std::uint32_t w, std::uint32_t h,
                              double dx, double dy) {
     const std::size_t texels = static_cast<std::size_t>(w) * h;
+    if (pre.size() < texels * 4) return std::vector<float>(texels * 4, 0.0f);
+    if (dx == 0.0 && dy == 0.0) return pre;
     std::vector<float> out(texels * 4, 0.0f);
-    if (src.size() < texels * 4) return out;
-    if (dx == 0.0 && dy == 0.0) return src;
 
-    std::vector<float> pre(texels * 4);
     parallelRanges(h, texels * 4, [&](std::size_t y0, std::size_t y1) {
         for (std::size_t t = y0 * w; t < y1 * w; ++t) {
-            const float a = src[t * 4 + 3];
-            for (int c = 0; c < 3; ++c) pre[t * 4 + c] = src[t * 4 + c] * a;
-            pre[t * 4 + 3] = a;
+            const float a = pre[t * 4 + 3];
+            for (int c = 0; c < 3; ++c) pre[t * 4 + c] = pre[t * 4 + c] * a;
         }
     });
 
@@ -174,33 +175,47 @@ ShadowGeometry shadowGeometry(std::uint32_t size, IconSizeClass sizeClass,
     return out;
 }
 
-std::vector<float> shadowRingMask(const std::vector<float>& art, std::uint32_t width,
-                                  std::uint32_t height, double ringWidth) {
+namespace {
+
+// The ring as a VALUE per texel, handed to `put(t, value)` -- `shadowRingMask`
+// stores it, `shadowImage` multiplies it straight into the alpha, and neither
+// needs the other's buffer. `put` is called exactly once per texel, from a
+// worker that owns t's row. Returns false for the inputs `shadowRingMask`
+// answers with an empty mask.
+template <typename Put>
+bool shadowRingEach(const std::vector<float>& art, std::uint32_t width, std::uint32_t height,
+                    double ringWidth, Put&& put) {
     const std::size_t texels = static_cast<std::size_t>(width) * height;
-    if (width == 0 || height == 0 || art.size() < texels * 4) return {};
+    if (width == 0 || height == 0 || art.size() < texels * 4) return false;
     // A non-positive width is the degenerate band: `maxAlpha == minAlpha`, and
     // the remap's `1 / (maxAlpha - minAlpha)` is infinite, so every alpha above
     // the contour saturates to one. That is the identity mask, not an empty one.
-    if (!(ringWidth > 0.0)) return std::vector<float>(texels, 1.0f);
+    if (!(ringWidth > 0.0)) {
+        parallelRanges(height, texels, [&](std::size_t y0, std::size_t y1) {
+            for (std::size_t t = y0 * width; t < y1 * width; ++t) put(t, 1.0f);
+        });
+        return true;
+    }
 
     const int w = static_cast<int>(width);
     const int h = static_cast<int>(height);
     const int n = std::max(w, h);
 
     // Seeds are the texels OUTSIDE the silhouette. Everything else starts at
-    // infinity and the transform brings it down to its true distance.
-    std::vector<double> sq(texels);
-    for (std::size_t t = 0; t < texels; ++t) {
-        sq[t] = art[t * 4 + 3] >= 0.5f ? kEdtInf : 0.0;
-    }
+    // infinity and the transform brings it down to its true distance. Not
+    // zeroed first: the seed loop writes every element.
+    std::unique_ptr<double[]> sq(new double[texels]);
+    parallelRanges(height, texels, [&](std::size_t y0, std::size_t y1) {
+        for (std::size_t t = y0 * width; t < y1 * width; ++t) {
+            sq[t] = art[t * 4 + 3] >= 0.5f ? kEdtInf : 0.0;
+        }
+    });
 
     // ONE COLUMN, THEN ONE ROW, PER WORKER -- the same split `edt2d` makes for
     // the same reason: `edtSquared1d` is a pure function of the line it is
-    // handed, and no line reads another's cells. The envelope's scratch
-    // (`f`, `d`, `v`, `z`) moves inside the worker so it is not shared, which
-    // is the whole of what changes here. No number does.
-    // The column half reads its columns a tile at a time (see the header).
-    edtSquaredColumns(sq.data(), w, h, nullptr);
+    // handed, and no line reads another's cells. The column half reads its
+    // columns a tile at a time (see `edtSquaredColumns`).
+    edtSquaredColumns(sq.get(), w, h, nullptr);
     parallelRanges(static_cast<std::size_t>(h), texels * 8, [&](std::size_t y0, std::size_t y1) {
         std::vector<double> f(static_cast<std::size_t>(n));
         std::vector<double> d(static_cast<std::size_t>(n));
@@ -214,11 +229,15 @@ std::vector<float> shadowRingMask(const std::vector<float>& art, std::uint32_t w
         }
     });
 
-    std::vector<float> mask(texels, 0.0f);
-    for (int y = 0; y < h; ++y) {
+    // Per texel, so split by row too: t reads its own art alpha and `sq`.
+    parallelRanges(static_cast<std::size_t>(h), texels * 8, [&](std::size_t y0, std::size_t y1) {
+    for (int y = static_cast<int>(y0); y < static_cast<int>(y1); ++y) {
         for (int x = 0; x < w; ++x) {
             const std::size_t t = static_cast<std::size_t>(y) * w + x;
-            if (art[t * 4 + 3] < 0.5f) continue;   // outside: the mask is zero there
+            if (art[t * 4 + 3] < 0.5f) {   // outside: the mask is zero there
+                put(t, 0.0f);
+                continue;
+            }
             double dist = std::sqrt(sq[t]);
             // The empty border ring of the target's SDF, as a distance to four
             // virtual outside rows one step beyond each edge.
@@ -227,8 +246,22 @@ std::vector<float> shadowRingMask(const std::vector<float>& art, std::uint32_t w
             dist = std::min(dist, static_cast<double>(w - x));
             dist = std::min(dist, static_cast<double>(h - y));
             const double depth = dist - 0.5;   // centres to contour
-            mask[t] = static_cast<float>(std::clamp(depth / ringWidth, 0.0, 1.0));
+            put(t, static_cast<float>(std::clamp(depth / ringWidth, 0.0, 1.0)));
         }
+    }
+    });
+    return true;
+}
+
+}  // namespace
+
+std::vector<float> shadowRingMask(const std::vector<float>& art, std::uint32_t width,
+                                  std::uint32_t height, double ringWidth) {
+    const std::size_t texels = static_cast<std::size_t>(width) * height;
+    std::vector<float> mask(texels, 0.0f);
+    if (!shadowRingEach(art, width, height, ringWidth,
+                        [&](std::size_t t, float m) { mask[t] = m; })) {
+        return {};
     }
     return mask;
 }
@@ -256,14 +289,13 @@ std::vector<float> shadowImage(const std::vector<float>& art, std::uint32_t widt
     // the blur is a filter on that state's layer, so the clip is inside it --
     // see the header, where that ordering is `[INF]` and argued. It multiplies
     // ALPHA only: `clipLayerWithAlpha:` masks coverage, it does not tint.
+    //
+    // The mask is multiplied in as it is computed rather than stored first. It
+    // is read off `art`, which is what `img` still held at this point, so the
+    // alpha it multiplies is untouched when its own value arrives.
     if (geometry.ringWidth) {
-        const std::vector<float> mask =
-            shadowRingMask(img, width, height, *geometry.ringWidth);
-        if (mask.size() == texels) {
-            parallelRanges(height, texels, [&](std::size_t y0, std::size_t y1) {
-                for (std::size_t t = y0 * width; t < y1 * width; ++t) img[t * 4 + 3] *= mask[t];
-            });
-        }
+        shadowRingEach(art, width, height, *geometry.ringWidth,
+                       [&](std::size_t t, float m) { img[t * 4 + 3] *= m; });
     }
 
     if (shadowUsesVibrantTable(style)) {
@@ -291,9 +323,8 @@ std::vector<float> shadowImage(const std::vector<float>& art, std::uint32_t widt
     // STEPS 2 AND 3. They commute -- a Gaussian is shift invariant -- so the blur
     // runs first, on the art's own grid, and the translation resamples once
     // afterwards instead of the resampling being fed into the kernel.
-    img = gaussian(img, width, height, geometry.blurRadius * kShadowBlurSigmaPerRadius);
-    img = translate(img, width, height, geometry.offsetX, geometry.offsetY);
-    return img;
+    gaussian(img, width, height, geometry.blurRadius * kShadowBlurSigmaPerRadius);
+    return translate(std::move(img), width, height, geometry.offsetX, geometry.offsetY);
 }
 
 double shadowOverdrawAlpha(double translucency, ShadowStyle style, IconSizeClass sizeClass,

@@ -239,6 +239,12 @@ int blurReduceFactorForVariance(double variance);
 std::vector<float> blurPremultipliedRgba(const std::vector<float>& src, std::uint32_t width,
                                          std::uint32_t height, double sigma);
 
+// The same blur, over `img` itself: for a caller that no longer needs the
+// input, which saves the copy. When it blurs, `img` comes back holding exactly
+// `width x height` texels, as the returned vector above would.
+void blurPremultipliedRgbaInPlace(std::vector<float>& img, std::uint32_t width,
+                                  std::uint32_t height, double sigma);
+
 // ---- the group's `blur-material`: the SURFACE ------------------------------
 //
 // `[ART]` The corpus carries 123 `blur-material` keys -- **123 GROUPS over 73
