@@ -1,6 +1,8 @@
 import { useState } from "react";
+import { useCallback } from "react";
 import { Sym } from "./Sym";
-import { Platform, Rendition, RENDITIONS } from "./doc";
+import { Node, Platform, Rendition, RENDITIONS } from "./doc";
+import { LiveIcon } from "./live/LiveIcon";
 
 // Centro da janela: a barra de ferramentas do alvo (inventario §2), o canvas
 // (§4) e a barra de rendicoes no rodape (§5).
@@ -18,6 +20,10 @@ export const BACKGROUNDS = [
 ];
 
 type Props = {
+  path: string | null;
+  doc: Node | null;
+  live: boolean;
+  onLive: (v: boolean) => void;
   title: string;
   image: string | null;
   busy: boolean;
@@ -45,6 +51,9 @@ type Props = {
 export function Canvas(p: Props) {
   const [bgMenu, setBgMenu] = useState(false);
   const [hoverRendition, setHoverRendition] = useState<Rendition | null>(null);
+  const [liveMs, setLiveMs] = useState<number | null>(null);
+  const onDrawn = useCallback((ms: number) => setLiveMs(ms), []);
+  const appearance = RENDITIONS.find((r) => r.id === p.rendition)!.appearance;
   const caption = RENDITIONS.find((r) => r.id === (hoverRendition ?? p.rendition))!.label;
   const iconPx = Math.round(512 * p.zoom);
 
@@ -153,6 +162,17 @@ export function Canvas(p: Props) {
         <div className="stage-scroll">
           {p.error ? (
             <pre className="error">{p.error}</pre>
+          ) : p.live && p.path && p.doc ? (
+            <div className="icon-wrap" style={{ width: iconPx, height: iconPx }}>
+              <LiveIcon path={p.path} doc={p.doc} appearance={appearance} idiom={p.platform} cssSize={iconPx} onDrawn={onDrawn} />
+              {p.grid && (
+                <img
+                  className="grid-overlay"
+                  src={`/apple/custom/${p.platform === "watchOS" ? "appicongrid.watchos" : "appicongrid.ios"}.svg`}
+                  alt=""
+                />
+              )}
+            </div>
           ) : p.image ? (
             <div className="icon-wrap" style={{ width: iconPx, height: iconPx }}>
               <img className="icon" src={p.image} alt="" />
@@ -171,7 +191,7 @@ export function Canvas(p: Props) {
           )}
         </div>
 
-        {p.image && (
+        {(p.image || (p.live && p.doc)) && (
           <div className="rendition-bar">
             <div className="rgroup">
               <span className="rcaption">{p.platforms.map((x) => (x === "iOS" ? "iOS, macOS" : x)).join(" · ")}</span>
@@ -207,9 +227,19 @@ export function Canvas(p: Props) {
             </div>
           </div>
         )}
-        <div className="stage-status">
-          {p.busy ? "renderizando…" : p.renderMs !== null ? `${Math.round(p.renderMs)} ms` : ""}
-        </div>
+        {p.doc && (
+          <button
+            className="stage-status"
+            title="Alterna entre o render ao vivo (navegador, sem vidro ainda) e o render fiel do nucleo (CPU)"
+            onClick={() => p.onLive(!p.live)}
+          >
+            {p.live
+              ? `ao vivo · ${liveMs !== null ? liveMs.toFixed(1) : "–"} ms · sem vidro`
+              : p.busy
+                ? "fiel · renderizando…"
+                : `fiel · ${p.renderMs !== null ? Math.round(p.renderMs) : "–"} ms`}
+          </button>
+        )}
       </div>
     </section>
   );

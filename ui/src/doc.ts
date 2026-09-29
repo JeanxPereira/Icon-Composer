@@ -79,6 +79,15 @@ export function displayName(node: Node, fallback: string): string {
   return fallback;
 }
 
+// A cor em numeros, como o nucleo a usa: componentes tomados como sRGB (o
+// nucleo tambem nao converte P3 -- ele anota a falta).
+export function parseColor(spec: string): [number, number, number, number] {
+  const [space, rest] = spec.split(":");
+  const v = (rest ?? "").split(",").map(Number);
+  if (space === "extended-gray" || space === "gray") return [v[0], v[0], v[0], v[1] ?? 1];
+  return [v[0], v[1], v[2], v[3] ?? 1];
+}
+
 // "srgb:0.1,0.2,0.3,1" / "display-p3:..." / "extended-gray:w,a" -> CSS
 export function cssColor(spec: string): string {
   const [space, rest] = spec.split(":");
