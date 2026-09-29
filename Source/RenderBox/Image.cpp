@@ -2,7 +2,50 @@
 
 #include <cstring>
 
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+#include <immintrin.h>
+#define RB_HAVE_F16C 1
+#endif
+
 namespace rb {
+
+namespace {
+
+// Half to float is EXACT -- every half is a float -- so the vector instruction
+// and the scalar `_Float16` cast produce the same bits, and the choice between
+// them is speed only. The scalar loop was 0.13 s of the same 1.67 s render.
+void halvesToFloatsScalar(const std::uint16_t* src, float* dst, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) {
+        _Float16 h = 0;
+        std::memcpy(&h, &src[i], sizeof h);
+        dst[i] = static_cast<float>(h);
+    }
+}
+
+#ifdef RB_HAVE_F16C
+__attribute__((target("f16c,avx"))) void halvesToFloatsF16c(const std::uint16_t* src,
+                                                              float* dst, std::size_t n) {
+    std::size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        const __m128i h = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i));
+        _mm256_storeu_ps(dst + i, _mm256_cvtph_ps(h));
+    }
+    halvesToFloatsScalar(src + i, dst + i, n - i);
+}
+#endif
+
+void halvesToFloats(const std::uint16_t* src, float* dst, std::size_t n) {
+#ifdef RB_HAVE_F16C
+    static const bool f16c = __builtin_cpu_supports("f16c") && __builtin_cpu_supports("avx");
+    if (f16c) {
+        halvesToFloatsF16c(src, dst, n);
+        return;
+    }
+#endif
+    halvesToFloatsScalar(src, dst, n);
+}
+
+}  // namespace
 
 Result<Image> Image::create(Device& device, std::uint32_t width, std::uint32_t height,
                             VkFormat format) {
@@ -118,9 +161,22 @@ Result<std::vector<Texel>> readBack(Device& device, const Image& image) {
     const std::size_t texels = static_cast<std::size_t>(image.width()) * image.height();
     const VkDeviceSize bytes = texels * 2 * sizeof(std::uint16_t);
 
+    // CACHED FIRST, and it is the whole cost of this function. Memory that is
+    // visible and coherent but NOT cached is write-combined: the CPU reads it
+    // uncached, and on this machine that was ~220 MB/s -- 0.24 s of a 1.67 s
+    // render of the heaviest corpus document spent in one memcpy
+    // (`Docs/Laudos/2026-09-29-perfil-do-render.md` §3.1). Coherent AND cached
+    // needs no invalidate. A device with no such type falls back to what was
+    // asked before, and the bytes read are the same either way.
     auto stage = Buffer::create(device, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                    VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    if (!stage) {
+        stage = Buffer::create(device, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    }
     if (!stage) return std::unexpected(stage.error());
 
     VkImage src = image.handle();
@@ -152,16 +208,10 @@ Result<std::vector<Texel>> readBack(Device& device, const Image& image) {
     });
     if (!ran) return std::unexpected(ran.error());
 
-    std::vector<std::uint16_t> raw(texels * 2);
-    std::memcpy(raw.data(), stage->mapped(), bytes);
     std::vector<Texel> out(texels);
-    for (std::size_t i = 0; i < texels; ++i) {
-        _Float16 hx = 0, hy = 0;
-        std::memcpy(&hx, &raw[i * 2], sizeof hx);
-        std::memcpy(&hy, &raw[i * 2 + 1], sizeof hy);
-        out[i].x = static_cast<float>(hx);
-        out[i].y = static_cast<float>(hy);
-    }
+    static_assert(sizeof(Texel) == 2 * sizeof(float), "Texel is read as a flat float pair");
+    halvesToFloats(static_cast<const std::uint16_t*>(stage->mapped()),
+                   reinterpret_cast<float*>(out.data()), texels * 2);
     return out;
 }
 
