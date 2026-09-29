@@ -350,12 +350,14 @@ std::vector<float> shadowOverdrawImage(const std::vector<float>& shadow,
     std::vector<float> out(shadow.begin(),
                            shadow.begin() + static_cast<std::ptrdiff_t>(texels * 4));
     const float k = static_cast<float>(clipAlpha);
-    for (std::size_t t = 0; t < texels; ++t) {
+    parallelRanges(height, texels * 2, [&](std::size_t y0, std::size_t y1) {
+    for (std::size_t t = y0 * width; t < y1 * width; ++t) {
         // The clip multiplies COVERAGE, so it lands on alpha alone -- the same
         // rule `shadowImage` already follows for the ring. The content's own
         // colour never enters: `clipLayerWithAlpha:` clips, it does not tint.
         out[t * 4 + 3] *= content[t * 4 + 3] * k;
     }
+    });
     return out;
 }
 

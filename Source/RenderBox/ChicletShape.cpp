@@ -1,5 +1,7 @@
 #include "Source/RenderBox/ChicletShape.h"
 
+#include "Source/RenderBox/Parallel.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -219,8 +221,13 @@ std::vector<float> chicletCoverage(const PixelGrid& g, IconPlatform platform) {
     constexpr int kSubRows = 4;
     const double w = 1.0 / kSubRows;
 
+    // One row per worker: a row sums only its own sub-rows, in the same order,
+    // into its own floats. `xs` is per worker.
+    parallelRanges(g.height, g.texels() * 16 + static_cast<std::size_t>(g.height) * kSubRows *
+                                                     poly.size() * 4,
+                   [&](std::size_t r0, std::size_t r1) {
     std::vector<double> xs;
-    for (std::uint32_t ly = 0; ly < g.height; ++ly) {
+    for (std::uint32_t ly = static_cast<std::uint32_t>(r0); ly < static_cast<std::uint32_t>(r1); ++ly) {
         const std::int64_t py = static_cast<std::int64_t>(ly) + g.originY;
         float* row = cov.data() + static_cast<std::size_t>(ly) * g.width;
         for (int s = 0; s < kSubRows; ++s) {
@@ -256,8 +263,9 @@ std::vector<float> chicletCoverage(const PixelGrid& g, IconPlatform platform) {
                 }
             }
         }
+        for (std::uint32_t x = 0; x < g.width; ++x) row[x] = std::clamp(row[x], 0.0f, 1.0f);
     }
-    for (float& c : cov) c = std::clamp(c, 0.0f, 1.0f);
+    });
     return cov;
 }
 
