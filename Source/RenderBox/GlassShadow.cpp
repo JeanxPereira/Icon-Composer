@@ -43,11 +43,13 @@ std::vector<float> translate(const std::vector<float>& src, std::uint32_t w, std
     if (dx == 0.0 && dy == 0.0) return src;
 
     std::vector<float> pre(texels * 4);
-    for (std::size_t t = 0; t < texels; ++t) {
-        const float a = src[t * 4 + 3];
-        for (int c = 0; c < 3; ++c) pre[t * 4 + c] = src[t * 4 + c] * a;
-        pre[t * 4 + 3] = a;
-    }
+    parallelRanges(h, texels * 4, [&](std::size_t y0, std::size_t y1) {
+        for (std::size_t t = y0 * w; t < y1 * w; ++t) {
+            const float a = src[t * 4 + 3];
+            for (int c = 0; c < 3; ++c) pre[t * 4 + c] = src[t * 4 + c] * a;
+            pre[t * 4 + 3] = a;
+        }
+    });
 
     // Split by destination row: `pre` is finished and read-only from here, and
     // every iteration writes only its own four floats.
@@ -267,7 +269,9 @@ std::vector<float> shadowImage(const std::vector<float>& art, std::uint32_t widt
         const std::vector<float> mask =
             shadowRingMask(img, width, height, *geometry.ringWidth);
         if (mask.size() == texels) {
-            for (std::size_t t = 0; t < texels; ++t) img[t * 4 + 3] *= mask[t];
+            parallelRanges(height, texels, [&](std::size_t y0, std::size_t y1) {
+                for (std::size_t t = y0 * width; t < y1 * width; ++t) img[t * 4 + 3] *= mask[t];
+            });
         }
     }
 
@@ -277,16 +281,20 @@ std::vector<float> shadowImage(const std::vector<float>& art, std::uint32_t widt
         // and not as a multiply by one, because the two differ on a NaN and
         // because the skip is what the binary does.
         if (v != 1.0) {
-            for (std::size_t t = 0; t < texels; ++t) {
-                for (int c = 0; c < 3; ++c) {
-                    img[t * 4 + c] = static_cast<float>(img[t * 4 + c] * v);
+            parallelRanges(height, texels * 3, [&](std::size_t y0, std::size_t y1) {
+                for (std::size_t t = y0 * width; t < y1 * width; ++t) {
+                    for (int c = 0; c < 3; ++c) {
+                        img[t * 4 + c] = static_cast<float>(img[t * 4 + c] * v);
+                    }
                 }
-            }
+            });
         }
     } else {
-        for (std::size_t t = 0; t < texels; ++t) {
-            for (int c = 0; c < 3; ++c) img[t * 4 + c] = 0.0f;
-        }
+        parallelRanges(height, texels * 3, [&](std::size_t y0, std::size_t y1) {
+            for (std::size_t t = y0 * width; t < y1 * width; ++t) {
+                for (int c = 0; c < 3; ++c) img[t * 4 + c] = 0.0f;
+            }
+        });
     }
 
     // STEPS 2 AND 3. They commute -- a Gaussian is shift invariant -- so the blur

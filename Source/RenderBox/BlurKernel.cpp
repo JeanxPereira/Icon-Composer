@@ -150,7 +150,11 @@ std::vector<float> reduceBox(const std::vector<float>& img, std::uint32_t width,
     outHeight = (height + f - 1) / f;
     std::vector<float> out(static_cast<std::size_t>(outWidth) * outHeight * 4, 0.0f);
     const double norm = 1.0 / (static_cast<double>(factor) * factor);
-    for (std::uint32_t ry = 0; ry < outHeight; ++ry) {
+    // One reduced row per iteration, each writing only its own texels: split by
+    // row like `blurPass`, and the sum inside a block keeps its order.
+    const std::size_t work = static_cast<std::size_t>(outWidth) * outHeight * f * f * 4;
+    parallelRanges(outHeight, work, [&](std::size_t r0, std::size_t r1) {
+    for (std::uint32_t ry = static_cast<std::uint32_t>(r0); ry < static_cast<std::uint32_t>(r1); ++ry) {
         for (std::uint32_t rx = 0; rx < outWidth; ++rx) {
             double acc[4] = {0, 0, 0, 0};
             for (int j = 0; j < factor; ++j) {
@@ -167,6 +171,7 @@ std::vector<float> reduceBox(const std::vector<float>& img, std::uint32_t width,
             for (int c = 0; c < 4; ++c) o[c] = static_cast<float>(acc[c] * norm);
         }
     }
+    });
     return out;
 }
 
@@ -182,7 +187,11 @@ std::vector<float> expandBilinear(const std::vector<float>& img, std::uint32_t w
     const double centre = (f - 1.0) * 0.5;
     const int lastX = static_cast<int>(width) - 1;
     const int lastY = static_cast<int>(height) - 1;
-    for (std::uint32_t y = 0; y < outHeight; ++y) {
+    // Split by output row: `img` is read-only here and every row writes only
+    // its own texels, so each float is the same expression it was serially.
+    const std::size_t work = static_cast<std::size_t>(outWidth) * outHeight * 16;
+    parallelRanges(outHeight, work, [&](std::size_t r0, std::size_t r1) {
+    for (std::uint32_t y = static_cast<std::uint32_t>(r0); y < static_cast<std::uint32_t>(r1); ++y) {
         const double v = (static_cast<double>(y) - centre) / f;
         const double fy = std::floor(v);
         const double ty = v - fy;
@@ -206,6 +215,7 @@ std::vector<float> expandBilinear(const std::vector<float>& img, std::uint32_t w
             }
         }
     }
+    });
     return out;
 }
 
@@ -261,24 +271,30 @@ std::vector<float> blurPremultipliedRgba(const std::vector<float>& src, std::uin
     if (src.size() < texels * 4) return src;
     if (blurKernelHalfWidth(sigma) <= 0) return src;
 
+    // Both conversions are per texel, so they are split by row the way the
+    // passes are; no texel reads another.
     std::vector<float> img(texels * 4);
-    for (std::size_t t = 0; t < texels; ++t) {
-        const float a = src[t * 4 + 3];
-        for (int c = 0; c < 3; ++c) img[t * 4 + c] = src[t * 4 + c] * a;
-        img[t * 4 + 3] = a;
-    }
+    parallelRanges(height, texels * 4, [&](std::size_t y0, std::size_t y1) {
+        for (std::size_t t = y0 * width; t < y1 * width; ++t) {
+            const float a = src[t * 4 + 3];
+            for (int c = 0; c < 3; ++c) img[t * 4 + c] = src[t * 4 + c] * a;
+            img[t * 4 + 3] = a;
+        }
+    });
 
     blurLadder(img, width, height, sigma * sigma);
 
-    std::vector<float> out(texels * 4, 0.0f);
-    for (std::size_t t = 0; t < texels; ++t) {
-        const double a = img[t * 4 + 3];
-        out[t * 4 + 3] = static_cast<float>(a);
-        for (int c = 0; c < 3; ++c) {
-            out[t * 4 + c] = a > 0.0 ? static_cast<float>(img[t * 4 + c] / a) : 0.0f;
+    // Un-premultiplied IN PLACE: texel t reads only its own four floats.
+    parallelRanges(height, texels * 16, [&](std::size_t y0, std::size_t y1) {
+        for (std::size_t t = y0 * width; t < y1 * width; ++t) {
+            const double a = img[t * 4 + 3];
+            img[t * 4 + 3] = static_cast<float>(a);
+            for (int c = 0; c < 3; ++c) {
+                img[t * 4 + c] = a > 0.0 ? static_cast<float>(img[t * 4 + c] / a) : 0.0f;
+            }
         }
-    }
-    return out;
+    });
+    return img;
 }
 
 BlurMaterialSurface blurMaterialSurface(double blurRadiusCanvasUnits, double frameX,
