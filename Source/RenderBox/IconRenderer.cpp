@@ -305,6 +305,175 @@ bool fillCarriesP3(const ResolvedFill& f) {
     return false;
 }
 
+// ---- the cache keys (`RenderCache.h`) ----------------------------------------
+//
+// One hasher per parameter struct, naming every field. The static_assert beside
+// each is the tripwire: a field added to the struct changes its size and stops
+// the build HERE, which is where the field has to be added to the key -- a key
+// that silently lacks a field serves a stale picture for every edit of it.
+
+void hashInto(KeyHasher& h, const FillOverride& f) {
+    static_assert(sizeof(FillOverride) == 104, "a FillOverride field is missing from the key");
+    h.value(f.kind).span(f.colour, 4).span(f.m, 6).value(f.smooth);
+    h.value(f.stops.size());
+    for (const RampPoint& p : f.stops) h.value(p.location).span(p.rgba, 4);
+}
+
+void hashInto(KeyHasher& h, const PathGlobals& g) {
+    static_assert(sizeof(PathGlobals) == 52, "a PathGlobals field is missing from the key");
+    h.span(g.m0, 2).span(g.m1, 2).span(g.m2, 2).span(g.twoOverSize, 2).span(g.origin, 2);
+    h.value(g.depth).value(g.urx).value(g.arg);
+}
+
+void hashInto(KeyHasher& h, const RenderOptions& o) {
+    static_assert(sizeof(RenderOptions) == 136, "a RenderOptions field is missing from the key");
+    h.value(o.width).value(o.height).value(o.originX).value(o.originY);
+    h.value(o.projectionWidth).value(o.projectionHeight).value(o.subdivisions);
+    hashInto(h, o.override);
+}
+
+void hashInto(KeyHasher& h, const FieldOptions& o) {
+    static_assert(sizeof(FieldOptions) == 20, "a FieldOptions field is missing from the key");
+    h.value(o.rule).value(o.aaWidth).value(o.originX).value(o.originY).value(o.subpixelSeed);
+}
+
+void hashInto(KeyHasher& h, const std::vector<FieldContour>& contours) {
+    h.value(contours.size());
+    for (const FieldContour& c : contours) h.span(c.xy.data(), c.xy.size());
+}
+
+void hashInto(KeyHasher& h, const ShadowGeometry& g) {
+    static_assert(sizeof(ShadowGeometry) == 40, "a ShadowGeometry field is missing from the key");
+    h.value(g.offsetX).value(g.offsetY).value(g.blurRadius).value(g.ringWidth.has_value());
+    if (g.ringWidth) h.value(*g.ringWidth);
+}
+
+void hashInto(KeyHasher& h, const PixelGrid& g) {
+    static_assert(sizeof(PixelGrid) == 20, "a PixelGrid field is missing from the key");
+    h.value(g.size).value(g.originX).value(g.originY).value(g.width).value(g.height);
+}
+
+void hashInto(KeyHasher& h, const SpecularArguments& a) {
+    static_assert(sizeof(SpecularArguments) == 120,
+                  "a SpecularArguments field is missing from the key");
+    h.value(a.sizeClass).value(a.pixelsPerPoint).value(a.lightLongitude);
+    h.value(a.lightIntensity).value(a.lightLatitude).value(a.layerOpacity);
+    h.value(a.placement).value(a.identityRecolour).value(a.clampPlusLighter).value(a.useVCM);
+    const SpatialHighlighting& s = a.spatial;
+    h.value(s.alignmentRange).value(s.intensityPower).value(s.minIntensity);
+    h.value(s.spreadPower).value(s.heightPower).value(s.maxExtraHeight).value(s.read);
+}
+
+std::size_t bytesOf(const std::vector<float>& v) { return v.size() * sizeof(float); }
+
+// ---- the four cached steps ----------------------------------------------------
+//
+// Each is the step it wraps when `cache` is null. With a cache, the key is every
+// input of the step; `kShadow` and the other `constexpr` parameter tables are
+// not inputs -- they are part of this binary, and so is the cache.
+
+// The SVG's own TEXT is the key, not the parsed document: `SvgDocument::parse`
+// reads nothing else, and the text is what the bundle holds. The value is the
+// render BEFORE the translucency mask, which the caller applies to its copy.
+Result<RenderedImage> svgRenderCached(Device& device, RenderCache* cache,
+                                      const std::string& text,
+                                      const icf::svg::SvgDocument& svg,
+                                      const PathGlobals& placement, const RenderOptions& ro) {
+    if (!cache) return renderSvgPlaced(device, svg, placement, ro);
+    KeyHasher h("svg-render");
+    h.bytes(text.data(), text.size());
+    hashInto(h, placement);
+    hashInto(h, ro);
+    const CacheKey key = h.finish();
+    if (auto hit = cache->find<RenderedImage>(key)) return *hit;
+    auto drew = renderSvgPlaced(device, svg, placement, ro);
+    if (!drew) return drew;   // a failure is not a value, and is not kept
+    const std::size_t bytes = bytesOf(drew->rgba);
+    cache->store(key, *drew, bytes);
+    return drew;
+}
+
+std::shared_ptr<const FieldImage> fieldFromContoursCached(
+    RenderCache* cache, const std::vector<FieldContour>& contours, std::uint32_t width,
+    std::uint32_t height, const FieldOptions& fo, std::uint32_t superSample) {
+    if (!cache) {
+        return std::make_shared<const FieldImage>(
+            generateFieldFromContours(contours, width, height, fo, superSample));
+    }
+    KeyHasher h("field-contours");
+    hashInto(h, contours);
+    h.value(width).value(height).value(superSample);
+    hashInto(h, fo);
+    const CacheKey key = h.finish();
+    if (auto hit = cache->find<FieldImage>(key)) return hit;
+    FieldImage made = generateFieldFromContours(contours, width, height, fo, superSample);
+    const std::size_t bytes = bytesOf(made.rgba);
+    return cache->store(key, std::move(made), bytes);
+}
+
+std::shared_ptr<const FieldImage> fieldFromAlphaCached(RenderCache* cache,
+                                                       const std::vector<float>& rgba,
+                                                       std::uint32_t width, std::uint32_t height,
+                                                       const FieldOptions& fo) {
+    if (!cache) {
+        return std::make_shared<const FieldImage>(
+            generateFieldFromAlpha(rgba, width, height, fo));
+    }
+    KeyHasher h("field-alpha");
+    h.span(rgba.data(), rgba.size());
+    h.value(width).value(height);
+    hashInto(h, fo);
+    const CacheKey key = h.finish();
+    if (auto hit = cache->find<FieldImage>(key)) return hit;
+    FieldImage made = generateFieldFromAlpha(rgba, width, height, fo);
+    const std::size_t bytes = bytesOf(made.rgba);
+    return cache->store(key, std::move(made), bytes);
+}
+
+std::shared_ptr<const std::vector<float>> shadowImageCached(
+    RenderCache* cache, const std::vector<float>& art, std::uint32_t width,
+    std::uint32_t height, ShadowStyle style, const ShadowGeometry& geometry) {
+    if (!cache) {
+        return std::make_shared<const std::vector<float>>(
+            shadowImage(art, width, height, style, geometry));
+    }
+    KeyHasher h("shadow-image");
+    h.span(art.data(), art.size());
+    h.value(width).value(height).value(style);
+    hashInto(h, geometry);
+    const CacheKey key = h.finish();
+    if (auto hit = cache->find<std::vector<float>>(key)) return hit;
+    std::vector<float> made = shadowImage(art, width, height, style, geometry);
+    const std::size_t bytes = bytesOf(made);
+    return cache->store(key, std::move(made), bytes);
+}
+
+// The chiclet highlights draw INTO the accumulator, so the cached value is the
+// accumulator after them, keyed by the accumulator before them.
+struct ChicletDrawn {
+    std::vector<float> acc;
+    std::size_t drawn = 0;
+};
+
+std::size_t chicletHighlightsCached(RenderCache* cache, std::vector<float>& acc,
+                                    const PixelGrid& grid, const SpecularArguments& args,
+                                    IconPlatform platform) {
+    if (!cache) return drawChicletHighlights(acc, grid, args, platform);
+    KeyHasher h("chiclet-highlights");
+    h.span(acc.data(), acc.size());
+    hashInto(h, grid);
+    hashInto(h, args);
+    h.value(platform);
+    const CacheKey key = h.finish();
+    if (auto hit = cache->find<ChicletDrawn>(key)) {
+        acc = hit->acc;
+        return hit->drawn;
+    }
+    const std::size_t drawn = drawChicletHighlights(acc, grid, args, platform);
+    cache->store(key, ChicletDrawn{acc, drawn}, bytesOf(acc));
+    return drawn;
+}
+
 }  // namespace
 
 const char* const kChicletRectNote =
@@ -731,7 +900,8 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                     chicletArgs.sizeClass = options.sizeClass;
                     chicletArgs.pixelsPerPoint =
                         static_cast<double>(options.size) / kCanvasPoints;
-                    if (drawChicletHighlights(acc, grid, chicletArgs, platform) > 0) {
+                    if (chicletHighlightsCached(options.cache, acc, grid, chicletArgs,
+                                                platform) > 0) {
                         note(out.notes, chicletHighlightsNote(appearance, lum));
                     }
                 }
@@ -1175,8 +1345,10 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             // values that nothing consumes. Painting the art is the reading
             // that leaves no dead data.
             std::optional<icf::svg::SvgDocument> svg;
+            std::string svgText;   // the cache key of the SVG render
             if (ext == ".svg") {
-                svg = icf::svg::SvgDocument::parse(readAll(art));
+                svgText = readAll(art);
+                svg = icf::svg::SvgDocument::parse(svgText);
                 if (!svg) {
                     skip("SVG que este leitor nao abre: " + *imageName);
                     continue;
@@ -1293,7 +1465,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             // it joins the same gate rather than building a second one.
             const bool wantsHighlight = isGlass && wantsSpecular;
             std::optional<OpacityMask> mask;
-            std::optional<FieldImage> specularField;
+            std::shared_ptr<const FieldImage> specularField;
 
             if (wantsRefraction || wantsTranslucency || wantsHighlight) {
                 // THE RASTER TAKES THE SAME DOOR AS THE VECTOR, AS OF THIS FRONT.
@@ -1338,7 +1510,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 const bool haveShape = svg.has_value();
                 std::string fieldGap;
 
-                std::optional<FieldImage> field;
+                std::shared_ptr<const FieldImage> field;
                 if (haveShape) {
                     const GlassContours shape =
                         flattenSvgToContours(*svg, placeOnCanvas(svg->viewBox, lp, options.size),
@@ -1375,9 +1547,10 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                         // desenho"). Com origem zero a aritmetica e a de antes.
                         fo.originX = grid.originX;
                         fo.originY = grid.originY;
-                        FieldImage fromShape = generateFieldFromContours(
-                            shape.contours, grid.width, grid.height, fo, kFieldSuperSample);
-                        if (fromShape.width == 0) {
+                        std::shared_ptr<const FieldImage> fromShape = fieldFromContoursCached(
+                            options.cache, shape.contours, grid.width, grid.height, fo,
+                            kFieldSuperSample);
+                        if (fromShape->width == 0) {
                             // Contours that close but cover no sample point --
                             // a hairline, a shape smaller than a texel. The
                             // brute force would have signed it anyway, from
@@ -1398,9 +1571,9 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                     FieldOptions fo;
                     fo.originX = grid.originX;
                     fo.originY = grid.originY;
-                    FieldImage fromAlpha =
-                        generateFieldFromAlpha(*rasterPlaced, grid.width, grid.height, fo);
-                    if (fromAlpha.width == 0) {
+                    std::shared_ptr<const FieldImage> fromAlpha = fieldFromAlphaCached(
+                        options.cache, *rasterPlaced, grid.width, grid.height, fo);
+                    if (fromAlpha->width == 0) {
                         // No texel reaches `alpha >= 0.5`: there is no contour to
                         // sign, so there is no field. A raster that faint has
                         // nothing for the glass to bend around, and saying so is
@@ -1511,18 +1684,19 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 if (!castsShadow) return;
                 const ShadowGeometry geometry =
                     shadowGeometry(options.size, options.sizeClass);
-                std::vector<float> img = shadowImage(artRgba, grid.width, grid.height,
-                                                     shadowIn.style, geometry);
+                const std::shared_ptr<const std::vector<float>> img =
+                    shadowImageCached(options.cache, artRgba, grid.width, grid.height,
+                                      shadowIn.style, geometry);
                 const double overdraw =
                     kShadow.drawOverContent
                         ? shadowOverdrawAlpha(groupTranslucency, shadowIn.style,
                                               options.sizeClass)
                         : 0.0;
                 if (overdraw > 0.0) {
-                    shadowOverdraw = shadowOverdrawImage(img, artRgba, grid.width,
+                    shadowOverdraw = shadowOverdrawImage(*img, artRgba, grid.width,
                                                          grid.height, overdraw);
                 }
-                blendOver(target, img, static_cast<float>(shadowAlpha(shadowIn)),
+                blendOver(target, *img, static_cast<float>(shadowAlpha(shadowIn)),
                           shadowBlendMode(shadowIn.style));
                 if (geometry.ringWidth) note(out.notes, kShadowRingNote);
                 ++out.glassShadowed;
@@ -1554,8 +1728,8 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 ro.projectionHeight = grid.size;
                 ro.subdivisions = options.subdivisions;
                 ro.override = paint;
-                auto drew = renderSvgPlaced(
-                    device, *svg, placeOnCanvas(svg->viewBox, lp, options.size), ro);
+                auto drew = svgRenderCached(device, options.cache, svgText, *svg,
+                                            placeOnCanvas(svg->viewBox, lp, options.size), ro);
                 if (!drew) return std::unexpected(drew.error());
                 for (const auto& s : drew->skipped) {
                     out.shapeGaps.push_back(name + " / " + *imageName + ": " + s.why);

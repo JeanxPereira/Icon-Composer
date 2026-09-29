@@ -25,7 +25,8 @@ bool OnyxTextureSink::update(ImTextureID id, std::uint32_t, std::uint32_t, const
     return pool_.Update(id, rgba8, err);
 }
 
-ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r) {
+ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
+                            rb::RenderCache* cache) {
     ick::RenderResult out;
     out.version = r.version;
     // THE ECHO. The coordinator matches a result against the request it is
@@ -47,6 +48,7 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r) {
     io.size = r.size;
     io.context = r.context;
     io.viewport = rb::IconViewport{r.tile.x, r.tile.y, r.tile.w, r.tile.h};
+    io.cache = cache;
     auto icon = rb::renderIcon(device, r.bundle, io);
 
     // Um ladrilho pode ser impossivel de desenhar de duas formas (spec
@@ -164,7 +166,7 @@ void JobScheduler::submitPending() {
             // nenhum. `renderNow` aloca o buffer inteiro do ladrilho, entao
             // `bad_alloc` e o escape que se espera de verdade aqui.
             try {
-                *result = renderNow(device_, *req);
+                *result = renderNow(device_, *req, &cache_);
             } catch (const std::exception& e) {
                 *result = ick::failedResult(*req, std::string("o render lancou: ") + e.what());
             } catch (...) {

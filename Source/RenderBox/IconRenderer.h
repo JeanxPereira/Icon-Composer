@@ -96,6 +96,7 @@
 #include "Source/RenderBox/FillResolve.h"
 #include "Source/RenderBox/GlassTranslucency.h"
 #include "Source/RenderBox/PixelGrid.h"
+#include "Source/RenderBox/RenderCache.h"
 #include "Source/RenderBox/SvgRenderer.h"
 #include "Source/RenderBox/SystemFill.h"
 
@@ -138,6 +139,12 @@ struct IconRenderOptions {
     IconSizeClass sizeClass = IconSizeClass::Large;
 
     IconViewport viewport;
+
+    // What one render leaves for the next (`RenderCache.h`). Null is the
+    // render with no memory, step for step the one before the cache existed;
+    // the pixels are the same either way, and the gate in
+    // `Tests/test_render_cache.cpp` holds it to that.
+    RenderCache* cache = nullptr;
 };
 
 // A layer that was not drawn, and why. Named, never dropped in silence.

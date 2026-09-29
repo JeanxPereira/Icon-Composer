@@ -125,3 +125,74 @@ a 1024.
 
 **Não autoriza** mexer na GPU: ela custa 2 % do render. O custo está em
 transportar a saída dela para a CPU e em tudo que roda na CPU depois disso.
+
+---
+
+## 6. Depois da R3 — o cache medido, e o que o gate dele pega
+
+### 6.1. O ganho
+
+Apollo, Release, um `RenderCache` para a sequência inteira. Cada linha é uma
+edição sobre a anterior, como no canvas:
+
+| | 512 px | 1024 px |
+|---|---|---|
+| primeiro render (frio) | 0,40 s | 1,35 s |
+| o mesmo render de novo | 0,09 s | 0,40 s |
+| opacidade de uma camada | 0,09 s | 0,39 s |
+| cor de uma camada | 0,12 s | 0,48 s |
+| posição de uma camada | 0,14 s | 0,52 s |
+| translucidez de um grupo | 0,18 s | 0,65 s |
+| fundo do documento | 0,12 s | 0,48 s |
+| memória retida | 88–132 MB | 352–528 MB |
+
+`[OBS]` O piso quente (0,09 s / 0,40 s) não foi decomposto. Ele contém o hash
+das entradas grandes (a arte de cada camada entra inteira na chave da
+sombra), as cópias de volta do cache e o que não é cacheado: `blendOver`,
+`drawSpecular`, a máscara de translucidez.
+
+### 6.2. A detecção, executada
+
+A regra 3 do plano: o gate (`Tests/test_render_cache.cpp`) tem de reprovar
+quando a chave é mutilada. Treze mutilações, uma por vez, cada uma aplicada
+sobre o arquivo intocado e restaurada com SHA-256 conferido:
+
+| tirado da chave | resultado |
+|---|---|
+| svg: a posição | pega |
+| svg: as opções (e a tinta dentro delas) | pega |
+| svg: o texto do arquivo | pega, **depois** de um caso novo (abaixo) |
+| tinta: a cor | pega |
+| campo: os contornos | pega |
+| campo: as `FieldOptions` | pega, **depois** de um caso novo (abaixo) |
+| campo raster: a arte | pega |
+| sombra: a arte | pega |
+| sombra: o estilo | pega |
+| sombra: a geometria | **não pega** |
+| pastilha: o acumulador | pega |
+| pastilha: a plataforma | **não pega** |
+| pastilha: a grade | **não pega** |
+
+Duas lacunas eram do gate, e foram fechadas:
+
+- **O texto do svg.** Todo svg do corpus tem `viewBox` próprio, e o `viewBox`
+  entra na posição, então trocar de arquivo já mudava a chave pela posição.
+  O caso novo escreve uma variante de `Eyes 3.svg` com o mesmo `viewBox` e a
+  GEOMETRIA mexida. A primeira tentativa trocou uma COR dentro do arquivo e
+  não pegou: a tinta que o render aplica por cima cobre as cores do arquivo, e
+  a troca não mudava um pixel.
+- **A origem do campo.** A 256 px a margem do plano (o alcance da sombra)
+  engolia o canvas inteiro, e os dois ladrilhos viravam o mesmo buffer. O caso
+  passou para 1024 px, com dois ladrilhos de mesmas dimensões no interior.
+
+As três que ficaram são **redundantes na prática**, e ficam na chave mesmo
+assim:
+
+- a **geometria da sombra** sai de `size` e `sizeClass`; `size` já está nas
+  dimensões e na arte, e as quatro classes têm os mesmos números nesta versão
+  dos parâmetros;
+- a **plataforma** e a **grade** da pastilha mudam o acumulador ANTES dos
+  realces (o recorte e o degradê do fundo dependem delas), e o acumulador
+  inteiro está na chave. `[OBS]` Um fundo de alfa zero, que zeraria o
+  acumulador nas duas plataformas, também não separou: os realces não
+  desenham nada ali.

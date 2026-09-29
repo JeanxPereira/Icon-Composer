@@ -7,6 +7,7 @@
 // allowed to say the word Onyx.
 #include "Source/IconComposerKit/Ports.h"
 #include "Source/RenderBox/Device.h"
+#include "Source/RenderBox/RenderCache.h"
 
 #include <Onyx/App/TexturePool.h>
 #include <Onyx/Services/Jobs.h>
@@ -77,6 +78,9 @@ private:
     bool working_ = false;   // the Work callback is on a worker thread right now
     bool running_ = false;   // submitted and its Done has not run yet
     std::optional<ick::RenderResult> done_;
+    // What one render leaves for the next. Only the job in flight touches it,
+    // and there is never more than one (`running_`).
+    rb::RenderCache cache_;
 };
 
 // Renders on the calling thread. The selftest's scheduler.
@@ -92,7 +96,8 @@ private:
 };
 
 // The one function both schedulers call.
-ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r);
+ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
+                            rb::RenderCache* cache = nullptr);
 
 // Asks for a `.icon` to open. Empty when the user cancels.
 //

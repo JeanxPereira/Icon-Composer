@@ -62,6 +62,14 @@ Guarda o que cada grupo produz, com a chave sendo o que entrou no cálculo.
 Numa edição, só o grupo que mudou é refeito. O R1 decide em que camada
 cachear (SVG interpretado, cobertura, campo, sombra).
 
+*Fechada.* Quatro etapas, com a chave sendo o hash de todas as entradas. Uma
+edição no Apollo a 512 px caiu de 0,40 s para 0,09–0,18 s, e a 1024 px de
+1,35 s para 0,39–0,65 s. O gate pega 10 de 13 mutilações da chave, e as três
+que não pega são redundantes (laudo de perfil §6).
+
 ### R4 — Os pontos quentes que o R1 apontar
 
 Definida pelo laudo.
+
+*R4a fechada* (`c38a469`): o `readBack` caiu de 0,39 s para 0,05 s, com staging
+em memória com cache e half->float por F16C.
