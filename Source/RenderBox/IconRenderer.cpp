@@ -9,6 +9,7 @@
 #include <sstream>
 
 #include "Source/CoreSVG/Document.h"
+#include "Source/RenderBox/Parallel.h"
 #include "Source/RenderBox/AutomaticGradient.h"
 #include "Source/RenderBox/BlendFormula.h"
 #include "Source/RenderBox/BlurKernel.h"
@@ -97,13 +98,17 @@ void blendPremulOver(std::vector<float>& dst, const std::vector<float>& src,
 
 // One layer's art drawn over the accumulator, with `alpha` applied to all of it.
 void over(std::vector<float>& acc, const std::vector<float>& src, float alpha) {
-    for (std::size_t i = 0; i + 3 < acc.size(); i += 4) {
+    // Per texel, so split into texel ranges: no texel reads another's floats.
+    const std::size_t texels = acc.size() / 4;
+    parallelRanges(texels, texels * 12, [&](std::size_t t0, std::size_t t1) {
+    for (std::size_t i = t0 * 4; i < t1 * 4; i += 4) {
         const float a = src[i + 3] * alpha;
         if (a <= 0.0f) continue;
         const float inv = 1.0f - a;
         for (int k = 0; k < 3; ++k) acc[i + k] = src[i + k] * a + acc[i + k] * inv;
         acc[i + 3] = a + acc[i + 3] * inv;
     }
+    });
 }
 
 // The same composite under a blend mode.
@@ -133,7 +138,9 @@ void blendOver(std::vector<float>& acc, const std::vector<float>& src, float alp
         over(acc, src, alpha);
         return;
     }
-    for (std::size_t i = 0; i + 3 < acc.size(); i += 4) {
+    const std::size_t texels = acc.size() / 4;
+    parallelRanges(texels, texels * 40, [&](std::size_t t0, std::size_t t1) {
+    for (std::size_t i = t0 * 4; i < t1 * 4; i += 4) {
         const float a = src[i + 3] * alpha;
         BlendColour s;
         s.rgba[3] = a;
@@ -143,6 +150,7 @@ void blendOver(std::vector<float>& acc, const std::vector<float>& src, float alp
         const BlendColour out = rb::blend(mode, s, d);
         for (int k = 0; k < 4; ++k) acc[i + k] = static_cast<float>(out.rgba[k]);
     }
+    });
 }
 
 // A decoded raster placed on the canvas, sampled bilinearly.
@@ -260,7 +268,10 @@ bool axisToMap(const GradientAxis& axis, double (&m)[6]) {
 // stack.
 void paintBackground(std::vector<float>& acc, const PixelGrid& grid,
                      const FillOverride& paint) {
-    for (std::uint32_t y = 0; y < grid.height; ++y) {
+    // One row per worker: every pixel is written from `paint` and its own
+    // position alone.
+    parallelRanges(grid.height, grid.texels() * 16, [&](std::size_t y0, std::size_t y1) {
+    for (std::uint32_t y = static_cast<std::uint32_t>(y0); y < static_cast<std::uint32_t>(y1); ++y) {
         for (std::uint32_t x = 0; x < grid.width; ++x) {
             float colour[4] = {paint.colour[0], paint.colour[1], paint.colour[2],
                                paint.colour[3]};
@@ -284,6 +295,7 @@ void paintBackground(std::vector<float>& acc, const PixelGrid& grid,
             acc[i + 3] = colour[3];
         }
     }
+    });
 }
 
 // Does this colour carry display-p3 components that nothing converts?
