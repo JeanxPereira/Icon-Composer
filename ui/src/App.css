@@ -381,18 +381,24 @@ button:disabled {
   min-height: 0;
 }
 
+/* margin:auto e nao place-items:center: com o icone maior que a area, o
+   centro por grid corta o topo e a esquerda fora do alcance da rolagem. */
 .stage-scroll {
   position: absolute;
   inset: 0;
   overflow: auto;
-  display: grid;
-  place-items: center;
+  display: flex;
+  padding: 40px 40px 120px;
+  box-sizing: border-box;
+}
+
+.stage-scroll > * {
+  margin: auto;
 }
 
 .icon-wrap {
   position: relative;
   flex: none;
-  margin: 40px 40px 120px;
 }
 
 .icon,
@@ -703,4 +709,8 @@ button:disabled {
   flex: none;
   object-fit: contain;
   opacity: 0.7;
+}
+
+.frame {
+  position: absolute;
 }

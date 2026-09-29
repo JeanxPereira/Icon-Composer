@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Sym } from "./Sym";
 import { Platform, Rendition, RENDITIONS } from "./doc";
 import { Frame } from "./core";
@@ -21,6 +21,8 @@ export const BACKGROUNDS = [
 type Props = {
   title: string;
   frame: Frame | null;
+  tile: Frame | null;
+  onView: (v: { x: number; y: number; w: number; h: number }) => void;
   busy: boolean;
   error: string;
   thumbs: Record<string, string>;
@@ -47,6 +49,41 @@ export function Canvas(p: Props) {
   const [hoverRendition, setHoverRendition] = useState<Rendition | null>(null);
   const caption = RENDITIONS.find((r) => r.id === (hoverRendition ?? p.rendition))!.label;
   const iconPx = Math.round(512 * p.zoom);
+  const scroller = useRef<HTMLDivElement>(null);
+  const wrap = useRef<HTMLDivElement>(null);
+  const center = useRef<{ x: number; y: number } | null>(null);
+
+  // O que se ve do quadrado do icone, em px CSS -- e o ladrilho que o App pede.
+  const reportView = () => {
+    const s = scroller.current, w = wrap.current;
+    if (!s || !w) return;
+    const sr = s.getBoundingClientRect(), wr = w.getBoundingClientRect();
+    const x = Math.max(0, sr.left - wr.left), y = Math.max(0, sr.top - wr.top);
+    const r = Math.min(wr.width, sr.right - wr.left), b = Math.min(wr.height, sr.bottom - wr.top);
+    const s0 = scroller.current!;
+    center.current = {
+      x: (s0.scrollLeft + s0.clientWidth / 2) / Math.max(1, s0.scrollWidth),
+      y: (s0.scrollTop + s0.clientHeight / 2) / Math.max(1, s0.scrollHeight),
+    };
+    if (r > x && b > y) p.onView({ x, y, w: r - x, h: b - y });
+  };
+
+  // O zoom segura o CENTRO da vista: depois de o quadrado crescer, a rolagem
+  // volta a por no meio o mesmo ponto que estava no meio antes.
+  useLayoutEffect(() => {
+    const s = scroller.current;
+    if (s && center.current) {
+      s.scrollLeft = center.current.x * s.scrollWidth - s.clientWidth / 2;
+      s.scrollTop = center.current.y * s.scrollHeight - s.clientHeight / 2;
+    }
+    reportView();
+  }, [iconPx, p.frame !== null]);
+
+  useEffect(() => {
+    const onResize = () => reportView();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   return (
     <section className="center">
@@ -134,10 +171,10 @@ export function Canvas(p: Props) {
         <div className="capsule text-cap zoom" title="Change zoom level">
           <span>{Math.round(p.zoom * 100)}%</span>
           <span className="stepper">
-            <button onClick={() => p.onZoom(Math.min(4, p.zoom + 0.25))} aria-label="Zoom In">
+            <button onClick={() => p.onZoom(p.zoom * 1.25)} aria-label="Zoom In">
               <Sym name="chevron.down" size={8} className="up" />
             </button>
-            <button onClick={() => p.onZoom(Math.max(0.25, p.zoom - 0.25))} aria-label="Zoom Out">
+            <button onClick={() => p.onZoom(p.zoom / 1.25)} aria-label="Zoom Out">
               <Sym name="chevron.down" size={8} />
             </button>
           </span>
@@ -145,12 +182,13 @@ export function Canvas(p: Props) {
       </div>
 
       <div className="stage">
-        <div className="stage-scroll">
+        <div className="stage-scroll" ref={scroller} onScroll={reportView}>
           {p.error ? (
             <pre className="error">{p.error}</pre>
           ) : p.frame ? (
-            <div className="icon-wrap" style={{ width: iconPx, height: iconPx }}>
-              <FrameView frame={p.frame} />
+            <div className="icon-wrap" ref={wrap} style={{ width: iconPx, height: iconPx }}>
+              <FrameView frame={p.frame} cssSide={iconPx} />
+              {p.tile && <FrameView frame={p.tile} cssSide={iconPx} />}
               {p.grid && (
                 <img
                   className="grid-overlay"
@@ -210,8 +248,10 @@ export function Canvas(p: Props) {
   );
 }
 
-// O quadro do nucleo, pintado como veio: RGBA8, sem PNG no caminho.
-function FrameView({ frame }: { frame: Frame }) {
+// O quadro do nucleo, pintado como veio: RGBA8, sem PNG no caminho. Ele se
+// posiciona pela origem e pelo `size` do canvas para o qual foi pedido, entao
+// um quadro de um zoom anterior fica no lugar certo (esticado) ate o novo chegar.
+function FrameView({ frame, cssSide }: { frame: Frame; cssSide: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const c = ref.current;
@@ -222,5 +262,12 @@ function FrameView({ frame }: { frame: Frame }) {
     }
     c.getContext("2d")!.putImageData(frame.image, 0, 0);
   }, [frame]);
-  return <canvas ref={ref} className="icon" />;
+  const k = cssSide / frame.size;
+  return (
+    <canvas
+      ref={ref}
+      className="frame"
+      style={{ left: frame.originX * k, top: frame.originY * k, width: frame.width * k, height: frame.height * k }}
+    />
+  );
 }

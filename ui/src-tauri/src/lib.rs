@@ -165,10 +165,11 @@ async fn core_render(
     appearance: String,
     idiom: String,
     tile: [i64; 4],
+    subdivisions: u32,
 ) -> Result<tauri::ipc::Response, String> {
     let s = state.inner().clone();
     let bytes = tauri::async_runtime::spawn_blocking(move || {
-        with_core(&s, |c| c.render(size, &appearance, &idiom, tile))
+        with_core(&s, |c| c.render(size, &appearance, &idiom, tile, subdivisions))
     })
     .await
     .map_err(|e| e.to_string())??;

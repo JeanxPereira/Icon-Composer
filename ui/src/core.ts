@@ -3,13 +3,16 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
-export type Frame = { width: number; height: number; originX: number; originY: number; ms: number; image: ImageData };
+// `size` e o lado do canvas inteiro para o qual o quadro foi pedido: um
+// ladrilho so se posiciona sabendo de que canvas ele e pedaco.
+export type Frame = { size: number; width: number; height: number; originX: number; originY: number; ms: number; image: ImageData };
 
 export type RenderParams = {
   size: number;
   appearance: string;
   idiom: string;
   tile?: [number, number, number, number];
+  subdivisions?: number;
 };
 
 async function renderNow(p: RenderParams): Promise<Frame> {
@@ -18,6 +21,7 @@ async function renderNow(p: RenderParams): Promise<Frame> {
     appearance: p.appearance,
     idiom: p.idiom,
     tile: p.tile ?? [0, 0, 0, 0],
+    subdivisions: p.subdivisions ?? 16,
   });
   const v = new DataView(buf);
   const width = v.getUint32(0, true);
@@ -26,7 +30,7 @@ async function renderNow(p: RenderParams): Promise<Frame> {
   const originY = v.getInt32(12, true);
   const ms = v.getFloat64(16, true);
   const image = new ImageData(new Uint8ClampedArray(buf, 24, width * height * 4), width, height);
-  return { width, height, originX, originY, ms, image };
+  return { size: p.size, width, height, originX, originY, ms, image };
 }
 
 // Um processo, um quadro por vez. Cada "raia" guarda so o pedido MAIS NOVO
@@ -38,7 +42,11 @@ let busy = false;
 
 function pump() {
   if (busy) return;
-  const key = lanes.has("canvas") ? "canvas" : lanes.keys().next().value;
+  const key = lanes.has("canvas")
+    ? "canvas"
+    : lanes.has("canvas-tile")
+      ? "canvas-tile"
+      : lanes.keys().next().value;
   if (key === undefined) return;
   const job = lanes.get(key)!;
   lanes.delete(key);

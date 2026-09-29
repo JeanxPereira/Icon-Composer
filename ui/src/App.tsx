@@ -11,8 +11,17 @@ import "./App.css";
 type Opened = { name: string; json: string; assets: string[] };
 
 const THUMB = 128;
-// Acima disto o canvas estica; o proximo passo e pedir so o ladrilho visivel.
-const MAX_CANVAS_PX = 2048;
+// Ate aqui o canvas vem inteiro; acima, vem uma BASE inteira (esticada) e o
+// LADRILHO visivel na resolucao da tela por cima.
+const FULL_MAX_PX = 2048;
+const BASE_PX = 1024;
+const MAX_ZOOM = 16;
+
+// Segmentos por cubica: 16 e o padrao do nucleo e basta a 100 %; com zoom, uma
+// curva viraria poligono visivel.
+const subdivisionsFor = (zoom: number) => Math.min(256, Math.max(16, Math.round(16 * zoom)));
+
+export type ViewRect = { x: number; y: number; w: number; h: number }; // px CSS, no quadrado do icone
 
 export default function App() {
   const [path, setPath] = useState<string | null>(null);
@@ -29,6 +38,8 @@ export default function App() {
   const [zoom, setZoom] = useState(1);
 
   const [frame, setFrame] = useState<Frame | null>(null);
+  const [tile, setTile] = useState<Frame | null>(null);
+  const [view, setView] = useState<ViewRect | null>(null);
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -39,6 +50,7 @@ export default function App() {
       const parsed = JSON.parse(d.json) as Node;
       await coreOpen(p);
       setFrame(null);
+      setTile(null);
       setPath(p);
       setDocName(d.name);
       setDoc(parsed);
@@ -59,14 +71,18 @@ export default function App() {
 
   const appearanceOf = (r: Rendition) => RENDITIONS.find((x) => x.id === r)!.appearance;
 
-  // O canvas: o nucleo renderiza no tamanho dos pixels da tela (512 x zoom x
-  // densidade), entao o zoom e um render novo, nao uma textura esticada.
+  const dpr = window.devicePixelRatio;
+  const fullPx = Math.round(512 * zoom * dpr);
+  const tiled = fullPx > FULL_MAX_PX;
+
+  // O canvas inteiro: no tamanho da tela ate FULL_MAX_PX, ou a base de
+  // BASE_PX quando o zoom passa disso (o ladrilho cobre o que se ve).
   useEffect(() => {
     if (!path) return;
     let alive = true;
-    const size = Math.min(MAX_CANVAS_PX, Math.round(512 * zoom * window.devicePixelRatio));
+    const size = tiled ? BASE_PX : fullPx;
     setBusy(true);
-    requestFrame("canvas", { size, appearance: appearanceOf(rendition), idiom: platform })
+    requestFrame("canvas", { size, appearance: appearanceOf(rendition), idiom: platform, subdivisions: subdivisionsFor(size / (512 * dpr)) })
       .then((f) => {
         if (!alive) return;
         setFrame(f);
@@ -77,7 +93,37 @@ export default function App() {
     return () => {
       alive = false;
     };
-  }, [path, platform, rendition, zoom]);
+  }, [path, platform, rendition, fullPx, tiled]);
+
+  // O ladrilho: so a parte visivel, na resolucao da tela, pedida de novo a
+  // cada rolagem ou zoom.
+  useEffect(() => {
+    if (!path || !tiled || !view) {
+      setTile(null);
+      return;
+    }
+    let alive = true;
+    const x = Math.max(0, Math.floor(view.x * dpr));
+    const y = Math.max(0, Math.floor(view.y * dpr));
+    const w = Math.min(fullPx - x, Math.ceil(view.w * dpr));
+    const h = Math.min(fullPx - y, Math.ceil(view.h * dpr));
+    if (w <= 0 || h <= 0) return;
+    const timer = window.setTimeout(() => {
+      requestFrame("canvas-tile", {
+        size: fullPx,
+        appearance: appearanceOf(rendition),
+        idiom: platform,
+        tile: [x, y, w, h],
+        subdivisions: subdivisionsFor(zoom),
+      })
+        .then((f) => alive && setTile(f))
+        .catch((e) => alive && e !== "substituido" && setError(String(e)));
+    }, 60);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [path, platform, rendition, fullPx, tiled, view, zoom]);
 
   // As miniaturas da barra de rendicoes, do mesmo nucleo, depois do canvas.
   useEffect(() => {
@@ -103,7 +149,7 @@ export default function App() {
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey) return;
       e.preventDefault();
-      setZoom((z) => Math.min(4, Math.max(0.25, z * (e.deltaY < 0 ? 1.1 : 1 / 1.1))));
+      setZoom((z) => Math.min(MAX_ZOOM, Math.max(0.25, z * (e.deltaY < 0 ? 1.15 : 1 / 1.15))));
     };
     window.addEventListener("wheel", onWheel, { passive: false });
     return () => window.removeEventListener("wheel", onWheel);
@@ -131,6 +177,8 @@ export default function App() {
       <Canvas
         title={docName || "Icon Composer"}
         frame={frame}
+        tile={tiled ? tile : null}
+        onView={setView}
         busy={busy}
         error={error}
         thumbs={thumbs}
@@ -146,7 +194,7 @@ export default function App() {
         grid={grid}
         onGrid={setGrid}
         zoom={zoom}
-        onZoom={setZoom}
+        onZoom={(z) => setZoom(Math.min(MAX_ZOOM, Math.max(0.25, z)))}
         onOpen={pick}
         sidebarHidden={sidebarHidden}
         onToggleSidebar={() => setSidebarHidden(false)}

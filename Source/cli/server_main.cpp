@@ -13,8 +13,10 @@
 //   doc <n>\n<n bytes de icon.json>
 //       troca o documento em memoria (as edicoes da UI chegam assim)
 //       -> "ok\n" | "err <motivo>\n"
-//   render <size> <appearance|-> <idiom|-> <x> <y> <w> <h>
-//       w = h = 0 e o canvas inteiro; senao, o ladrilho (IconViewport)
+//   render <size> <appearance|-> <idiom|-> <x> <y> <w> <h> [subdivisions]
+//       w = h = 0 e o canvas inteiro; senao, o ladrilho (IconViewport).
+//       subdivisions: segmentos por cubica (padrao 16); a UI sobe com o zoom,
+//       senao uma curva vira poligono visivel a 8x.
 //       -> "frame <w> <h> <originX> <originY> <ms> <n>\n" + n bytes RGBA8
 //          (straight, a mesma conversao de `ick::toRgba8`)
 //        | "err <motivo>\n"
@@ -138,7 +140,13 @@ int main() {
             std::uint32_t size = 0, w = 0, h = 0;
             std::int32_t x = 0, y = 0;
             std::string appearance, idiom;
+            int subdivisions = 16;
             in >> size >> appearance >> idiom >> x >> y >> w >> h;
+            if (!(in >> subdivisions)) subdivisions = 16;
+            if (subdivisions < 1 || subdivisions > 256) {
+                fail("subdivisions fora de 1..256");
+                continue;
+            }
             if (size == 0 || size > 8192) {
                 fail("size fora de 1..8192");
                 continue;
@@ -147,6 +155,7 @@ int main() {
             io.size = size;
             io.cache = &cache;
             io.viewport = rb::IconViewport{x, y, w, h};
+            io.subdivisions = subdivisions;
             if (appearance != "-") {
                 auto a = icf::appearanceFromString(appearance);
                 if (!a) {
@@ -169,6 +178,10 @@ int main() {
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
             if (!icon) {
                 fail(icon.error());
+                continue;
+            }
+            if (icon->viewportRefused) {
+                fail("ladrilho acima do teto de area do render");
                 continue;
             }
             const std::vector<std::uint8_t> bytes = toRgba8(icon->rgba);
