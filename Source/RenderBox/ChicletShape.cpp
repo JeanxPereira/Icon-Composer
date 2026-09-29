@@ -192,8 +192,12 @@ ChicletGeometry ChicletGeometry::of(std::uint32_t size, IconPlatform platform) {
     return g;
 }
 
+// Um segmento a cada ~2 px de raio, sem o teto de 96 que vivia aqui: com o
+// zoom da casca, a 8192 px o raio passa de 2000 px e 96 segmentos por cubica
+// davam ~11 px de reta cada -- os "dentes" na silhueta. O 96 nao tinha selo;
+// era escolha nossa. A 512 px nada muda (raio 133, 67 segmentos).
 int chicletSubdivisions(double radius) {
-    return std::clamp(static_cast<int>(std::ceil(radius * 0.5)), 8, 96);
+    return std::clamp(static_cast<int>(std::ceil(radius * 0.5)), 8, 2048);
 }
 
 icf::svg::Path chicletOutline(const ChicletGeometry& g) {

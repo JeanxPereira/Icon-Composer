@@ -18,7 +18,7 @@
 //       subdivisions: segmentos por cubica (padrao 16); a UI sobe com o zoom,
 //       senao uma curva vira poligono visivel a 8x.
 //       -> "frame <w> <h> <originX> <originY> <ms> <n>\n" + n bytes RGBA8
-//          (straight, a mesma conversao de `ick::toRgba8`)
+//          (straight, com dithering: ver `toRgba8Dithered`)
 //        | "err <motivo>\n"
 //   quit
 //
@@ -63,14 +63,37 @@ void fail(const std::string& why) {
     reply("err " + clean);
 }
 
-// `ick::toRgba8`, repetida aqui para o servidor nao linkar o Kit (ImGui).
-std::vector<std::uint8_t> toRgba8(const std::vector<float>& in) {
+// A conversao para 8 bits da TELA, com dithering. `[ART]` O PNG que o Icon
+// Composer exporta tem dithering: numa coluna do fundo `system-dark` do Kenzu
+// ele alterna 43/44/43/44 e a maior faixa lisa tem 16 px, onde o arredondamento
+// seco (`ick::toRgba8`) da faixas de ate 86 px -- os "degraus no degrade".
+//
+// O ruido e o interleaved gradient noise nas coordenadas ABSOLUTAS do canvas,
+// entao o ladrilho e a base concordam no mesmo ponto e o mesmo documento da
+// sempre os mesmos bytes. So a cor: o alfa sai como `toRgba8`. A exportacao
+// (Export.cpp / icrender) NAO passa por aqui.
+float ditherAt(std::int64_t x, std::int64_t y) {
+    const double f = 0.06711056 * static_cast<double>(x) + 0.00583715 * static_cast<double>(y);
+    const double g = 52.9829189 * (f - std::floor(f));
+    return static_cast<float>(g - std::floor(g)) - 0.5f;
+}
+
+std::vector<std::uint8_t> toRgba8Dithered(const std::vector<float>& in, std::uint32_t width,
+                                          std::int32_t originX, std::int32_t originY) {
     std::vector<std::uint8_t> out(in.size());
-    for (std::size_t i = 0; i < in.size(); ++i) {
-        float v = in[i];
-        if (v < 0.0f) v = 0.0f;
-        if (v > 1.0f) v = 1.0f;
-        out[i] = static_cast<std::uint8_t>(std::lround(v * 255.0f));
+    const std::size_t texels = in.size() / 4;
+    for (std::size_t t = 0; t < texels; ++t) {
+        const std::int64_t x = originX + static_cast<std::int64_t>(t % width);
+        const std::int64_t y = originY + static_cast<std::int64_t>(t / width);
+        const float n = ditherAt(x, y);
+        for (int c = 0; c < 4; ++c) {
+            float v = in[t * 4 + c];
+            if (v < 0.0f) v = 0.0f;
+            if (v > 1.0f) v = 1.0f;
+            float scaled = v * 255.0f;
+            if (c < 3) scaled = std::fmin(255.0f, std::fmax(0.0f, scaled + n));
+            out[t * 4 + c] = static_cast<std::uint8_t>(std::lround(scaled));
+        }
     }
     return out;
 }
@@ -184,7 +207,8 @@ int main() {
                 fail("ladrilho acima do teto de area do render");
                 continue;
             }
-            const std::vector<std::uint8_t> bytes = toRgba8(icon->rgba);
+            const std::vector<std::uint8_t> bytes =
+                toRgba8Dithered(icon->rgba, icon->width, icon->originX, icon->originY);
             char head[160];
             std::snprintf(head, sizeof head, "frame %u %u %d %d %.3f %zu", icon->width, icon->height,
                           icon->originX, icon->originY, ms, bytes.size());
