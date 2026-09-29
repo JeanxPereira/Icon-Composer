@@ -384,6 +384,19 @@ FieldImage generateField(const std::vector<FieldContour>& contours, std::uint32_
 void edtSquared1d(std::vector<double>& f, std::vector<double>& d, std::vector<int>& v,
                   std::vector<double>& z, int n, std::vector<int>* arg = nullptr);
 
+// The COLUMN half of the 2D transform, in place over a row-major `w x h` grid
+// of squared distances (`sq` holds `w * h`, and so does `siteY` when given): every column of `sq` goes through `edtSquared1d` and
+// comes back where it was. When `siteY` is not null it receives, per texel,
+// the row of the parabola that won (`-1` where the column has no seed).
+//
+// It exists so both callers (`edt2d` and `shadowRingMask`) read a column the
+// cheap way. A column of a 1024-wide grid of doubles is one element every
+// 8 KB, which is the worst stride a set-associative cache can be handed; this
+// gathers a TILE of neighbouring columns with row-order reads, runs the 1D
+// transform on each, and scatters them back the same way. Each column is the
+// same call over the same inputs as before, so no number can move.
+void edtSquaredColumns(double* sq, int w, int h, int* siteY);
+
 // The field of a BITMAP's alpha, in the same `(d, gx, gy, coverage)` layout and
 // the same sign convention as `generateField` -- negative inside, unit
 // gradient pointing the way `d` increases, coverage from the same

@@ -8,6 +8,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <memory>
+#include <new>
+#include <utility>
 
 namespace rb {
 
@@ -338,6 +341,24 @@ FieldImage generateField(const std::vector<FieldContour>& contours, std::uint32_
 namespace {
 constexpr double kEdtInf = 1e20;
 
+// A buffer whose elements are NOT value-initialised on `resize`. The transform
+// writes every element before it reads one, and zeroing a million doubles
+// first -- on memory the OS then has to fault in -- was a measurable slice of
+// the field.
+template <typename T>
+struct NoInitAllocator : std::allocator<T> {
+    using value_type = T;
+    template <typename U> struct rebind { using other = NoInitAllocator<U>; };
+    NoInitAllocator() = default;
+    template <typename U> NoInitAllocator(const NoInitAllocator<U>&) noexcept {}
+    template <typename U> void construct(U* p) noexcept { ::new (static_cast<void*>(p)) U; }
+    template <typename U, typename... A> void construct(U* p, A&&... a) {
+        ::new (static_cast<void*>(p)) U(std::forward<A>(a)...);
+    }
+};
+template <typename T>
+using EdtBuffer = std::vector<T, NoInitAllocator<T>>;
+
 // The full two-dimensional transform: seeds are the texels for which
 // `seed[t]` is true, and every other texel comes back with the squared
 // distance to the nearest seed CENTRE plus, in `site`, that seed's linear
@@ -361,56 +382,48 @@ constexpr double kEdtInf = 1e20;
 // thread per pass against a sweep of a million texels, and the alternative --
 // one shared buffer -- would be a data race and a wrong answer, not a slower
 // one.
-void edt2d(const std::vector<char>& seed, int w, int h, std::vector<double>& sq,
-           std::vector<int>& site) {
+void edt2d(const std::vector<char>& seed, int w, int h, EdtBuffer<double>& sq,
+           EdtBuffer<int>& site) {
     const std::size_t texels = static_cast<std::size_t>(w) * h;
     const int n = std::max(w, h);
 
-    sq.assign(texels, 0.0);
-    site.assign(texels, -1);
-    // `siteY[t]` is the row of the nearest seed within t's own column, which is
-    // all the column pass can know. The row pass turns it into a full index.
-    std::vector<int> siteY(texels, -1);
-
-    for (std::size_t t = 0; t < texels; ++t) sq[t] = seed[t] ? 0.0 : kEdtInf;
+    // Neither buffer is zeroed first: the seed loop writes every `sq`, the
+    // column pass writes every `site`, and the row pass rewrites every `site`.
+    sq.resize(texels);
+    site.resize(texels);
 
     // The envelope makes two sweeps over a line and the caller copies the line
     // in and out, which is a handful of operations per element either way:
     // eight is the estimate, in the same unit every other call site uses.
     const std::size_t pass = texels * 8;
 
-    parallelRanges(static_cast<std::size_t>(w), pass, [&](std::size_t x0, std::size_t x1) {
-        std::vector<double> f(static_cast<std::size_t>(n));
-        std::vector<double> d(static_cast<std::size_t>(n));
-        std::vector<int> v(static_cast<std::size_t>(n) + 1);
-        std::vector<double> z(static_cast<std::size_t>(n) + 2);
-        std::vector<int> arg(static_cast<std::size_t>(n));
-        for (int x = static_cast<int>(x0); x < static_cast<int>(x1); ++x) {
-            for (int y = 0; y < h; ++y) f[static_cast<std::size_t>(y)] = sq[static_cast<std::size_t>(y) * w + x];
-            edtSquared1d(f, d, v, z, h, &arg);
-            for (int y = 0; y < h; ++y) {
-                const std::size_t t = static_cast<std::size_t>(y) * w + x;
-                sq[t] = d[static_cast<std::size_t>(y)];
-                siteY[t] = d[static_cast<std::size_t>(y)] >= kEdtInf ? -1 : arg[static_cast<std::size_t>(y)];
-            }
-        }
+    parallelRanges(static_cast<std::size_t>(h), texels, [&](std::size_t y0, std::size_t y1) {
+        for (std::size_t t = y0 * w; t < y1 * w; ++t) sq[t] = seed[t] ? 0.0 : kEdtInf;
     });
+
+    // `site` first holds what used to be a separate `siteY`: the row of the
+    // nearest seed within t's own column, which is all the column pass can
+    // know. The row pass turns it into a full index -- reading the row's
+    // column answers from a private copy, because it overwrites them in place.
+    edtSquaredColumns(sq.data(), w, h, site.data());
     parallelRanges(static_cast<std::size_t>(h), pass, [&](std::size_t y0, std::size_t y1) {
         std::vector<double> f(static_cast<std::size_t>(n));
         std::vector<double> d(static_cast<std::size_t>(n));
         std::vector<int> v(static_cast<std::size_t>(n) + 1);
         std::vector<double> z(static_cast<std::size_t>(n) + 2);
         std::vector<int> arg(static_cast<std::size_t>(n));
+        std::vector<int> siteY(static_cast<std::size_t>(w));
         for (int y = static_cast<int>(y0); y < static_cast<int>(y1); ++y) {
             double* row = &sq[static_cast<std::size_t>(y) * w];
+            int* srow = &site[static_cast<std::size_t>(y) * w];
             for (int x = 0; x < w; ++x) f[static_cast<std::size_t>(x)] = row[x];
+            std::copy(srow, srow + w, siteY.begin());
             edtSquared1d(f, d, v, z, w, &arg);
             for (int x = 0; x < w; ++x) {
-                const std::size_t t = static_cast<std::size_t>(y) * w + x;
                 row[x] = d[static_cast<std::size_t>(x)];
                 const int sx = arg[static_cast<std::size_t>(x)];
-                const int sy = siteY[static_cast<std::size_t>(y) * w + sx];
-                site[t] = sy < 0 ? -1 : sy * w + sx;
+                const int sy = siteY[static_cast<std::size_t>(sx)];
+                srow[x] = sy < 0 ? -1 : sy * w + sx;
             }
         }
     });
@@ -446,6 +459,44 @@ void edtSquared1d(std::vector<double>& f, std::vector<double>& d, std::vector<in
         d[static_cast<std::size_t>(q)] = dq * dq + f[static_cast<std::size_t>(vk)];
         if (arg) (*arg)[static_cast<std::size_t>(q)] = vk;
     }
+}
+
+void edtSquaredColumns(double* sq, int w, int h, int* siteY) {
+    if (w <= 0 || h <= 0) return;
+    const std::size_t texels = static_cast<std::size_t>(w) * h;
+    // Sixteen columns: two cache lines of doubles per row, and sixteen columns
+    // of a 1024-high grid are 128 KB each for `f` and `d`, which stays in L2.
+    constexpr int kTile = 16;
+    const std::size_t hs = static_cast<std::size_t>(h);
+    parallelRanges(static_cast<std::size_t>(w), texels * 8, [&](std::size_t x0, std::size_t x1) {
+        std::vector<std::vector<double>> f(kTile, std::vector<double>(hs));
+        std::vector<std::vector<double>> d(kTile, std::vector<double>(hs));
+        std::vector<std::vector<int>> arg(siteY ? kTile : 0, std::vector<int>(hs));
+        std::vector<int> v(hs + 1);
+        std::vector<double> z(hs + 2);
+        for (std::size_t tx = x0; tx < x1; tx += kTile) {
+            const int nt = static_cast<int>(std::min<std::size_t>(kTile, x1 - tx));
+            for (std::size_t y = 0; y < hs; ++y) {
+                const double* row = &sq[y * w + tx];
+                for (int j = 0; j < nt; ++j) f[static_cast<std::size_t>(j)][y] = row[j];
+            }
+            for (int j = 0; j < nt; ++j) {
+                const std::size_t ju = static_cast<std::size_t>(j);
+                edtSquared1d(f[ju], d[ju], v, z, h, siteY ? &arg[ju] : nullptr);
+            }
+            for (std::size_t y = 0; y < hs; ++y) {
+                double* row = &sq[y * w + tx];
+                for (int j = 0; j < nt; ++j) row[j] = d[static_cast<std::size_t>(j)][y];
+                if (siteY) {
+                    int* srow = &siteY[y * w + tx];
+                    for (int j = 0; j < nt; ++j) {
+                        const std::size_t ju = static_cast<std::size_t>(j);
+                        srow[j] = d[ju][y] >= kEdtInf ? -1 : arg[ju][y];
+                    }
+                }
+            }
+        }
+    });
 }
 
 namespace {
@@ -494,7 +545,11 @@ FieldImage fieldFromInsideMask(const std::vector<char>& inside,
         band.assign(texels, 0);
         bnx.assign(texels, 0.0f);
         bny.assign(texels, 0.0f);
-        for (int y = 0; y < mh; ++y) {
+        // One row per worker: texel t writes only its own `sOff`, `band`,
+        // `bnx`, `bny` and seeds, and reads only `inside` and `coverage`,
+        // which nothing here writes.
+        parallelRanges(static_cast<std::size_t>(mh), texels * 4, [&](std::size_t r0, std::size_t r1) {
+        for (int y = static_cast<int>(r0); y < static_cast<int>(r1); ++y) {
             for (int x = 0; x < mw; ++x) {
                 const std::size_t t = static_cast<std::size_t>(y) * mw + x;
                 const float c = coverage[t];
@@ -542,14 +597,15 @@ FieldImage fieldFromInsideMask(const std::vector<char>& inside,
                 insideSeed[t] = 1;
             }
         }
+        });
     }
 
     // Distance from every texel to the nearest OUTSIDE centre (what an inside
     // texel needs) and to the nearest INSIDE centre (what an outside texel
     // needs). Two transforms and not one, because a signed field wants the
     // depth on each side measured to the other side's seeds.
-    std::vector<double> sqOut, sqIn;
-    std::vector<int> siteOut, siteIn;
+    EdtBuffer<double> sqOut, sqIn;
+    EdtBuffer<int> siteOut, siteIn;
     edt2d(outsideSeed, mw, mh, sqOut, siteOut);
     edt2d(insideSeed, mw, mh, sqIn, siteIn);
 

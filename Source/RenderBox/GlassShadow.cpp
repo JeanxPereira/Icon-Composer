@@ -199,17 +199,8 @@ std::vector<float> shadowRingMask(const std::vector<float>& art, std::uint32_t w
     // handed, and no line reads another's cells. The envelope's scratch
     // (`f`, `d`, `v`, `z`) moves inside the worker so it is not shared, which
     // is the whole of what changes here. No number does.
-    parallelRanges(static_cast<std::size_t>(w), texels * 8, [&](std::size_t x0, std::size_t x1) {
-        std::vector<double> f(static_cast<std::size_t>(n));
-        std::vector<double> d(static_cast<std::size_t>(n));
-        std::vector<int> v(static_cast<std::size_t>(n) + 1);
-        std::vector<double> z(static_cast<std::size_t>(n) + 2);
-        for (int x = static_cast<int>(x0); x < static_cast<int>(x1); ++x) {
-            for (int y = 0; y < h; ++y) f[static_cast<std::size_t>(y)] = sq[static_cast<std::size_t>(y) * w + x];
-            edtSquared1d(f, d, v, z, h);
-            for (int y = 0; y < h; ++y) sq[static_cast<std::size_t>(y) * w + x] = d[static_cast<std::size_t>(y)];
-        }
-    });
+    // The column half reads its columns a tile at a time (see the header).
+    edtSquaredColumns(sq.data(), w, h, nullptr);
     parallelRanges(static_cast<std::size_t>(h), texels * 8, [&](std::size_t y0, std::size_t y1) {
         std::vector<double> f(static_cast<std::size_t>(n));
         std::vector<double> d(static_cast<std::size_t>(n));
