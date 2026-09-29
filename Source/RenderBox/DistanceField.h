@@ -199,9 +199,10 @@ struct FieldOptions {
 
     // `[INF]` THE SUB-TEXEL SEED. OURS. THE TARGET WAS NOT READ HERE.
     //
-    // Only the grid-borne generators read this -- `generateFieldFromAlpha` and
-    // `generateFieldFromContours`. `generateField`'s brute force already has the
-    // true contour and ignores it.
+    // Only the grid-borne generator reads this -- `generateFieldFromAlpha`.
+    // `generateField`'s brute force already has the true contour and ignores
+    // it, and so, since 29/09/2026, does `generateFieldFromContours`, which
+    // gives the same exact distance by a faster route.
     //
     // WHAT IT CHANGES. Without it the two Euclidean transforms are seeded from a
     // BINARY mask and the zero of the field is pinned to a texel centre, so the
@@ -473,29 +474,44 @@ FieldImage generateFieldFromAlpha(const std::vector<float>& rgba, std::uint32_t 
 // transforms. A field taken off a grid is not a worse answer than the exact
 // one -- it is the answer the target gives.
 //
-// So this rasterises the contours onto the field's own grid -- one scanline
-// sweep, the SAME half-open crossing rule and the SAME fill rule as
-// `FieldShape::distanceAt`'s inside test, so a pixel is inside here exactly
-// when it was inside there -- and hands the mask to the same two exact
-// Euclidean transforms `generateFieldFromAlpha` runs. O(pixels + segments).
+// UNTIL 29/09/2026 this rasterised the contours onto the field's own grid and
+// ran the two exact Euclidean transforms `generateFieldFromAlpha` runs. That is
+// O(pixels + segments), and it was WRONG IN A WAY THAT SHOWED: along a curve the
+// distance stepped in texel increments, and the nearest-texel sampling plus the
+// four-tap gradient of `distanceGradient_v1` (part one, sealed) turned each step
+// into a step of the NORMAL -- hard radial streaks along every curved rim the
+// highlights lit. Swapping in `generateField` made them vanish on the Kenzu
+// icon, at ten times the cost.
 //
-// AND IT IS NOT ONLY CHEAPER. The `argmin` measured to the nearest SEGMENT
-// whether or not that segment is buried inside the union -- the crease the
-// method's own caveat above admits to, and the one thing about the old field
-// that Apple's smooth union provably does not have. A rasterised shape has no
-// buried edges to measure to, so the crease is gone. `[ART]` On
-// `Apollo-Reborn__Apollo-Reborn__AppIcon`'s own art the two fields agree to a
-// mean of 0.27-0.34 px and a worst of 0.78 px on SEVEN of eight layers; the
-// eighth is `stem.svg`, where they differ by up to 3.22 px, and every one of
-// those pixels is a crease under the antenna ellipse.
+// NOW IT RETURNS `generateField`'s NUMBERS -- the same `closestOnSegment`, in
+// double, over the same segments, so the distance is bit-identical (`[ART]`
+// max |diff| 0 on the chiclet and on every vector-glass layer of
+// `Apollo-Reborn__Apollo-Reborn__AppIcon`, `Jellify-Music__App__teal-icon-composer`
+// and `DimensionDev__Flare__AppIcon`, at 512 and 1024) -- through a uniform
+// grid of segment buckets searched per 8x8 block: an annulus bounded by the
+// neighbouring block's distance (1-Lipschitz), then the segments within
+// `dP + 2h` of the block centre as each pixel's candidates. Exact EVERYWHERE,
+// not in a band, because the translucency's `borderWidth` and the refraction's
+// height are document values with no ceiling.
 //
-// `superSample` rasterises onto an N-times-finer grid and runs the transform
-// there, which divides both the distance quantisation and the ANGULAR
-// quantisation of the gradient by N; the field is then read at the sub-texel
-// that the pixel centre lands on. It must be ODD, because only an odd factor
-// has a sub-texel whose centre IS the pixel centre -- an even one would read
-// the field half a sub-texel off and put the whole picture out of step with
-// `CoveragePass`. Even values are rounded down to the odd below.
+// The SIGN still comes from the scanline rasterisation, with the SAME half-open
+// crossing rule and fill rule as `FieldShape::distanceAt`, read at the sub-texel
+// the pixel centre lands on. The GRADIENT is `generateField`'s exact one,
+// `sign * unit(p - foot)`, not the Sobel `fieldFromInsideMask` takes off a
+// quantised field. The four virtual outside rows beyond the buffer edge still
+// clamp an inside distance, as they do in the alpha path.
+//
+// WHAT CAME BACK WITH EXACTNESS: the crease. The distance is again to the
+// nearest SEGMENT whether or not it is buried inside the union (the caveat
+// above) -- on `Apollo`'s `stem.svg` the grid field used to differ from this by
+// up to 3.22 px, every one of them under the antenna ellipse, and now it does
+// not differ at all.
+//
+// `superSample` no longer changes the distance -- an exact answer has nothing
+// to gain from a finer grid. It still picks the grid the SIGN mask is
+// rasterised on (read at the sub-texel whose centre IS the pixel centre, which
+// is why it must be ODD; even values are rounded down), so a shape thinner
+// than a pixel that only a finer mask catches still counts as present.
 FieldImage generateFieldFromContours(const std::vector<FieldContour>& contours,
                                      std::uint32_t width, std::uint32_t height,
                                      FieldOptions options = FieldOptions{},

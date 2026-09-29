@@ -11,6 +11,7 @@
 #include <cstring>
 #include <memory>
 #include <new>
+#include <numeric>
 #include <utility>
 
 namespace rb {
@@ -962,123 +963,376 @@ void rasteriseContours(const std::vector<FieldContour>& contours, int ox, int oy
     insideCount = counted.load();
 }
 
-// `[INF]` THE COVERAGE OF A CONTOUR, for the sub-texel seed. OURS.
+// A DISTANCIA EXATA AO CONTORNO, SEM O PRECO DA FORCA BRUTA. NOSSO.
 //
-// `rasteriseContours` above answers a yes/no question at the texel CENTRE and
-// it is left exactly as it was, ties and all -- the class, and therefore the
-// silhouette and the sign, do not move. This answers a different question over
-// the same crossings: how MUCH of the texel the shape covers.
+// O campo que as duas transformadas acima fazem sobre uma mascara e quantizado
+// na grade: ao longo de uma curva a distancia anda em degraus de texel, e a
+// amostragem NEAREST mais o gradiente de quatro toques de `distanceGradient_v1`
+// (PARTE UM, selada) viram esses degraus em degraus da NORMAL -- as linhas
+// duras radiais que os realces mostravam nas bordas curvas. Trocar o campo pelo
+// `generateField` exato as apagava (medido no Kenzu), a 3,5 s em vez de 0,35 s
+// em 1024 px. O que esta aqui da o MESMO numero que `generateField` -- a mesma
+// `closestOnSegment`, em double, sobre os mesmos segmentos -- sem olhar todo
+// segmento em todo pixel.
 //
-// Exact in x, because a scanline's inside spans are exact in x and the overlap
-// with a column is a subtraction. Quantised in y to `1 / kCoverageSubRows`,
-// because it samples that many sub-rows per texel row and averages them. Four
-// puts the worst error of the seed offset at an eighth of a texel, well under
-// the half texel the binary seed had, and it costs four cheap sweeps and no
-// second Euclidean transform -- which is the whole point, since the transform
-// is what a supersampled field pays nine times over.
-constexpr int kCoverageSubRows = 16;
+// COMO. Os segmentos vao para uma grade uniforme de celulas, cada um em toda
+// celula que atravessa. O buffer e varrido em BLOCOS de `kExactBlock` pixels de
+// lado. Para o centro `P` de um bloco, de meia-diagonal `h`:
+//
+//   1. `dP`, a distancia exata de `P` ao contorno. O primeiro bloco da linha a
+//      acha por aneis de celulas; os seguintes usam que a distancia e
+//      1-Lipschitz -- `dP` esta em `[dAnt - s, dAnt + s]`, `s` o passo entre os
+//      centros -- e so visitam as celulas dessa COROA.
+//   2. Os candidatos: todo segmento a no maximo `dP + 2h` de `P`. Nenhum outro
+//      pode ser o mais proximo de um pixel `q` do bloco: `d(q) <= dP + h`, e um
+//      segmento a essa distancia de `q` esta a no maximo `dP + 2h` de `P`.
+//   3. Cada pixel toma o minimo exato sobre os candidatos.
+//
+// A coroa e o que mantem o fundo da forma barato: um bloco a 500 px da borda
+// nao visita o disco de 500 px, so o anel em que o contorno pode estar.
+//
+// A BANDA E O CAMPO INTEIRO. A translucidez le `sd / borderWidth` e a refracao
+// le a altura do vidro; as duas sao valores do DOCUMENTO, sem teto. Com a coroa
+// o fundo custa pouco, entao nao ha banda a escolher e nenhum consumidor a
+// adivinhar.
+//
+// O SINAL NAO SAI DAQUI. Sai de `rasteriseContours`, a mesma regra de
+// cruzamento semiaberto e a mesma regra de preenchimento de antes -- nao existe
+// uma segunda implementacao de dentro/fora para discordar da primeira.
 
-// O span chega em coordenada ABSOLUTA e e grampeado em `[ox, ox + w)`. O
-// grampo so CORTA: a sobreposicao de uma coluna inteiramente dentro do buffer
-// e a mesma do render cheio, subtracao a subtracao.
-void addSpan(std::vector<double>& acc, int ox, int w, double a, double b, double wt) {
-    const double lo = static_cast<double>(ox);
-    const double hi = static_cast<double>(ox + w);
-    if (a < lo) a = lo;
-    if (b > hi) b = hi;
-    if (!(b > a)) return;
-    int x0 = static_cast<int>(std::floor(a));
-    int x1 = static_cast<int>(std::ceil(b)) - 1;
-    if (x0 < ox) x0 = ox;
-    if (x1 >= ox + w) x1 = ox + w - 1;
-    for (int x = x0; x <= x1; ++x) {
-        const double l = a > static_cast<double>(x) ? a : static_cast<double>(x);
-        const double r = b < static_cast<double>(x) + 1.0 ? b : static_cast<double>(x) + 1.0;
-        if (r > l) acc[static_cast<std::size_t>(x - ox)] += (r - l) * wt;
+// Pixels por lado de um bloco: oito deixam `2h` perto de 10 px, poucos
+// candidatos por pixel e uma busca de grade para cada 64 pixels.
+constexpr int kExactBlock = 8;
+
+struct ExactSegments {
+    std::vector<double> xy;   // x0, y0, x1, y1 por segmento, na ordem de `FieldShape`
+    double gx0 = 0.0, gy0 = 0.0, cell = 8.0;
+    int nx = 1, ny = 1;
+    std::vector<std::uint32_t> start;   // nx * ny + 1
+    std::vector<std::uint32_t> items;
+
+    std::size_t count() const { return xy.size() / 4; }
+
+    // As celulas que o segmento `s` atravessa, faixa de linha a faixa de linha,
+    // com folga de arredondamento para o lado de SOBRAR: uma celula a mais custa
+    // um teste, uma a menos custa a exatidao.
+    template <typename F>
+    void forCells(std::size_t s, F&& f) const {
+        const double ax = xy[s * 4], ay = xy[s * 4 + 1];
+        const double bx = xy[s * 4 + 2], by = xy[s * 4 + 3];
+        const double inv = 1.0 / cell;
+        constexpr double eps = 1e-7;
+        const double ylo = std::min(ay, by), yhi = std::max(ay, by);
+        int j0 = static_cast<int>(std::floor((ylo - gy0) * inv - eps));
+        int j1 = static_cast<int>(std::floor((yhi - gy0) * inv + eps));
+        j0 = std::max(j0, 0);
+        j1 = std::min(j1, ny - 1);
+        for (int j = j0; j <= j1; ++j) {
+            double xlo, xhi;
+            if (ay == by) {
+                xlo = std::min(ax, bx);
+                xhi = std::max(ax, bx);
+            } else {
+                const double b0 = std::max(ylo, gy0 + j * cell);
+                const double b1 = std::min(yhi, gy0 + (j + 1) * cell);
+                double t0 = (b0 - ay) / (by - ay);
+                double t1 = (b1 - ay) / (by - ay);
+                t0 = t0 < 0.0 ? 0.0 : (t0 > 1.0 ? 1.0 : t0);
+                t1 = t1 < 0.0 ? 0.0 : (t1 > 1.0 ? 1.0 : t1);
+                const double x0 = ax + t0 * (bx - ax);
+                const double x1 = ax + t1 * (bx - ax);
+                xlo = std::min(x0, x1);
+                xhi = std::max(x0, x1);
+            }
+            int i0 = static_cast<int>(std::floor((xlo - gx0) * inv - eps));
+            int i1 = static_cast<int>(std::floor((xhi - gx0) * inv + eps));
+            i0 = std::max(i0, 0);
+            i1 = std::min(i1, nx - 1);
+            for (int i = i0; i <= i1; ++i) f(static_cast<std::size_t>(j) * nx + i);
+        }
     }
-}
 
-void coverageFromContours(const std::vector<FieldContour>& contours, int ox, int oy, int w, int h,
-                          FieldRule rule, double scale, std::vector<float>& coverage) {
-    coverage.assign(static_cast<std::size_t>(w) * h, 0.0f);
-    const int n = kCoverageSubRows;
-    const int subRows = h * n;
+    explicit ExactSegments(const std::vector<FieldContour>& contours) {
+        // A MESMA lista que `FieldShape` monta, na mesma ordem.
+        for (const FieldContour& c : contours) {
+            const std::size_t n = c.xy.size() / 2;
+            if (n < 2) continue;
+            for (std::size_t i = 0; i < n; ++i) {
+                const std::size_t j = (i + 1) % n;
+                xy.push_back(c.xy[i * 2]);
+                xy.push_back(c.xy[i * 2 + 1]);
+                xy.push_back(c.xy[j * 2]);
+                xy.push_back(c.xy[j * 2 + 1]);
+            }
+        }
+        const std::size_t n = count();
+        if (n == 0) return;
+        double x0 = xy[0], y0 = xy[1], x1 = xy[0], y1 = xy[1];
+        for (std::size_t k = 0; k < xy.size(); k += 2) {
+            x0 = std::min(x0, xy[k]);
+            x1 = std::max(x1, xy[k]);
+            y0 = std::min(y0, xy[k + 1]);
+            y1 = std::max(y1, xy[k + 1]);
+        }
+        // Oito pixels por celula, e no maximo ~512 celulas por lado: o zoom
+        // entrega contornos num canvas de 16k px, e uma grade de 2000 x 2000
+        // custaria mais para montar do que economiza.
+        const double extent = std::max(x1 - x0, y1 - y0);
+        cell = std::max(8.0, extent / 512.0);
+        gx0 = x0;
+        gy0 = y0;
+        nx = std::max(1, static_cast<int>(std::floor((x1 - x0) / cell)) + 1);
+        ny = std::max(1, static_cast<int>(std::floor((y1 - y0) / cell)) + 1);
+        const std::size_t cells = static_cast<std::size_t>(nx) * ny;
+        start.assign(cells + 1, 0);
+        for (std::size_t s = 0; s < n; ++s) forCells(s, [&](std::size_t c) { ++start[c + 1]; });
+        for (std::size_t c = 0; c < cells; ++c) start[c + 1] += start[c];
+        items.resize(start[cells]);
+        std::vector<std::uint32_t> fill(start.begin(), start.end() - 1);
+        for (std::size_t s = 0; s < n; ++s) {
+            forCells(s, [&](std::size_t c) { items[fill[c]++] = static_cast<std::uint32_t>(s); });
+        }
+    }
 
-    std::vector<std::vector<Crossing>> rows(static_cast<std::size_t>(subRows));
-    for (const FieldContour& c : contours) {
-        const std::size_t count = c.xy.size() / 2;
-        if (count < 2) continue;
-        for (std::size_t i = 0; i < count; ++i) {
-            const std::size_t j = (i + 1) % count;
-            const double ax = static_cast<double>(c.xy[i * 2]) * scale;
-            const double ay = static_cast<double>(c.xy[i * 2 + 1]) * scale;
-            const double bx = static_cast<double>(c.xy[j * 2]) * scale;
-            const double by = static_cast<double>(c.xy[j * 2 + 1]) * scale;
-            if (ay == by) continue;
+    Closest closest(std::size_t s, double px, double py) const {
+        return closestOnSegment(px, py, xy[s * 4], xy[s * 4 + 1], xy[s * 4 + 2], xy[s * 4 + 3]);
+    }
 
-            const int dir = ay < by ? 1 : -1;
-            const double lo = ay < by ? ay : by;
-            const double hi = ay < by ? by : ay;
-            // Sub-row k has its centre at `(k + 0.5) / n`, so the half-open
-            // interval that decides which rows a segment crosses is the same one
-            // `rasteriseContours` uses, measured in sub-rows.
-            int k0 = static_cast<int>(std::ceil(lo * n - 0.5)) - oy * n;
-            int k1 = static_cast<int>(std::ceil(hi * n - 0.5)) - oy * n;   // exclusive
-            if (k0 < 0) k0 = 0;
-            if (k1 > subRows) k1 = subRows;
-            const double invDy = 1.0 / (by - ay);
-            for (int k = k0; k < k1; ++k) {
-                const double cy = (static_cast<double>(k + oy * n) + 0.5) / n;
-                const double t = (cy - ay) * invDy;
-                rows[static_cast<std::size_t>(k)].push_back({ax + t * (bx - ax), dir});
+    // Toda celula que pode ter um ponto a distancia em `[rIn, rOut]` de `P`: as
+    // que tocam o disco de `rOut`, menos as que cabem INTEIRAS no disco de
+    // `rIn`. Linha de celulas a linha, com os dois intervalos em x fechados.
+    template <typename F>
+    void forAnnulus(double px, double py, double rIn, double rOut, F&& f) const {
+        const double inv = 1.0 / cell;
+        int j0 = static_cast<int>(std::floor((py - rOut - gy0) * inv));
+        int j1 = static_cast<int>(std::floor((py + rOut - gy0) * inv));
+        j0 = std::max(j0, 0);
+        j1 = std::min(j1, ny - 1);
+        for (int j = j0; j <= j1; ++j) {
+            const double ya = gy0 + j * cell;
+            const double yb = ya + cell;
+            const double dyMin = py < ya ? ya - py : (py > yb ? py - yb : 0.0);
+            if (dyMin > rOut) continue;
+            const double so = std::sqrt(rOut * rOut - dyMin * dyMin);
+            int i0 = static_cast<int>(std::floor((px - so - gx0) * inv));
+            int i1 = static_cast<int>(std::floor((px + so - gx0) * inv));
+            i0 = std::max(i0, 0);
+            i1 = std::min(i1, nx - 1);
+            int k0 = 1, k1 = 0;   // o buraco; vazio quando `rIn` nao alcanca a linha
+            const double dyMax = std::max(std::fabs(py - ya), std::fabs(py - yb));
+            if (rIn > dyMax) {
+                const double si = std::sqrt(rIn * rIn - dyMax * dyMax);
+                k0 = static_cast<int>(std::ceil((px - si - gx0) * inv));
+                k1 = static_cast<int>(std::floor((px + si - gx0) * inv)) - 1;
+            }
+            const std::size_t row = static_cast<std::size_t>(j) * nx;
+            for (int i = i0; i <= i1; ++i) {
+                if (i >= k0 && i <= k1) {
+                    i = k1;
+                    continue;
+                }
+                f(row + static_cast<std::size_t>(i));
             }
         }
     }
 
-    const double wt = 1.0 / n;
-    // One row per worker, with its own `acc`: a row sums its own sixteen
-    // sub-rows in order and nothing else.
-    parallelRanges(static_cast<std::size_t>(h), static_cast<std::size_t>(w) * h * 4,
-                   [&](std::size_t r0, std::size_t r1) {
-    std::vector<double> acc(static_cast<std::size_t>(w), 0.0);
-    for (int y = static_cast<int>(r0); y < static_cast<int>(r1); ++y) {
-        bool any = false;
-        for (int s = 0; s < n; ++s) {
-            std::vector<Crossing>& r = rows[static_cast<std::size_t>(y) * n + s];
-            if (r.empty()) continue;
-            std::sort(r.begin(), r.end(),
-                      [](const Crossing& a, const Crossing& b) { return a.x < b.x; });
-            if (!any) {
-                std::fill(acc.begin(), acc.end(), 0.0);
-                any = true;
+    // A distancia exata de `P` por aneis de celulas: o anel `r` so e visitado
+    // enquanto o quadrado ja coberto nao garante que o melhor achado ganha de
+    // tudo o que esta fora dele.
+    double nearest(double px, double py) const {
+        const double inv = 1.0 / cell;
+        const int ci = std::clamp(static_cast<int>(std::floor((px - gx0) * inv)), 0, nx - 1);
+        const int cj = std::clamp(static_cast<int>(std::floor((py - gy0) * inv)), 0, ny - 1);
+        double best = -1.0;
+        const int rMax = std::max({ci, cj, nx - 1 - ci, ny - 1 - cj});
+        for (int r = 0; r <= rMax; ++r) {
+            if (best >= 0.0 && r >= 1) {
+                // Tudo fora do quadrado de `r - 1` celulas em volta esta pelo
+                // menos a isto de `P` (negativo quando `P` cai fora dele).
+                const double left = gx0 + (ci - (r - 1)) * cell;
+                const double right = gx0 + (ci + r) * cell;
+                const double top = gy0 + (cj - (r - 1)) * cell;
+                const double bottom = gy0 + (cj + r) * cell;
+                const double lb = std::min({px - left, right - px, py - top, bottom - py});
+                if (lb > 0.0 && lb * lb > best) break;
             }
-            int winding = 0;
-            bool in = false;
-            double start = 0.0;
-            for (std::size_t i = 0; i < r.size(); ++i) {
-                winding += rule == FieldRule::NonZero ? r[i].dir : 1;
-                const bool now = rule == FieldRule::NonZero ? winding != 0 : (winding & 1) != 0;
-                if (now && !in) {
-                    start = r[i].x;
-                    in = true;
-                } else if (!now && in) {
-                    addSpan(acc, ox, w, start, r[i].x, wt);
-                    in = false;
+            for (int j = cj - r; j <= cj + r; ++j) {
+                if (j < 0 || j >= ny) continue;
+                const int step = (r == 0 || j == cj - r || j == cj + r) ? 1 : 2 * r;
+                for (int i = ci - r; i <= ci + r; i += step) {
+                    if (i < 0 || i >= nx) continue;
+                    const std::size_t c = static_cast<std::size_t>(j) * nx + i;
+                    for (std::uint32_t k = start[c]; k < start[c + 1]; ++k) {
+                        const double d2 = closest(items[k], px, py).d2;
+                        if (best < 0.0 || d2 < best) best = d2;
+                    }
                 }
             }
-            // A span still open past the last crossing is art that runs off the
-            // right edge; the sweep in `rasteriseContours` keeps marking inside
-            // there too, so this does.
-            if (in) addSpan(acc, ox, w, start, static_cast<double>(ox + w), wt);
         }
-        if (!any) continue;
-        float* row = &coverage[static_cast<std::size_t>(y) * w];
-        for (int x = 0; x < w; ++x) {
-            const double v = acc[static_cast<std::size_t>(x)];
-            row[x] = static_cast<float>(v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v));
+        return best < 0.0 ? 0.0 : std::sqrt(best);
+    }
+};
+
+// O campo exato sobre o buffer `W x H` de origem `ox, oy` (em pixels do campo),
+// assinado pela mascara `inside`, uma entrada por pixel do buffer.
+FieldImage exactFieldFromContours(const std::vector<FieldContour>& contours,
+                                  const std::vector<char>& inside, int W, int H, int ox,
+                                  int oy, const FieldOptions& options) {
+    FieldImage img;
+    const ExactSegments g(contours);
+    if (g.count() == 0) return img;
+    // So para o pixel cujo centro cai EXATAMENTE sobre o contorno, onde
+    // `p - pe` e o vetor nulo: la `generateField` faz uma diferenca central de
+    // passo 0,5, e aqui se faz a mesma, pela mesma funcao.
+    const FieldShape shape(contours);
+
+    img.width = static_cast<std::uint32_t>(W);
+    img.height = static_cast<std::uint32_t>(H);
+    img.rgba.assign(static_cast<std::size_t>(W) * H * 4, 0.0f);
+    const double aa = options.aaWidth > 0.0f ? static_cast<double>(options.aaWidth) : 1.0;
+
+    const int bw = (W + kExactBlock - 1) / kExactBlock;
+    const int bh = (H + kExactBlock - 1) / kExactBlock;
+    const std::size_t nseg = g.count();
+
+    // Uma LINHA DE BLOCOS por item. Cada pixel escreve so os proprios quatro
+    // floats e le a grade e a mascara, que ninguem mais escreve, entao a divisao
+    // entre nucleos nao move um bit. As linhas vao INTERCALADAS
+    // (`i -> i * passo mod bh`, passo primo com `bh`) porque as do meio da forma
+    // custam mais que as da borda, e fatias contiguas deixariam um nucleo com
+    // todas as caras.
+    int stride = std::max(1, bh / static_cast<int>(parallelThreadCount()));
+    while (std::gcd(stride, bh) != 1) ++stride;
+    parallelRanges(static_cast<std::size_t>(bh), static_cast<std::size_t>(W) * H * 64,
+                   [&](std::size_t r0, std::size_t r1) {
+    std::vector<std::uint32_t> stamp(nseg, 0);
+    std::uint32_t tick = 0;
+    std::vector<std::uint32_t> cand;
+    std::vector<std::pair<double, std::uint32_t>> ring;
+    for (std::size_t r = r0; r < r1; ++r) {
+        const int by = static_cast<int>((r * static_cast<std::size_t>(stride)) %
+                                        static_cast<std::size_t>(bh));
+        const int y0 = by * kExactBlock;
+        const int y1 = std::min(H, y0 + kExactBlock);
+        double prevD = -1.0, prevX = 0.0, prevY = 0.0;
+        for (int bx = 0; bx < bw; ++bx) {
+            const int x0 = bx * kExactBlock;
+            const int x1 = std::min(W, x0 + kExactBlock);
+            // Centros ABSOLUTOS, `(x + origem) + 0,5` (spec 2026-09-16).
+            const double cx0 = static_cast<double>(x0 + ox) + 0.5;
+            const double cx1 = static_cast<double>(x1 - 1 + ox) + 0.5;
+            const double cy0 = static_cast<double>(y0 + oy) + 0.5;
+            const double cy1 = static_cast<double>(y1 - 1 + oy) + 0.5;
+            const double px = 0.5 * (cx0 + cx1);
+            const double py = 0.5 * (cy0 + cy1);
+            const double h = 0.5 * std::hypot(cx1 - cx0, cy1 - cy0);
+            // Folga de arredondamento, sempre para o lado de visitar MAIS.
+            const double slack = 1e-6 * (1.0 + std::fabs(px) + std::fabs(py));
+
+            double best = -1.0;
+            const auto collect = [&](double rIn, double rOut) {
+                if (++tick == 0) {
+                    std::fill(stamp.begin(), stamp.end(), 0u);
+                    tick = 1;
+                }
+                ring.clear();
+                best = -1.0;
+                g.forAnnulus(px, py, std::max(0.0, rIn - slack), rOut + slack,
+                             [&](std::size_t c) {
+                    for (std::uint32_t k = g.start[c]; k < g.start[c + 1]; ++k) {
+                        const std::uint32_t s = g.items[k];
+                        if (stamp[s] == tick) continue;
+                        stamp[s] = tick;
+                        const double d2 = g.closest(s, px, py).d2;
+                        ring.emplace_back(d2, s);
+                        if (best < 0.0 || d2 < best) best = d2;
+                    }
+                });
+            };
+            if (prevD >= 0.0) {
+                const double step = std::hypot(px - prevX, py - prevY);
+                collect(prevD - step, prevD + step + 2.0 * h);
+            }
+            if (best < 0.0) {
+                // O primeiro bloco da linha -- e, por garantia, qualquer coroa
+                // que tenha voltado vazia, o que a conta acima nao permite.
+                const double dN = g.nearest(px, py);
+                collect(dN, dN + 2.0 * h);
+            }
+            const double dP = std::sqrt(best < 0.0 ? 0.0 : best);
+            prevD = dP;
+            prevX = px;
+            prevY = py;
+            const double lim = dP + 2.0 * h + slack;
+            const double lim2 = lim * lim;
+            cand.clear();
+            for (const auto& e : ring) {
+                if (e.first <= lim2) cand.push_back(e.second);
+            }
+            // A ordem dos segmentos e a da forca bruta, para que um empate
+            // escolha o mesmo pe que ela.
+            std::sort(cand.begin(), cand.end());
+
+            for (int y = y0; y < y1; ++y) {
+                const double qy = static_cast<double>(y + oy) + 0.5;
+                for (int x = x0; x < x1; ++x) {
+                    const double qx = static_cast<double>(x + ox) + 0.5;
+                    double b2 = -1.0, fx = 0.0, fy = 0.0;
+                    for (const std::uint32_t s : cand) {
+                        const Closest c = g.closest(s, qx, qy);
+                        if (b2 < 0.0 || c.d2 < b2) {
+                            b2 = c.d2;
+                            fx = c.cx;
+                            fy = c.cy;
+                        }
+                    }
+                    const std::size_t t = static_cast<std::size_t>(y) * W + x;
+                    const bool in = inside[t] != 0;
+                    const double sign = in ? -1.0 : 1.0;
+                    double d = std::sqrt(b2 < 0.0 ? 0.0 : b2);
+                    double gx = 0.0, gy = 0.0;
+                    if (d > 0.0) {
+                        // `grad d = sign * unit(p - pe)`, a derivada analitica:
+                        // unitaria em todo lugar, e no eixo medial so escolhe um
+                        // dos dois pes.
+                        gx = sign * (qx - fx) / d;
+                        gy = sign * (qy - fy) / d;
+                    } else {
+                        const float fqx = static_cast<float>(qx), fqy = static_cast<float>(qy);
+                        const double e = 0.5;
+                        gx = static_cast<double>(shape.distanceAt(static_cast<float>(qx + e), fqy, options.rule)) -
+                             shape.distanceAt(static_cast<float>(qx - e), fqy, options.rule);
+                        gy = static_cast<double>(shape.distanceAt(fqx, static_cast<float>(qy + e), options.rule)) -
+                             shape.distanceAt(fqx, static_cast<float>(qy - e), options.rule);
+                    }
+                    if (in) {
+                        // As quatro linhas virtuais de fora, uma alem de cada
+                        // borda do buffer: a mesma regra e as mesmas contas de
+                        // `fieldFromInsideMask`.
+                        const double bx0 = static_cast<double>(x) + 0.5;
+                        const double by0 = static_cast<double>(y) + 0.5;
+                        const double bx1 = static_cast<double>(W) - bx0;
+                        const double by1 = static_cast<double>(H) - by0;
+                        if (bx0 < d) { d = bx0; gx = -1.0; gy = 0.0; }
+                        if (by0 < d) { d = by0; gx = 0.0; gy = -1.0; }
+                        if (bx1 < d) { d = bx1; gx = 1.0; gy = 0.0; }
+                        if (by1 < d) { d = by1; gx = 0.0; gy = 1.0; }
+                    }
+                    float* p = img.rgba.data() + t * 4;
+                    p[0] = static_cast<float>(sign * d);
+                    const double len = std::sqrt(gx * gx + gy * gy);
+                    if (len > 0.0) {
+                        p[1] = static_cast<float>(gx / len);
+                        p[2] = static_cast<float>(gy / len);
+                    }
+                    const double cov = -static_cast<double>(p[0]) / aa + 0.5;
+                    p[3] = static_cast<float>(cov < 0.0 ? 0.0 : (cov > 1.0 ? 1.0 : cov));
+                }
+            }
         }
     }
     });
+    return img;
 }
 
 }  // namespace
@@ -1133,36 +1387,43 @@ FieldImage generateFieldFromContours(const std::vector<FieldContour>& contours,
     FieldImage img;
     if (width == 0 || height == 0) return img;
     // Odd only: see the header. An even factor has no sub-texel centred on the
-    // pixel centre, and reading the field half a sub-texel off would shift the
-    // whole picture against `CoveragePass`.
+    // pixel centre.
     int ss = superSample < 1 ? 1 : static_cast<int>(superSample);
     if ((ss & 1) == 0) --ss;
     if (ss < 1) ss = 1;
 
-    const int mw = static_cast<int>(width) * ss;
-    const int mh = static_cast<int>(height) * ss;
+    const int W = static_cast<int>(width);
+    const int H = static_cast<int>(height);
+    const int mw = W * ss;
+    const int mh = H * ss;
 
-    std::vector<char> inside;
+    // O SINAL e a mascara de sempre: a mesma rasterizacao, na grade `ss` vezes
+    // mais fina, lida no sub-texel cujo centro E o centro do pixel. A origem
+    // entra ja multiplicada, porque a mascara e a grade fina.
+    std::vector<char> fine;
     std::size_t insideCount = 0;
-    // A origem entra JA multiplicada pelo supersample: a mascara e a grade
-    // fina, e a origem dela e a do buffer medida nessa mesma grade.
-    const int ox = options.originX * ss;
-    const int oy = options.originY * ss;
-    rasteriseContours(contours, ox, oy, mw, mh, options.rule, static_cast<double>(ss), inside,
-                      insideCount);
-    // A contour set that covers no sample point has no inside to sign, and the
-    // same rule applies as for an alpha that never reaches the threshold: an
-    // empty field, so the caller names the gap rather than being handed one
-    // that is everywhere-outside and draws nothing in silence.
+    rasteriseContours(contours, options.originX * ss, options.originY * ss, mw, mh, options.rule,
+                      static_cast<double>(ss), fine, insideCount);
+    // A contour set that covers no sample point has no inside to sign: an empty
+    // field, so the caller names the gap rather than drawing nothing in silence.
     if (insideCount == 0) return img;
 
-    std::vector<float> coverage;
-    if (options.subpixelSeed) {
-        coverageFromContours(contours, ox, oy, mw, mh, options.rule, static_cast<double>(ss),
-                             coverage);
+    std::vector<char> inside;
+    if (ss == 1) {
+        inside = std::move(fine);
+    } else {
+        inside.assign(static_cast<std::size_t>(W) * H, 0);
+        const int half = ss / 2;
+        for (int y = 0; y < H; ++y) {
+            for (int x = 0; x < W; ++x) {
+                inside[static_cast<std::size_t>(y) * W + x] =
+                    fine[static_cast<std::size_t>(y * ss + half) * mw + (x * ss + half)];
+            }
+        }
     }
 
-    FieldImage made = fieldFromInsideMask(inside, coverage, mw, mh, ss, options);
+    FieldImage made =
+        exactFieldFromContours(contours, inside, W, H, options.originX, options.originY, options);
     made.originX = options.originX;
     made.originY = options.originY;
     return made;

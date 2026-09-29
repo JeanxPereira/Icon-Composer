@@ -1322,13 +1322,19 @@ TEST_CASE(the_medial_axis_of_a_thin_bar_keeps_the_seed_vector_not_a_cancelled_di
 // first thing they need is for the knob to still work. So the two claims the
 // decision RESTS on are gated here, at 128 px where they cost nothing:
 //
-//   1. `ss = 3` really does sharpen the normal (the reason to want it), and
+//   1. (UNTIL 29/09/2026) `ss = 3` really did sharpen the normal -- 1.31/10.48
+//      deg at `ss = 1` against 0.31/1.42 at `ss = 3`, on the grid field. The
+//      contour field is now EXACT (`generateField`'s numbers), so there is
+//      nothing left for a finer grid to sharpen: every factor measures
+//      0.05/0.09 deg, which is the 2048-gon's own departure from the circle.
+//      What is gated now is that the knob moves NOTHING and that the normal is
+//      the exact one; and
 //   2. `ss = 2` is NOT a middle ground -- it is `ss = 1` bit for bit, because
 //      the generator rounds an even factor down to the odd below. That trap is
 //      worth a case of its own: the next reader's first instinct is to try 2,
 //      and it would look like "supersampling does nothing" rather than like
 //      "2 means 1".
-TEST_CASE(the_supersample_knob_sharpens_the_normal_and_2_still_means_1) {
+TEST_CASE(the_supersample_knob_no_longer_moves_the_exact_field_and_2_still_means_1) {
     const double cx = 64.0, cy = 64.0, r = 44.0;
     const std::vector<FieldContour> cs = {circleContour(static_cast<float>(cx),
                                                         static_cast<float>(cy),
@@ -1374,9 +1380,10 @@ TEST_CASE(the_supersample_knob_sharpens_the_normal_and_2_still_means_1) {
     CHECK(m2 == m1);
     CHECK(w2 == w1);
 
-    // And the knob does what the decision says it does. The bound is loose
-    // because the point is that it WORKS, not what the fourth digit is; the
-    // measured pair at 512 px is in the laudo.
-    CHECK(m3 < m1 * 0.6);
-    CHECK(w3 < w1 * 0.6);
+    // An exact field has nothing a finer sign mask could sharpen: 3 is 1 too,
+    // and both are the closed form to within the polygon's own flattening.
+    CHECK(m3 == m1);
+    CHECK(w3 == w1);
+    CHECK(m1 < 0.2);
+    CHECK(w1 < 0.5);
 }
