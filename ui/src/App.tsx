@@ -27,7 +27,6 @@ export default function App() {
   const [background, setBackground] = useState<Background>({ kind: "image", file: "1 - sine-purple-orange.jpeg" });
   const [grid, setGrid] = useState(false);
   const [zoom, setZoom] = useState(1);
-  const [live, setLive] = useState(true);
 
   const [image, setImage] = useState<string | null>(null);
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
@@ -59,10 +58,10 @@ export default function App() {
 
   const appearanceOf = (r: Rendition) => RENDITIONS.find((x) => x.id === r)!.appearance;
 
-  // O render FIEL do canvas (nucleo, CPU): so quando o modo ao vivo esta desligado.
+  // O render do canvas.
   useEffect(() => {
-    if (!path || live) return;
-    let alive = true;
+    if (!path) return;
+    let live = true;
     setBusy(true);
     const t0 = performance.now();
     invoke<Rendered>("render_bundle", {
@@ -72,17 +71,17 @@ export default function App() {
       appearance: appearanceOf(rendition),
     })
       .then((r) => {
-        if (!alive) return;
+        if (!live) return;
         setImage(r.png);
         setRenderMs(performance.now() - t0);
         setError("");
       })
-      .catch((e) => alive && setError(String(e)))
-      .finally(() => alive && setBusy(false));
+      .catch((e) => live && setError(String(e)))
+      .finally(() => live && setBusy(false));
     return () => {
-      alive = false;
+      live = false;
     };
-  }, [path, platform, rendition, live]);
+  }, [path, platform, rendition]);
 
   // As miniaturas da barra de rendicoes: as tres aparencias na plataforma
   // corrente, e as plataformas na aparencia corrente.
@@ -130,10 +129,6 @@ export default function App() {
         />
       )}
       <Canvas
-        path={path}
-        doc={doc}
-        live={live}
-        onLive={setLive}
         title={docName || "Icon Composer"}
         image={image}
         busy={busy}
