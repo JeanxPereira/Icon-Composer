@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 
+#include "Source/RenderBox/Parallel.h"
 #include "Source/RenderBox/BlendFormula.h"
 
 namespace rb {
@@ -384,7 +385,10 @@ std::size_t drawSpecular(std::vector<float>& rgba, const FieldImage& field,
         const GlassHighlightSettings g = resolveHighlight(slots[s], args);
         if (g.opacity <= 0.0 || g.height <= 0.0) continue;
 
-        for (std::uint32_t y = 0; y < field.height; ++y) {
+        // One row per worker, and a join before the next highlight: a pixel
+        // still sees the highlights in slot order, and no pixel reads another.
+        parallelRanges(field.height, n * 24, [&](std::size_t y0, std::size_t y1) {
+        for (std::uint32_t y = static_cast<std::uint32_t>(y0); y < static_cast<std::uint32_t>(y1); ++y) {
             for (std::uint32_t x = 0; x < field.width; ++x) {
                 const float* p = field.at(x, y);
                 // The field is NEGATIVE INSIDE and the shader's `sd` is positive
@@ -449,6 +453,7 @@ std::size_t drawSpecular(std::vector<float>& rgba, const FieldImage& field,
                 }
             }
         }
+        });
     }
     std::size_t touched = 0;
     for (std::size_t i = 0; i < n; ++i) touched += static_cast<std::size_t>(hit[i]);

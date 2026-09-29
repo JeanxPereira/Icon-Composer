@@ -1,6 +1,9 @@
 #include "Source/RenderBox/GlassTranslucency.h"
 
+#include "Source/RenderBox/Parallel.h"
+
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 
@@ -102,7 +105,9 @@ OpacityMask glassOpacityMask(const FieldImage& field, const OpacityMaskArguments
     const std::size_t n = static_cast<std::size_t>(field.width) * field.height;
     out.a.assign(n, 1.0f);
     out.coverage.assign(n, 0.0f);
-    for (std::uint32_t y = 0; y < field.height; ++y) {
+    // One row per worker: each pixel is its own field texel and its own row.
+    parallelRanges(field.height, n * 24, [&](std::size_t y0, std::size_t y1) {
+    for (std::uint32_t y = static_cast<std::uint32_t>(y0); y < static_cast<std::uint32_t>(y1); ++y) {
         // ABSOLUTO: `bounds` chega na grade de `size` -- e o retangulo da arte
         // colocada no canvas --, nao na do buffer, entao a rampa tem de ser
         // medida no ponto `(y + origem) + 0.5` dessa mesma grade (spec
@@ -119,25 +124,37 @@ OpacityMask glassOpacityMask(const FieldImage& field, const OpacityMaskArguments
             out.coverage[i] = saturate(sd + 1.0f);
         }
     }
+    });
     return out;
 }
 
 void applyOpacityMask(std::vector<float>& rgba, const OpacityMask& mask) {
     const std::size_t n = std::min(mask.a.size(), rgba.size() / 4);
-    for (std::size_t i = 0; i < n; ++i) rgba[i * 4 + 3] *= mask.a[i];
+    parallelRanges(n, n * 2, [&](std::size_t i0, std::size_t i1) {
+        for (std::size_t i = i0; i < i1; ++i) rgba[i * 4 + 3] *= mask.a[i];
+    });
 }
 
 std::size_t opacityMaskMissedPixels(const std::vector<float>& rgba, const OpacityMask& mask,
                                     std::size_t& painted, float alphaFloor) {
-    painted = 0;
-    std::size_t missed = 0;
+    // Counted per range and added up after: these are integer counts, so the
+    // order of the additions cannot change the total.
     const std::size_t n = std::min(mask.coverage.size(), rgba.size() / 4);
-    for (std::size_t i = 0; i < n; ++i) {
-        if (rgba[i * 4 + 3] <= alphaFloor) continue;
-        ++painted;
-        if (mask.coverage[i] == 0.0f) ++missed;
-    }
-    return missed;
+    std::atomic<std::size_t> paintedSum{0};
+    std::atomic<std::size_t> missedSum{0};
+    parallelRanges(n, n * 2, [&](std::size_t i0, std::size_t i1) {
+        std::size_t p = 0;
+        std::size_t m = 0;
+        for (std::size_t i = i0; i < i1; ++i) {
+            if (rgba[i * 4 + 3] <= alphaFloor) continue;
+            ++p;
+            if (mask.coverage[i] == 0.0f) ++m;
+        }
+        paintedSum += p;
+        missedSum += m;
+    });
+    painted = paintedSum.load();
+    return missedSum.load();
 }
 
 }  // namespace rb

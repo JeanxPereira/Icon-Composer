@@ -1,5 +1,7 @@
 #include "Source/RenderBox/ChicletHighlights.h"
 
+#include "Source/RenderBox/Parallel.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -249,7 +251,10 @@ std::size_t drawChicletHighlights(std::vector<float>& rgba, const PixelGrid& gri
         // `rim` sai aqui: `opacity == 0` e o unico dos seis que nao pinta.
         if (g.opacity <= 0.0 || g.height <= 0.0) continue;
 
-        for (std::uint32_t y = 0; y < grid.height; ++y) {
+        // Uma linha por worker, com junta antes do proximo realce: cada pixel
+        // le e escreve so os proprios floats, e ve os realces na mesma ordem.
+        parallelRanges(grid.height, n * 24, [&](std::size_t y0, std::size_t y1) {
+        for (std::uint32_t y = static_cast<std::uint32_t>(y0); y < static_cast<std::uint32_t>(y1); ++y) {
             for (std::uint32_t x = 0; x < grid.width; ++x) {
                 const float* p = field.at(x, y);
                 // O campo e NEGATIVO DENTRO e o `sd` do shader e positivo
@@ -296,6 +301,7 @@ std::size_t drawChicletHighlights(std::vector<float>& rgba, const PixelGrid& gri
                 }
             }
         }
+        });
     }
     std::size_t touched = 0;
     for (std::size_t i = 0; i < n; ++i) touched += static_cast<std::size_t>(hit[i]);

@@ -150,7 +150,11 @@ std::vector<float> reduceBox(const std::vector<float>& img, std::uint32_t width,
     outHeight = (height + f - 1) / f;
     std::vector<float> out(static_cast<std::size_t>(outWidth) * outHeight * 4, 0.0f);
     const double norm = 1.0 / (static_cast<double>(factor) * factor);
-    for (std::uint32_t ry = 0; ry < outHeight; ++ry) {
+    // One reduced row per iteration, each writing only its own texels: split by
+    // row like `blurPass`, and the sum inside a block keeps its order.
+    const std::size_t work = static_cast<std::size_t>(outWidth) * outHeight * f * f * 4;
+    parallelRanges(outHeight, work, [&](std::size_t r0, std::size_t r1) {
+    for (std::uint32_t ry = static_cast<std::uint32_t>(r0); ry < static_cast<std::uint32_t>(r1); ++ry) {
         for (std::uint32_t rx = 0; rx < outWidth; ++rx) {
             double acc[4] = {0, 0, 0, 0};
             for (int j = 0; j < factor; ++j) {
@@ -167,6 +171,7 @@ std::vector<float> reduceBox(const std::vector<float>& img, std::uint32_t width,
             for (int c = 0; c < 4; ++c) o[c] = static_cast<float>(acc[c] * norm);
         }
     }
+    });
     return out;
 }
 
@@ -174,15 +179,22 @@ std::vector<float> reduceBox(const std::vector<float>& img, std::uint32_t width,
 // coordinate `r * factor + (factor - 1) / 2` -- the centre of the block
 // `reduceBox` averaged, so down and up agree about where a sample IS. Edges
 // clamp, for the reason the blur's edges clamp.
-std::vector<float> expandBilinear(const std::vector<float>& img, std::uint32_t width,
-                                  std::uint32_t height, std::uint32_t outWidth,
-                                  std::uint32_t outHeight, int factor) {
-    std::vector<float> out(static_cast<std::size_t>(outWidth) * outHeight * 4, 0.0f);
+//
+// It writes EVERY element of `out`, which it sizes to `outWidth x outHeight`, so
+// the caller can hand in the buffer the reduce was taken from.
+void expandBilinear(const std::vector<float>& img, std::uint32_t width,
+                    std::uint32_t height, std::uint32_t outWidth,
+                    std::uint32_t outHeight, int factor, std::vector<float>& out) {
+    out.resize(static_cast<std::size_t>(outWidth) * outHeight * 4);
     const double f = factor;
     const double centre = (f - 1.0) * 0.5;
     const int lastX = static_cast<int>(width) - 1;
     const int lastY = static_cast<int>(height) - 1;
-    for (std::uint32_t y = 0; y < outHeight; ++y) {
+    // Split by output row: `img` is read-only here and every row writes only
+    // its own texels, so each float is the same expression it was serially.
+    const std::size_t work = static_cast<std::size_t>(outWidth) * outHeight * 16;
+    parallelRanges(outHeight, work, [&](std::size_t r0, std::size_t r1) {
+    for (std::uint32_t y = static_cast<std::uint32_t>(r0); y < static_cast<std::uint32_t>(r1); ++y) {
         const double v = (static_cast<double>(y) - centre) / f;
         const double fy = std::floor(v);
         const double ty = v - fy;
@@ -206,7 +218,7 @@ std::vector<float> expandBilinear(const std::vector<float>& img, std::uint32_t w
             }
         }
     }
-    return out;
+    });
 }
 
 // The ladder itself, over PREMULTIPLIED RGBA, in place. `variance` is in the
@@ -226,7 +238,8 @@ void blurLadder(std::vector<float>& img, std::uint32_t width, std::uint32_t heig
             std::uint32_t rw = 0, rh = 0;
             std::vector<float> small = reduceBox(img, width, height, factor, rw, rh);
             blurLadder(small, rw, rh, residual);
-            img = expandBilinear(small, rw, rh, width, height, factor);
+            // Into `img` itself: `small` is all the expand reads.
+            expandBilinear(small, rw, rh, width, height, factor, img);
             return;
         }
     }
@@ -254,31 +267,42 @@ int blurReduceFactorForVariance(double variance) {
     return 1;
 }
 
-std::vector<float> blurPremultipliedRgba(const std::vector<float>& src, std::uint32_t width,
-                                         std::uint32_t height, double sigma) {
-    if (sigma <= 0.0 || width == 0 || height == 0) return src;
+void blurPremultipliedRgbaInPlace(std::vector<float>& img, std::uint32_t width,
+                                  std::uint32_t height, double sigma) {
+    if (sigma <= 0.0 || width == 0 || height == 0) return;
     const std::size_t texels = static_cast<std::size_t>(width) * height;
-    if (src.size() < texels * 4) return src;
-    if (blurKernelHalfWidth(sigma) <= 0) return src;
+    if (img.size() < texels * 4) return;
+    if (blurKernelHalfWidth(sigma) <= 0) return;
+    img.resize(texels * 4);
 
-    std::vector<float> img(texels * 4);
-    for (std::size_t t = 0; t < texels; ++t) {
-        const float a = src[t * 4 + 3];
-        for (int c = 0; c < 3; ++c) img[t * 4 + c] = src[t * 4 + c] * a;
-        img[t * 4 + 3] = a;
-    }
+    // Both conversions are per texel, so they are split by row the way the
+    // passes are; no texel reads another, and each reads its own alpha before
+    // writing its colour.
+    parallelRanges(height, texels * 4, [&](std::size_t y0, std::size_t y1) {
+        for (std::size_t t = y0 * width; t < y1 * width; ++t) {
+            const float a = img[t * 4 + 3];
+            for (int c = 0; c < 3; ++c) img[t * 4 + c] = img[t * 4 + c] * a;
+        }
+    });
 
     blurLadder(img, width, height, sigma * sigma);
 
-    std::vector<float> out(texels * 4, 0.0f);
-    for (std::size_t t = 0; t < texels; ++t) {
-        const double a = img[t * 4 + 3];
-        out[t * 4 + 3] = static_cast<float>(a);
-        for (int c = 0; c < 3; ++c) {
-            out[t * 4 + c] = a > 0.0 ? static_cast<float>(img[t * 4 + c] / a) : 0.0f;
+    parallelRanges(height, texels * 16, [&](std::size_t y0, std::size_t y1) {
+        for (std::size_t t = y0 * width; t < y1 * width; ++t) {
+            const double a = img[t * 4 + 3];
+            img[t * 4 + 3] = static_cast<float>(a);
+            for (int c = 0; c < 3; ++c) {
+                img[t * 4 + c] = a > 0.0 ? static_cast<float>(img[t * 4 + c] / a) : 0.0f;
+            }
         }
-    }
-    return out;
+    });
+}
+
+std::vector<float> blurPremultipliedRgba(const std::vector<float>& src, std::uint32_t width,
+                                         std::uint32_t height, double sigma) {
+    std::vector<float> img = src;
+    blurPremultipliedRgbaInPlace(img, width, height, sigma);
+    return img;
 }
 
 BlurMaterialSurface blurMaterialSurface(double blurRadiusCanvasUnits, double frameX,
