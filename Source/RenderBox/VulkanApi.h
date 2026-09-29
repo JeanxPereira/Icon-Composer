@@ -64,6 +64,7 @@ namespace rb {
     X(vkCmdDispatch)                \
     X(vkCmdDraw)                    \
     X(vkCmdEndRenderPass)           \
+    X(vkCmdFillBuffer)              \
     X(vkCmdPipelineBarrier)         \
     X(vkCmdPushConstants)           \
     X(vkCmdSetScissor)              \
@@ -103,6 +104,7 @@ namespace rb {
     X(vkGetImageMemoryRequirements) \
     X(vkMapMemory)                  \
     X(vkQueueSubmit)                \
+    X(vkResetDescriptorPool)        \
     X(vkUnmapMemory)                \
     X(vkUpdateDescriptorSets)       \
     X(vkWaitForFences)

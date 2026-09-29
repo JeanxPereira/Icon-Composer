@@ -265,10 +265,11 @@ CoveragePass& CoveragePass::operator=(CoveragePass&& o) noexcept {
     return *this;
 }
 
-Result<void> CoveragePass::draw(Device& device, Image& target, const PathBuffer& path,
-                                const PathGlobals& globals, CoverageViewport vp) {
+Result<void> CoveragePass::check(const Device& device, std::uint32_t targetWidth,
+                                 std::uint32_t targetHeight, const PathBuffer& path,
+                                 CoverageViewport vp) const {
     if (pipeline_ == VK_NULL_HANDLE) {
-        return std::unexpected(std::string("CoveragePass::draw on an unbuilt pass"));
+        return std::unexpected(std::string("CoveragePass on an unbuilt pass"));
     }
     // Never size a draw from a number the buffer merely claims -- the same guard
     // that stopped a mutated header from asking for a hundred gigabytes.
@@ -286,8 +287,8 @@ Result<void> CoveragePass::draw(Device& device, Image& target, const PathBuffer&
         // sao imutaveis por dispositivo, e este bloco roda uma vez por forma e
         // uma vez por filho de clip-path.
         const VkPhysicalDeviceLimits& lim = device.limits();
-        const double vw = vp.width ? vp.width : target.width();
-        const double vh = vp.height ? vp.height : target.height();
+        const double vw = vp.width ? vp.width : targetWidth;
+        const double vh = vp.height ? vp.height : targetHeight;
         if (vw > lim.maxViewportDimensions[0] || vh > lim.maxViewportDimensions[1]) {
             return std::unexpected(std::string("a projecao do desenho passa de "
                                                "maxViewportDimensions deste aparelho"));
@@ -299,6 +300,56 @@ Result<void> CoveragePass::draw(Device& device, Image& target, const PathBuffer&
             return std::unexpected(std::string("o deslocamento do viewport sai de "
                                                "viewportBoundsRange deste aparelho"));
         }
+    }
+
+    return {};
+}
+
+void CoveragePass::record(VkCommandBuffer cmd, VkFramebuffer framebuffer, VkDescriptorSet set,
+                          std::uint32_t w, std::uint32_t h, const PathBuffer& path,
+                          const PathGlobals& globals, CoverageViewport vp) const {
+    const DeviceApi& api = *api_;
+    const std::uint32_t indices = indicesPerInstance(PathPass::Exterior);
+    const std::int32_t total = path.vertexCount();
+    const std::uint32_t instances =
+        (static_cast<std::uint32_t>(total) + indices - 1) / indices;
+    const CoveragePush push{globals, vp.originX, vp.originY};
+
+    VkClearValue clear{};
+    VkRenderPassBeginInfo rbi{};
+    rbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rbi.renderPass = renderPass_;
+    rbi.framebuffer = framebuffer;
+    rbi.renderArea.extent = {w, h};
+    rbi.clearValueCount = 1;
+    rbi.pClearValues = &clear;
+    api.vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkViewport viewport{};
+    viewport.x = static_cast<float>(-vp.originX);
+    viewport.y = static_cast<float>(-vp.originY);
+    viewport.width = static_cast<float>(vp.width ? vp.width : w);
+    viewport.height = static_cast<float>(vp.height ? vp.height : h);
+    viewport.maxDepth = 1.0f;
+    api.vkCmdSetViewport(cmd, 0, 1, &viewport);
+    VkRect2D scissor{};
+    scissor.extent = {w, h};
+    api.vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+    api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set, 0,
+                            nullptr);
+    api.vkCmdPushConstants(cmd, layout_,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(CoveragePush), &push);
+    api.vkCmdDraw(cmd, indices * 6, instances, 0, 0);
+    api.vkCmdEndRenderPass(cmd);
+}
+
+Result<void> CoveragePass::draw(Device& device, Image& target, const PathBuffer& path,
+                                const PathGlobals& globals, CoverageViewport vp) {
+    if (auto ok = check(device, target.width(), target.height(), path, vp); !ok) {
+        return std::unexpected(ok.error());
     }
 
     auto segments = Buffer::create(device, path.entries.size() * sizeof(CubicSegment),
@@ -337,48 +388,11 @@ Result<void> CoveragePass::draw(Device& device, Image& target, const PathBuffer&
         return std::unexpected(std::string("vkCreateFramebuffer: ") + describe(r));
     }
 
-    const std::uint32_t indices = indicesPerInstance(PathPass::Exterior);
-    const std::int32_t total = path.vertexCount();
-    const std::uint32_t instances =
-        (static_cast<std::uint32_t>(total) + indices - 1) / indices;
-
-    VkRenderPass rp = renderPass_;
-    const CoveragePush push{globals, vp.originX, vp.originY};
-    VkPipeline pipeline = pipeline_;
-    VkPipelineLayout layout = layout_;
     VkDescriptorSet set = set_;
     const std::uint32_t w = target.width(), h = target.height();
 
-    auto ran = device.submitAndWait([&, vp, push](VkCommandBuffer cmd) {
-        VkClearValue clear{};
-        VkRenderPassBeginInfo rbi{};
-        rbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        rbi.renderPass = rp;
-        rbi.framebuffer = framebuffer;
-        rbi.renderArea.extent = {w, h};
-        rbi.clearValueCount = 1;
-        rbi.pClearValues = &clear;
-        api.vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
-
-        VkViewport viewport{};
-        viewport.x = static_cast<float>(-vp.originX);
-        viewport.y = static_cast<float>(-vp.originY);
-        viewport.width = static_cast<float>(vp.width ? vp.width : w);
-        viewport.height = static_cast<float>(vp.height ? vp.height : h);
-        viewport.maxDepth = 1.0f;
-        api.vkCmdSetViewport(cmd, 0, 1, &viewport);
-        VkRect2D scissor{};
-        scissor.extent = {w, h};
-        api.vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-        api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-        api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0,
-                                nullptr);
-        api.vkCmdPushConstants(cmd, layout,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                           sizeof(CoveragePush), &push);
-        api.vkCmdDraw(cmd, indices * 6, instances, 0, 0);
-        api.vkCmdEndRenderPass(cmd);
+    auto ran = device.submitAndWait([&](VkCommandBuffer cmd) {
+        record(cmd, framebuffer, set, w, h, path, globals, vp);
     });
     api.vkDestroyFramebuffer(device_, framebuffer, nullptr);
     if (!ran) return std::unexpected(ran.error());

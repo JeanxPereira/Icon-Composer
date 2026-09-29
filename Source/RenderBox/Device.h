@@ -103,6 +103,13 @@ public:
     Result<std::uint32_t> memoryTypeIndex(std::uint32_t typeBits,
                                           VkMemoryPropertyFlags properties) const;
 
+    // O QUE O CAMINHO RESIDENTE (`renderIconGpu`) MONTA UMA VEZ POR APARELHO:
+    // os pipelines de compute, a passada de cobertura, o pool de buffers. Mora
+    // aqui porque tem a vida do aparelho -- e destruido ANTES do `vkDestroyDevice`
+    // em `destroy()` -- e este andar nao sabe o tipo: e um `shared_ptr<void>`
+    // que so `IconRendererGpu.cpp` preenche e le.
+    std::shared_ptr<void>& residentState() { return resident_; }
+
 private:
     void destroy();
 
@@ -115,6 +122,7 @@ private:
     std::uint32_t queueFamily_ = 0;
     std::string name_;
     VkPhysicalDeviceLimits limits_{};   // see limits()
+    std::shared_ptr<void> resident_;    // see residentState()
 };
 
 // The Vulkan result code, spelled the way the header spells it. A number in an

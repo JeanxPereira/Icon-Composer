@@ -49,6 +49,28 @@ public:
     Result<void> draw(Device& device, Image& target, const PathBuffer& path,
                       const PathGlobals& globals, CoverageViewport viewport = CoverageViewport{});
 
+    // AS DUAS METADES DE `draw`, PARA QUEM GRAVA O SEU PROPRIO COMMAND BUFFER.
+    //
+    // `draw` submete e espera, uma vez por forma: e o que o caminho de CPU quer,
+    // porque ele le a cobertura de volta logo em seguida. O caminho residente
+    // (`renderIconGpu`) nao le: ele grava o desenho, a copia da cobertura e o
+    // resolve de todas as formas de uma camada NUM command buffer so. `draw` e
+    // exatamente `check` + `record` com o conjunto e o framebuffer dele, entao os
+    // dois caminhos emitem os mesmos comandos por forma.
+    //
+    // `check` e a guarda de `draw` (cabecalho contra segmentos, limites de
+    // viewport do aparelho). `record` usa `set`, que o chamador aloca de
+    // `setLayout()` com o buffer de segmentos no binding 0, e um framebuffer
+    // feito sobre `renderPass()`. O alvo termina em TRANSFER_SRC_OPTIMAL.
+    Result<void> check(const Device& device, std::uint32_t targetWidth,
+                       std::uint32_t targetHeight, const PathBuffer& path,
+                       CoverageViewport viewport) const;
+    void record(VkCommandBuffer cmd, VkFramebuffer framebuffer, VkDescriptorSet set,
+                std::uint32_t width, std::uint32_t height, const PathBuffer& path,
+                const PathGlobals& globals, CoverageViewport viewport) const;
+    VkRenderPass renderPass() const { return renderPass_; }
+    VkDescriptorSetLayout setLayout() const { return setLayout_; }
+
 private:
     void destroy();
 

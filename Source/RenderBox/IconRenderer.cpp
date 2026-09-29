@@ -20,6 +20,7 @@
 #include "Source/RenderBox/GlassShadow.h"
 #include "Source/RenderBox/GlassSpecular.h"
 #include "Source/RenderBox/GradientOracle.h"
+#include "Source/RenderBox/IconSurface.h"
 #include "Source/RenderBox/SystemFill.h"
 #include "Source/RenderBox/ViewportPlan.h"
 #include "Source/IconComposerFoundation/Png.h"
@@ -804,8 +805,121 @@ PathGlobals placeOnCanvas(const icf::svg::ViewBox& box, const LayerPlacement& p,
     return g;
 }
 
+namespace {
+
+// OS PIXELS DE `renderIcon`, NA CPU -- cada metodo e a chamada que a linha
+// correspondente de `renderIconOn` fazia antes de a interface existir, com os
+// mesmos argumentos (IconSurface.h diz por que ela existe). O gate de SHA do
+// corpus e quem prova que nenhum byte andou.
+class CpuSurface final : public IconSurface {
+public:
+    explicit CpuSurface(Device& device) : device_(device) {}
+
+    Result<void> begin(const PixelGrid& grid) override {
+        grid_ = grid;
+        acc_.assign(grid.texels() * 4, 0.0f);
+        return {};
+    }
+    Result<void> paintBackground(const FillOverride& paint) override {
+        rb::paintBackground(acc_, grid_, paint);
+        return {};
+    }
+    Result<void> clipToChiclet(IconPlatform platform) override {
+        rb::clipToChiclet(acc_, grid_, platform);
+        return {};
+    }
+    Result<void> onTarget(const std::function<void(std::vector<float>&)>& step) override {
+        step(target());
+        return {};
+    }
+    Result<void> beginGroup(bool isolated) override {
+        isolated_ = isolated;
+        groupAcc_.clear();
+        if (isolated) groupAcc_.assign(grid_.texels() * 4, 0.0f);
+        return {};
+    }
+    Result<void> endGroup(std::optional<BlendMode> blend) override {
+        if (isolated_ && blend) blendPremulOver(acc_, groupAcc_, *blend);
+        isolated_ = false;
+        return {};
+    }
+    Result<SurfaceArt> drawSvg(RenderCache* cache, const std::string& text,
+                               const icf::svg::SvgDocument& svg, const PathGlobals& placement,
+                               const RenderOptions& ro) override {
+        auto drew = svgRenderCached(device_, cache, text, svg, placement, ro);
+        if (!drew) return std::unexpected(drew.error());
+        SurfaceArt art;
+        art.rgba = std::move(drew->rgba);
+        art.skipped = std::move(drew->skipped);
+        return art;
+    }
+    Result<SurfaceArt> placeRaster(const icf::DecodedPng& png,
+                                   const LayerPlacement& placement) override {
+        SurfaceArt art;
+        art.rgba = rb::placeRaster(png, placement, grid_);
+        return art;
+    }
+    Result<const std::vector<float>*> artOnCpu(SurfaceArt& art) override { return &art.rgba; }
+    Result<std::size_t> applyMask(SurfaceArt& art, const OpacityMask& mask,
+                                  std::size_t& painted) override {
+        const std::size_t missed = opacityMaskMissedPixels(art.rgba, mask, painted);
+        applyOpacityMask(art.rgba, mask);
+        return missed;
+    }
+    Result<void> blendArt(const SurfaceArt& art, float alpha, BlendMode mode) override {
+        blendOver(target(), art.rgba, alpha, mode);
+        return {};
+    }
+    Result<void> blendImage(const std::vector<float>& straight, float alpha,
+                            BlendMode mode) override {
+        blendOver(target(), straight, alpha, mode);
+        return {};
+    }
+    Result<std::vector<float>> finish(std::int32_t cropX, std::int32_t cropY,
+                                      std::uint32_t viewW, std::uint32_t viewH) override {
+        std::vector<float> rgba(static_cast<std::size_t>(viewW) * viewH * 4, 0.0f);
+        for (std::uint32_t y = 0; y < viewH; ++y) {
+            for (std::uint32_t x = 0; x < viewW; ++x) {
+                const std::size_t s =
+                    ((static_cast<std::size_t>(y) + cropY) * grid_.width + x + cropX) * 4;
+                const std::size_t d = (static_cast<std::size_t>(y) * viewW + x) * 4;
+                const float a = acc_[s + 3];
+                for (int k = 0; k < 3; ++k) rgba[d + k] = a > 0.0f ? acc_[s + k] / a : 0.0f;
+                rgba[d + 3] = a;
+            }
+        }
+        return rgba;
+    }
+
+private:
+    std::vector<float>& target() { return isolated_ ? groupAcc_ : acc_; }
+
+    Device& device_;
+    PixelGrid grid_;
+    // The accumulator is PREMULTIPLIED while layers stack -- `over` is only
+    // associative in that form -- and is un-multiplied once at the end, which is
+    // what `RenderedIcon::rgba` promises and what a PNG wants.
+    //
+    // This step was missing until the mutation sweep pointed at the `over`
+    // operator. The test that should have caught it checked only the ALPHA of a
+    // half-transparent layer, never its colour, so a premultiplied result read
+    // as straight -- a semi-transparent icon came out too dark and every test
+    // stayed green.
+    std::vector<float> acc_;
+    std::vector<float> groupAcc_;
+    bool isolated_ = false;
+};
+
+}  // namespace
+
 Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                                 IconRenderOptions options) {
+    CpuSurface surface(device);
+    return renderIconOn(surface, bundle, options);
+}
+
+Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& bundle,
+                                  IconRenderOptions options) {
     if (options.size == 0) return std::unexpected("a canvas of zero size was asked for");
 
     // O DOCUMENTO E LIDO AQUI porque a margem sai DELE: `documentReach` mede o
@@ -831,17 +945,9 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                         "\"O teto de area\")");
         return out;
     }
-    const std::size_t texels = grid.texels();
-    // The accumulator is PREMULTIPLIED while layers stack -- `over` is only
-    // associative in that form -- and is un-multiplied once at the end, which is
-    // what `RenderedIcon::rgba` promises and what a PNG wants.
-    //
-    // This step was missing until the mutation sweep pointed at the `over`
-    // operator. The test that should have caught it checked only the ALPHA of a
-    // half-transparent layer, never its colour, so a premultiplied result read
-    // as straight -- a semi-transparent icon came out too dark and every test
-    // stayed green.
-    std::vector<float> acc(texels * 4, 0.0f);
+    // O acumulador (pre-multiplicado) mora na superficie -- `CpuSurface` diz
+    // por que ele e pre-multiplicado.
+    if (auto began = surface.begin(grid); !began) return std::unexpected(began.error());
 
     // Qual pastilha este contexto pede -- `ChicletShape.h`, `platformOverrides`.
     const IconPlatform platform = iconPlatformOf(options.context.idiom);
@@ -871,7 +977,9 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             if (!why.empty()) {
                 out.backgroundGap = why;
             } else {
-                paintBackground(acc, grid, paint);
+                if (auto ok = surface.paintBackground(paint); !ok) {
+                    return std::unexpected(ok.error());
+                }
                 // The one line this front adds to this file. The background is
                 // painted over the whole square and then CUT, which is the order
                 // that keeps the ramp's parameter mapped to the canvas -- see
@@ -882,7 +990,9 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 // -- e meio pixel de recuo. Ate aqui todo idioma recortava ao
                 // mesmo quadrado de 0,26, que era a metade visual do "todo modo
                 // alem de Square vira um quadrado desalinhado".
-                clipToChiclet(acc, grid, platform);
+                if (auto ok = surface.clipToChiclet(platform); !ok) {
+                    return std::unexpected(ok.error());
+                }
                 out.backgroundPainted = true;
                 note(out.notes, kBackgroundShapeNote);
 
@@ -912,8 +1022,16 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                     chicletArgs.sizeClass = options.sizeClass;
                     chicletArgs.pixelsPerPoint =
                         static_cast<double>(options.size) / kCanvasPoints;
-                    if (chicletHighlightsCached(options.cache, acc, grid, chicletArgs,
-                                                platform) > 0) {
+                    // Na GPU e uma ida e volta: ver `onTarget`.
+                    std::size_t highlighted = 0;
+                    if (auto ok = surface.onTarget([&](std::vector<float>& acc) {
+                            highlighted = chicletHighlightsCached(options.cache, acc, grid,
+                                                                  chicletArgs, platform);
+                        });
+                        !ok) {
+                        return std::unexpected(ok.error());
+                    }
+                    if (highlighted > 0) {
                         note(out.notes, chicletHighlightsNote(appearance, lum));
                     }
                 }
@@ -1190,9 +1308,9 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
         }
 
         const bool blendTheGroup = groupBlend && groupMode && !groupWouldRefract;
-        std::vector<float> groupAcc;
-        if (blendTheGroup) groupAcc.assign(texels * 4, 0.0f);
-        std::vector<float>& target = blendTheGroup ? groupAcc : acc;
+        // O alvo proprio do grupo, quando ele mescla: a superficie passa a
+        // desenhar nele ate `endGroup`.
+        if (auto ok = surface.beginGroup(blendTheGroup); !ok) return std::unexpected(ok.error());
 
         // ...and so does the layer array inside a group, for the same reason
         // and by the same proof. The corpus signal here is weak on its own --
@@ -1402,7 +1520,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             //
             // It is decoded ONCE and reused by the draw below, so this is not an
             // extra read.
-            std::optional<std::vector<float>> rasterPlaced;
+            std::optional<SurfaceArt> rasterPlaced;
             std::uint32_t rasterW = 0, rasterH = 0;
             if (!svg && ext == ".png") {
                 const icf::DecodedPng png = icf::readPng(art.string());
@@ -1412,7 +1530,9 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 }
                 rasterW = png.width;
                 rasterH = png.height;
-                rasterPlaced = placeRaster(png, lp, grid);
+                auto placed = surface.placeRaster(png, lp);
+                if (!placed) return std::unexpected(placed.error());
+                rasterPlaced = std::move(*placed);
             }
 
             // The paint is built AFTER the art, because a gradient needs the
@@ -1583,8 +1703,11 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                     FieldOptions fo;
                     fo.originX = grid.originX;
                     fo.originY = grid.originY;
+                    // Na GPU e um readback da arte: o campo ainda e de CPU.
+                    auto alphaSource = surface.artOnCpu(*rasterPlaced);
+                    if (!alphaSource) return std::unexpected(alphaSource.error());
                     std::shared_ptr<const FieldImage> fromAlpha = fieldFromAlphaCached(
-                        options.cache, *rasterPlaced, grid.width, grid.height, fo);
+                        options.cache, **alphaSource, grid.width, grid.height, fo);
                     if (fromAlpha->width == 0) {
                         // No texel reaches `alpha >= 0.5`: there is no contour to
                         // sign, so there is no field. A raster that faint has
@@ -1618,8 +1741,14 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 } else {
                     if (wantsHighlight) specularField = field;
                     if (wantsRefraction) {
-                        glassOver(target, grid, glassDisplacementMap(*field, refraction),
-                                  refraction);
+                        // Na GPU e uma ida e volta do alvo: a refracao e de CPU.
+                        if (auto ok = surface.onTarget([&](std::vector<float>& target) {
+                                glassOver(target, grid, glassDisplacementMap(*field, refraction),
+                                          refraction);
+                            });
+                            !ok) {
+                            return std::unexpected(ok.error());
+                        }
                         note(out.notes, glassRulerNote(options.size));
                         ++out.glassRefracted;
                     }
@@ -1692,8 +1821,13 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             // blur behind it is the most expensive thing this loop does.
             // `GlassShadow.h` carries the addresses for all of it.
             std::vector<float> shadowOverdraw;
-            auto castShadow = [&](const std::vector<float>& artRgba) {
-                if (!castsShadow) return;
+            auto castShadow = [&](SurfaceArt& artDrawn) -> Result<void> {
+                if (!castsShadow) return {};
+                // Na GPU e um readback da arte e um upload da sombra: a sombra
+                // ainda e de CPU.
+                auto onCpu = surface.artOnCpu(artDrawn);
+                if (!onCpu) return std::unexpected(onCpu.error());
+                const std::vector<float>& artRgba = **onCpu;
                 const ShadowGeometry geometry =
                     shadowGeometry(options.size, options.sizeClass);
                 const std::shared_ptr<const std::vector<float>> img =
@@ -1708,10 +1842,14 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                     shadowOverdraw = shadowOverdrawImage(*img, artRgba, grid.width,
                                                          grid.height, overdraw);
                 }
-                blendOver(target, *img, static_cast<float>(shadowAlpha(shadowIn)),
-                          shadowBlendMode(shadowIn.style));
+                if (auto ok = surface.blendImage(*img, static_cast<float>(shadowAlpha(shadowIn)),
+                                                 shadowBlendMode(shadowIn.style));
+                    !ok) {
+                    return ok;
+                }
                 if (geometry.ringWidth) note(out.notes, kShadowRingNote);
                 ++out.glassShadowed;
+                return {};
             };
             // `[BIN]` AFTER THE CONTENT AND BEFORE THE HIGHLIGHTS, which is the
             // order of `0x48B74`: `0x4A2D4` (the glass pass, where the main
@@ -1721,13 +1859,18 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
             // `0x48DB4`, on the path every branch merges into (`0x48DAC`). The
             // per-element loop at `0x48E20` runs the same three in the same
             // order (`0x48F30`, `0x48F5C`, `0x48EAC`).
-            auto castShadowOverdraw = [&]() {
-                if (shadowOverdraw.empty()) return;
-                blendOver(target, shadowOverdraw, static_cast<float>(shadowAlpha(shadowIn)),
-                          kShadow.overdrawBlendMode);
+            auto castShadowOverdraw = [&]() -> Result<void> {
+                if (shadowOverdraw.empty()) return {};
+                if (auto ok = surface.blendImage(shadowOverdraw,
+                                                 static_cast<float>(shadowAlpha(shadowIn)),
+                                                 kShadow.overdrawBlendMode);
+                    !ok) {
+                    return ok;
+                }
                 shadowOverdraw.clear();
                 note(out.notes, kShadowOverdrawNote);
                 ++out.glassShadowOverdrawn;
+                return {};
             };
 
             if (svg) {
@@ -1740,7 +1883,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 ro.projectionHeight = grid.size;
                 ro.subdivisions = options.subdivisions;
                 ro.override = paint;
-                auto drew = svgRenderCached(device, options.cache, svgText, *svg,
+                auto drew = surface.drawSvg(options.cache, svgText, *svg,
                                             placeOnCanvas(svg->viewBox, lp, options.size), ro);
                 if (!drew) return std::unexpected(drew.error());
                 for (const auto& s : drew->skipped) {
@@ -1763,8 +1906,9 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                     // against the art's alpha so the sentence carries a number
                     // instead of a worry.
                     std::size_t painted = 0;
-                    const std::size_t missed =
-                        opacityMaskMissedPixels(drew->rgba, *mask, painted);
+                    auto counted = surface.applyMask(*drew, *mask, painted);
+                    if (!counted) return std::unexpected(counted.error());
+                    const std::size_t missed = *counted;
                     if (missed > 0 && painted > 0) {
                         char buf[420];
                         std::snprintf(
@@ -1779,17 +1923,19 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                             100.0 * static_cast<double>(missed) / static_cast<double>(painted));
                         out.shapeGaps.push_back(name + " / " + *imageName + ": " + buf);
                     }
-                    applyOpacityMask(drew->rgba, *mask);
                     ++out.glassTranslucent;
                 }
-                castShadow(drew->rgba);
+                if (auto ok = castShadow(*drew); !ok) return std::unexpected(ok.error());
                 // THE HIGHLIGHT GOES ON AFTER THE SHADOW IS CAST, ON PURPOSE.
                 // `[BIN]` The target keeps them apart -- the highlight is its
                 // own clip + backdrop colour matrix inside a pass gated by
                 // `hasSpecular` at `0x00049200`, and the shadow is a different
                 // `drawShape:` in a different function.
-                blendOver(target, drew->rgba, static_cast<float>(opacity), layerBlend);
-                castShadowOverdraw();
+                if (auto ok = surface.blendArt(*drew, static_cast<float>(opacity), layerBlend);
+                    !ok) {
+                    return std::unexpected(ok.error());
+                }
+                if (auto ok = castShadowOverdraw(); !ok) return std::unexpected(ok.error());
                 // THE HIGHLIGHT FILTERS THE BACKDROP, SO IT GOES ON AFTER THE
                 // LAYER IS IN IT. `[BIN]` `beginLayerWithFlags:1` sets bit 0 of
                 // `RB::DisplayList::Layer::Flag`, and `Builder::null_style_draw`
@@ -1802,7 +1948,14 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 if (specularField) {
                     SpecularArguments layerSpecular = specularArgs;
                     layerSpecular.layerOpacity = opacity;
-                    const std::size_t moved = drawSpecular(target, *specularField, layerSpecular);
+                    // Na GPU e uma ida e volta do alvo: o especular e de CPU.
+                    std::size_t moved = 0;
+                    if (auto ok = surface.onTarget([&](std::vector<float>& target) {
+                            moved = drawSpecular(target, *specularField, layerSpecular);
+                        });
+                        !ok) {
+                        return std::unexpected(ok.error());
+                    }
                     if (moved > 0) ++out.glassSpecular;
                     note(out.notes, specularDrawnNote());
                 }
@@ -1821,11 +1974,12 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                 // documents; 39 of 146 across 29 documents if only a
                 // specialization's BASE entry counts. Both counts were recounted
                 // for this front and both are in the laudo.
-                std::vector<float> placed = std::move(*rasterPlaced);
+                SurfaceArt& placed = *rasterPlaced;
                 if (mask) {
                     std::size_t painted = 0;
-                    const std::size_t missed =
-                        opacityMaskMissedPixels(placed, *mask, painted);
+                    auto counted = surface.applyMask(placed, *mask, painted);
+                    if (!counted) return std::unexpected(counted.error());
+                    const std::size_t missed = *counted;
                     if (missed > 0 && painted > 0) {
                         char buf[420];
                         std::snprintf(
@@ -1838,17 +1992,26 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                             100.0 * static_cast<double>(missed) / static_cast<double>(painted));
                         out.shapeGaps.push_back(name + " / " + *imageName + ": " + buf);
                     }
-                    applyOpacityMask(placed, *mask);
                     ++out.glassTranslucent;
                 }
-                castShadow(placed);
-                blendOver(target, placed, static_cast<float>(opacity), layerBlend);
-                castShadowOverdraw();
+                if (auto ok = castShadow(placed); !ok) return std::unexpected(ok.error());
+                if (auto ok = surface.blendArt(placed, static_cast<float>(opacity), layerBlend);
+                    !ok) {
+                    return std::unexpected(ok.error());
+                }
+                if (auto ok = castShadowOverdraw(); !ok) return std::unexpected(ok.error());
                 if (specularField) {
                     // The same backdrop reading as the vector branch above.
                     SpecularArguments layerSpecular = specularArgs;
                     layerSpecular.layerOpacity = opacity;
-                    const std::size_t moved = drawSpecular(target, *specularField, layerSpecular);
+                    // Na GPU e uma ida e volta do alvo: o especular e de CPU.
+                    std::size_t moved = 0;
+                    if (auto ok = surface.onTarget([&](std::vector<float>& target) {
+                            moved = drawSpecular(target, *specularField, layerSpecular);
+                        });
+                        !ok) {
+                        return std::unexpected(ok.error());
+                    }
                     if (moved > 0) ++out.glassSpecular;
                     note(out.notes, specularDrawnNote());
                 }
@@ -1900,7 +2063,9 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                                           : kBlurMaterialFrameNote);
         }
 
-        if (blendTheGroup) blendPremulOver(acc, groupAcc, *groupMode);
+        if (auto ok = surface.endGroup(blendTheGroup ? groupMode : std::nullopt); !ok) {
+            return std::unexpected(ok.error());
+        }
     }
 
     // O RECORTE. O buffer e `(viewport + margem) ∩ canvas`, entao o pedaco
@@ -1913,17 +2078,9 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
     const std::uint32_t viewH = planned->crop.height;
     out.width = viewW;
     out.height = viewH;
-    out.rgba.assign(static_cast<std::size_t>(viewW) * viewH * 4, 0.0f);
-    for (std::uint32_t y = 0; y < viewH; ++y) {
-        for (std::uint32_t x = 0; x < viewW; ++x) {
-            const std::size_t s =
-                ((static_cast<std::size_t>(y) + cropY) * out.buffer.width + x + cropX) * 4;
-            const std::size_t d = (static_cast<std::size_t>(y) * viewW + x) * 4;
-            const float a = acc[s + 3];
-            for (int k = 0; k < 3; ++k) out.rgba[d + k] = a > 0.0f ? acc[s + k] / a : 0.0f;
-            out.rgba[d + 3] = a;
-        }
-    }
+    auto cropped = surface.finish(cropX, cropY, viewW, viewH);
+    if (!cropped) return std::unexpected(cropped.error());
+    out.rgba = std::move(*cropped);
     return out;
 }
 
