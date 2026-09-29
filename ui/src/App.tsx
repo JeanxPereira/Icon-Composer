@@ -144,17 +144,6 @@ export default function App() {
     };
   }, [path, doc, platform, rendition]);
 
-  // Ctrl + roda = zoom, como no alvo.
-  useEffect(() => {
-    const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey) return;
-      e.preventDefault();
-      setZoom((z) => Math.min(MAX_ZOOM, Math.max(0.25, z * (e.deltaY < 0 ? 1.15 : 1 / 1.15))));
-    };
-    window.addEventListener("wheel", onWheel, { passive: false });
-    return () => window.removeEventListener("wheel", onWheel);
-  }, []);
-
   // O fundo do viewport cobre a JANELA INTEIRA; a barra lateral e o inspetor
   // sao vidro fosco sobre ele, como no alvo.
   const backdrop =
