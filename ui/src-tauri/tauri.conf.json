@@ -18,7 +18,15 @@
         "minWidth": 980,
         "minHeight": 620,
         "decorations": false,
-        "center": true
+        "center": true,
+        "transparent": true,
+        "theme": "Light",
+        "shadow": true,
+        "windowEffects": {
+          "effects": [
+            "mica"
+          ]
+        }
       }
     ],
     "security": {

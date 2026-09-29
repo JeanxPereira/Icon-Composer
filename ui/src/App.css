@@ -9,7 +9,7 @@
   --accent: #0a63e3;
   --accent-text: #ffffff;
   --sep: rgba(0, 0, 0, 0.08);
-  --panel: rgba(246, 244, 243, 0.86);
+  --panel: rgba(243, 243, 245, 0.55);
   --box: rgba(0, 0, 0, 0.035);
   --box-strong: rgba(0, 0, 0, 0.06);
   --control: rgba(255, 255, 255, 0.78);
@@ -27,7 +27,8 @@ body,
 #root {
   margin: 0;
   height: 100%;
-  background: #d9d6d4;
+  /* a Mica do Windows 11 fica ATRAS da pagina: nada aqui pode ser opaco */
+  background: transparent;
   overflow: hidden;
 }
 
@@ -70,7 +71,7 @@ button:disabled {
   display: grid;
   grid-template-columns: 300px 1fr 300px;
   height: 100%;
-  background: #2a2a2e;
+  background: transparent;
 }
 
 .window.no-sidebar {
@@ -693,4 +694,10 @@ button:disabled {
 .center-note {
   text-align: center;
   margin-top: 40px;
+}
+
+.sym-img {
+  flex: none;
+  object-fit: contain;
+  opacity: 0.7;
 }

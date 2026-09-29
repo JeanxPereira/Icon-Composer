@@ -24,7 +24,7 @@ export default function App() {
   const [pane, setPane] = useState<Pane>("content");
   const [sidebarHidden, setSidebarHidden] = useState(false);
   const [effects, setEffects] = useState<EffectsMode>("gen27");
-  const [background, setBackground] = useState<Background>({ kind: "image", file: "6 - sine-gray.jpeg" });
+  const [background, setBackground] = useState<Background>({ kind: "image", file: "1 - sine-purple-orange.jpeg" });
   const [grid, setGrid] = useState(false);
   const [zoom, setZoom] = useState(1);
 

@@ -103,10 +103,10 @@ function MemberPane({
   return (
     <>
       <Section title="Color" scope={renditionLabel}>
-        <Line icon={<Sym name="Opacity" custom size={16} />} label="Opacity" varied={scopedVariation("opacity")}>
+        <Line icon={<Sym name="Opacity" custom image size={16} />} label="Opacity" varied={scopedVariation("opacity")}>
           <NumberBox value={Math.round((typeof opacity === "number" ? opacity : 1) * 100)} unit="%" />
         </Line>
-        <Line icon={<Sym name="Blendmode" custom size={16} />} label="Blend Mode" varied={scopedVariation("blend-mode")}>
+        <Line icon={<Sym name="Blendmode" custom image size={18} />} label="Blend Mode" varied={scopedVariation("blend-mode")}>
           <PopUp value={BLEND_LABELS[(blend as string) ?? "normal"] ?? String(blend)} />
         </Line>
         <Line icon={<Sym name="fill" custom size={16} />} label="Fill" varied={scopedVariation("fill")}>
