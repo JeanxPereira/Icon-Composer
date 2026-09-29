@@ -6,6 +6,7 @@
 #include "Source/RenderBox/Parallel.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -922,7 +923,15 @@ void rasteriseContours(const std::vector<FieldContour>& contours, int ox, int oy
         }
     }
 
-    for (int y = 0; y < h; ++y) {
+    // The buckets above are filled serially, so each row's crossings arrive in
+    // the order they always did; from here a row only sorts and scans its own,
+    // and one row per worker changes nothing but the core. The count is an
+    // integer, added up per range.
+    std::atomic<std::size_t> counted{0};
+    parallelRanges(static_cast<std::size_t>(h), static_cast<std::size_t>(w) * h * 2,
+                   [&](std::size_t r0, std::size_t r1) {
+    std::size_t local = 0;
+    for (int y = static_cast<int>(r0); y < static_cast<int>(r1); ++y) {
         std::vector<Crossing>& r = rows[static_cast<std::size_t>(y)];
         if (r.empty()) continue;
         std::sort(r.begin(), r.end(),
@@ -942,12 +951,15 @@ void rasteriseContours(const std::vector<FieldContour>& contours, int ox, int oy
             const bool in = rule == FieldRule::NonZero ? acc != 0 : (acc & 1) != 0;
             if (in) {
                 row[x] = 1;
-                ++insideCount;
+                ++local;
             } else if (k >= r.size()) {
                 break;   // every crossing is behind us and we are out: so is the rest
             }
         }
     }
+    counted += local;
+    });
+    insideCount = counted.load();
 }
 
 // `[INF]` THE COVERAGE OF A CONTOUR, for the sub-texel seed. OURS.
@@ -1024,8 +1036,12 @@ void coverageFromContours(const std::vector<FieldContour>& contours, int ox, int
     }
 
     const double wt = 1.0 / n;
+    // One row per worker, with its own `acc`: a row sums its own sixteen
+    // sub-rows in order and nothing else.
+    parallelRanges(static_cast<std::size_t>(h), static_cast<std::size_t>(w) * h * 4,
+                   [&](std::size_t r0, std::size_t r1) {
     std::vector<double> acc(static_cast<std::size_t>(w), 0.0);
-    for (int y = 0; y < h; ++y) {
+    for (int y = static_cast<int>(r0); y < static_cast<int>(r1); ++y) {
         bool any = false;
         for (int s = 0; s < n; ++s) {
             std::vector<Crossing>& r = rows[static_cast<std::size_t>(y) * n + s];
@@ -1062,6 +1078,7 @@ void coverageFromContours(const std::vector<FieldContour>& contours, int ox, int
             row[x] = static_cast<float>(v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v));
         }
     }
+    });
 }
 
 }  // namespace
@@ -1081,14 +1098,20 @@ FieldImage generateFieldFromAlpha(const std::vector<float>& rgba, std::uint32_t 
     // silhouette moves; the coverage only says WHERE inside the texel the
     // surface runs.
     std::vector<float> coverage(texels, 0.0f);
-    for (std::size_t t = 0; t < texels; ++t) {
-        const float a = rgba[t * 4 + 3];
-        coverage[t] = a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
-        if (a >= 0.5f) {
-            inside[t] = 1;
-            ++insideCount;
+    std::atomic<std::size_t> counted{0};
+    parallelRanges(height, texels * 2, [&](std::size_t y0, std::size_t y1) {
+        std::size_t local = 0;
+        for (std::size_t t = y0 * width; t < y1 * width; ++t) {
+            const float a = rgba[t * 4 + 3];
+            coverage[t] = a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
+            if (a >= 0.5f) {
+                inside[t] = 1;
+                ++local;
+            }
         }
-    }
+        counted += local;
+    });
+    insideCount = counted.load();
     // No inside means no contour, and a field with no contour is not a field
     // whose every pixel is outside -- it is no answer at all. Say so by being
     // empty, so the caller names a gap instead of drawing nothing quietly.
