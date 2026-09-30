@@ -4,7 +4,7 @@ import { ask, open, save } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Sidebar, SidebarActions } from "./Sidebar";
-import { Background, BACKGROUNDS, Canvas, EffectsMode } from "./Canvas";
+import { Background, Canvas, EffectsMode, solidCss } from "./Canvas";
 import { Edit, Inspector, Pane } from "./Inspector";
 import { Menu, Menubar } from "./Menubar";
 import { ExportSheet } from "./ExportSheet";
@@ -56,7 +56,8 @@ export default function App() {
   const [pane, setPane] = useState<Pane>("content");
   const [sidebarHidden, setSidebarHidden] = useState(false);
   const [effects, setEffects] = useState<EffectsMode>("gen27");
-  const [background, setBackground] = useState<Background>({ kind: "image", url: `/apple/backgrounds/${BACKGROUNDS[0]}` });
+  // Fundo solido por padrao; "auto" segue o tema da casca (--canvas-solid).
+  const [background, setBackground] = useState<Background>({ kind: "solid", color: "auto" });
   // Os fundos que a pessoa acrescentou ("Add Background..."), como data URL.
   const [userBackgrounds, setUserBackgrounds] = useState<string[]>([]);
   const [exporting, setExporting] = useState(false);
@@ -615,7 +616,9 @@ export default function App() {
   // O fundo do viewport cobre a JANELA INTEIRA; a barra lateral e o inspetor
   // sao vidro fosco sobre ele, como no alvo.
   const backdrop =
-    background.kind === "image" ? { backgroundImage: `url("${background.url}")` } : { background: background.color };
+    background.kind === "image"
+      ? { backgroundImage: `url("${background.url}")` }
+      : { background: solidCss(background.color) };
 
   return (
     <div className={`window${sidebarHidden ? " no-sidebar" : ""}`} style={backdrop}>

@@ -13,6 +13,9 @@ export type Background = { kind: "solid"; color: string } | { kind: "image"; url
 
 // `BackgroundColorPopoverContent`: as cores prontas do fundo solido, mais o
 // seletor do sistema.
+// "auto": a cor solida do tema da casca, clara ou escura.
+export const solidCss = (c: string) => (c === "auto" ? "var(--canvas-solid)" : c);
+
 const SOLID_COLORS = ["#ffffff", "#f2f2f4", "#c7c7cc", "#8e8e93", "#48484a", "#1e1e20", "#000000"];
 
 export const PREVIEW_SIZES = [0, 1024, 256, 128, 64, 32] as const;
@@ -68,7 +71,7 @@ type Props = {
 export function Canvas(p: Props) {
   const [bgMenu, setBgMenu] = useState<"solid" | "image" | null>(null);
   // O ultimo de cada tipo, para o clique na amostra voltar a ele.
-  const [lastSolid, setLastSolid] = useState("#1e1e20");
+  const [lastSolid, setLastSolid] = useState("auto");
   const [lastImage, setLastImage] = useState(`/apple/backgrounds/${BACKGROUNDS[0]}`);
   const pickBackground = (b: Background) => {
     if (b.kind === "solid") setLastSolid(b.color);
@@ -125,7 +128,7 @@ export function Canvas(p: Props) {
           <button
             className={`swatch${p.background.kind === "solid" ? " on" : ""}`}
             title="Solid Color Background"
-            style={{ background: lastSolid }}
+            style={{ background: solidCss(lastSolid) }}
             onClick={() =>
               p.background.kind === "solid"
                 ? setBgMenu(bgMenu === "solid" ? null : "solid")
@@ -155,7 +158,7 @@ export function Canvas(p: Props) {
               <label className="color-dot custom" title="Opens system color picker">
                 <input
                   type="color"
-                  value={p.background.kind === "solid" ? p.background.color : lastSolid}
+                  value={p.background.kind === "solid" && p.background.color !== "auto" ? p.background.color : "#1e1e20"}
                   onChange={(e) => pickBackground({ kind: "solid", color: e.target.value })}
                 />
               </label>
