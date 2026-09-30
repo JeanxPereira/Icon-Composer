@@ -445,8 +445,6 @@ std::shared_ptr<const FieldImage> fieldFromAlphaCached(RenderCache* cache,
     return cache->store(key, std::move(made), bytes);
 }
 
-namespace {
-
 std::shared_ptr<const std::vector<float>> shadowImageCached(
     RenderCache* cache, const std::vector<float>& art, std::uint32_t width,
     std::uint32_t height, ShadowStyle style, const ShadowGeometry& geometry) {
@@ -464,6 +462,8 @@ std::shared_ptr<const std::vector<float>> shadowImageCached(
     const std::size_t bytes = bytesOf(made);
     return cache->store(key, std::move(made), bytes);
 }
+
+namespace {
 
 // The chiclet highlights draw INTO the accumulator, so the cached value is the
 // accumulator after them, keyed by the accumulator before them.
@@ -863,7 +863,6 @@ public:
         art.rgba = rb::placeRaster(png, placement, grid_);
         return art;
     }
-    Result<const std::vector<float>*> artOnCpu(SurfaceArt& art) override { return &art.rgba; }
     Result<SurfaceField> contourField(RenderCache* cache, const std::vector<FieldContour>& contours,
                                       std::uint32_t width, std::uint32_t height,
                                       const FieldOptions& fo, std::uint32_t ss) override {
@@ -886,9 +885,21 @@ public:
         blendOver(target(), art.rgba, alpha, mode);
         return {};
     }
-    Result<void> blendImage(const std::vector<float>& straight, float alpha,
-                            BlendMode mode) override {
-        blendOver(target(), straight, alpha, mode);
+    Result<SurfaceShadow> makeShadow(RenderCache* cache, SurfaceArt& art, ShadowStyle style,
+                                     const ShadowGeometry& geometry,
+                                     double overdrawAlpha) override {
+        SurfaceShadow s;
+        s.image = shadowImageCached(cache, art.rgba, grid_.width, grid_.height, style, geometry);
+        if (overdrawAlpha > 0.0) {
+            s.overdraw = shadowOverdrawImage(*s.image, art.rgba, grid_.width, grid_.height,
+                                             overdrawAlpha);
+        }
+        s.hasOverdraw = !s.overdraw.empty();
+        return s;
+    }
+    Result<void> blendShadow(const SurfaceShadow& shadow, bool overdraw, float alpha,
+                             BlendMode mode) override {
+        blendOver(target(), overdraw ? shadow.overdraw : *shadow.image, alpha, mode);
         return {};
     }
     Result<std::vector<float>> finish(std::int32_t cropX, std::int32_t cropY,
@@ -1863,33 +1874,27 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
             // image is kept between the two draws instead of being rebuilt: the
             // blur behind it is the most expensive thing this loop does.
             // `GlassShadow.h` carries the addresses for all of it.
-            std::vector<float> shadowOverdraw;
+            std::optional<SurfaceShadow> shadowOverdraw;
             auto castShadow = [&](SurfaceArt& artDrawn) -> Result<void> {
                 if (!castsShadow) return {};
-                // Na GPU e um readback da arte e um upload da sombra: a sombra
-                // ainda e de CPU.
-                auto onCpu = surface.artOnCpu(artDrawn);
-                if (!onCpu) return std::unexpected(onCpu.error());
-                const std::vector<float>& artRgba = **onCpu;
+                // Na GPU a sombra e feita da arte residente, sem descer nada.
                 const ShadowGeometry geometry =
                     shadowGeometry(options.size, options.sizeClass);
-                const std::shared_ptr<const std::vector<float>> img =
-                    shadowImageCached(options.cache, artRgba, grid.width, grid.height,
-                                      shadowIn.style, geometry);
                 const double overdraw =
                     kShadow.drawOverContent
                         ? shadowOverdrawAlpha(groupTranslucency, shadowIn.style,
                                               options.sizeClass)
                         : 0.0;
-                if (overdraw > 0.0) {
-                    shadowOverdraw = shadowOverdrawImage(*img, artRgba, grid.width,
-                                                         grid.height, overdraw);
-                }
-                if (auto ok = surface.blendImage(*img, static_cast<float>(shadowAlpha(shadowIn)),
-                                                 shadowBlendMode(shadowIn.style));
+                auto made = surface.makeShadow(options.cache, artDrawn, shadowIn.style, geometry,
+                                               overdraw);
+                if (!made) return std::unexpected(made.error());
+                if (auto ok = surface.blendShadow(*made, false,
+                                                  static_cast<float>(shadowAlpha(shadowIn)),
+                                                  shadowBlendMode(shadowIn.style));
                     !ok) {
                     return ok;
                 }
+                if (made->hasOverdraw) shadowOverdraw = std::move(*made);
                 if (geometry.ringWidth) note(out.notes, kShadowRingNote);
                 ++out.glassShadowed;
                 return {};
@@ -1903,14 +1908,14 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
             // per-element loop at `0x48E20` runs the same three in the same
             // order (`0x48F30`, `0x48F5C`, `0x48EAC`).
             auto castShadowOverdraw = [&]() -> Result<void> {
-                if (shadowOverdraw.empty()) return {};
-                if (auto ok = surface.blendImage(shadowOverdraw,
-                                                 static_cast<float>(shadowAlpha(shadowIn)),
-                                                 kShadow.overdrawBlendMode);
+                if (!shadowOverdraw) return {};
+                if (auto ok = surface.blendShadow(*shadowOverdraw, true,
+                                                  static_cast<float>(shadowAlpha(shadowIn)),
+                                                  kShadow.overdrawBlendMode);
                     !ok) {
                     return ok;
                 }
-                shadowOverdraw.clear();
+                shadowOverdraw.reset();
                 note(out.notes, kShadowOverdrawNote);
                 ++out.glassShadowOverdrawn;
                 return {};

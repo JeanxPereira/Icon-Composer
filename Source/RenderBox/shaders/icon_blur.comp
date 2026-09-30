@@ -1,0 +1,109 @@
+#version 450
+// A ESCADA DO DESFOQUE NA GPU (frente GPU, G3): `blurPass`, `reduceBox` e
+// `expandBilinear` de BlurKernel.cpp, sobre RGBA PRE-MULTIPLICADO, com as bordas
+// grampeadas. A sequencia (que nivel reduz por quanto, quantas passadas e com
+// que sigma) e a de `blurLadderPlan`, decidida na CPU; aqui so a aritmetica.
+//
+//   0 -- passada horizontal: `acc += p * k` em double, o kernel de `blurKernel`;
+//   1 -- passada vertical, a mesma conta;
+//   2 -- reducao em caixa por `factor`: soma em double, vezes `1/(f*f)`;
+//   3 -- expansao bilinear por `factor`: a diferenca de dois texels e FLOAT (em
+//        C++ `float - float` e float), o resto e double.
+//
+// `precise` em toda soma: a CPU nao funde multiplicacao e soma.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) writeonly buffer Dst { vec4 dst[]; };
+layout(std430, binding = 1) readonly buffer Src { vec4 src[]; };
+layout(std430, binding = 2) readonly buffer Kernel { double kern[]; };
+
+layout(push_constant) uniform Push {
+    uint dw, dh;      // o destino
+    uint sw, sh;      // a fonte
+    uint mode;
+    int halfWidth;
+    int factor;
+} p;
+
+void main() {
+    uvec2 g = gl_GlobalInvocationID.xy;
+    if (g.x >= p.dw || g.y >= p.dh) return;
+    int x = int(g.x), y = int(g.y);
+
+    if (p.mode <= 1u) {
+        double a0 = 0.0lf, a1 = 0.0lf, a2 = 0.0lf, a3 = 0.0lf;
+        for (int i = -p.halfWidth; i <= p.halfWidth; ++i) {
+            vec4 v;
+            if (p.mode == 0u) {
+                int sx = clamp(x + i, 0, int(p.sw) - 1);
+                v = src[uint(y) * p.sw + uint(sx)];
+            } else {
+                int sy = clamp(y + i, 0, int(p.sh) - 1);
+                v = src[uint(sy) * p.sw + uint(x)];
+            }
+            double k = kern[i + p.halfWidth];
+            precise double m0 = double(v.r) * k;
+            precise double m1 = double(v.g) * k;
+            precise double m2 = double(v.b) * k;
+            precise double m3 = double(v.a) * k;
+            a0 = a0 + m0;
+            a1 = a1 + m1;
+            a2 = a2 + m2;
+            a3 = a3 + m3;
+        }
+        dst[g.y * p.dw + g.x] = vec4(float(a0), float(a1), float(a2), float(a3));
+        return;
+    }
+
+    if (p.mode == 2u) {
+        double a0 = 0.0lf, a1 = 0.0lf, a2 = 0.0lf, a3 = 0.0lf;
+        for (int j = 0; j < p.factor; ++j) {
+            int sy = clamp(y * p.factor + j, 0, int(p.sh) - 1);
+            for (int i = 0; i < p.factor; ++i) {
+                int sx = clamp(x * p.factor + i, 0, int(p.sw) - 1);
+                vec4 v = src[uint(sy) * p.sw + uint(sx)];
+                a0 = a0 + double(v.r);
+                a1 = a1 + double(v.g);
+                a2 = a2 + double(v.b);
+                a3 = a3 + double(v.a);
+            }
+        }
+        double norm = 1.0lf / (double(p.factor) * double(p.factor));
+        dst[g.y * p.dw + g.x] =
+            vec4(float(a0 * norm), float(a1 * norm), float(a2 * norm), float(a3 * norm));
+        return;
+    }
+
+    // mode 3
+    double f = double(p.factor);
+    precise double centre = (f - 1.0lf) * 0.5lf;
+    precise double vv = (double(y) - centre) / f;
+    double fy = floor(vv);
+    precise double ty = vv - fy;
+    int lastX = int(p.sw) - 1, lastY = int(p.sh) - 1;
+    int y0 = clamp(int(fy), 0, lastY);
+    int y1 = clamp(int(fy) + 1, 0, lastY);
+    precise double u = (double(x) - centre) / f;
+    double fx = floor(u);
+    precise double tx = u - fx;
+    int x0 = clamp(int(fx), 0, lastX);
+    int x1 = clamp(int(fx) + 1, 0, lastX);
+    vec4 p00 = src[uint(y0) * p.sw + uint(x0)];
+    vec4 p10 = src[uint(y0) * p.sw + uint(x1)];
+    vec4 p01 = src[uint(y1) * p.sw + uint(x0)];
+    vec4 p11 = src[uint(y1) * p.sw + uint(x1)];
+    vec4 o;
+    for (int c = 0; c < 4; ++c) {
+        precise float dTop = p10[c] - p00[c];
+        precise float dBot = p11[c] - p01[c];
+        precise double mt = double(dTop) * tx;
+        precise double top = double(p00[c]) + mt;
+        precise double mb = double(dBot) * tx;
+        precise double bottom = double(p01[c]) + mb;
+        precise double dv = bottom - top;
+        precise double m = dv * ty;
+        precise double r = top + m;
+        o[c] = float(r);
+    }
+    dst[g.y * p.dw + g.x] = o;
+}

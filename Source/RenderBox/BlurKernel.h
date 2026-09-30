@@ -222,6 +222,25 @@ int blurPassCountForVariance(double variance);
 // floor is applied.
 int blurReduceFactorForVariance(double variance);
 
+// O PLANO DA ESCADA, sem pixel nenhum: as decisoes que `blurLadder` toma para
+// `variance` sobre `width x height` -- cada reducao (fator e tamanho reduzido),
+// e no fundo o numero de passadas e o sigma de cada uma. O caminho residente
+// (`GpuGlass.cpp`) executa a mesma sequencia na GPU: reduz na ordem de
+// `levels`, roda `passes` passadas separaveis de `sigmaPerPass` no ultimo nivel
+// e expande de volta na ordem inversa. `levels[0]` e o tamanho pedido
+// (`factor == 1`). `passes == 0` e "nada a fazer".
+struct BlurLadderLevel {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    int factor = 1;   // quanto ESTE nivel encolheu o anterior
+};
+struct BlurLadderPlan {
+    std::vector<BlurLadderLevel> levels;
+    int passes = 0;
+    double sigmaPerPass = 0.0;
+};
+BlurLadderPlan blurLadderPlan(std::uint32_t width, std::uint32_t height, double variance);
+
 // A separable blur of straight RGBA, run over PREMULTIPLIED values with CLAMPED
 // edges, returning straight RGBA.
 //

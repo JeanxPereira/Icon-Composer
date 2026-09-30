@@ -91,7 +91,7 @@ public:
 
     Kernel paint, chiclet, blend, svg, finish, mask, raster;
     // O vidro (GpuGlass.cpp). Os em double so sao montados com `float64()`.
-    Kernel field;
+    Kernel field, ring, shadow, blur;
     bool float64() const { return device_->float64(); }
     CoveragePass coverage;
 

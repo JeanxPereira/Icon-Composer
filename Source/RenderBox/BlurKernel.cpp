@@ -254,6 +254,33 @@ void blurLadder(std::vector<float>& img, std::uint32_t width, std::uint32_t heig
 
 }  // namespace
 
+BlurLadderPlan blurLadderPlan(std::uint32_t width, std::uint32_t height, double variance) {
+    BlurLadderPlan plan;
+    if (!(variance > 0.0) || width == 0 || height == 0) return plan;
+    plan.levels.push_back({width, height, 1});
+    // `blurLadder`, linha a linha, com a recursao desenrolada.
+    for (;;) {
+        const int factor = blurReduceFactorForVariance(variance);
+        if (factor > 1) {
+            const std::uint32_t f = static_cast<std::uint32_t>(factor);
+            const double residual =
+                variance / (f * f) - (factor == 4 ? kBlurReduce4Variance : kBlurReduce2Variance);
+            if ((width + f - 1) / f >= kBlurMinReducedSide &&
+                (height + f - 1) / f >= kBlurMinReducedSide && residual > 0.0) {
+                width = (width + f - 1) / f;
+                height = (height + f - 1) / f;
+                plan.levels.push_back({width, height, factor});
+                variance = residual;
+                if (!(variance > 0.0)) return plan;
+                continue;
+            }
+        }
+        plan.passes = std::clamp(blurPassCountForVariance(variance), 1, 32);
+        plan.sigmaPerPass = std::sqrt(variance / plan.passes);
+        return plan;
+    }
+}
+
 int blurPassCountForVariance(double variance) {
     if (!(variance > 0.0)) return 0;
     const double sigmaMaxSquared = kBlurSigmaMax * kBlurSigmaMax;

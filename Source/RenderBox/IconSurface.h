@@ -17,7 +17,7 @@
 // `GpuSurface` (IconRendererGpu.cpp) guarda o acumulador e a arte em buffers da
 // GPU e so desce para a CPU onde a interface diz.
 //
-// A UNICA PORTA PARA A CPU E `onTarget` (mais `artOnCpu` para a arte). Tudo que
+// A UNICA PORTA PARA A CPU E `onTarget` (mais `fieldOnCpu` para o campo). Tudo que
 // ainda roda na CPU sobre o acumulador -- a refracao (`glassOver`), o especular
 // (`drawSpecular`) e os realces da pastilha (`drawChicletHighlights`) -- passa
 // por ela; na GPU isso e uma ida e volta (readback + upload) DECLARADA, e as
@@ -35,6 +35,7 @@
 #include "Source/RenderBox/BlendMode.h"
 #include "Source/RenderBox/ChicletShape.h"
 #include "Source/RenderBox/DistanceField.h"
+#include "Source/RenderBox/GlassShadow.h"
 #include "Source/RenderBox/GlassTranslucency.h"
 #include "Source/RenderBox/IconRenderer.h"
 #include "Source/RenderBox/RenderCache.h"
@@ -64,6 +65,16 @@ struct SurfaceField {
     std::int32_t originX = 0;
     std::int32_t originY = 0;
     bool empty() const { return width == 0; }
+};
+
+// A sombra de UMA camada e o seu overdraw, feitos da arte ja mascarada. Na CPU
+// sao as imagens de `shadowImageCached`/`shadowOverdrawImage`; na GPU, buffers.
+struct SurfaceShadow {
+    std::shared_ptr<const std::vector<float>> image;
+    std::vector<float> overdraw;
+    std::shared_ptr<void> residentImage;
+    std::shared_ptr<void> residentOverdraw;
+    bool hasOverdraw = false;
 };
 
 class IconSurface {
@@ -104,10 +115,6 @@ public:
                                            const LayerPlacement& placement,
                                            bool feedsField) = 0;
 
-    // A arte na CPU, para quem ainda so existe la: o campo de um raster e a
-    // sombra. Na GPU: readback.
-    virtual Result<const std::vector<float>*> artOnCpu(SurfaceArt& art) = 0;
-
     // O campo de uma camada de vidro. `contourField` e `fieldFromContoursCached`
     // (os contornos de `flattenSvgToContours`); `alphaField` e
     // `fieldFromAlphaCached` sobre o alfa da arte colocada. Na GPU o primeiro e
@@ -129,18 +136,28 @@ public:
     virtual Result<std::size_t> applyMask(SurfaceArt& art, const OpacityMask& mask,
                                           std::size_t& painted) = 0;
 
-    // `blendOver` no alvo corrente: arte de camada, ou uma imagem feita na CPU
-    // (a sombra e o seu overdraw).
+    // `blendOver` no alvo corrente, da arte de uma camada.
     virtual Result<void> blendArt(const SurfaceArt& art, float alpha, BlendMode mode) = 0;
-    virtual Result<void> blendImage(const std::vector<float>& straight, float alpha,
-                                    BlendMode mode) = 0;
+
+    // A sombra de `art` (`shadowImageCached`) e, com `overdrawAlpha > 0`, o
+    // overdraw dela (`shadowOverdrawImage`), feitos de uma vez porque os dois
+    // leem a arte como ela e AGORA. `blendShadow` compoe uma das duas no alvo
+    // corrente com `blendOver`. Na GPU: `icon_ring`, `icon_shadow`, `icon_blur`.
+    virtual Result<SurfaceShadow> makeShadow(RenderCache* cache, SurfaceArt& art,
+                                             ShadowStyle style, const ShadowGeometry& geometry,
+                                             double overdrawAlpha) = 0;
+    virtual Result<void> blendShadow(const SurfaceShadow& shadow, bool overdraw, float alpha,
+                                     BlendMode mode) = 0;
 
     // O recorte pedido, des-multiplicado: o `RenderedIcon::rgba`.
     virtual Result<std::vector<float>> finish(std::int32_t cropX, std::int32_t cropY,
                                               std::uint32_t width, std::uint32_t height) = 0;
 };
 
-// Os campos com o `RenderCache` de IconRenderer.cpp (nulo = sem cache).
+// Os campos e a sombra com o `RenderCache` de IconRenderer.cpp (nulo = sem cache).
+std::shared_ptr<const std::vector<float>> shadowImageCached(
+    RenderCache* cache, const std::vector<float>& art, std::uint32_t width,
+    std::uint32_t height, ShadowStyle style, const ShadowGeometry& geometry);
 std::shared_ptr<const FieldImage> fieldFromContoursCached(
     RenderCache* cache, const std::vector<FieldContour>& contours, std::uint32_t width,
     std::uint32_t height, const FieldOptions& fo, std::uint32_t superSample);

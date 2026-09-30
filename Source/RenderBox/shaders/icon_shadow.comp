@@ -1,0 +1,141 @@
+#version 450
+// A SOMBRA NA GPU (frente GPU, G3): `shadowImage` e `shadowOverdrawImage` de
+// GlassShadow.cpp, menos o desfoque (`icon_blur.comp`). Tres modos:
+//
+//   0 -- passos 4 e 1: o anel (a metade de linha da transformada; a de coluna e
+//        `icon_ring.comp`) multiplicado no alfa, e a cor -- a vibrante escala o
+//        rgb por `vibrantBrightness` (pulada em 1.0, como o binario), a neutra o
+//        zera. Com `premultiply`, a pre-multiplicacao de
+//        `blurPremultipliedRgbaInPlace` antes da escada.
+//   1 -- o fim: a des-multiplicacao da escada (quando ela rodou) e o passo 3, a
+//        translacao bilinear de `translate`, que pre-multiplica de novo cada
+//        texel que le. As duas contas por texel sao funcao so daquele texel,
+//        entao fazer as duas na hora da leitura e o mesmo numero.
+//   2 -- o overdraw: a MESMA sombra com o alfa vezes `conteudo.a * k`.
+//
+// Em double onde a CPU e double, float onde ela e float, e `precise` onde uma fma
+// mudaria o arredondamento.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) writeonly buffer Dst { vec4 dst[]; };
+layout(std430, binding = 1) readonly buffer Src { vec4 src[]; };
+layout(std430, binding = 2) readonly buffer Aux { vec4 aux[]; };
+layout(std430, binding = 3) readonly buffer Column { uint gcol[]; };
+
+layout(push_constant) uniform Push {
+    double ringWidth;
+    double brightness;   // vibrantBrightness
+    double dx, dy;       // a translacao
+    uint w, h;
+    uint mode;
+    uint R;              // a janela do anel; 0 = sem anel
+    uint colour;         // 0 neutra (preto), 1 vibrante escalada, 2 vibrante em 1.0 (pulada)
+    uint premultiply;    // modo 0: pre-multiplica para a escada
+    uint blurred;        // modo 1: a entrada saiu da escada, pre-multiplicada
+    float k;             // modo 2
+} p;
+
+vec4 straightAt(uint t) {
+    vec4 v = src[t];
+    if (p.blurred == 0u) return v;
+    // O fim de `blurPremultipliedRgbaInPlace`.
+    double a = double(v.a);
+    vec4 o;
+    o.a = v.a;
+    for (int c = 0; c < 3; ++c) o[c] = a > 0.0lf ? float(double(v[c]) / a) : 0.0;
+    return o;
+}
+
+void main() {
+    uvec2 g = gl_GlobalInvocationID.xy;
+    if (g.x >= p.w || g.y >= p.h) return;
+    uint t = g.y * p.w + g.x;
+
+    if (p.mode == 0u) {
+        vec4 v = src[t];
+        if (p.R > 0u) {
+            float m;
+            if (v.a < 0.5) {
+                m = 0.0;
+            } else {
+                uint best = 0xFFFFFFFFu;
+                int x = int(g.x);
+                int lo = max(x - int(p.R), 0), hi = min(x + int(p.R), int(p.w) - 1);
+                for (int xx = lo; xx <= hi; ++xx) {
+                    uint gc = gcol[g.y * p.w + uint(xx)];
+                    if (gc == 0xFFFFFFFFu) continue;
+                    uint ddx = uint(abs(xx - x));
+                    uint d2 = ddx * ddx + gc * gc;
+                    best = min(best, d2);
+                }
+                double dist = best == 0xFFFFFFFFu ? 1.0e10lf : sqrt(double(best));
+                dist = min(dist, double(g.x) + 1.0lf);
+                dist = min(dist, double(g.y) + 1.0lf);
+                dist = min(dist, double(p.w - g.x));
+                dist = min(dist, double(p.h - g.y));
+                precise double depth = dist - 0.5lf;
+                double r = depth / p.ringWidth;
+                m = float(r < 0.0lf ? 0.0lf : (r > 1.0lf ? 1.0lf : r));
+            }
+            v.a = v.a * m;
+        }
+        if (p.colour == 0u) {
+            v.rgb = vec3(0.0);
+        } else if (p.colour == 1u) {
+            for (int c = 0; c < 3; ++c) v[c] = float(double(v[c]) * p.brightness);
+        }
+        if (p.premultiply != 0u) {
+            float a = v.a;
+            v.rgb = vec3(v.r * a, v.g * a, v.b * a);
+        }
+        dst[t] = v;
+        return;
+    }
+
+    if (p.mode == 2u) {
+        vec4 s = src[t];
+        float c = aux[t].a * p.k;
+        s.a = s.a * c;
+        dst[t] = s;
+        return;
+    }
+
+    // mode 1
+    if (p.dx == 0.0lf && p.dy == 0.0lf) {
+        dst[t] = straightAt(t);
+        return;
+    }
+    precise double sxf = double(g.x) - p.dx;
+    precise double syf = double(g.y) - p.dy;
+    double fx = floor(sxf), fy = floor(syf);
+    precise double tx = sxf - fx;
+    precise double ty = syf - fy;
+    double acc0 = 0.0lf, acc1 = 0.0lf, acc2 = 0.0lf, acc3 = 0.0lf;
+    for (int j = 0; j < 2; ++j) {
+        for (int i = 0; i < 2; ++i) {
+            double px = fx + double(i), py = fy + double(j);
+            if (px < 0.0lf || py < 0.0lf || px >= double(p.w) || py >= double(p.h)) continue;
+            precise double wx = i != 0 ? tx : 1.0lf - tx;
+            precise double wy = j != 0 ? ty : 1.0lf - ty;
+            precise double wgt = wx * wy;
+            if (wgt <= 0.0lf) continue;
+            vec4 s = straightAt(uint(py) * p.w + uint(px));
+            float a = s.a;
+            vec4 pre = vec4(s.r * a, s.g * a, s.b * a, a);
+            precise double m0 = double(pre.r) * wgt;
+            precise double m1 = double(pre.g) * wgt;
+            precise double m2 = double(pre.b) * wgt;
+            precise double m3 = double(pre.a) * wgt;
+            acc0 = acc0 + m0;
+            acc1 = acc1 + m1;
+            acc2 = acc2 + m2;
+            acc3 = acc3 + m3;
+        }
+    }
+    vec4 o;
+    o.a = float(acc3);
+    o.r = acc3 > 0.0lf ? float(acc0 / acc3) : 0.0;
+    o.g = acc3 > 0.0lf ? float(acc1 / acc3) : 0.0;
+    o.b = acc3 > 0.0lf ? float(acc2 / acc3) : 0.0;
+    dst[t] = o;
+}

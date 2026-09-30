@@ -13,6 +13,7 @@
 
 #include "Source/RenderBox/BlendMode.h"
 #include "Source/RenderBox/DistanceField.h"
+#include "Source/RenderBox/GlassShadow.h"
 #include "Source/RenderBox/GpuResident.h"
 
 namespace rb::gpu {
@@ -32,5 +33,17 @@ struct ResidentField {
 Result<ResidentField> fieldFromContours(Resident& r, const std::vector<FieldContour>& contours,
                                         std::uint32_t width, std::uint32_t height,
                                         const FieldOptions& options, std::uint32_t superSample);
+
+// `shadowImage` sobre a arte reta `art` (W x H), e -- com `overdrawAlpha > 0` --
+// `shadowOverdrawImage` dela. O anel, a cor, a escada de `blurLadderPlan`, a
+// translacao e o overdraw sao os kernels `icon_ring`, `icon_shadow` e
+// `icon_blur`. Pede `Device::float64()`.
+struct ResidentShadow {
+    Slab image;
+    Slab overdraw;   // nulo quando nao ha overdraw
+};
+Result<ResidentShadow> shadow(Resident& r, const Slab& art, std::uint32_t width,
+                              std::uint32_t height, ShadowStyle style,
+                              const ShadowGeometry& geometry, double overdrawAlpha);
 
 }  // namespace rb::gpu

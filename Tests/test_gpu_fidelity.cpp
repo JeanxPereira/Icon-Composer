@@ -19,6 +19,7 @@
 #include "Source/IconComposerFoundation/IconBundle.h"
 #include "Source/RenderBox/ChicletShape.h"
 #include "Source/RenderBox/DistanceField.h"
+#include "Source/RenderBox/GlassShadow.h"
 #include "Source/RenderBox/GpuGlass.h"
 #include "Source/RenderBox/IconRenderer.h"
 #include "Source/RenderBox/RenderCache.h"
@@ -273,6 +274,96 @@ TEST_CASE(gpu_field_is_the_cpu_field_bit_for_bit) {
                             f.ox, f.oy, differ, static_cast<double>(worst));
             }
             CHECK_EQ(differ, std::size_t{0});
+        }
+    }
+}
+
+// G3: A SOMBRA DA GPU E A DA CPU, BIT A BIT. O anel e uma transformada exata (os
+// inteiros sao os mesmos), a escada segue `blurLadderPlan` e cada conta e a da CPU
+// na mesma precisao -- entao, de novo, cada float igual. A geometria do alvo nas
+// quatro classes de tamanho, e uma inventada que obriga a escada a reduzir duas
+// vezes e a translacao a ser fracionaria; as duas cores; com e sem overdraw.
+TEST_CASE(gpu_shadow_is_the_cpu_shadow_bit_for_bit) {
+    Device& device = gpuDevice();
+    REQUIRE(device.valid());
+    if (!device.float64()) {
+        std::printf("  (sem shaderFloat64 neste aparelho: a sombra fica na CPU)\n");
+        return;
+    }
+    auto resident = gpu::Resident::of(device);
+    REQUIRE(resident.has_value());
+    gpu::Resident& r = **resident;
+
+    auto compare = [](const std::vector<float>& got, const std::vector<float>& want,
+                      const char* what) {
+        std::size_t differ = 0;
+        float worst = 0.0f;
+        for (std::size_t i = 0; i < want.size(); ++i) {
+            if (std::memcmp(&got[i], &want[i], sizeof(float)) != 0) {
+                ++differ;
+                worst = std::max(worst, std::fabs(got[i] - want[i]));
+            }
+        }
+        if (differ) {
+            std::printf("  %s: %zu floats diferem, pior %g\n", what, differ,
+                        static_cast<double>(worst));
+        }
+        return differ;
+    };
+
+    for (const std::uint32_t size : {256u, 512u}) {
+        // Um disco colorido de borda suave com um furo, e uma faixa que sai da
+        // borda do buffer (o anel grampeia nas quatro linhas virtuais).
+        std::vector<float> art(static_cast<std::size_t>(size) * size * 4, 0.0f);
+        for (std::uint32_t y = 0; y < size; ++y) {
+            for (std::uint32_t x = 0; x < size; ++x) {
+                const double cx = x + 0.5 - size * 0.45, cy = y + 0.5 - size * 0.5;
+                const double d = std::sqrt(cx * cx + cy * cy);
+                double a = std::clamp(size * 0.3 - d, 0.0, 1.0) *
+                           (d < size * 0.08 ? 0.0 : 1.0);
+                if (y > size * 0.8 && x > size * 0.6) a = 0.75;
+                float* p = &art[(static_cast<std::size_t>(y) * size + x) * 4];
+                p[0] = static_cast<float>(x) / size;
+                p[1] = 0.3f;
+                p[2] = static_cast<float>(y) / size;
+                p[3] = static_cast<float>(a);
+            }
+        }
+        std::vector<ShadowGeometry> geometries;
+        for (IconSizeClass c : {IconSizeClass::Small, IconSizeClass::Medium, IconSizeClass::Large,
+                                IconSizeClass::Display}) {
+            geometries.push_back(shadowGeometry(size, c));
+        }
+        ShadowGeometry wide;
+        wide.offsetX = 3.3;
+        wide.offsetY = -2.7;
+        wide.blurRadius = 40.0;
+        wide.ringWidth = 5.5;
+        geometries.push_back(wide);
+        wide.ringWidth.reset();
+        geometries.push_back(wide);
+
+        for (const ShadowGeometry& g : geometries) {
+            for (ShadowStyle style : {ShadowStyle::Vibrant, ShadowStyle::Neutral}) {
+                const std::vector<float> want = shadowImage(art, size, size, style, g);
+                const std::vector<float> wantOver =
+                    shadowOverdrawImage(want, art, size, size, 0.37);
+                std::lock_guard<std::mutex> lock(r.mutex());
+                auto slab = r.acquire(art.size() * sizeof(float));
+                REQUIRE(slab.has_value());
+                REQUIRE(r.upload(*slab, art.data(), art.size() * sizeof(float)).has_value());
+                auto made = gpu::shadow(r, *slab, size, size, style, g, 0.37);
+                REQUIRE(made.has_value());
+                REQUIRE(made->overdraw != nullptr);
+                std::vector<float> got(want.size()), gotOver(want.size());
+                REQUIRE(r.download(made->image, got.data(), got.size() * sizeof(float))
+                            .has_value());
+                REQUIRE(r.download(made->overdraw, gotOver.data(),
+                                   gotOver.size() * sizeof(float))
+                            .has_value());
+                CHECK_EQ(compare(got, want, "sombra"), std::size_t{0});
+                CHECK_EQ(compare(gotOver, wantOver, "overdraw"), std::size_t{0});
+            }
         }
     }
 }

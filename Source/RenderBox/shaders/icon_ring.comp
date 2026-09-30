@@ -1,0 +1,44 @@
+#version 450
+// O ANEL DA SOMBRA, METADE DE COLUNA (frente GPU, G3). `shadowRingEach` de
+// GlassShadow.cpp faz a transformada euclidiana EXATA do conjunto `alpha < 0.5`
+// (as sementes) e le a distancia de cada texel de dentro; o anel so pede essa
+// distancia ate `ringWidth + 0.5`, acima dela o valor satura em 1.
+//
+// Entao aqui a transformada e exata DENTRO de uma janela de raio `R >= ringWidth
+// + 0.5`: esta passada guarda, por texel, a distancia vertical a semente mais
+// proxima NA COLUNA dentro de `R` (ou "nenhuma"); a passada de linha
+// (`icon_shadow.comp`, modo 0) faz o minimo de `dx^2 + g^2` com `|dx| <= R`. Onde
+// a distancia verdadeira e `<= R`, a semente que a realiza esta na janela e o
+// numero e o mesmo inteiro da CPU; onde e maior, o da janela tambem e, e os dois
+// saturam o anel. Inteiros, entao sem arredondamento a espelhar.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) writeonly buffer Column { uint gcol[]; };
+layout(std430, binding = 1) readonly buffer Art { vec4 art[]; };
+
+layout(push_constant) uniform Push {
+    uint w, h;
+    uint R;
+} p;
+
+void main() {
+    uvec2 g = gl_GlobalInvocationID.xy;
+    if (g.x >= p.w || g.y >= p.h) return;
+    uint t = g.y * p.w + g.x;
+    if (art[t].a < 0.5) {
+        gcol[t] = 0u;
+        return;
+    }
+    uint found = 0xFFFFFFFFu;
+    for (uint d = 1u; d <= p.R; ++d) {
+        if (g.y >= d && art[t - d * p.w].a < 0.5) {
+            found = d;
+            break;
+        }
+        if (g.y + d < p.h && art[t + d * p.w].a < 0.5) {
+            found = d;
+            break;
+        }
+    }
+    gcol[t] = found;
+}

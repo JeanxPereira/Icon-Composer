@@ -19,7 +19,8 @@
 //   [RT1] realces da pastilha: readback do acumulador, `drawChicletHighlights`, upload.
 //   [RT2] refracao: readback do alvo, `glassOver`, upload.
 //   [RT3] especular: readback do alvo, `drawSpecular`, upload.
-//   [RT4] sombra: readback da arte, `shadowImage` (+ overdraw), upload da sombra.
+//   (A sombra era [RT4]; desde G3 e residente -- `icon_ring`, `icon_shadow`,
+//   `icon_blur` em GpuGlass.cpp, bit a bit a da CPU.)
 //   [RT6] mascara de translucidez: o campo e a mascara sao de CPU; sobem os dois
 //         vetores e desce a contagem de pixels perdidos (8 bytes).
 //   [UP1] traco do SVG: a cobertura e rasterizada na CPU e sobe (so ida).
@@ -36,7 +37,7 @@
 // O campo de um raster segue na CPU (`generateFieldFromAlpha` sobre a copia de
 // [UP3]): as duas transformadas de Felzenszwalb com a semente sub-texel ficam
 // para depois, e o raster de vidro e minoria no corpus.
-// G3-G4 tiram RT1-RT4, RT6 e RT7.
+// G4 tira RT1-RT3, RT6 e RT7.
 //
 // O CACHE (`RenderCache.h`) continua valendo para o que ficou na CPU: campo,
 // sombra e realces da pastilha passam pelas mesmas funcoes cacheadas de
@@ -621,18 +622,6 @@ public:
         return art;
     }
 
-    // [RT4]: a arte desce (o campo de um raster ja tem a copia de [UP3]).
-    Result<const std::vector<float>*> artOnCpu(SurfaceArt& art) override {
-        if (art.rgba.empty()) {
-            const Slab s = artSlab(art);
-            art.rgba.resize(s->size() / sizeof(float));
-            if (auto ok = r_.download(s, art.rgba.data(), s->size()); !ok) {
-                return std::unexpected(ok.error());
-            }
-        }
-        return &art.rgba;
-    }
-
     Result<SurfaceField> contourField(RenderCache* cache, const std::vector<FieldContour>& contours,
                                       std::uint32_t width, std::uint32_t height,
                                       const FieldOptions& fo, std::uint32_t ss) override {
@@ -729,10 +718,40 @@ public:
         return blendRange(whole(artSlab(art)), alpha, mode);
     }
 
-    // [RT4]: a sombra feita na CPU sobe.
-    Result<void> blendImage(const std::vector<float>& straight, float alpha,
-                            BlendMode mode) override {
-        auto staged = r_.stage(straight.data(), straight.size() * sizeof(float));
+    // A sombra da arte residente (G3): `icon_ring`, `icon_shadow`, `icon_blur`,
+    // sem descer a arte e sem subir a sombra.
+    Result<SurfaceShadow> makeShadow(RenderCache* cache, SurfaceArt& art, ShadowStyle style,
+                                     const ShadowGeometry& geometry,
+                                     double overdrawAlpha) override {
+        SurfaceShadow s;
+        if (!r_.float64()) {
+            // Sem double na GPU a sombra e a de CPU: a arte desce, a sombra sobe.
+            auto onCpu = artOnCpu(art);
+            if (!onCpu) return std::unexpected(onCpu.error());
+            s.image = shadowImageCached(cache, **onCpu, grid_.width, grid_.height, style,
+                                        geometry);
+            if (overdrawAlpha > 0.0) {
+                s.overdraw = shadowOverdrawImage(*s.image, **onCpu, grid_.width, grid_.height,
+                                                 overdrawAlpha);
+            }
+            s.hasOverdraw = !s.overdraw.empty();
+            return s;
+        }
+        auto made = gpu::shadow(r_, artSlab(art), grid_.width, grid_.height, style, geometry,
+                                overdrawAlpha);
+        if (!made) return std::unexpected(made.error());
+        s.residentImage = made->image;
+        s.residentOverdraw = made->overdraw;
+        s.hasOverdraw = made->overdraw != nullptr;
+        return s;
+    }
+
+    Result<void> blendShadow(const SurfaceShadow& shadow, bool overdraw, float alpha,
+                             BlendMode mode) override {
+        const std::shared_ptr<void>& slab = overdraw ? shadow.residentOverdraw : shadow.residentImage;
+        if (slab) return blendRange(whole(std::static_pointer_cast<Buffer>(slab)), alpha, mode);
+        const std::vector<float>& img = overdraw ? shadow.overdraw : *shadow.image;
+        auto staged = r_.stage(img.data(), img.size() * sizeof(float));
         if (!staged) return std::unexpected(staged.error());
         return blendRange(*staged, alpha, mode);
     }
@@ -759,6 +778,18 @@ public:
     }
 
 private:
+    // A arte na CPU: a copia de [UP3] quando ha, senao um readback.
+    Result<const std::vector<float>*> artOnCpu(SurfaceArt& art) {
+        if (art.rgba.empty()) {
+            const Slab s = artSlab(art);
+            art.rgba.resize(s->size() / sizeof(float));
+            if (auto ok = r_.download(s, art.rgba.data(), s->size()); !ok) {
+                return std::unexpected(ok.error());
+            }
+        }
+        return &art.rgba;
+    }
+
     static SurfaceField cpuField(std::shared_ptr<const FieldImage> image) {
         SurfaceField f;
         f.width = image->width;

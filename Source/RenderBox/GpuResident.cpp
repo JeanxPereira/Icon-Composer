@@ -27,6 +27,15 @@ static const std::uint32_t kRasterSpirv[] =
 static const std::uint32_t kFieldSpirv[] =
 #include "icon_field.comp.inc"
     ;
+static const std::uint32_t kRingSpirv[] =
+#include "icon_ring.comp.inc"
+    ;
+static const std::uint32_t kShadowSpirv[] =
+#include "icon_shadow.comp.inc"
+    ;
+static const std::uint32_t kBlurSpirv[] =
+#include "icon_blur.comp.inc"
+    ;
 
 namespace rb::gpu {
 namespace {
@@ -198,6 +207,9 @@ Result<Resident*> Resident::of(Device& device) {
     if (device.float64()) {
         const Spec wide[] = {
             {&r->field, kFieldSpirv, sizeof kFieldSpirv, 5, 52},
+            {&r->ring, kRingSpirv, sizeof kRingSpirv, 2, 12},
+            {&r->shadow, kShadowSpirv, sizeof kShadowSpirv, 4, 64},
+            {&r->blur, kBlurSpirv, sizeof kBlurSpirv, 3, 28},
         };
         for (const Spec& s : wide) {
             auto k = Kernel::create(device, s.code, s.bytes, s.bindings, s.push);
