@@ -628,6 +628,7 @@ export default function App() {
           onSelect={setSelection}
           onToggleSidebar={() => setSidebarHidden(true)}
           actions={sidebarActions}
+          dirty={dirty}
         />
       )}
       <Canvas
@@ -665,6 +666,7 @@ export default function App() {
         onZoom={(z) => setZoom(Math.min(MAX_ZOOM, Math.max(0.25, z)))}
         onOpen={pick}
         sidebarHidden={sidebarHidden}
+        dirty={dirty}
         onToggleSidebar={() => setSidebarHidden(false)}
       />
       <Inspector

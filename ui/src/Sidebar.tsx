@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Sym } from "./Sym";
+import { TrafficLights } from "./TrafficLights";
 import { displayName, groups, layers, Node, Selection } from "./doc";
 
 // A lista do alvo: `LayerSidebar` -> `LayerList` -> linhas `IconRow`,
@@ -26,13 +26,13 @@ type Props = {
   onSelect: (s: Selection) => void;
   onToggleSidebar: () => void;
   actions: SidebarActions;
+  dirty: boolean;
 };
 
-export function Sidebar({ path, docName, doc, selection, onSelect, onToggleSidebar, actions }: Props) {
+export function Sidebar({ path, docName, doc, selection, onSelect, onToggleSidebar, actions, dirty }: Props) {
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
   const [addMenu, setAddMenu] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
-  const win = getCurrentWindow();
   const iconName = docName.replace(/\.icon$/i, "");
   const key = (s: Selection) => (s.kind === "icon" ? "i" : s.kind === "group" ? `g${s.g}` : `l${s.g}.${s.l}`);
   const same = (a: Selection, b: Selection) => key(a) === key(b);
@@ -82,11 +82,7 @@ export function Sidebar({ path, docName, doc, selection, onSelect, onToggleSideb
   return (
     <aside className="sidebar">
       <div className="sidebar-top" data-tauri-drag-region>
-        <div className="traffic">
-          <button className="light close" onClick={() => win.close()} aria-label="Fechar" />
-          <button className="light min" onClick={() => win.minimize()} aria-label="Minimizar" />
-          <button className="light max" onClick={() => win.toggleMaximize()} aria-label="Maximizar" />
-        </div>
+        <TrafficLights dirty={dirty} />
         <button className="round-btn" onClick={onToggleSidebar} title="Show Sidebar">
           <Sym name="sidebar.left" size={17} />
         </button>

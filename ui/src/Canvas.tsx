@@ -3,6 +3,7 @@ import { Sym } from "./Sym";
 import { Platform, Rendition, RENDITIONS, Selection, Tint, TINT_SPECTRUM } from "./doc";
 import { Frame, LayerRect } from "./core";
 import { Stage } from "./Stage";
+import { TrafficLights } from "./TrafficLights";
 
 // Centro da janela: a barra de ferramentas do alvo (inventario §2), o canvas
 // (§4) e a barra de rendicoes no rodape (§5).
@@ -60,6 +61,7 @@ type Props = {
   onZoom: (z: number) => void;
   onOpen: () => void;
   sidebarHidden: boolean;
+  dirty: boolean;
   onToggleSidebar: () => void;
 };
 
@@ -82,10 +84,15 @@ export function Canvas(p: Props) {
   return (
     <section className="center">
       <div className="toolbar" data-tauri-drag-region>
+        {/* Sem a barra lateral as luzes vem para a barra de ferramentas: a janela
+            continua podendo fechar. */}
         {p.sidebarHidden && (
-          <button className="round-btn" onClick={p.onToggleSidebar} title="Show Sidebar">
-            <Sym name="sidebar.left" size={17} />
-          </button>
+          <>
+            <TrafficLights dirty={p.dirty} />
+            <button className="round-btn" onClick={p.onToggleSidebar} title="Show Sidebar">
+              <Sym name="sidebar.left" size={17} />
+            </button>
+          </>
         )}
         {p.menubar}
         <button className="doc-title" onClick={p.onOpen} title="Abrir .icon">

@@ -160,34 +160,9 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 12px 0 16px;
+  /* As luzes trazem o proprio inset de 9 pt (`_minXTitlebarWidgetInset`). */
+  padding: 0 12px 0 0;
   flex: none;
-}
-
-.traffic {
-  display: flex;
-  gap: 8px;
-}
-
-.light {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
-}
-
-.light.close {
-  background: #ff5f57;
-}
-.light.min {
-  background: #febc2e;
-}
-.light.max {
-  background: #28c840;
-}
-
-.traffic:not(:hover) .light {
-  filter: saturate(0.95);
 }
 
 .round-btn {
@@ -1360,3 +1335,89 @@ button.varied {
   height: 8px;
   border-radius: 4px;
 }
+
+/* ---- as luzes da janela (TrafficLights.tsx; AquaKit traffic-lights §2-§4) ----
+   Cores do glifo, sRGB [BIN] (tabela §3.3): Close light (0.639,0,0) / dark
+   (0.55,0,0); Minimize (0.756,0.27,0) / (0.65,0.228,0); verde (0.213,0.533,0) /
+   (0.18,0.45,0). Dimmed: preto. */
+:root {
+  --tl-close: image-set(url("/apple/traffic/Close-light-1x.png") 1x, url("/apple/traffic/Close-light-2x.png") 2x);
+  --tl-minimize: image-set(url("/apple/traffic/Minimize-light-1x.png") 1x, url("/apple/traffic/Minimize-light-2x.png") 2x);
+  --tl-zoom: image-set(url("/apple/traffic/Expand-light-1x.png") 1x, url("/apple/traffic/Expand-light-2x.png") 2x);
+  --tl-inactive: image-set(url("/apple/traffic/Inactive-light-1x.png") 1x, url("/apple/traffic/Inactive-light-2x.png") 2x);
+  --tl-close-glyph: rgb(163, 0, 0);
+  --tl-minimize-glyph: rgb(193, 69, 0);
+  --tl-zoom-glyph: rgb(54, 136, 0);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --tl-close: image-set(url("/apple/traffic/Close-dark-1x.png") 1x, url("/apple/traffic/Close-dark-2x.png") 2x);
+    --tl-minimize: image-set(url("/apple/traffic/Minimize-dark-1x.png") 1x, url("/apple/traffic/Minimize-dark-2x.png") 2x);
+    --tl-zoom: image-set(url("/apple/traffic/Expand-dark-1x.png") 1x, url("/apple/traffic/Expand-dark-2x.png") 2x);
+    --tl-inactive: image-set(url("/apple/traffic/Inactive-dark-1x.png") 1x, url("/apple/traffic/Inactive-dark-2x.png") 2x);
+    --tl-close-glyph: rgb(140, 0, 0);
+    --tl-minimize-glyph: rgb(166, 58, 0);
+    --tl-zoom-glyph: rgb(46, 115, 0);
+  }
+}
+
+:root[data-theme="dark"] {
+  --tl-close: image-set(url("/apple/traffic/Close-dark-1x.png") 1x, url("/apple/traffic/Close-dark-2x.png") 2x);
+  --tl-minimize: image-set(url("/apple/traffic/Minimize-dark-1x.png") 1x, url("/apple/traffic/Minimize-dark-2x.png") 2x);
+  --tl-zoom: image-set(url("/apple/traffic/Expand-dark-1x.png") 1x, url("/apple/traffic/Expand-dark-2x.png") 2x);
+  --tl-inactive: image-set(url("/apple/traffic/Inactive-dark-1x.png") 1x, url("/apple/traffic/Inactive-dark-2x.png") 2x);
+  --tl-close-glyph: rgb(140, 0, 0);
+  --tl-minimize-glyph: rgb(166, 58, 0);
+  --tl-zoom-glyph: rgb(46, 115, 0);
+}
+
+.traffic-lights {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding-left: 9px;
+}
+
+.tl {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 0;
+  background: none;
+  flex: none;
+}
+
+/* O bitmap tem 22 pt: o disco de 14 no meio e a sombra em volta. */
+.tl-body {
+  position: absolute;
+  left: -4px;
+  top: -4px;
+  width: 22px;
+  height: 22px;
+  background-size: 22px 22px;
+  pointer-events: none;
+}
+
+.tl-close .tl-body { background-image: var(--tl-close); }
+.tl-minimize .tl-body { background-image: var(--tl-minimize); }
+.tl-zoom .tl-body { background-image: var(--tl-zoom); }
+.traffic-lights.dimmed .tl-body { background-image: var(--tl-inactive); }
+
+.tl-glyph {
+  position: absolute;
+  inset: 0;
+  -webkit-mask-size: 14px 14px;
+  mask-size: 14px 14px;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  /* .spring(response: 0.1, dampingFraction: 1.0): criticamente amortecida. */
+  transition: opacity 0.1s ease-out;
+  pointer-events: none;
+}
+
+.tl-close .tl-glyph { background: var(--tl-close-glyph); }
+.tl-minimize .tl-glyph { background: var(--tl-minimize-glyph); }
+.tl-zoom .tl-glyph { background: var(--tl-zoom-glyph); }
+.traffic-lights.dimmed .tl-glyph { background: #000; }
