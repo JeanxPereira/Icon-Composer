@@ -151,8 +151,11 @@ fn with_core<T>(
         *guard = Some(Core::spawn(core_bin(), mingw_bin())?);
     }
     let result = f(guard.as_mut().unwrap());
-    // Um processo que caiu nao volta sozinho: o proximo comando abre outro.
-    if result.is_err() {
+    // Um processo que caiu nao volta sozinho: o proximo comando abre outro. So
+    // o que CAIU: um "err" do protocolo ("nada a desfazer", "na borda") e uma
+    // resposta, e descartar o processo por ela levava o documento aberto junto
+    // -- o seguinte subia vazio e todo render dizia "render antes de open".
+    if result.is_err() && !guard.as_mut().unwrap().alive() {
         *guard = None;
     }
     result

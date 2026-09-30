@@ -64,7 +64,9 @@ export default function App() {
   const [zoom, setZoom] = useState(1);
 
   const [frame, setFrame] = useState<Frame | null>(null);
-  const [tile, setTile] = useState<Frame | null>(null);
+  // O ladrilho guarda o documento (`rev`) para o qual foi feito: um ladrilho de
+  // antes de uma edicao mostraria a camada no lugar velho por cima da base.
+  const [tile, setTile] = useState<(Frame & { rev: number }) | null>(null);
   const [view, setView] = useState<ViewRect | null>(null);
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
   const [rects, setRects] = useState<LayerRect[]>([]);
@@ -419,22 +421,30 @@ export default function App() {
 
   // O canvas inteiro: no tamanho da tela ate FULL_MAX_PX, ou a base de
   // BASE_PX quando o zoom passa disso (o ladrilho cobre o que se ve).
+  //
+  // Um quadro que chega depois de o documento ter mudado NAO e descartado: num
+  // arraste o documento muda a cada passo, e descartar o que estava em voo
+  // deixava o canvas parado ate soltar. Vale o mais novo PEDIDO (a sequencia),
+  // e so do documento aberto.
+  const frameSeq = useRef(0);
+  const shownSeq = useRef(0);
+  const pathRef = useRef(path);
+  pathRef.current = path;
   useEffect(() => {
     if (!path) return;
-    let alive = true;
+    const seq = ++frameSeq.current;
+    const forPath = path;
     const size = tiled ? BASE_PX : fullPx;
     setBusy(true);
     requestFrame("canvas", { size, appearance: appearanceOf(rendition), idiom: platform, subdivisions: subdivisionsFor(size / (512 * dpr)), effects: effects !== "disabled" })
       .then((f) => {
-        if (!alive) return;
+        if (seq < shownSeq.current || pathRef.current !== forPath) return;
+        shownSeq.current = seq;
         setFrame(f);
         setError("");
       })
-      .catch((e) => alive && e !== "substituido" && setError(String(e)))
-      .finally(() => alive && setBusy(false));
-    return () => {
-      alive = false;
-    };
+      .catch((e) => e !== "substituido" && seq >= shownSeq.current && setError(String(e)))
+      .finally(() => seq === frameSeq.current && setBusy(false));
   }, [path, platform, rendition, fullPx, tiled, rev, effects]);
 
   // O ladrilho: so a parte visivel, na resolucao da tela, pedida de novo a
@@ -459,7 +469,7 @@ export default function App() {
         subdivisions: subdivisionsFor(zoom),
         effects: effects !== "disabled",
       })
-        .then((f) => alive && setTile(f))
+        .then((f) => alive && setTile({ ...f, rev }))
         .catch((e) => alive && e !== "substituido" && setError(String(e)));
     }, 60);
     return () => {
@@ -527,7 +537,7 @@ export default function App() {
       <Canvas
         title={docName ? `${docName}${dirty ? " — editado" : ""}` : "Icon Composer"}
         frame={frame}
-        tile={tiled ? tile : null}
+        tile={tiled && tile && tile.rev === rev && tile.size === fullPx ? tile : null}
         onView={setView}
         rects={rects}
         onMove={onMove}

@@ -52,6 +52,11 @@ impl Core {
         Ok(Core { child, stdin, stdout })
     }
 
+    // O processo ainda esta de pe. Um erro de pipe e o processo que morreu.
+    pub fn alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
     fn send(&mut self, line: &str) -> Result<(), String> {
         self.stdin
             .write_all(format!("{line}\n").as_bytes())
