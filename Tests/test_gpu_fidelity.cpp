@@ -191,6 +191,42 @@ TEST_CASE(gpu_render_with_a_warm_cache_is_the_render_without_one) {
     CHECK(warm->notes == base->notes);
 }
 
+// O CACHE RESIDENTE ATRAVESSA UMA EDICAO: arte, campo, sombra e pastilha ficam na
+// GPU pela chave de conteudo, entao trocar o que um passo le (aqui a aparencia,
+// que muda os preenchimentos, e o tamanho de classe, que muda a sombra) re-roda
+// so o que mudou -- e cada render com o cache e o render SEM ele, float por
+// float, notas e contadores inclusive. O Apollo tem vidro vetorial com mascara e
+// sombra; o NotchMyProblem, vidro sobre raster.
+TEST_CASE(gpu_resident_cache_survives_an_edit) {
+    Device& device = gpuDevice();
+    REQUIRE(device.valid());
+    for (const char* name : {"Apollo-Reborn__Apollo-Reborn__AppIcon", "Aeastr__NotchMyProblem__icon"}) {
+        auto bundle = icf::IconBundle::open(corpus(name));
+        REQUIRE(bundle.has_value());
+        IconRenderOptions light;
+        light.size = 256;
+        IconRenderOptions dark = light;
+        dark.context.appearance = icf::Appearance::Dark;
+        IconRenderOptions small = light;
+        small.sizeClass = IconSizeClass::Small;
+
+        RenderCache cache;
+        for (const IconRenderOptions& o : {light, dark, small, light, dark}) {
+            auto plain = renderIconGpu(device, *bundle, o);
+            IconRenderOptions cached = o;
+            cached.cache = &cache;
+            auto warm = renderIconGpu(device, *bundle, cached);
+            REQUIRE(plain.has_value() && warm.has_value());
+            CHECK(warm->rgba == plain->rgba);
+            CHECK(warm->notes == plain->notes);
+            CHECK(warm->shapeGaps == plain->shapeGaps);
+            CHECK_EQ(warm->glassSpecular, plain->glassSpecular);
+            CHECK_EQ(warm->glassShadowed, plain->glassShadowed);
+        }
+        CHECK(cache.stats().hits > 0);
+    }
+}
+
 // G2: O CAMPO DA GPU E O DA CPU, BIT A BIT. `icon_field.comp` faz em double a mesma
 // conta de `exactFieldFromContours`, com o empate pela ordem dos segmentos, e o
 // sinal e a mesma mascara -- entao nao ha teto aqui: cada float tem de ser igual.

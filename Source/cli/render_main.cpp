@@ -34,6 +34,7 @@ const char* kUsage =
     "  --gpu               a bundle through rb::renderIconGpu (the resident chain)\n"
     "  --repeat N          render a bundle N times sharing one RenderCache, timing each\n"
     "  --warmup            one untimed render first (pipelines built, no cache)\n"
+    "  --no-validation     the Vulkan validation layer off (for timing)\n"
     "\n"
     "Flat fills only. Whatever cannot be drawn is named on stderr.\n";
 
@@ -104,6 +105,7 @@ int main(int argc, char** argv) {
     icf::Context ctx;
     bool gpu = false;
     bool warmup = false;
+    bool validation = true;
     int repeat = 1;
     for (std::size_t i = 1; i < args.size(); ++i) {
         // As chaves sem valor.
@@ -113,6 +115,10 @@ int main(int argc, char** argv) {
         }
         if (args[i] == "--warmup") {
             warmup = true;
+            continue;
+        }
+        if (args[i] == "--no-validation") {
+            validation = false;
             continue;
         }
         if (i + 1 >= args.size()) return fail("missing a value for " + args[i]);
@@ -145,7 +151,11 @@ int main(int argc, char** argv) {
     }
     if (output.empty()) return fail("missing --out");
 
-    auto device = rb::Device::create();
+    // A camada de validacao fica ligada por padrao (DeviceOptions); para MEDIR ela
+    // pesa -- sobretudo em cada vkAllocateMemory -- e `--no-validation` a tira.
+    rb::DeviceOptions deviceOptions;
+    deviceOptions.validation = validation;
+    auto device = rb::Device::create(deviceOptions);
     if (!device) return fail("no Vulkan device: " + device.error());
 
     // A bundle and a loose SVG take different paths, and the argument says which

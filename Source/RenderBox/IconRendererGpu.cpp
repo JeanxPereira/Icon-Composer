@@ -147,6 +147,25 @@ Slab fieldSlab(const SurfaceField& f) { return std::static_pointer_cast<Buffer>(
 // responde por um valor de CPU. Um buffer guardado e so LIDO por quem o recebe;
 // quem precisa escrever copia antes. O `RenderCache` tem de morrer antes do
 // `Device` (o buffer volta ao pool do aparelho, ou e destruido com ele).
+//
+// O que fica, por camada, e com que chave:
+//   - a arte do SVG: o TEXTO, a colocacao e as opcoes (a chave de
+//     `svgRenderCached`); a de um raster: os pixels, a colocacao, a grade e se a
+//     colocacao foi a exata de [UP3]. O buffer guardado E o da camada
+//     (`SurfaceArt::shared`): a mascara, a unica que escreve na arte, copia antes;
+//   - o campo de um vetor: os contornos (a chave de `fieldFromContoursCached`);
+//     o de um raster: a chave da arte; o da pastilha: a grade e a plataforma;
+//   - a sombra e o overdraw: a chave da arte COMO ELA ESTA -- a do render
+//     encadeada com a do campo e os argumentos da mascara, quando houve uma.
+// Um passo cujo insumo nao mudou nao roda. O que roda todo quadro e o que le o
+// acumulador (refracao, especular, realces da pastilha) e as mesclas.
+//
+// `[ART]` O PRECO DO PRIMEIRO QUADRO: um buffer guardado nao volta ao pool, entao
+// o primeiro render com um cache vazio aloca um buffer novo por entrada, e neste
+// aparelho (RX 6750 XT) um `vkAllocateMemory` de 16 MB custa ~7 ms, com ou sem a
+// camada de validacao. No Apollo a 1024 px isso e ~50 ms a mais no frio (148 ms
+// contra 88 ms sem cache) para um quente de 13 ms em vez de 32 ms. Depois que o
+// cache enche, o que ele despeja volta ao pool e nada mais e alocado.
 
 // Os contadores de um render: uma palavra por contagem pedida (`CountSink`,
 // `MaskSink`), descidos todos juntos no `finish`.
@@ -157,6 +176,37 @@ struct GpuCachedField {
     std::uint32_t width = 0, height = 0;
     std::int32_t originX = 0, originY = 0;
 };
+
+struct GpuCachedArt {
+    Slab art;
+    std::vector<SkippedShape> skipped;
+};
+
+struct GpuCachedShadow {
+    Slab image;
+    Slab overdraw;
+};
+
+// Os mesmos campos que `hashInto` de IconRenderer.cpp nomeia, com o mesmo
+// tripwire de tamanho.
+void hashPaint(KeyHasher& h, const FillOverride& f) {
+    static_assert(sizeof(FillOverride) == 104, "a FillOverride field is missing from the key");
+    h.value(f.kind).span(f.colour, 4).span(f.m, 6).value(f.smooth);
+    h.value(f.stops.size());
+    for (const RampPoint& p : f.stops) h.value(p.location).span(p.rgba, 4);
+}
+
+void hashRender(KeyHasher& h, const PathGlobals& g, const RenderOptions& o) {
+    static_assert(sizeof(PathGlobals) == 52, "a PathGlobals field is missing from the key");
+    h.span(g.m0, 2).span(g.m1, 2).span(g.m2, 2).span(g.twoOverSize, 2).span(g.origin, 2);
+    h.value(g.depth).value(g.urx).value(g.arg);
+    static_assert(sizeof(RenderOptions) == 136, "a RenderOptions field is missing from the key");
+    h.value(o.width).value(o.height).value(o.originX).value(o.originY);
+    h.value(o.projectionWidth).value(o.projectionHeight).value(o.subdivisions);
+    hashPaint(h, o.override);
+}
+
+void hashKey(KeyHasher& h, const CacheKey& k) { h.value(k.a).value(k.b); }
 
 void hashField(KeyHasher& h, const std::vector<FieldContour>& contours, std::uint32_t width,
                std::uint32_t height, const FieldOptions& o, std::uint32_t ss) {
@@ -599,8 +649,28 @@ public:
                            groups16(grid_.height));
     }
 
-    Result<SurfaceArt> drawSvg(RenderCache*, const std::string&, const icf::svg::SvgDocument& svg,
-                               const PathGlobals& placement, const RenderOptions& ro) override {
+    // Com cache, a arte fica guardada na GPU pela chave de `svgRenderCached` (o
+    // TEXTO do SVG, a colocacao, as opcoes): o proximo render copia o buffer em
+    // vez de refazer a cobertura. A copia e porque a mascara escreve na arte.
+    Result<SurfaceArt> drawSvg(RenderCache* cache, const std::string& text,
+                               const icf::svg::SvgDocument& svg, const PathGlobals& placement,
+                               const RenderOptions& ro) override {
+        CacheKey key;
+        if (cache) {
+            KeyHasher h("gpu-svg-render");
+            h.bytes(text.data(), text.size());
+            hashRender(h, placement, ro);
+            key = h.finish();
+            if (auto hit = cache->find<GpuCachedArt>(key)) {
+                SurfaceArt art;
+                art.resident = hit->art;
+                art.skipped = hit->skipped;
+                art.key = key;
+                art.keyed = true;
+                art.shared = true;
+                return art;
+            }
+        }
         auto a = r_.acquire(static_cast<VkDeviceSize>(ro.width) * ro.height * 16);
         if (!a) return std::unexpected(a.error());
         auto drew = svgResident(r_, device_, svg, placement, ro, *a);
@@ -608,11 +678,51 @@ public:
         SurfaceArt art;
         art.resident = *a;
         art.skipped = std::move(drew->skipped);
+        if (cache) {
+            cache->store(key, GpuCachedArt{*a, art.skipped}, (*a)->size());
+            art.key = key;
+            art.keyed = true;
+            art.shared = true;
+        }
         return art;
     }
 
-    Result<SurfaceArt> placeRaster(const icf::DecodedPng& png, const LayerPlacement& lp,
-                                   bool feedsField) override {
+    Result<SurfaceArt> placeRaster(RenderCache* cache, const icf::DecodedPng& png,
+                                   const LayerPlacement& lp, bool feedsField) override {
+        CacheKey key;
+        if (cache) {
+            KeyHasher h("gpu-raster");
+            h.value(png.width).value(png.height).span(png.rgba.data(), png.rgba.size());
+            static_assert(sizeof(LayerPlacement) == 24, "a LayerPlacement field is missing");
+            h.value(lp.scale).value(lp.translateX).value(lp.translateY);
+            h.value(grid_.size).value(grid_.originX).value(grid_.originY);
+            h.value(grid_.width).value(grid_.height);
+            // A colocacao exata de [UP3] e a de float nao respondem uma pela outra.
+            h.value(feedsField);
+            key = h.finish();
+            if (auto hit = cache->find<GpuCachedArt>(key)) {
+                SurfaceArt art;
+                art.resident = hit->art;
+                art.key = key;
+                art.keyed = true;
+                art.shared = true;
+                return art;
+            }
+        }
+        auto placed = placeRasterUncached(png, lp, feedsField);
+        if (!placed) return placed;
+        if (cache) {
+            const Slab kept = artSlab(*placed);
+            cache->store(key, GpuCachedArt{kept, {}}, kept->size());
+            placed->key = key;
+            placed->keyed = true;
+            placed->shared = true;
+        }
+        return placed;
+    }
+
+    Result<SurfaceArt> placeRasterUncached(const icf::DecodedPng& png, const LayerPlacement& lp,
+                                           bool feedsField) {
         auto a = r_.acquire(bytes());
         if (!a) return std::unexpected(a.error());
         SurfaceArt art;
@@ -694,6 +804,8 @@ public:
                 f.height = hit->height;
                 f.originX = hit->originX;
                 f.originY = hit->originY;
+                f.key = key;
+                f.keyed = true;
                 return f;
             }
         }
@@ -706,6 +818,8 @@ public:
         f.originX = made->originX;
         f.originY = made->originY;
         if (cache) {
+            f.key = key;
+            f.keyed = true;
             const std::size_t bytes = made->data ? made->data->size() : 0;
             cache->store(key, GpuCachedField{made->data, f.width, f.height, f.originX, f.originY},
                          bytes);
@@ -716,9 +830,39 @@ public:
     // O raster de vidro tem a copia de CPU de [UP3]; o campo dele segue na CPU.
     Result<SurfaceField> alphaField(RenderCache* cache, SurfaceArt& art, std::uint32_t width,
                                     std::uint32_t height, const FieldOptions& fo) override {
+        // Com cache, o campo que subiu fica na GPU pela chave da arte: o proximo
+        // render nem hasheia o alfa nem sobe nada.
+        CacheKey key;
+        const bool keyed = cache && art.keyed && r_.float64();
+        if (keyed) {
+            KeyHasher h("gpu-field-alpha");
+            hashKey(h, art.key);
+            hashField(h, {}, width, height, fo, 1);
+            key = h.finish();
+            if (auto hit = cache->find<GpuCachedField>(key)) {
+                SurfaceField f;
+                f.resident = hit->data;
+                f.width = hit->width;
+                f.height = hit->height;
+                f.originX = hit->originX;
+                f.originY = hit->originY;
+                f.key = key;
+                f.keyed = true;
+                return f;
+            }
+        }
         auto onCpu = artOnCpu(art);
         if (!onCpu) return std::unexpected(onCpu.error());
-        return cpuField(fieldFromAlphaCached(cache, **onCpu, width, height, fo));
+        auto f = cpuField(fieldFromAlphaCached(cache, **onCpu, width, height, fo));
+        if (!f) return f;
+        if (keyed) {
+            const Slab s = f->resident ? fieldSlab(*f) : Slab{};
+            cache->store(key, GpuCachedField{s, f->width, f->height, f->originX, f->originY},
+                         s ? s->size() : 0);
+            f->key = key;
+            f->keyed = true;
+        }
+        return f;
     }
 
     // A refracao (G4, era [RT2]): `icon_displace` e `icon_refract`, float como a CPU.
@@ -758,6 +902,13 @@ public:
             sink(missed, painted);
             return {};
         }
+        if (art.shared) {
+            // A arte e tambem a do cache: a mascara escreve numa copia.
+            auto own = duplicate(artSlab(art));
+            if (!own) return std::unexpected(own.error());
+            art.resident = *own;
+            art.shared = false;
+        }
         const std::uint32_t slot = counterSlot(2);
         if (auto ok = gpu::glassMask(r_, artSlab(art), fieldSlab(mask.field), grid_.width,
                                      grid_.height, mask.field.originY, mask.args, counters_, slot);
@@ -765,6 +916,18 @@ public:
             return ok;
         }
         art.rgba.clear();   // a copia de CPU, se havia, ficou velha
+        if (art.keyed && mask.field.keyed) {
+            KeyHasher h("gpu-masked");
+            hashKey(h, art.key);
+            hashKey(h, mask.field.key);
+            static_assert(sizeof(OpacityMaskArguments) == 36, "a mask argument is missing");
+            h.value(mask.args.borderWidth).span(mask.args.opacityBounds, 2);
+            h.span(mask.args.contourOpacityBounds, 2).span(mask.args.bounds, 4);
+            h.value(mask.field.originY);
+            art.key = h.finish();
+        } else {
+            art.keyed = false;
+        }
         pending_.push_back(
             [this, slot, sink = std::move(sink)]() { sink(counted(slot + 1), counted(slot)); });
         return {};
@@ -842,12 +1005,38 @@ public:
             s.hasOverdraw = !s.overdraw.empty();
             return s;
         }
+        // Com cache, a sombra fica na GPU pela chave da arte como ela esta agora
+        // (a do render, encadeada com a da mascara quando houve uma).
+        CacheKey key;
+        const bool keyed = cache && art.keyed;
+        if (keyed) {
+            KeyHasher h("gpu-shadow");
+            hashKey(h, art.key);
+            h.value(grid_.width).value(grid_.height).value(style);
+            static_assert(sizeof(ShadowGeometry) == 40, "a ShadowGeometry field is missing");
+            h.value(geometry.offsetX).value(geometry.offsetY).value(geometry.blurRadius);
+            h.value(geometry.ringWidth.has_value());
+            if (geometry.ringWidth) h.value(*geometry.ringWidth);
+            h.value(overdrawAlpha);
+            key = h.finish();
+            if (auto hit = cache->find<GpuCachedShadow>(key)) {
+                s.residentImage = hit->image;
+                s.residentOverdraw = hit->overdraw;
+                s.hasOverdraw = hit->overdraw != nullptr;
+                return s;
+            }
+        }
         auto made = gpu::shadow(r_, artSlab(art), grid_.width, grid_.height, style, geometry,
                                 overdrawAlpha);
         if (!made) return std::unexpected(made.error());
         s.residentImage = made->image;
         s.residentOverdraw = made->overdraw;
         s.hasOverdraw = made->overdraw != nullptr;
+        if (keyed) {
+            const std::size_t bytes =
+                made->image->size() + (made->overdraw ? made->overdraw->size() : 0);
+            cache->store(key, GpuCachedShadow{made->image, made->overdraw}, bytes);
+        }
         return s;
     }
 
@@ -895,6 +1084,14 @@ private:
         if (auto ok = r_.download(t, host.data(), bytes()); !ok) return ok;
         step(host);
         return r_.upload(t, host.data(), bytes());
+    }
+
+    // Um buffer novo com o conteudo de `s` (gravado no lote).
+    Result<Slab> duplicate(const Slab& s) {
+        auto d = r_.acquire(s->size());
+        if (!d) return d;
+        r_.copy(whole(s), *d);
+        return d;
     }
 
     std::uint32_t counterSlot(std::uint32_t words) {

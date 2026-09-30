@@ -867,8 +867,8 @@ public:
         art.skipped = std::move(drew->skipped);
         return art;
     }
-    Result<SurfaceArt> placeRaster(const icf::DecodedPng& png, const LayerPlacement& placement,
-                                   bool) override {
+    Result<SurfaceArt> placeRaster(RenderCache*, const icf::DecodedPng& png,
+                                   const LayerPlacement& placement, bool) override {
         SurfaceArt art;
         art.rgba = rb::placeRaster(png, placement, grid_);
         return art;
@@ -1605,7 +1605,7 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                 const bool feedsField =
                     isGlass && (!glassRefractionIsIdentity(refraction) || groupWantsMask ||
                                 wantsSpecular);
-                auto placed = surface.placeRaster(png, lp, feedsField);
+                auto placed = surface.placeRaster(options.cache, png, lp, feedsField);
                 if (!placed) return std::unexpected(placed.error());
                 rasterPlaced = std::move(*placed);
             }

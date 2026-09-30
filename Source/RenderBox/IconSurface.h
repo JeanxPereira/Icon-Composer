@@ -61,6 +61,14 @@ struct SurfaceArt {
     std::shared_ptr<void> resident;
     // O que o render do SVG nao desenhou, com o indice da forma.
     std::vector<SkippedShape> skipped;
+    // A GPU com cache: a chave de conteudo desta arte COMO ELA ESTA AGORA -- a do
+    // render (ou da colocacao), e depois da mascara a mesma encadeada com a do
+    // campo e os argumentos. A sombra se guarda por ela. A CPU nao usa.
+    CacheKey key;
+    bool keyed = false;
+    // A GPU: o buffer tambem e o valor de uma entrada do cache, entao quem vai
+    // ESCREVER nele (a mascara) copia antes.
+    bool shared = false;
 };
 
 // O campo de distancia de UMA camada de vidro, onde a superficie o guarda. Na CPU
@@ -73,6 +81,9 @@ struct SurfaceField {
     std::uint32_t height = 0;
     std::int32_t originX = 0;
     std::int32_t originY = 0;
+    // A GPU com cache: a chave de conteudo do campo (ver `SurfaceArt::key`).
+    CacheKey key;
+    bool keyed = false;
     bool empty() const { return width == 0; }
 };
 
@@ -132,7 +143,7 @@ public:
                                        const icf::svg::SvgDocument& svg,
                                        const PathGlobals& placement,
                                        const RenderOptions& options) = 0;
-    virtual Result<SurfaceArt> placeRaster(const icf::DecodedPng& png,
+    virtual Result<SurfaceArt> placeRaster(RenderCache* cache, const icf::DecodedPng& png,
                                            const LayerPlacement& placement,
                                            bool feedsField) = 0;
 
