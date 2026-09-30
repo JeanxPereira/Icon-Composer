@@ -1,24 +1,87 @@
 {
   "version": 6,
   "configurePresets": [
-    { "name": "mingw", "generator": "Ninja", "binaryDir": "build/mingw",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "CMAKE_CXX_COMPILER": "g++" } },
-    { "name": "mingw-asan", "inherits": "mingw", "binaryDir": "build/mingw-asan",
-      "cacheVariables": { "IC_SANITIZE": "ON" } },
-    { "name": "mingw-b", "inherits": "mingw", "binaryDir": "build/mingw-b" },
-    { "name": "msvc", "generator": "Ninja", "binaryDir": "build/msvc",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "CMAKE_CXX_COMPILER": "cl" } },
-    { "name": "release", "generator": "Ninja", "binaryDir": "build/release",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } }
+    {
+      "name": "mingw",
+      "generator": "Ninja",
+      "binaryDir": "build/mingw",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "mingw-asan",
+      "inherits": "mingw",
+      "binaryDir": "build/mingw-asan",
+      "cacheVariables": {
+        "IC_SANITIZE": "ON"
+      }
+    },
+    {
+      "name": "mingw-b",
+      "inherits": "mingw",
+      "binaryDir": "build/mingw-b"
+    },
+    {
+      "name": "msvc",
+      "generator": "Ninja",
+      "binaryDir": "build/msvc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "cl"
+      }
+    },
+    {
+      "name": "release",
+      "generator": "Ninja",
+      "binaryDir": "build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "mingw-release",
+      "inherits": "mingw",
+      "binaryDir": "build/mingw-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
   ],
   "buildPresets": [
-    { "name": "mingw", "configurePreset": "mingw" },
-    { "name": "mingw-asan", "configurePreset": "mingw-asan" },
-    { "name": "mingw-b", "configurePreset": "mingw-b" },
-    { "name": "msvc", "configurePreset": "msvc" },
-    { "name": "release", "configurePreset": "release" }
+    {
+      "name": "mingw",
+      "configurePreset": "mingw"
+    },
+    {
+      "name": "mingw-asan",
+      "configurePreset": "mingw-asan"
+    },
+    {
+      "name": "mingw-b",
+      "configurePreset": "mingw-b"
+    },
+    {
+      "name": "msvc",
+      "configurePreset": "msvc"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "mingw-release",
+      "configurePreset": "mingw-release"
+    }
   ],
   "testPresets": [
-    { "name": "mingw", "configurePreset": "mingw", "output": { "outputOnFailure": true } }
+    {
+      "name": "mingw",
+      "configurePreset": "mingw",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
   ]
 }

@@ -800,6 +800,10 @@ int run(const fs::path& initial) {
     // coordenador, que devolve a textura) antes do pool, o pool antes da fila
     // de trabalho, e tudo antes do Shell, que e dono do dispositivo da tela.
     JobQueue jobs;
+    // A primeira coisa na fila, antes de qualquer render: o canvas pede o dele
+    // no primeiro quadro e ele espera este, em vez de pagar o aquecimento
+    // dentro do proprio tempo.
+    jobs.submit([&device] { warmUp(*device); }, {});
     State state;
     state.shell = shell.get();
     // O dispositivo da exportacao e o mesmo do agendador -- ver `State::device`.

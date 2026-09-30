@@ -6,99 +6,127 @@ namespace ick {
 
 RenderCoordinator::~RenderCoordinator() {
     if (view_.texture != ImTextureID_Invalid) sink_.remove(view_.texture);
+    if (view_.tileTexture != ImTextureID_Invalid) sink_.remove(view_.tileTexture);
+}
+
+namespace {
+
+// Uma textura: atualizada no lugar quando o tamanho e o mesmo, recriada senao.
+void upload(TextureSink& sink, ImTextureID& tex, std::uint32_t& w, std::uint32_t& h,
+            const RenderResult& r) {
+    if (tex != ImTextureID_Invalid && w == r.width && h == r.height) {
+        sink.update(tex, r.width, r.height, r.rgba8.data());
+        return;
+    }
+    if (tex != ImTextureID_Invalid) sink.remove(tex);
+    tex = sink.create(r.width, r.height, r.rgba8.data());
+    w = r.width;
+    h = r.height;
+}
+
+}  // namespace
+
+void RenderCoordinator::apply(const RenderResult& r, bool asTile) {
+    view_.drawn = r.drawn;
+    view_.total = r.total;
+    view_.skipped = r.skipped;
+    view_.shapeGaps = r.shapeGaps;
+    view_.notes = r.notes;
+    view_.error = r.error;
+    // UM FRACASSO TAMBEM E A RESPOSTA. Sem marcar a chave como respondida, o
+    // `tick` seguinte a veria de novo em falta e pediria outra vez -- um pedido
+    // por quadro, para sempre, para um documento que nao rende. Fica marcado,
+    // sem textura, e so uma chave NOVA (uma edicao, outro zoom) tenta de novo.
+    if (!r.error.empty() || r.rgba8.empty()) {
+        const Key k{r.version, r.context, r.size, r.tile};
+        if (asTile) {
+            tile_ = k;
+            haveTile_ = true;
+        } else {
+            base_ = k;
+            haveBase_ = true;
+        }
+        return;
+    }
+    // Um ladrilho que caiu para a base (o teto de area) E uma base: o icone
+    // inteiro na resolucao de reserva. Vai para a camada de baixo.
+    if (asTile && r.refined) {
+        upload(sink_, view_.tileTexture, view_.tileWidth, view_.tileHeight, r);
+        view_.tileGrid = r.gridSize;
+        view_.tileX = r.originX;
+        view_.tileY = r.originY;
+        view_.tileVersion = r.version;
+        view_.refined = true;
+        tile_ = Key{r.version, r.context, r.size, r.tile};
+        haveTile_ = true;
+        return;
+    }
+    upload(sink_, view_.texture, view_.width, view_.height, r);
+    view_.gridSize = r.gridSize ? r.gridSize : r.width;
+    view_.originX = 0;
+    view_.originY = 0;
+    view_.version = r.version;
+    view_.refined = !asTile;
+    base_ = Key{r.version, r.context, asTile ? r.gridSize : r.size, TileRect{}};
+    haveBase_ = true;
 }
 
 void RenderCoordinator::tick(Session& s) {
-    // O LADRILHO (spec 2026-09-16, "O que o Kit faz"). O canvas escreve
-    // `tileSize`/`tile` quando o pan e o zoom param; aqui isso e so mais um
-    // pedaco da chave. `tileSize == 0` (zoom <= 1, ou nada pintado) e o pedido
-    // de sempre: o canvas inteiro na resolucao base.
     const ViewContext& v = s.view;
+    const std::uint32_t baseSize = v.size;
+    const Key wantBase{s.version(), v.context, baseSize, TileRect{}};
     const bool tiled = v.tileSize > 0 && v.tile.w > 0;
-    const Key now{s.version(), v.context, tiled ? v.tileSize : v.size,
-                  tiled ? v.tile : TileRect{}};
-    if (!everRequested_ || !(now == requested_)) {
-        // AGGREGATE initialisation, in declaration order. `RenderRequest r;` does not
-        // compile: it holds an `icf::IconBundle`, which has no default constructor
-        // (only the private one `open` uses). `RenderRequest` must stay an aggregate.
-        // Every field is named, so a field added to the struct and forgotten here
-        // is a warning rather than a silent default.
-        //
-        // O ultimo, `fallbackSize`, e PARA ONDE CAIR quando o ladrilho nao
-        // couber (o teto de area ou o do aparelho): o canvas inteiro na
-        // resolucao base, que e o que o painel mostrava antes desta frente.
-        // Nunca zero -- `ViewContext::size` e 512 ou 1024 --, e e de proposito:
-        // com uma base para onde cair, o job nunca devolve o estado "recusado e
-        // sem pixels", em que nada foi desenhado e nem ha erro para mostrar.
-        RenderRequest r{now.version, s.bundle().clone(), now.context, now.size, now.tile, v.size};
-        scheduler_.request(std::move(r));
-        requested_ = now;
-        everRequested_ = true;
-        view_.pending = true;
-        requestedAt_ = std::chrono::steady_clock::now();
-        view_.pendingSeconds = 0.0;
-    }
+    const Key wantTile{s.version(), v.context, v.tileSize, v.tile};
 
-    // Ticked every frame while something is in flight, so the panel can say how
-    // long the person has been waiting BEFORE the answer arrives. That is the
-    // whole point: a render that never finishes produces no result to time, and
-    // "pending" alone cannot tell forty milliseconds from eighty-seven seconds.
-    if (view_.pending) {
-        view_.pendingSeconds =
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - requestedAt_).count();
-    }
-
+    // Primeiro colhe. Uma base de uma versao ANTERIOR ainda serve: num arraste
+    // o documento muda a cada passo, e descartar o que estava em voo deixava o
+    // canvas parado ate soltar (o mesmo achado do App.tsx do Tauri). O que nao
+    // pode e andar para tras, entao a versao so sobe.
     while (auto result = scheduler_.poll()) {
-        // A result is the one being waited for only when it answers the WHOLE key.
-        // Comparing the version alone accepts a stale frame the moment the view
-        // context moves: `size` and `context` live on `Session::view`, which is
-        // not behind a command, so changing either leaves the version where it
-        // was. Ask for 512, drag the size to 1024, and the 512 that lands carries
-        // the same version -- it would be shown as if it were the answer, and
-        // `pending` would go false, so nothing would ever correct it. The tile
-        // is in the key for the same reason: a pan that stops one tile to the
-        // left is a different question, with the same version and the same size.
-        //
-        // `size` and `tile` here are the ECHO of what was asked (Ports.h), not
-        // what the pixels turned out to be: a job that fell back to the base
-        // still answers the tile it was asked for, and `width`/`gridSize` are
-        // where that shows.
         const Key answered{result->version, result->context, result->size, result->tile};
-        if (!(answered == requested_)) continue;   // stale: the latest wins
-        view_.drawn = result->drawn;
-        view_.total = result->total;
-        view_.skipped = result->skipped;
-        view_.shapeGaps = result->shapeGaps;
-        view_.notes = result->notes;
-        view_.error = result->error;
-        if (result->error.empty() && !result->rgba8.empty()) {
-            // ONDE OS PIXELS FICAM, junto com os pixels e nunca sem eles: o
-            // painel poe a textura no retangulo que estes quatro numeros
-            // descrevem (spec 2026-09-16, "O que o Kit faz"), entao uma grade
-            // adotada sem a textura correspondente colocaria a textura ANTIGA
-            // no lugar da nova. Nos dois ramos, porque a textura so e recriada
-            // quando a extensao muda e a grade pode mudar sem ela: dois
-            // ladrilhos do mesmo tamanho em origens diferentes passam pelo
-            // `update`.
-            view_.gridSize = result->gridSize;
-            view_.originX = result->originX;
-            view_.originY = result->originY;
-            view_.refined = result->refined;
-            if (view_.texture != ImTextureID_Invalid && view_.width == result->width &&
-                view_.height == result->height) {
-                sink_.update(view_.texture, result->width, result->height, result->rgba8.data());
-            } else {
-                if (view_.texture != ImTextureID_Invalid) sink_.remove(view_.texture);
-                view_.texture = sink_.create(result->width, result->height, result->rgba8.data());
-                view_.width = result->width;
-                view_.height = result->height;
+        const bool isTile = answered.tile.w > 0;
+        if (flying_ && answered == inFlight_) flying_ = false;
+        if (result->context != v.context) continue;
+        if (isTile) {
+            if (!result->refined) {
+                if (!haveBase_ || result->version >= base_.version) apply(*result, true);
+                // E o ladrilho fica RESPONDIDO: recusado, mas respondido. Sem
+                // isto o `tick` seguinte o pediria de novo, e o teto o recusaria
+                // de novo, um pedido por quadro para sempre.
+                if (answered == wantTile) {
+                    tile_ = answered;
+                    haveTile_ = true;
+                }
+            } else if (answered == wantTile) {
+                apply(*result, true);
             }
+        } else if (!haveBase_ || result->version >= base_.version) {
+            apply(*result, false);
         }
         view_.lastRenderSeconds =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - requestedAt_).count();
-        view_.pendingSeconds = 0.0;
-        view_.pending = false;   // it matched the whole key, so it IS the answer
     }
+
+    // Depois decide o que falta. A base antes do ladrilho, sempre.
+    const Key* next = nullptr;
+    if (!haveBase_ || !(base_ == wantBase)) next = &wantBase;
+    else if (tiled && (!haveTile_ || !(tile_ == wantTile))) next = &wantTile;
+    if (next && !(flying_ && inFlight_ == *next)) {
+        // A base para onde cair vai em todo pedido, e nunca e zero: com ela o
+        // job nunca devolve "recusado, sem pixels e sem erro".
+        RenderRequest r{next->version, s.bundle().clone(), next->context, next->size, next->tile,
+                        baseSize};
+        scheduler_.request(std::move(r));
+        inFlight_ = *next;
+        flying_ = true;
+        requestedAt_ = std::chrono::steady_clock::now();
+    }
+    // Sem ladrilho a pedir, o que esta na tela e o que foi pedido: a base.
+    if (!tiled) view_.refined = true;
+    view_.pending = flying_;
+    view_.pendingSeconds =
+        flying_ ? std::chrono::duration<double>(std::chrono::steady_clock::now() - requestedAt_).count()
+                : 0.0;
 }
 
 }  // namespace ick

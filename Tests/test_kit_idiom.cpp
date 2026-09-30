@@ -405,17 +405,20 @@ TEST_CASE(kit_coordinator_keys_on_the_tile_and_falls_back_to_the_base) {
     sched.answerTile(s->version(), s->view.context, 2048, ick::TileRect{340, 100, 700, 600});
     coord.tick(*s);
     CHECK(coord.view().pending);
-    CHECK_EQ(coord.view().gridSize, 512u);   // a textura de antes continua
+    CHECK_EQ(coord.view().tileWidth, 0u);   // nenhum ladrilho adotado
+    CHECK_EQ(coord.view().gridSize, 512u);  // a base de antes continua
 
-    // O que responde, responde -- e traz consigo onde os pixels ficam.
+    // O que responde, responde -- e traz consigo onde os pixels ficam. Na
+    // camada do ladrilho (30/09): a base continua por baixo, inteira.
     sched.answerTile(s->version(), s->view.context, 2048, want);
     coord.tick(*s);
     CHECK(!coord.view().pending);
-    CHECK_EQ(coord.view().gridSize, 2048u);
-    CHECK_EQ(coord.view().width, 700u);
-    CHECK_EQ(coord.view().height, 600u);
-    CHECK_EQ(coord.view().originX, 100);
-    CHECK_EQ(coord.view().originY, 100);
+    CHECK_EQ(coord.view().tileGrid, 2048u);
+    CHECK_EQ(coord.view().tileWidth, 700u);
+    CHECK_EQ(coord.view().tileHeight, 600u);
+    CHECK_EQ(coord.view().tileX, 100);
+    CHECK_EQ(coord.view().tileY, 100);
+    CHECK_EQ(coord.view().gridSize, 512u);
     CHECK(coord.view().refined);
 
     // A QUEDA. O ladrilho seguinte nao cabe -- o teto de area, ou o do
@@ -441,16 +444,18 @@ TEST_CASE(kit_coordinator_keys_on_the_tile_and_falls_back_to_the_base) {
     REQUIRE(coord.view().notes.size() == 1);
     CHECK_EQ(coord.view().notes[0], std::string("viewport acima do teto de area: nada desenhado"));
 
-    // De volta a 100%: o canvas inteiro na base, e `refined` volta a ser
-    // verdade quando os pixels pedidos sao os que chegam.
+    // E A QUEDA NAO E PEDIDA DE NOVO: o ladrilho ficou respondido, recusado.
+    // Pedir outra vez seria o teto recusando de novo, um pedido por quadro.
+    coord.tick(*s);
+    CHECK_EQ(sched.asks.size(), std::size_t{3});
+
+    // De volta a 100%: a base ja esta la (a queda a deixou em dia), entao nao
+    // ha o que pedir, e `refined` volta a ser verdade -- o que se ve e o que
+    // foi pedido.
     s->view.tileSize = 0;
     s->view.tile = ick::TileRect{};
     coord.tick(*s);
-    REQUIRE(sched.asks.size() == 4);
-    CHECK_EQ(sched.asks[3].size, 512u);
-    CHECK_EQ(sched.asks[3].tile.w, 0u);
-    sched.answer(s->version(), s->view.context, 512);
-    coord.tick(*s);
+    CHECK_EQ(sched.asks.size(), std::size_t{3});
     CHECK(!coord.view().pending);
     CHECK(coord.view().refined);
     CHECK_EQ(coord.view().gridSize, 512u);

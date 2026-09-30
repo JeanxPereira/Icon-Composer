@@ -1,6 +1,10 @@
 #include "Source/app/AppPorts.h"
 
+#include "Source/RenderBox/GpuResident.h"
 #include "Source/RenderBox/IconRenderer.h"
+
+#include <algorithm>
+#include <cmath>
 
 #include <cstdio>
 #include <exception>
@@ -52,7 +56,12 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
     io.context = r.context;
     io.viewport = rb::IconViewport{r.tile.x, r.tile.y, r.tile.w, r.tile.h};
     io.cache = cache;
-    auto icon = rb::renderIcon(device, r.bundle, io);
+    // O CAMINHO DO `icserver` (30/09): o residente na GPU, o mesmo que o canvas
+    // do Tauri usa. `renderIcon` fica para a exportacao, o gabarito. E as
+    // subdivisoes sobem com o tamanho, como `subdivisionsFor` do App.tsx: 16
+    // bastam a 512 px, e com zoom uma curva viraria poligono visivel.
+    io.subdivisions = std::clamp(static_cast<int>(std::lround(16.0 * r.size / 512.0)), 16, 256);
+    auto icon = rb::renderIconGpu(device, r.bundle, io);
 
     // Um ladrilho pode ser impossivel de desenhar de duas formas (spec
     // 2026-09-16, "O teto de area"):
@@ -82,7 +91,8 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
         // painel estica -- o que ele fazia antes desta frente.
         io.size = r.fallbackSize;
         io.viewport = rb::IconViewport{};
-        icon = rb::renderIcon(device, r.bundle, io);
+        io.subdivisions = std::clamp(static_cast<int>(std::lround(16.0 * io.size / 512.0)), 16, 256);
+        icon = rb::renderIconGpu(device, r.bundle, io);
         out.refined = false;
         if (icon.has_value()) {
             if (!tileError.empty()) {
@@ -119,6 +129,8 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
     out.notes.insert(out.notes.end(), icon->notes.begin(), icon->notes.end());
     return out;
 }
+
+void warmUp(rb::Device& device) { (void)rb::gpu::Resident::of(device); }
 
 JobScheduler::~JobScheduler() {
     std::unique_lock<std::mutex> lock(mutex_);

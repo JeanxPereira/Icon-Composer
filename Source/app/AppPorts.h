@@ -96,6 +96,10 @@ private:
     std::optional<ick::RenderResult> done_;
 };
 
+// O que o caminho residente monta uma vez por aparelho (o heap, os pipelines).
+// Pago uma vez, na thread de trabalho, antes do primeiro render do canvas.
+void warmUp(rb::Device& device);
+
 // The one function both schedulers call.
 ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
                             rb::RenderCache* cache = nullptr);

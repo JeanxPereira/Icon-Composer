@@ -29,23 +29,29 @@ private:
         std::uint64_t version = 0;
         icf::Context context;
         std::uint32_t size = 0;
-        // O ladrilho pedido, na grade de `size` (spec 2026-09-16, "O que o Kit
-        // faz"). Parte da chave como o resto: dois ladrilhos da MESMA grade
-        // sao dois pedidos diferentes, e um resultado que responde o vizinho
-        // nao responde este.
+        // O ladrilho pedido, na grade de `size`. Vazio (`w == 0`) = a base,
+        // o icone inteiro.
         TileRect tile;
         bool operator==(const Key&) const = default;
     };
+    // O que `tick` quer ver na tela neste quadro, e o que ja esta.
+    void apply(const RenderResult& r, bool asTile);
+
     RenderScheduler& scheduler_;
     TextureSink& sink_;
     RenderView view_;
-    Key requested_;
-    bool everRequested_ = false;
+    // DUAS CAMADAS, UMA RAIA (30/09). A base (o icone inteiro) e o ladrilho
+    // (o que se ve, nitido, com zoom alto) saem do mesmo agendador, que e de
+    // um pedido por vez e o mais novo substitui o que espera. Entao a ordem e
+    // decidida aqui: a base primeiro, sempre -- sem ela nao ha o que mostrar
+    // durante um zoom --, e o ladrilho so com a base em dia.
+    Key base_, tile_;          // o que esta na tela
+    Key inFlight_;             // o ultimo pedido feito
+    bool flying_ = false;
+    bool haveBase_ = false, haveTile_ = false;
     // When the request now in flight was made. Wall time from HERE, and not from
     // inside the render job, because the queue is part of what the person waits
-    // for: a scheduler that is already busy with an 87 second render will not
-    // start this one for 87 seconds, and a clock that only timed the draw would
-    // report a fast render while the canvas stayed empty.
+    // for.
     std::chrono::steady_clock::time_point requestedAt_{};
 };
 

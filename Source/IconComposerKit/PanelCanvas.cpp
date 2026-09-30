@@ -698,13 +698,22 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
     // jitter em `painted` que nao muda ladrilho nenhum nao reinicia a espera).
     // Com zoom <= 1 ele e sempre `TileRect{}`, entao esta condicao nao muda
     // nada la -- vale o caminho de sempre.
-    const TileRect want = canvasTileFor(st.painted, CanvasVec{tl.x, tl.y}, v.size, v.zoom);
-    const bool settled = v.zoom == v.zoomTarget && v.panX == v.panTargetX &&
-                         v.panY == v.panTargetY && want == v.lastWanted;
+    //
+    // E O PEDIDO E DO ALVO, NAO DO QUE ESTA NA TELA (30/09, como o Stage do
+    // Tauri). O ease leva ~150 ms para chegar; pedir o alvo deixa o render sair
+    // `kTileSettleSeconds` depois de a roda parar, e nao depois de a animacao
+    // acabar. O que se ve durante a animacao e a base esticada.
+    const CanvasRect targetPainted = canvasIntersect(
+        canvasImageRect(CanvasVec{origin.x + v.panTargetX, origin.y + v.panTargetY}, sidePx, v.zoomTarget),
+        st.clip);
+    const TileRect want =
+        canvasTileFor(targetPainted, CanvasVec{origin.x + v.panTargetX, origin.y + v.panTargetY}, v.size,
+                      v.zoomTarget);
+    const bool sameTarget = want == v.lastWanted;
     v.lastWanted = want;
-    v.settledSeconds = settled ? v.settledSeconds + io.DeltaTime : 0.0f;
+    v.settledSeconds = sameTarget ? v.settledSeconds + io.DeltaTime : 0.0f;
     if (v.settledSeconds >= kTileSettleSeconds) {
-        v.tileSize = want.w ? canvasTileSize(v.size, v.zoom) : 0;
+        v.tileSize = want.w ? canvasTileSize(v.size, v.zoomTarget) : 0;
         v.tile = want;
     }
 
@@ -727,16 +736,22 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
     // E e por aqui que a espera funciona: a grade vem do render que esta na
     // tela, nao do que foi pedido, entao o ladrilho velho fica ancorado na
     // imagem e acompanha o pan; um zoom o estica ate o novo chegar.
+    // A BASE, SEMPRE O ICONE INTEIRO, esticada ao lado que esta na tela. E o
+    // que a pessoa ve enquanto o zoom anda e o ladrilho novo nao chegou.
     if (view.texture != ImTextureID_Invalid && view.width > 0) {
-        const float grid = view.gridSize > 0 ? static_cast<float>(view.gridSize)
-                                             : static_cast<float>(view.width);
-        const float perTexel = fullSide / grid;
-        const ImVec2 a(tl.x + static_cast<float>(view.originX) * perTexel,
-                       tl.y + static_cast<float>(view.originY) * perTexel);
-        const ImVec2 b(a.x + static_cast<float>(view.width) * perTexel,
-                       a.y + static_cast<float>(view.height) * perTexel);
-        dl->AddImage(view.texture, a, b);
+        dl->AddImage(view.texture, tl, ImVec2(tl.x + fullSide, tl.y + fullSide));
         st.textured = true;
+    }
+    // O LADRILHO, so quando e deste zoom e desta versao: a grade dele tem de
+    // ser a do lado na tela agora, senao ele esta no lugar errado.
+    if (view.tileTexture != ImTextureID_Invalid && view.tileWidth > 0 &&
+        view.tileGrid == canvasTileSize(v.size, v.zoom) && view.tileVersion == view.version) {
+        const float perTexel = fullSide / static_cast<float>(view.tileGrid);
+        const ImVec2 a(tl.x + static_cast<float>(view.tileX) * perTexel,
+                       tl.y + static_cast<float>(view.tileY) * perTexel);
+        const ImVec2 b(a.x + static_cast<float>(view.tileWidth) * perTexel,
+                       a.y + static_cast<float>(view.tileHeight) * perTexel);
+        dl->AddImage(view.tileTexture, a, b);
     }
 
     // ── O RETANGULO DA CAMADA SELECIONADA ───────────────────────────────────

@@ -71,6 +71,8 @@ fs::path makeBundle(const std::string& name) {
 // gives the font atlas that id, and the whole point of the id here is that the
 // icon's own draw command can be picked out of the finished draw data.
 constexpr ImTextureID kIconTex = static_cast<ImTextureID>(4242);
+// O ladrilho tem textura propria desde 30/09: a base continua por baixo.
+constexpr ImTextureID kTileTex = static_cast<ImTextureID>(4343);
 
 ick::RenderView landed(std::uint32_t side) {
     ick::RenderView v;
@@ -89,18 +91,17 @@ ick::RenderView landed(std::uint32_t side) {
 }
 
 // A TILE that has already landed: `w` x `h` texels at (`ox`, `oy`) of a grid
-// of `grid`. This is what a render above 100% comes back as.
+// of `grid`, ON TOP of the whole 512 base -- which is what the coordinator
+// keeps since 30/09, so zooming out never shows the tile alone.
 ick::RenderView landedTile(std::uint32_t grid, std::int32_t ox, std::int32_t oy, std::uint32_t w,
                            std::uint32_t h) {
-    ick::RenderView v;
-    v.texture = kIconTex;
-    v.width = w;
-    v.height = h;
-    v.gridSize = grid;
-    v.originX = ox;
-    v.originY = oy;
-    v.drawn = 1;
-    v.total = 1;
+    ick::RenderView v = landed(512);
+    v.tileTexture = kTileTex;
+    v.tileWidth = w;
+    v.tileHeight = h;
+    v.tileGrid = grid;
+    v.tileX = ox;
+    v.tileY = oy;
     return v;
 }
 
@@ -138,7 +139,7 @@ bool iconScissor(ImVec4& out) {
 // numbers and nothing else. `AddImage` emits one quad and does not clip its
 // geometry -- the clip is the scissor `iconScissor` reads -- so the bounding
 // box of the command's vertices IS the rectangle the image was placed in.
-bool iconQuad(ImVec4& out) {
+bool iconQuad(ImVec4& out, ImTextureID tex = kIconTex) {
     ImDrawData* d = ImGui::GetDrawData();
     if (!d) return false;
     for (int i = 0; i < d->CmdListsCount; ++i) {
@@ -146,7 +147,7 @@ bool iconQuad(ImVec4& out) {
         for (const ImDrawCmd& cmd : list->CmdBuffer) {
             if (cmd.UserCallback) continue;
             if (cmd.ElemCount == 0) continue;
-            if (cmd.GetTexID() != kIconTex) continue;
+            if (cmd.GetTexID() != tex) continue;
             ImVec4 box(FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX);
             for (unsigned int n = 0; n < cmd.ElemCount; ++n) {
                 const ImDrawVert& v =
@@ -228,9 +229,12 @@ struct TileRecorder : ick::RenderScheduler {
 
 struct TexSink : ick::TextureSink {
     int live = 0;
+    int made = 0;
+    // A primeira textura e a base, e as seguintes sao o ladrilho: o
+    // coordenador sempre cria a base antes.
     ImTextureID create(std::uint32_t, std::uint32_t, const std::uint8_t*) override {
         ++live;
-        return kIconTex;
+        return made++ == 0 ? kIconTex : kTileTex;
     }
     bool update(ImTextureID, std::uint32_t, std::uint32_t, const std::uint8_t*) override { return true; }
     void remove(ImTextureID) override { --live; }
@@ -633,17 +637,17 @@ TEST_CASE(canvas_writes_the_tile_only_after_the_pan_settles) {
     s->view.panY = s->view.panTargetY = -100.0f;
     s->view.settledSeconds = 0.0f;
 
-    // Nine frames at 60Hz: not yet. NINE AND NOT EIGHT, and the extra one is
-    // not slack -- the settle predicate also compares the tile this frame would
-    // ask for with the previous frame's, and the four lines above have just
-    // changed the zoom and the pan, so the FIRST frame after them sees a tile
-    // that moved and holds `settledSeconds` at zero. The clock therefore starts
-    // on the second frame: eight more of them is 133ms.
-    for (int i = 0; i < 9; ++i) canvasFrame(gui, *s, view);
+    // Four frames at 60Hz: not yet. FOUR AND NOT THREE, and the extra one is
+    // not slack -- the settle predicate compares the tile this frame would ask
+    // for with the previous frame's, and the four lines above have just changed
+    // the zoom and the pan, so the FIRST frame after them sees a tile that
+    // moved and holds `settledSeconds` at zero. The clock therefore starts on
+    // the second frame: three more of them is 50ms.
+    for (int i = 0; i < 4; ++i) canvasFrame(gui, *s, view);
     CHECK_EQ(s->view.tileSize, 0u);
     CHECK_EQ(s->view.tile.w, 0u);
 
-    // The tenth crosses 150ms, and now there is a tile -- at the resolution the
+    // The fifth crosses 60ms, and now there is a tile -- at the resolution the
     // zoom asks for, and offset by the pan.
     const ick::CanvasStats at4 = canvasFrame(gui, *s, view);
     CHECK_EQ(s->view.tileSize, 2048u);
@@ -799,7 +803,12 @@ TEST_CASE(canvas_places_a_tile_at_its_own_origin_and_does_not_move_the_icon) {
     const ick::CanvasStats tiled = canvasFrame(gui, *s, landedTile(2048, 100, 100, 700, 600));
     REQUIRE(tiled.textured);
     ImVec4 t;
-    REQUIRE(iconQuad(t));
+    REQUIRE(iconQuad(t, kTileTex));
+    // And the base is still there under it, over the whole icon.
+    ImVec4 under;
+    REQUIRE(iconQuad(under));
+    CHECK(near(under.x, tiled.image.x0, 0.05f));
+    CHECK(near(under.z, tiled.image.x1, 0.05f));
     CHECK(near(t.x, tiled.image.x0 + 100.0f, 0.05f));
     CHECK(near(t.y, tiled.image.y0 + 100.0f, 0.05f));
     CHECK(near(t.z - t.x, 700.0f, 0.05f));
@@ -873,15 +882,17 @@ TEST_CASE(canvas_and_coordinator_ask_for_one_tile_and_place_the_answer) {
     for (int i = 0; i < 40; ++i) frame();
     CHECK_EQ(sched.asks.size(), std::size_t{1});
 
-    // THE WHEEL, to 400%. The ease is on its way and nothing is asked for while
-    // it moves -- that is the "no request per frame" rule seen from the other
-    // side of the wire.
+    // THE WHEEL, to 400%. The request is made from the TARGET (30/09, as the
+    // Tauri canvas does), so it goes out `kTileSettleSeconds` after the wheel
+    // stops and not after the ease arrives -- but ONE request, not one per
+    // frame of the ease: that is the "no request per frame" rule seen from the
+    // other side of the wire.
     s->view.zoomRequest = 4.0f;
     for (int i = 0; i < 8; ++i) {
         frame();
-        CHECK_EQ(sched.asks.size(), std::size_t{1});
+        CHECK(sched.asks.size() <= std::size_t{2});
     }
-    // It arrives, it settles, and exactly one tile is asked for.
+    // It arrives, it settles, and still exactly one tile has been asked for.
     for (int i = 0; i < 60; ++i) frame();
     REQUIRE(sched.asks.size() == 2);
     const TileRecorder::Ask& ask = sched.asks[1];
@@ -912,25 +923,27 @@ TEST_CASE(canvas_and_coordinator_ask_for_one_tile_and_place_the_answer) {
     sched.answerTile(s->version(), s->view.context, ask);
     frame();
     CHECK(!coord.view().pending);
-    CHECK_EQ(coord.view().gridSize, 2048u);
-    CHECK_EQ(coord.view().width, ask.tile.w);
-    CHECK_EQ(coord.view().originX, ask.tile.x);
-    CHECK_EQ(coord.view().originY, ask.tile.y);
+    CHECK_EQ(coord.view().tileGrid, 2048u);
+    CHECK_EQ(coord.view().tileWidth, ask.tile.w);
+    CHECK_EQ(coord.view().tileX, ask.tile.x);
+    CHECK_EQ(coord.view().tileY, ask.tile.y);
+    CHECK_EQ(coord.view().gridSize, 512u);   // the base under it is untouched
     CHECK(coord.view().refined);
     const ick::CanvasStats placed = canvasFrame(gui, *s, coord.view());
     ImVec4 p;
-    REQUIRE(iconQuad(p));
+    REQUIRE(iconQuad(p, kTileTex));
     CHECK(near(p.x, placed.image.x0 + static_cast<float>(ask.tile.x), 0.05f));
     CHECK(near(p.z - p.x, static_cast<float>(ask.tile.w), 0.05f));
 
-    // BACK TO 100%: the whole canvas at the base again, which is the state the
-    // editor had before this frente.
+    // BACK TO 100%: the whole canvas at the base -- and nothing to ask for,
+    // because the base never left: it was under the tile the whole time. That
+    // is the difference from before 30/09, when zooming out showed the tile
+    // alone until a new base came back.
     s->view.zoomRequest = 1.0f;
     for (int i = 0; i < 80; ++i) frame();
-    REQUIRE(sched.asks.size() == 3);
-    CHECK_EQ(sched.asks[2].size, 512u);
-    CHECK_EQ(sched.asks[2].tile.w, 0u);
+    CHECK_EQ(sched.asks.size(), std::size_t{2});
     CHECK_EQ(s->view.tileSize, 0u);
+    CHECK(!coord.view().pending);
     CHECK_EQ(gui.errors(), std::uint64_t(0));
 }
 

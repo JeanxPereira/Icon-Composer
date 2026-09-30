@@ -112,6 +112,20 @@ struct RenderView {
     // False: o ladrilho pedido nao coube (o teto de area ou o do aparelho) e
     // isto e o canvas inteiro na resolucao base, esticado.
     bool refined = true;
+    // A versao do documento que a base mostra.
+    std::uint64_t version = 0;
+
+    // O LADRILHO NITIDO, POR CIMA DA BASE (30/09, como o canvas do Tauri).
+    //
+    // A base acima e SEMPRE o icone inteiro: e ela que a pessoa ve durante um
+    // zoom ou um pan, esticada, e por isso tirar o zoom nunca mostra so um
+    // pedaco. O ladrilho so existe acima de 100% (`canvasTileSize`) e so e
+    // desenhado quando a grade dele e a do zoom na tela e a versao e a da base
+    // -- fora disso ele esta velho, e a base esticada e o que vale.
+    ImTextureID tileTexture = ImTextureID_Invalid;
+    std::uint32_t tileWidth = 0, tileHeight = 0, tileGrid = 0;
+    std::int32_t tileX = 0, tileY = 0;
+    std::uint64_t tileVersion = 0;
     bool pending = false;   // a newer render is on its way
     std::size_t drawn = 0, total = 0;
     std::vector<std::string> skipped, shapeGaps, notes;
@@ -336,10 +350,10 @@ std::optional<icf::NodePath> canvasLayerAt(const Session& s, icf::Context ctx,
 //
 // Quanto tempo o pan e o zoom precisam ficar parados antes de um pedido sair.
 // Curto de proposito: e o intervalo que separa "a pessoa parou de arrastar" de
-// "a pessoa esta arrastando", e nao um atraso que ela deva sentir. Casa com o
-// settle do ease (`canvasEase`, ~150 ms), entao um zoom com a roda acaba de
-// assentar na tela quando o pedido sai.
-inline constexpr float kTileSettleSeconds = 0.15f;
+// "a pessoa esta arrastando", e nao um atraso que ela deva sentir. 60 ms, o
+// mesmo temporizador do ladrilho do Tauri; o render na GPU e rapido o
+// bastante para o pedido sair antes de o ease acabar.
+inline constexpr float kTileSettleSeconds = 0.06f;
 // A resolucao do ladrilho para um zoom: zero (a base) ate 100%, e a base
 // ampliada acima disso. Com zoom <= 1 nada muda -- vale o caminho de sempre.
 std::uint32_t canvasTileSize(std::uint32_t baseSize, float zoom);
@@ -348,6 +362,7 @@ std::uint32_t canvasTileSize(std::uint32_t baseSize, float zoom);
 // na tela. Vazio (`w == 0`) quando nao ha nada pintado.
 TileRect canvasTileFor(CanvasRect painted, CanvasVec imageTopLeft, std::uint32_t baseSize,
                        float zoom);
+
 // The per-frame coefficient of the exponential ease, clamped against both a
 // stalled frame and a 500 Hz one so the settle is ~150ms on any machine.
 float canvasEase(float deltaSeconds);
