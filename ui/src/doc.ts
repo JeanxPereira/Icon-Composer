@@ -63,6 +63,39 @@ export function resolve(
   return node[prop];
 }
 
+// O escopo onde uma edicao deve cair para APARECER no contexto mostrado: o
+// predicado da entrada que `resolve` escolhe. Sem lista (ou sem entrada que
+// case), e a base. `forceAppearance` e a secao Color numa rendicao Dark/Mono:
+// ali a edicao e a variacao daquela aparencia, criada se nao existir.
+export type Scope = { appearance: string; idiom: string };
+
+export function writeScope(
+  node: Node,
+  prop: string,
+  appearance: string,
+  idiom: string,
+  forceAppearance: boolean,
+): Scope {
+  const list = node[`${prop}-specializations`];
+  let best: Scope = { appearance: "", idiom: "" };
+  if (Array.isArray(list)) {
+    let bestScore = -1;
+    for (const e of list as Node[]) {
+      const a = e.appearance as string | undefined;
+      const i = e.idiom as string | undefined;
+      if (a && a !== appearance) continue;
+      if (i && i !== idiom && !(i === "square" && idiom !== "watchOS")) continue;
+      const score = (a ? 2 : 0) + (i ? 1 : 0);
+      if (score > bestScore) {
+        bestScore = score;
+        best = { appearance: a ?? "", idiom: i ?? "" };
+      }
+    }
+  }
+  if (forceAppearance && appearance) best = { ...best, appearance };
+  return best;
+}
+
 // Uma entrada PROPRIA deste escopo existe? E o que o inspetor marca como
 // "variacao" em vez de herdado.
 export function hasOwnVariation(node: Node, prop: string, appearance: string): boolean {
@@ -80,6 +113,31 @@ export function displayName(node: Node, fallback: string): string {
 }
 
 // "srgb:0.1,0.2,0.3,1" / "display-p3:..." / "extended-gray:w,a" -> CSS
+// A cor em numeros, como o nucleo a usa: componentes tomados como sRGB (o
+// nucleo tambem nao converte P3 -- ele anota a falta).
+export function parseColor(spec: string): [number, number, number, number] {
+  const [space, rest] = spec.split(":");
+  const v = (rest ?? "").split(",").map(Number);
+  if (space === "extended-gray" || space === "gray") return [v[0], v[0], v[0], v[1] ?? 1];
+  return [v[0], v[1], v[2], v[3] ?? 1];
+}
+
+// A grafia da Apple para uma cor sRGB: cinco casas por componente.
+export function srgbSpec(r: number, g: number, b: number, a: number): string {
+  const f = (x: number) => Math.min(1, Math.max(0, x)).toFixed(5);
+  return `srgb:${f(r)},${f(g)},${f(b)},${f(a)}`;
+}
+
+export function hexToRgb(hex: string): [number, number, number] {
+  const n = parseInt(hex.slice(1), 16);
+  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
+export function rgbToHex(r: number, g: number, b: number): string {
+  const h = (x: number) => Math.round(Math.min(1, Math.max(0, x)) * 255).toString(16).padStart(2, "0");
+  return `#${h(r)}${h(g)}${h(b)}`;
+}
+
 export function cssColor(spec: string): string {
   const [space, rest] = spec.split(":");
   const v = (rest ?? "").split(",").map(Number);

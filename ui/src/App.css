@@ -738,3 +738,57 @@ button:disabled {
   left: 50%;
   transform: translate(-50%, -50%);
 }
+
+/* ---- o inspetor editavel ---- */
+.numbox.scrub {
+  cursor: ew-resize;
+}
+
+.numbox.editing {
+  background: #fff;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.numbox-input {
+  width: 48px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font: inherit;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  padding: 0;
+}
+
+.popup {
+  position: relative;
+}
+
+.popup-select {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  font: inherit;
+  cursor: default;
+}
+
+.toggle {
+  display: inline-block;
+  cursor: default;
+}
+
+.well {
+  position: relative;
+  display: inline-block;
+  overflow: hidden;
+  cursor: default;
+}
+
+.well input[type="color"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  cursor: default;
+}

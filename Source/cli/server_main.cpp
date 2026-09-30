@@ -21,6 +21,14 @@
 //       -> "frame <w> <h> <originX> <originY> <ms> <n>\n" + n bytes RGBA8
 //          (straight, com dithering: ver `toRgba8Dithered`)
 //        | "err <motivo>\n"
+//   set <g> <l> <appearance|-> <idiom|-> <prop> <n>\n<n bytes: o valor JSON>
+//       escreve `prop` no no (g = -1 e a raiz; l = -1 e o grupo g) sob o
+//       escopo, com `icf::setProperty` -- a mesma escrita do inspetor antigo,
+//       na grafia da Apple. O valor `null` remove a entrada do escopo.
+//       -> "json <n>\n" + o icon.json inteiro | "err <motivo>\n"
+//   undo | redo   -> "json <n>\n" + o icon.json | "err nada a desfazer"
+//   get           -> "json <n>\n" + o icon.json
+//   save          -> "ok\n" | "err <motivo>\n"   (grava no .icon aberto)
 //   quit
 //
 // O stdout e BINARIO: no Windows ele e posto em _O_BINARY, senao cada 0x0A do
@@ -28,6 +36,7 @@
 
 #include "Source/IconComposerFoundation/IconBundle.h"
 #include "Source/IconComposerFoundation/IconDocument.h"
+#include "Source/IconComposerFoundation/Edit.h"
 #include "Source/IconComposerFoundation/Json.h"
 #include "Source/RenderBox/Device.h"
 #include "Source/RenderBox/IconRenderer.h"
@@ -107,6 +116,15 @@ std::vector<std::uint8_t> toRgba8Dithered(const std::vector<float>& in, std::uin
     return out;
 }
 
+void replyJson(const icf::json::Value& root) {
+    const std::string text = icf::json::write(root);
+    std::string head = "json " + std::to_string(text.size());
+    std::fwrite(head.data(), 1, head.size(), stdout);
+    std::fputc('\n', stdout);
+    std::fwrite(text.data(), 1, text.size(), stdout);
+    std::fflush(stdout);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -125,6 +143,9 @@ int main(int argc, char** argv) {
     }
     rb::RenderCache cache;
     std::optional<icf::IconBundle> bundle;
+    // O desfazer guarda o documento INTEIRO antes de cada escrita: o texto e
+    // pequeno, e restaurar o texto e restaurar os bytes, sem inverter edicao.
+    std::vector<std::string> undo, redo;
     reply("ready");
 
     std::string line;
@@ -145,6 +166,8 @@ int main(int argc, char** argv) {
                 continue;
             }
             bundle = std::move(*b);
+            undo.clear();
+            redo.clear();
             reply("ok");
             continue;
         }
@@ -165,6 +188,95 @@ int main(int argc, char** argv) {
             }
             bundle->json() = std::move(*parsed);
             reply("ok");
+            continue;
+        }
+
+        if (cmd == "set") {
+            int g = -1, l = -1;
+            std::string appearance, idiom, prop;
+            std::size_t n = 0;
+            in >> g >> l >> appearance >> idiom >> prop >> n;
+            std::string text(n, '\0');
+            std::cin.read(text.data(), static_cast<std::streamsize>(n));
+            if (!bundle) {
+                fail("set antes de open");
+                continue;
+            }
+            icf::Context scope;
+            if (appearance != "-") {
+                auto a = icf::appearanceFromString(appearance);
+                if (!a) {
+                    fail("aparencia desconhecida: " + appearance);
+                    continue;
+                }
+                scope.appearance = *a;
+            }
+            if (idiom != "-") {
+                auto d = icf::idiomFromString(idiom);
+                if (!d) {
+                    fail("idioma desconhecido: " + idiom);
+                    continue;
+                }
+                scope.idiom = *d;
+            }
+            auto value = icf::json::parse(text);
+            if (!value) {
+                fail("valor nao le como JSON: " + text);
+                continue;
+            }
+            icf::NodePath path;
+            if (g >= 0) path.group = static_cast<std::size_t>(g);
+            if (g >= 0 && l >= 0) path.layer = static_cast<std::size_t>(l);
+            icf::json::Value* node = icf::nodeAt(bundle->json(), path);
+            if (!node) {
+                fail("no inexistente");
+                continue;
+            }
+            undo.push_back(icf::json::write(bundle->json()));
+            redo.clear();
+            std::optional<icf::json::Value> v;
+            if (value->kind() != icf::json::Value::Kind::Null) v = std::move(*value);
+            icf::setProperty(*node, prop, scope, std::move(v));
+            replyJson(bundle->json());
+            continue;
+        }
+
+        if (cmd == "undo" || cmd == "redo") {
+            auto& from = cmd == "undo" ? undo : redo;
+            auto& to = cmd == "undo" ? redo : undo;
+            if (!bundle || from.empty()) {
+                fail(cmd == "undo" ? "nada a desfazer" : "nada a refazer");
+                continue;
+            }
+            auto restored = icf::json::parse(from.back());
+            if (!restored) {
+                fail("historico ilegivel");
+                continue;
+            }
+            to.push_back(icf::json::write(bundle->json()));
+            from.pop_back();
+            bundle->json() = std::move(*restored);
+            replyJson(bundle->json());
+            continue;
+        }
+
+        if (cmd == "get") {
+            if (!bundle) {
+                fail("get antes de open");
+                continue;
+            }
+            replyJson(bundle->json());
+            continue;
+        }
+
+        if (cmd == "save") {
+            if (!bundle) {
+                fail("save antes de open");
+                continue;
+            }
+            const std::string why = bundle->save();
+            if (why.empty()) reply("ok");
+            else fail(why);
             continue;
         }
 

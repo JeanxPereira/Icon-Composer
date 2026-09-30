@@ -82,6 +82,48 @@ impl Core {
         self.expect_ok()
     }
 
+    fn read_json(&mut self) -> Result<String, String> {
+        let head = read_line(&mut self.stdout)?;
+        let n: usize = match head.strip_prefix("json ") {
+            Some(n) => n.parse().map_err(|e: std::num::ParseIntError| e.to_string())?,
+            None => return Err(head.trim_start_matches("err ").to_string()),
+        };
+        let mut buf = vec![0u8; n];
+        self.stdout.read_exact(&mut buf).map_err(|e| e.to_string())?;
+        String::from_utf8(buf).map_err(|e| e.to_string())
+    }
+
+    // Escreve `prop` sob o escopo (`icf::setProperty` no nucleo) e devolve o
+    // icon.json inteiro depois da escrita.
+    pub fn set(
+        &mut self,
+        group: i64,
+        layer: i64,
+        appearance: &str,
+        idiom: &str,
+        prop: &str,
+        value: &str,
+    ) -> Result<String, String> {
+        let a = if appearance.is_empty() { "-" } else { appearance };
+        let i = if idiom.is_empty() { "-" } else { idiom };
+        self.stdin
+            .write_all(format!("set {group} {layer} {a} {i} {prop} {}\n", value.len()).as_bytes())
+            .and_then(|_| self.stdin.write_all(value.as_bytes()))
+            .and_then(|_| self.stdin.flush())
+            .map_err(|e| e.to_string())?;
+        self.read_json()
+    }
+
+    pub fn history(&mut self, cmd: &str) -> Result<String, String> {
+        self.send(cmd)?;
+        self.read_json()
+    }
+
+    pub fn save(&mut self) -> Result<(), String> {
+        self.send("save")?;
+        self.expect_ok()
+    }
+
     // Devolve 24 bytes de cabecalho (w, h, originX, originY: u32/i32 LE; ms: f64
     // LE) seguidos do RGBA8. O front le com um DataView, sem base64 nem PNG.
     pub fn render(

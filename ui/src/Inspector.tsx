@@ -1,75 +1,84 @@
+import { useEffect, useRef, useState } from "react";
 import { Sym } from "./Sym";
 import {
   BLEND_LABELS,
   fillView,
   hasOwnVariation,
+  hexToRgb,
   Json,
   Node,
   nodeAt,
+  parseColor,
   Platform,
   Rendition,
   RENDITIONS,
   resolve,
+  rgbToHex,
+  Scope,
   Selection,
+  srgbSpec,
+  writeScope,
 } from "./doc";
 
 // O inspetor do alvo: `IconCompositionInspector` com as secoes Color (escopo:
 // a rendicao), Liquid Glass e Composition (escopo: All) -- inventario §6 e §7.
-// So leitura neste passo: a escrita vem com o processo do nucleo.
+// Toda escrita vai ao nucleo (`icf::setProperty` no icserver), que devolve o
+// documento; nada e escrito no JSON deste lado.
 
 export type Pane = "content" | "document";
+export type Edit = (sel: Selection, scope: Scope, prop: string, value: unknown) => void;
 
 type Props = {
   doc: Node | null;
+  assets: string[];
   selection: Selection;
   rendition: Rendition;
   platform: Platform;
   pane: Pane;
   onPane: (p: Pane) => void;
+  onEdit: Edit;
 };
 
-export function Inspector({ doc, selection, rendition, platform, pane, onPane }: Props) {
-  const r = RENDITIONS.find((x) => x.id === rendition)!;
-  const node = doc ? nodeAt(doc, selection) : null;
-  const idiom = platform === "watchOS" ? "watchOS" : "iOS";
-  const get = (prop: string, scoped: boolean) =>
-    node ? resolve(node, prop, scoped ? r.appearance : "", idiom) : undefined;
+export function Inspector(p: Props) {
+  const r = RENDITIONS.find((x) => x.id === p.rendition)!;
+  const node = p.doc ? nodeAt(p.doc, p.selection) : null;
+  const idiom = p.platform === "watchOS" ? "watchOS" : "iOS";
+  const get = (prop: string, scoped: boolean) => (node ? resolve(node, prop, scoped ? r.appearance : "", idiom) : undefined);
+  // `color`: a secao Color, que numa rendicao Dark/Mono escreve a variacao.
+  const set = (prop: string, value: unknown, color: boolean) => {
+    if (!node) return;
+    p.onEdit(p.selection, writeScope(node, prop, color ? r.appearance : "", idiom, color), prop, value);
+  };
 
   return (
     <aside className="inspector">
       <div className="inspector-top" data-tauri-drag-region>
         <div className="capsule">
-          <button
-            className={`cap-btn${pane === "content" ? " on" : ""}`}
-            title="Show or hide style options"
-            onClick={() => onPane("content")}
-          >
+          <button className={`cap-btn${p.pane === "content" ? " on" : ""}`} title="Show or hide style options" onClick={() => p.onPane("content")}>
             <Sym name="paintbrush" size={16} />
           </button>
-          <button
-            className={`cap-btn${pane === "document" ? " on" : ""}`}
-            title="Show or hide document options"
-            onClick={() => onPane("document")}
-          >
+          <button className={`cap-btn${p.pane === "document" ? " on" : ""}`} title="Show or hide document options" onClick={() => p.onPane("document")}>
             <Sym name="document" size={16} />
           </button>
         </div>
       </div>
 
       <div className="inspector-body">
-        {!doc ? (
+        {!p.doc || !node ? (
           <p className="muted center-note">No Selection</p>
-        ) : pane === "document" ? (
-          <DocumentPane doc={doc} rendition={r.label} />
-        ) : selection.kind === "icon" ? (
-          <IconPane doc={doc} get={get} rendition={r.label} />
+        ) : p.pane === "document" ? (
+          <DocumentPane doc={p.doc} onSet={(prop, v) => p.onEdit({ kind: "icon" }, { appearance: "", idiom: "" }, prop, v)} />
+        ) : p.selection.kind === "icon" ? (
+          <BackgroundPane get={get} set={set} rendition={r.label} />
         ) : (
           <MemberPane
-            node={node!}
-            isLayer={selection.kind === "layer"}
+            node={node}
+            isLayer={p.selection.kind === "layer"}
             get={get}
-            renditionLabel={r.label}
-            scopedVariation={(prop) => hasOwnVariation(node!, prop, r.appearance)}
+            set={set}
+            assets={p.assets}
+            rendition={r.label}
+            varied={(prop) => hasOwnVariation(node, prop, r.appearance)}
           />
         )}
       </div>
@@ -78,138 +87,263 @@ export function Inspector({ doc, selection, rendition, platform, pane, onPane }:
 }
 
 type Getter = (prop: string, scoped: boolean) => Json | undefined;
+type Setter = (prop: string, value: unknown, color: boolean) => void;
 
-function MemberPane({
-  node,
-  isLayer,
-  get,
-  renditionLabel,
-  scopedVariation,
-}: {
-  node: Node;
-  isLayer: boolean;
-  get: Getter;
-  renditionLabel: string;
-  scopedVariation: (prop: string) => boolean;
-}) {
-  const opacity = get("opacity", true);
-  const blend = get("blend-mode", true);
-  const fill = fillView(get("fill", true));
-  const glass = get("glass", false);
-  const hidden = get("hidden", false);
-  const pos = get("position", false) as { scale?: number; "translation-in-points"?: number[] } | undefined;
-  const image = get("image-name", false);
+const LAYER_FILLS = ["Automatic", "None", "Solid", "Gradient"] as const;
+const BACKGROUND_FILLS = ["Automatic", "Solid", "Gradient", "System Light", "System Dark"] as const;
 
+// A cor corrente de um fill, para semear Solid/Gradient quando o tipo muda.
+function seedColor(fill: Json | undefined): [number, number, number, number] {
+  const f = fill as Record<string, unknown> | undefined;
+  if (f && typeof f === "object") {
+    if (typeof f.solid === "string") return parseColor(f.solid);
+    const g = f["automatic-gradient"] ?? f["linear-gradient"];
+    if (typeof g === "string") return parseColor(g);
+    if (Array.isArray(g) && typeof g[0] === "string") return parseColor(g[0]);
+  }
+  return [0.2, 0.47, 0.96, 1];
+}
+
+function fillValue(kind: string, seed: [number, number, number, number]): unknown {
+  switch (kind) {
+    case "Automatic":
+      return "automatic";
+    case "None":
+      return "none";
+    case "System Light":
+      return "system-light";
+    case "System Dark":
+      return "system-dark";
+    case "Solid":
+      return { solid: srgbSpec(...seed) };
+    default:
+      return { "automatic-gradient": srgbSpec(...seed) };
+  }
+}
+
+function FillRows({ get, set, kinds }: { get: Getter; set: Setter; kinds: readonly string[] }) {
+  const raw = get("fill", true);
+  const fill = fillView(raw);
+  const seed = seedColor(raw);
+  const kind = fill.kind === "Gradient" ? "Gradient" : fill.kind;
   return (
     <>
-      <Section title="Color" scope={renditionLabel}>
-        <Line icon={<Sym name="Opacity" custom image size={16} />} label="Opacity" varied={scopedVariation("opacity")}>
-          <NumberBox value={Math.round((typeof opacity === "number" ? opacity : 1) * 100)} unit="%" />
-        </Line>
-        <Line icon={<Sym name="Blendmode" custom image size={18} />} label="Blend Mode" varied={scopedVariation("blend-mode")}>
-          <PopUp value={BLEND_LABELS[(blend as string) ?? "normal"] ?? String(blend)} />
-        </Line>
-        <Line icon={<Sym name="fill" custom size={16} />} label="Fill" varied={scopedVariation("fill")}>
-          <PopUp value={fill.kind} />
-        </Line>
-        {fill.kind === "Solid" && (
-          <div className="subline">
-            <span className="well" style={{ background: fill.color }} />
-            <span className="mini-pop">
-              <Sym name="chevron.down" size={9} />
-            </span>
-            <NumberBox value={Math.round(fill.alpha * 100)} unit="%" />
-          </div>
-        )}
-        {fill.kind === "Gradient" && (
-          <div className="subline">
-            {fill.colors.map((c, i) => (
-              <span key={i} className="well small" style={{ background: c }} />
-            ))}
-          </div>
-        )}
-      </Section>
-
-      <Section title="Liquid Glass" scope="All">
-        <Line icon={<Sym name="custom.fx.circle" custom size={16} />} label="Effects">
-          <Toggle on={glass !== false} />
-        </Line>
-      </Section>
-
-      <Section title="Composition" scope="All">
-        <Line icon={<Sym name="eye" size={16} />} label="Visible">
-          <Toggle on={hidden !== true} />
-        </Line>
-        {isLayer && (
-          <>
-            <Line icon={<Sym name="photo" size={16} />} label="Image">
-              <PopUp value={typeof image === "string" ? image : "—"} chevron="down" />
-            </Line>
-            <Line
-              icon={<Sym name="arrow.up.left.and.down.right.and.arrow.up.right.and.down.left" size={15} />}
-              label="Layout"
-            >
-              <NumberBox prefix="x" value={pos?.["translation-in-points"]?.[0] ?? 0} unit="pt" />
-              <NumberBox prefix="y" value={pos?.["translation-in-points"]?.[1] ?? 0} unit="pt" />
-            </Line>
-            <div className="subline">
-              <Sym name="arrow.up.left.and.arrow.down.right" size={13} className="muted-sym" />
-              <NumberBox value={Math.round((pos?.scale ?? 1) * 100)} unit="%" />
-            </div>
-          </>
-        )}
-      </Section>
-      {!isLayer && (
-        <p className="muted small-note">
-          {node.name ? String(node.name) : "Group"}: sombra, translucidez, especular e refração
-          entram aqui na próxima volta.
-        </p>
+      <Line icon={<Sym name="fill" custom size={16} />} label="Fill">
+        <Select value={kind} options={kinds} onChange={(k) => set("fill", fillValue(k, seed), true)} />
+      </Line>
+      {fill.kind === "Solid" && (
+        <div className="subline">
+          <ColorWell
+            color={seed}
+            onChange={(c) => set("fill", { solid: srgbSpec(c[0], c[1], c[2], seed[3]) }, true)}
+          />
+          <NumberBox
+            value={Math.round(seed[3] * 100)}
+            unit="%"
+            min={0}
+            max={100}
+            onChange={(v) => set("fill", { solid: srgbSpec(seed[0], seed[1], seed[2], v / 100) }, true)}
+          />
+        </div>
+      )}
+      {fill.kind === "Gradient" && (
+        <div className="subline">
+          <ColorWell color={seed} onChange={(c) => set("fill", { "automatic-gradient": srgbSpec(c[0], c[1], c[2], seed[3]) }, true)} />
+        </div>
       )}
     </>
   );
 }
 
-function IconPane({ doc, get, rendition }: { doc: Node; get: Getter; rendition: string }) {
-  const fill = fillView(get("fill", true));
+function MemberPane({
+  node,
+  isLayer,
+  get,
+  set,
+  assets,
+  rendition,
+  varied,
+}: {
+  node: Node;
+  isLayer: boolean;
+  get: Getter;
+  set: Setter;
+  assets: string[];
+  rendition: string;
+  varied: (prop: string) => boolean;
+}) {
+  const opacity = get("opacity", true);
+  const blend = (get("blend-mode", true) as string) ?? "normal";
+  const glass = get("glass", false);
+  const hidden = get("hidden", false);
+  const pos = get("position", false) as { scale?: number; "translation-in-points"?: number[] } | undefined;
+  const scale = pos?.scale ?? 1;
+  const tx = pos?.["translation-in-points"]?.[0] ?? 0;
+  const ty = pos?.["translation-in-points"]?.[1] ?? 0;
+  const setPos = (s: number, x: number, y: number) =>
+    set("position", { scale: s, "translation-in-points": [x, y] }, false);
+  const image = get("image-name", false);
+  const blendKeys = Object.keys(BLEND_LABELS);
+
   return (
-    <Section title="Background" scope={rendition}>
-      <Line icon={<Sym name="fill" custom size={16} />} label="Fill">
-        <PopUp value={fill.kind} />
-      </Line>
-      {fill.kind === "Gradient" && (
+    <>
+      <Section title="Color" scope={rendition}>
+        <Line icon={<Sym name="Opacity" custom image size={16} />} label="Opacity" varied={varied("opacity")}>
+          <NumberBox
+            value={Math.round((typeof opacity === "number" ? opacity : 1) * 100)}
+            unit="%"
+            min={0}
+            max={100}
+            onChange={(v) => set("opacity", v / 100, true)}
+          />
+        </Line>
+        <Line icon={<Sym name="Blendmode" custom image size={18} />} label="Blend Mode" varied={varied("blend-mode")}>
+          <Select
+            value={BLEND_LABELS[blend] ?? blend}
+            options={blendKeys.map((k) => BLEND_LABELS[k])}
+            onChange={(label) => set("blend-mode", blendKeys.find((k) => BLEND_LABELS[k] === label), true)}
+          />
+        </Line>
+        {isLayer && <FillRows get={get} set={set} kinds={LAYER_FILLS} />}
+      </Section>
+
+      {isLayer ? (
+        <Section title="Liquid Glass" scope="All">
+          <Line icon={<Sym name="custom.fx.circle" custom size={16} />} label="Effects">
+            <Toggle on={glass !== false} onChange={(on) => set("glass", on, false)} />
+          </Line>
+        </Section>
+      ) : (
+        <GroupGlass get={get} set={set} />
+      )}
+
+      <Section title="Composition" scope="All">
+        <Line icon={<Sym name="eye" size={16} />} label="Visible">
+          <Toggle on={hidden !== true} onChange={(on) => set("hidden", !on, false)} />
+        </Line>
+        {isLayer && (
+          <Line icon={<Sym name="photo" size={16} />} label="Image">
+            <Select
+              value={typeof image === "string" ? image : "—"}
+              options={assets.length ? assets : [typeof image === "string" ? image : "—"]}
+              chevron="down"
+              onChange={(name) => set("image-name", name, false)}
+            />
+          </Line>
+        )}
+        <Line icon={<Sym name="arrow.up.left.and.down.right.and.arrow.up.right.and.down.left" size={15} />} label="Layout">
+          <NumberBox prefix="x" value={tx} unit="pt" onChange={(v) => setPos(scale, v, ty)} />
+          <NumberBox prefix="y" value={ty} unit="pt" onChange={(v) => setPos(scale, tx, v)} />
+        </Line>
         <div className="subline">
-          {fill.colors.map((c, i) => (
-            <span key={i} className="well small" style={{ background: c }} />
-          ))}
+          <Sym name="arrow.up.left.and.arrow.down.right" size={13} className="muted-sym" />
+          <NumberBox value={Math.round(scale * 100)} unit="%" min={1} onChange={(v) => setPos(v / 100, tx, ty)} />
+        </div>
+      </Section>
+      {!isLayer && node.name === undefined && null}
+    </>
+  );
+}
+
+// As linhas de vidro do GRUPO (`ShadowInspector`, `TranslucencyInspector`,
+// `GroupSpecularInspector`, `BlurMaterialInspector`), na grafia do corpus.
+function GroupGlass({ get, set }: { get: Getter; set: Setter }) {
+  const shadow = (get("shadow", false) as { kind?: string; opacity?: number } | undefined) ?? {};
+  const kind = shadow.kind ?? "neutral";
+  const tr = (get("translucency", false) as { enabled?: boolean; value?: number } | undefined) ?? {};
+  const specular = get("specular", false);
+  const blur = get("blur-material", false);
+  const KINDS: Record<string, string> = { neutral: "Neutral", "layer-color": "Chromatic", none: "None" };
+  return (
+    <Section title="Liquid Glass" scope="All">
+      <Line icon={<Sym name="specular" custom size={16} />} label="Specular">
+        <Toggle on={specular !== false && specular !== undefined} onChange={(on) => set("specular", on, false)} />
+      </Line>
+      <Line icon={<Sym name="blur" custom size={16} />} label="Blur">
+        <NumberBox
+          value={Math.round((typeof blur === "number" ? blur : 0) * 100)}
+          unit="%"
+          min={0}
+          max={100}
+          onChange={(v) => set("blur-material", v > 0 ? v / 100 : null, false)}
+        />
+      </Line>
+      <Line icon={<Sym name="translucency" custom size={16} />} label="Translucency">
+        <Toggle on={tr.enabled !== false} onChange={(on) => set("translucency", { enabled: on, value: tr.value ?? 0.5 }, false)} />
+        <NumberBox
+          value={Math.round((tr.value ?? 0.5) * 100)}
+          unit="%"
+          min={0}
+          max={100}
+          onChange={(v) => set("translucency", { enabled: tr.enabled !== false, value: v / 100 }, false)}
+        />
+      </Line>
+      <Line icon={<Sym name="shadow" custom size={16} />} label="Shadow">
+        <Select
+          value={KINDS[kind] ?? kind}
+          options={Object.values(KINDS)}
+          onChange={(label) => {
+            const k = Object.keys(KINDS).find((x) => KINDS[x] === label)!;
+            set("shadow", { kind: k, opacity: shadow.opacity ?? 0.5 }, false);
+          }}
+        />
+      </Line>
+      {kind !== "none" && (
+        <div className="subline">
+          <NumberBox
+            value={Math.round((shadow.opacity ?? 0.5) * 100)}
+            unit="%"
+            min={0}
+            onChange={(v) => set("shadow", { kind, opacity: v / 100 }, false)}
+          />
         </div>
       )}
-      <p className="muted small-note">{(doc.groups as Json[] | undefined)?.length ?? 0} grupos</p>
     </Section>
   );
 }
 
-function DocumentPane({ doc, rendition }: { doc: Node; rendition: string }) {
+function BackgroundPane({ get, set, rendition }: { get: Getter; set: Setter; rendition: string }) {
+  return (
+    <Section title="Background" scope={rendition}>
+      <FillRows get={get} set={set} kinds={BACKGROUND_FILLS} />
+    </Section>
+  );
+}
+
+function DocumentPane({ doc, onSet }: { doc: Node; onSet: (prop: string, v: unknown) => void }) {
   const sp = (doc["supported-platforms"] ?? {}) as Node;
-  const squares = sp.squares;
-  const circles = sp.circles;
   const p3 = doc["color-space-for-untagged-svg-colors"] === "display-p3";
   return (
     <>
       <Section title="Platforms" scope="">
         <Line icon={<Sym name="ipad.and.iphone" custom size={16} />} label="iOS, macOS">
-          <PopUp value={squares === "shared" ? "Shared" : squares ? "Unique" : "Off"} />
+          <Select
+            value={sp.squares === "shared" ? "Shared" : sp.squares ? "Unique" : "Off"}
+            options={["Shared", "Off"]}
+            onChange={(v) => {
+              const next = { ...sp } as Node;
+              if (v === "Shared") next.squares = "shared";
+              else delete next.squares;
+              onSet("supported-platforms", next);
+            }}
+          />
         </Line>
         <Line icon={<Sym name="circle" size={15} />} label="watchOS">
-          <Toggle on={circles !== undefined} />
+          <Toggle
+            on={sp.circles !== undefined}
+            onChange={(on) => {
+              const next = { ...sp } as Node;
+              if (on) next.circles = ["watchOS"];
+              else delete next.circles;
+              onSet("supported-platforms", next);
+            }}
+          />
         </Line>
       </Section>
       <Section title="SVG Colors" scope="">
         <Line icon={<Sym name="paintbrush" size={15} />} label="Use Display P3 if untagged">
-          <Toggle on={p3} />
+          <Toggle on={p3} onChange={(on) => onSet("color-space-for-untagged-svg-colors", on ? "display-p3" : null)} />
         </Line>
-      </Section>
-      <Section title="Languages" scope="">
-        <p className="muted small-note">Localização: ainda não ({rendition}).</p>
       </Section>
     </>
   );
@@ -231,17 +365,7 @@ function Section({ title, scope, children }: { title: string; scope: string; chi
   );
 }
 
-function Line({
-  icon,
-  label,
-  varied,
-  children,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  varied?: boolean;
-  children: React.ReactNode;
-}) {
+function Line({ icon, label, varied, children }: { icon: React.ReactNode; label: string; varied?: boolean; children: React.ReactNode }) {
   return (
     <div className="iline">
       <span className="iline-icon">{icon}</span>
@@ -254,35 +378,139 @@ function Line({
   );
 }
 
-function NumberBox({ value, unit, prefix }: { value: number; unit?: string; prefix?: string }) {
+// O campo numerico do alvo (`Scrubbable` + `MultiNumericTextField`): arrastar na
+// horizontal muda o valor, clicar sem arrastar abre para digitar.
+function NumberBox({
+  value,
+  unit,
+  prefix,
+  min = -Infinity,
+  max = Infinity,
+  onChange,
+}: {
+  value: number;
+  unit?: string;
+  prefix?: string;
+  min?: number;
+  max?: number;
+  onChange: (v: number) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState("");
+  const drag = useRef<{ x: number; start: number; moved: boolean } | null>(null);
+  const clamp = (v: number) => Math.min(max, Math.max(min, v));
+  const shown = Number.isInteger(value) ? String(value) : value.toFixed(2);
+
+  const commit = () => {
+    setEditing(false);
+    const v = parseFloat(text.replace(",", "."));
+    if (Number.isFinite(v) && v !== value) onChange(clamp(v));
+  };
+
+  if (editing) {
+    return (
+      <span className="numbox editing">
+        {prefix && <span className="numbox-prefix">{prefix}</span>}
+        <input
+          autoFocus
+          className="numbox-input"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit();
+            if (e.key === "Escape") setEditing(false);
+          }}
+        />
+        {unit && <span className="numbox-unit">{unit}</span>}
+      </span>
+    );
+  }
   return (
-    <span className="numbox">
+    <span
+      className="numbox scrub"
+      onPointerDown={(e) => {
+        drag.current = { x: e.clientX, start: value, moved: false };
+        (e.currentTarget as Element).setPointerCapture(e.pointerId);
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (!d) return;
+        const dx = e.clientX - d.x;
+        if (Math.abs(dx) > 2) d.moved = true;
+        if (d.moved) {
+          const next = clamp(Math.round(d.start + dx * (e.shiftKey ? 0.1 : 1)));
+          if (next !== value) onChange(next);
+        }
+      }}
+      onPointerUp={() => {
+        const d = drag.current;
+        drag.current = null;
+        if (d && !d.moved) {
+          setText(shown);
+          setEditing(true);
+        }
+      }}
+    >
       {prefix && <span className="numbox-prefix">{prefix}</span>}
-      <span className="numbox-value">{Number.isInteger(value) ? value : value.toFixed(2)}</span>
+      <span className="numbox-value">{shown}</span>
       {unit && <span className="numbox-unit">{unit}</span>}
     </span>
   );
 }
 
-function PopUp({ value, chevron = "updown" }: { value: string; chevron?: "updown" | "down" }) {
+// O pop-up do alvo sobre um <select> nativo transparente: o menu e o do sistema.
+function Select({
+  value,
+  options,
+  onChange,
+  chevron = "updown",
+}: {
+  value: string;
+  options: readonly string[];
+  onChange: (v: string) => void;
+  chevron?: "updown" | "down";
+}) {
   return (
     <span className="popup">
       <span>{value}</span>
       <span className={`popup-chev ${chevron}`}>
-        {chevron === "down" ? (
-          <Sym name="chevron.down" size={9} />
-        ) : (
-          <Sym name="chevron.up.chevron.down" size={11} />
-        )}
+        {chevron === "down" ? <Sym name="chevron.down" size={9} /> : <Sym name="chevron.up.chevron.down" size={11} />}
       </span>
+      <select className="popup-select" value={value} onChange={(e) => onChange(e.target.value)}>
+        {!options.includes(value) && <option value={value}>{value}</option>}
+        {options.map((o) => (
+          <option key={o} value={o}>
+            {o}
+          </option>
+        ))}
+      </select>
     </span>
   );
 }
 
-function Toggle({ on }: { on: boolean }) {
+function Toggle({ on, onChange }: { on: boolean; onChange: (on: boolean) => void }) {
   return (
-    <span className={`toggle${on ? " on" : ""}`}>
+    <button className={`toggle${on ? " on" : ""}`} onClick={() => onChange(!on)} role="switch" aria-checked={on}>
       <span className="knob" />
-    </span>
+    </button>
+  );
+}
+
+// A amostra de cor, com o seletor do sistema por baixo.
+function ColorWell({ color, onChange }: { color: [number, number, number, number]; onChange: (c: [number, number, number]) => void }) {
+  const [hex, setHex] = useState(rgbToHex(color[0], color[1], color[2]));
+  useEffect(() => setHex(rgbToHex(color[0], color[1], color[2])), [color[0], color[1], color[2]]);
+  return (
+    <label className="well" style={{ background: hex }} title="Opens system color picker">
+      <input
+        type="color"
+        value={hex}
+        onChange={(e) => {
+          setHex(e.target.value);
+          onChange(hexToRgb(e.target.value));
+        }}
+      />
+    </label>
   );
 }

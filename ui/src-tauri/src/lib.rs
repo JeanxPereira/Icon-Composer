@@ -176,6 +176,44 @@ async fn core_render(
     Ok(tauri::ipc::Response::new(bytes))
 }
 
+#[tauri::command]
+async fn core_set(
+    state: tauri::State<'_, CoreState>,
+    group: i64,
+    layer: i64,
+    appearance: String,
+    idiom: String,
+    prop: String,
+    value: String,
+) -> Result<String, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        with_core(&s, |c| c.set(group, layer, &appearance, &idiom, &prop, &value))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// "undo" | "redo" | "get": o documento inteiro depois do passo.
+#[tauri::command]
+async fn core_history(state: tauri::State<'_, CoreState>, step: String) -> Result<String, String> {
+    if !matches!(step.as_str(), "undo" | "redo" | "get") {
+        return Err(format!("passo desconhecido: {step}"));
+    }
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || with_core(&s, |c| c.history(&step)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn core_save(state: tauri::State<'_, CoreState>) -> Result<(), String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || with_core(&s, |c| c.save()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -188,7 +226,10 @@ pub fn run() {
             render_bundle,
             core_open,
             core_set_doc,
-            core_render
+            core_render,
+            core_set,
+            core_history,
+            core_save
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

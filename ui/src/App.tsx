@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Sidebar } from "./Sidebar";
 import { Background, Canvas, EffectsMode } from "./Canvas";
-import { Inspector, Pane } from "./Inspector";
+import { Edit, Inspector, Pane } from "./Inspector";
 import { Node, Platform, Rendition, RENDITIONS, Selection, supportedPlatforms } from "./doc";
-import { coreOpen, Frame, frameToDataUrl, requestFrame } from "./core";
+import { coreHistory, coreOpen, coreSave, coreSet, Frame, frameToDataUrl, requestFrame } from "./core";
 import "./App.css";
 
 type Opened = { name: string; json: string; assets: string[] };
@@ -27,6 +27,11 @@ export default function App() {
   const [path, setPath] = useState<string | null>(null);
   const [docName, setDocName] = useState("");
   const [doc, setDoc] = useState<Node | null>(null);
+  const [assets, setAssets] = useState<string[]>([]);
+  // `rev` sobe a cada documento que o nucleo devolve: e o que pede um quadro novo.
+  const [rev, setRev] = useState(0);
+  const [dirty, setDirty] = useState(false);
+  const edits = useRef<Promise<void>>(Promise.resolve());
   const [selection, setSelection] = useState<Selection>({ kind: "icon" });
   const [rendition, setRendition] = useState<Rendition>("default");
   const [platform, setPlatform] = useState<Platform>("iOS");
@@ -54,6 +59,9 @@ export default function App() {
       setPath(p);
       setDocName(d.name);
       setDoc(parsed);
+      setAssets(d.assets);
+      setDirty(false);
+      setRev((r) => r + 1);
       setSelection({ kind: "icon" });
       setError("");
       const plats = supportedPlatforms(parsed);
@@ -70,6 +78,53 @@ export default function App() {
   };
 
   const appearanceOf = (r: Rendition) => RENDITIONS.find((x) => x.id === r)!.appearance;
+
+  // A escrita: em FILA, porque um arraste manda varias e elas tem de chegar ao
+  // nucleo na ordem. Cada resposta e o documento inteiro, que vira o da UI.
+  const adopt = (json: string) => {
+    setDoc(JSON.parse(json) as Node);
+    setRev((r) => r + 1);
+  };
+  const onEdit: Edit = (sel, scope, prop, value) => {
+    const g = sel.kind === "icon" ? -1 : sel.g;
+    const l = sel.kind === "layer" ? sel.l : -1;
+    edits.current = edits.current
+      .then(() => coreSet(g, l, scope, prop, value))
+      .then((json) => {
+        adopt(json);
+        setDirty(true);
+      })
+      .catch((e) => setError(String(e)));
+  };
+
+  // Desfazer, refazer e salvar, pelo nucleo.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || !path) return;
+      const k = e.key.toLowerCase();
+      if (k === "z" || k === "y") {
+        const target = e.target as HTMLElement;
+        if (target.tagName === "INPUT") return;
+        e.preventDefault();
+        const step = k === "y" || e.shiftKey ? "redo" : "undo";
+        edits.current = edits.current
+          .then(() => coreHistory(step))
+          .then((json) => {
+            adopt(json);
+            setDirty(true);
+          })
+          .catch(() => {});
+      } else if (k === "s") {
+        e.preventDefault();
+        edits.current = edits.current
+          .then(() => coreSave())
+          .then(() => setDirty(false))
+          .catch((err) => setError(String(err)));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [path]);
 
   const dpr = window.devicePixelRatio;
   const fullPx = Math.round(512 * zoom * dpr);
@@ -93,7 +148,7 @@ export default function App() {
     return () => {
       alive = false;
     };
-  }, [path, platform, rendition, fullPx, tiled]);
+  }, [path, platform, rendition, fullPx, tiled, rev]);
 
   // O ladrilho: so a parte visivel, na resolucao da tela, pedida de novo a
   // cada rolagem ou zoom.
@@ -123,24 +178,27 @@ export default function App() {
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [path, platform, rendition, fullPx, tiled, view, zoom]);
+  }, [path, platform, rendition, fullPx, tiled, view, zoom, rev]);
 
   // As miniaturas da barra de rendicoes, do mesmo nucleo, depois do canvas.
   useEffect(() => {
     if (!path || !doc) return;
     let alive = true;
-    setThumbs({});
     const jobs: [string, string, string][] = [
       ...RENDITIONS.map((r) => [`r:${r.id}`, platform, r.appearance] as [string, string, string]),
       ...supportedPlatforms(doc).map((pl) => [`p:${pl}`, pl, appearanceOf(rendition)] as [string, string, string]),
     ];
-    for (const [key, idiom, appearance] of jobs) {
-      requestFrame(`thumb:${key}`, { size: THUMB, idiom, appearance })
-        .then((f) => alive && setThumbs((t) => ({ ...t, [key]: frameToDataUrl(f) })))
-        .catch(() => {});
-    }
+    // Espera a edicao assentar: um arraste nao refaz cinco miniaturas por passo.
+    const timer = window.setTimeout(() => {
+      for (const [key, idiom, appearance] of jobs) {
+        requestFrame(`thumb:${key}`, { size: THUMB, idiom, appearance })
+          .then((f) => alive && setThumbs((t) => ({ ...t, [key]: frameToDataUrl(f) })))
+          .catch(() => {});
+      }
+    }, 250);
     return () => {
       alive = false;
+      window.clearTimeout(timer);
     };
   }, [path, doc, platform, rendition]);
 
@@ -164,7 +222,7 @@ export default function App() {
         />
       )}
       <Canvas
-        title={docName || "Icon Composer"}
+        title={docName ? `${docName}${dirty ? " — editado" : ""}` : "Icon Composer"}
         frame={frame}
         tile={tiled ? tile : null}
         onView={setView}
@@ -188,7 +246,16 @@ export default function App() {
         sidebarHidden={sidebarHidden}
         onToggleSidebar={() => setSidebarHidden(false)}
       />
-      <Inspector doc={doc} selection={selection} rendition={rendition} platform={platform} pane={pane} onPane={setPane} />
+      <Inspector
+        doc={doc}
+        assets={assets}
+        selection={selection}
+        rendition={rendition}
+        platform={platform}
+        pane={pane}
+        onPane={setPane}
+        onEdit={onEdit}
+      />
     </div>
   );
 }

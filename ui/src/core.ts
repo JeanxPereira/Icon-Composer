@@ -80,3 +80,29 @@ export function frameToDataUrl(f: Frame): string {
   c.getContext("2d")!.putImageData(f.image, 0, 0);
   return c.toDataURL();
 }
+
+// A escrita: o nucleo aplica `setProperty` sob o escopo e devolve o icon.json.
+export async function coreSet(
+  group: number,
+  layer: number,
+  scope: { appearance: string; idiom: string },
+  prop: string,
+  value: unknown,
+): Promise<string> {
+  return invoke<string>("core_set", {
+    group,
+    layer,
+    appearance: scope.appearance,
+    idiom: scope.idiom,
+    prop,
+    value: JSON.stringify(value ?? null),
+  });
+}
+
+export function coreHistory(step: "undo" | "redo" | "get"): Promise<string> {
+  return invoke<string>("core_history", { step });
+}
+
+export function coreSave(): Promise<void> {
+  return invoke("core_save");
+}
