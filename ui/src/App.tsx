@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Sidebar } from "./Sidebar";
+import { Sidebar, SidebarActions } from "./Sidebar";
 import { Background, Canvas, EffectsMode } from "./Canvas";
 import { Edit, Inspector, Pane } from "./Inspector";
-import { Node, Platform, Rendition, RENDITIONS, Selection, supportedPlatforms } from "./doc";
-import { coreHistory, coreOpen, coreSave, coreSet, Frame, frameToDataUrl, requestFrame } from "./core";
+import { groups, layers, Node, Platform, Rendition, RENDITIONS, Selection, supportedPlatforms } from "./doc";
+import { coreHistory, coreImport, coreNode, coreOpen, coreSave, coreSet, Frame, frameToDataUrl, NodeOp, requestFrame } from "./core";
 import "./App.css";
 
 type Opened = { name: string; json: string; assets: string[] };
@@ -40,6 +40,7 @@ export default function App() {
   const [effects, setEffects] = useState<EffectsMode>("gen27");
   const [background, setBackground] = useState<Background>({ kind: "image", file: "1 - sine-purple-orange.jpeg" });
   const [grid, setGrid] = useState(false);
+  const [gridStyle, setGridStyle] = useState<"light" | "dark">("dark");
   const [zoom, setZoom] = useState(1);
 
   const [frame, setFrame] = useState<Frame | null>(null);
@@ -85,16 +86,88 @@ export default function App() {
     setDoc(JSON.parse(json) as Node);
     setRev((r) => r + 1);
   };
-  const onEdit: Edit = (sel, scope, prop, value) => {
+  const onEdit: Edit = (sel, scope, prop, value, coalesce) => {
     const g = sel.kind === "icon" ? -1 : sel.g;
     const l = sel.kind === "layer" ? sel.l : -1;
     edits.current = edits.current
-      .then(() => coreSet(g, l, scope, prop, value))
+      .then(() => coreSet(g, l, scope, prop, value, coalesce))
       .then((json) => {
         adopt(json);
         setDirty(true);
       })
       .catch((e) => setError(String(e)));
+  };
+
+  // A estrutura, pelo nucleo; `then` escolhe a selecao a partir do documento novo.
+  const structural = (op: NodeOp, g: number, l: number, arg: string, then: (d: Node) => Selection) => {
+    edits.current = edits.current
+      .then(() => coreNode(op, g, l, arg))
+      .then((json) => {
+        const d = JSON.parse(json) as Node;
+        setDoc(d);
+        setRev((r) => r + 1);
+        setDirty(true);
+        setSelection(then(d));
+      })
+      .catch((e) => setError(String(e)));
+  };
+  const at = (sel: Selection): [number, number] => [sel.kind === "icon" ? -1 : sel.g, sel.kind === "layer" ? sel.l : -1];
+  const groupOf = (sel: Selection) => (sel.kind === "icon" ? 0 : sel.g);
+
+  const sidebarActions: SidebarActions = {
+    addGroup: () => structural("add-group", -1, -1, "Group", (d) => ({ kind: "group", g: groups(d).length - 1 })),
+    addImage: async () => {
+      const file = await open({
+        title: "New Image",
+        multiple: false,
+        filters: [{ name: "Image", extensions: ["svg", "png"] }],
+      });
+      if (typeof file !== "string" || !doc) return;
+      const hasGroup = groups(doc).length > 0;
+      const g = hasGroup ? groupOf(selection) : 0;
+      edits.current = edits.current
+        .then(async () => {
+          const name = await coreImport(file);
+          setAssets((a) => (a.includes(name) ? a : [...a, name].sort()));
+          if (!hasGroup) await coreNode("add-group", -1, -1, "Group");
+          return coreNode("add-layer", g, -1, name);
+        })
+        .then((json) => {
+          const d = JSON.parse(json) as Node;
+          setDoc(d);
+          setRev((r) => r + 1);
+          setDirty(true);
+          setSelection({ kind: "layer", g, l: layers(groups(d)[g]).length - 1 });
+        })
+        .catch((e) => setError(String(e)));
+    },
+    remove: () => {
+      if (selection.kind === "icon") return;
+      const [g, l] = at(selection);
+      structural("remove", g, l, "", () => (selection.kind === "layer" ? { kind: "group", g } : { kind: "icon" }));
+    },
+    duplicate: () => {
+      if (selection.kind === "icon") return;
+      const [g, l] = at(selection);
+      structural("duplicate", g, l, "", () =>
+        selection.kind === "layer" ? { kind: "layer", g, l: l + 1 } : { kind: "group", g: g + 1 },
+      );
+    },
+    toggleHidden: (sel, hidden) => onEdit(sel, { appearance: "", idiom: "" }, "hidden", hidden),
+    rename: (sel, name) => {
+      const [g, l] = at(sel);
+      structural("rename", g, l, name, () => sel);
+    },
+    move: (sel, delta) => {
+      const [g, l] = at(sel);
+      structural("move", g, l, String(delta), (d) => {
+        if (sel.kind === "layer") {
+          const n = layers(groups(d)[g]).length;
+          return { kind: "layer", g, l: Math.min(n - 1, Math.max(0, l + delta)) };
+        }
+        return { kind: "group", g: Math.min(groups(d).length - 1, Math.max(0, g + delta)) };
+      });
+    },
   };
 
   // Desfazer, refazer e salvar, pelo nucleo.
@@ -137,7 +210,7 @@ export default function App() {
     let alive = true;
     const size = tiled ? BASE_PX : fullPx;
     setBusy(true);
-    requestFrame("canvas", { size, appearance: appearanceOf(rendition), idiom: platform, subdivisions: subdivisionsFor(size / (512 * dpr)) })
+    requestFrame("canvas", { size, appearance: appearanceOf(rendition), idiom: platform, subdivisions: subdivisionsFor(size / (512 * dpr)), effects: effects !== "disabled" })
       .then((f) => {
         if (!alive) return;
         setFrame(f);
@@ -148,7 +221,7 @@ export default function App() {
     return () => {
       alive = false;
     };
-  }, [path, platform, rendition, fullPx, tiled, rev]);
+  }, [path, platform, rendition, fullPx, tiled, rev, effects]);
 
   // O ladrilho: so a parte visivel, na resolucao da tela, pedida de novo a
   // cada rolagem ou zoom.
@@ -170,6 +243,7 @@ export default function App() {
         idiom: platform,
         tile: [x, y, w, h],
         subdivisions: subdivisionsFor(zoom),
+        effects: effects !== "disabled",
       })
         .then((f) => alive && setTile(f))
         .catch((e) => alive && e !== "substituido" && setError(String(e)));
@@ -178,7 +252,7 @@ export default function App() {
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [path, platform, rendition, fullPx, tiled, view, zoom, rev]);
+  }, [path, platform, rendition, fullPx, tiled, view, zoom, rev, effects]);
 
   // As miniaturas da barra de rendicoes, do mesmo nucleo, depois do canvas.
   useEffect(() => {
@@ -191,7 +265,7 @@ export default function App() {
     // Espera a edicao assentar: um arraste nao refaz cinco miniaturas por passo.
     const timer = window.setTimeout(() => {
       for (const [key, idiom, appearance] of jobs) {
-        requestFrame(`thumb:${key}`, { size: THUMB, idiom, appearance })
+        requestFrame(`thumb:${key}`, { size: THUMB, idiom, appearance, effects: effects !== "disabled" })
           .then((f) => alive && setThumbs((t) => ({ ...t, [key]: frameToDataUrl(f) })))
           .catch(() => {});
       }
@@ -200,7 +274,7 @@ export default function App() {
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [path, doc, platform, rendition]);
+  }, [path, doc, platform, rendition, effects]);
 
   // O fundo do viewport cobre a JANELA INTEIRA; a barra lateral e o inspetor
   // sao vidro fosco sobre ele, como no alvo.
@@ -219,6 +293,7 @@ export default function App() {
           selection={selection}
           onSelect={setSelection}
           onToggleSidebar={() => setSidebarHidden(true)}
+          actions={sidebarActions}
         />
       )}
       <Canvas
@@ -240,6 +315,8 @@ export default function App() {
         onBackground={setBackground}
         grid={grid}
         onGrid={setGrid}
+        gridStyle={gridStyle}
+        onGridStyle={setGridStyle}
         zoom={zoom}
         onZoom={(z) => setZoom(Math.min(MAX_ZOOM, Math.max(0.25, z)))}
         onOpen={pick}
@@ -255,6 +332,7 @@ export default function App() {
         pane={pane}
         onPane={setPane}
         onEdit={onEdit}
+        onRendition={setRendition}
       />
     </div>
   );

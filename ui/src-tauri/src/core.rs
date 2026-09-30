@@ -103,15 +103,40 @@ impl Core {
         idiom: &str,
         prop: &str,
         value: &str,
+        coalesce: bool,
     ) -> Result<String, String> {
         let a = if appearance.is_empty() { "-" } else { appearance };
         let i = if idiom.is_empty() { "-" } else { idiom };
         self.stdin
-            .write_all(format!("set {group} {layer} {a} {i} {prop} {}\n", value.len()).as_bytes())
+            .write_all(format!("set {group} {layer} {a} {i} {prop} {}{}\n", value.len(), if coalesce { " c" } else { "" }).as_bytes())
             .and_then(|_| self.stdin.write_all(value.as_bytes()))
             .and_then(|_| self.stdin.flush())
             .map_err(|e| e.to_string())?;
         self.read_json()
+    }
+
+    // A estrutura (add-group, add-layer, remove, duplicate, move, rename).
+    pub fn node(&mut self, op: &str, group: i64, layer: i64, arg: &str) -> Result<String, String> {
+        self.stdin
+            .write_all(format!("node {op} {group} {layer} {}\n", arg.len()).as_bytes())
+            .and_then(|_| self.stdin.write_all(arg.as_bytes()))
+            .and_then(|_| self.stdin.flush())
+            .map_err(|e| e.to_string())?;
+        self.read_json()
+    }
+
+    // Copia um arquivo para Assets/; devolve o nome que ele ganhou la.
+    pub fn import(&mut self, file: &str) -> Result<String, String> {
+        self.stdin
+            .write_all(format!("import {}\n", file.len()).as_bytes())
+            .and_then(|_| self.stdin.write_all(file.as_bytes()))
+            .and_then(|_| self.stdin.flush())
+            .map_err(|e| e.to_string())?;
+        let r = read_line(&mut self.stdout)?;
+        match r.strip_prefix("asset ") {
+            Some(name) => Ok(name.to_string()),
+            None => Err(r.trim_start_matches("err ").to_string()),
+        }
     }
 
     pub fn history(&mut self, cmd: &str) -> Result<String, String> {
@@ -133,12 +158,13 @@ impl Core {
         idiom: &str,
         tile: [i64; 4],
         subdivisions: u32,
+        effects: bool,
     ) -> Result<Vec<u8>, String> {
         let a = if appearance.is_empty() { "-" } else { appearance };
         let i = if idiom.is_empty() { "-" } else { idiom };
         self.send(&format!(
-            "render {size} {a} {i} {} {} {} {} {subdivisions}",
-            tile[0], tile[1], tile[2], tile[3]
+            "render {size} {a} {i} {} {} {} {} {subdivisions} {}",
+            tile[0], tile[1], tile[2], tile[3], if effects { 1 } else { 0 }
         ))?;
         let head = read_line(&mut self.stdout)?;
         let f: Vec<&str> = head.split(' ').collect();

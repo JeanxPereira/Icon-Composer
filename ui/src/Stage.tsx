@@ -24,6 +24,7 @@ type Props = {
   frame: Frame | null;
   tile: Frame | null;
   grid: boolean;
+  gridStyle: "light" | "dark";
   platform: string;
   zoom: number; // o ALVO, dono e o App (a barra de ferramentas tambem o muda)
   onZoom: (z: number) => void;
@@ -168,7 +169,7 @@ export function Stage(p: Props) {
           {p.tile && <FrameView frame={p.tile} cssSide={side} />}
           {p.grid && (
             <img
-              className="grid-overlay"
+              className={`grid-overlay ${p.gridStyle}`}
               src={`/apple/custom/${p.platform === "watchOS" ? "appicongrid.watchos" : "appicongrid.ios"}.svg`}
               alt=""
             />

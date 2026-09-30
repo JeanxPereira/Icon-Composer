@@ -26,7 +26,9 @@ import {
 // documento; nada e escrito no JSON deste lado.
 
 export type Pane = "content" | "document";
-export type Edit = (sel: Selection, scope: Scope, prop: string, value: unknown) => void;
+// `coalesce`: o passo continua o anterior (um arraste) e nao abre entrada nova
+// no desfazer.
+export type Edit = (sel: Selection, scope: Scope, prop: string, value: unknown, coalesce?: boolean) => void;
 
 type Props = {
   doc: Node | null;
@@ -37,6 +39,7 @@ type Props = {
   pane: Pane;
   onPane: (p: Pane) => void;
   onEdit: Edit;
+  onRendition: (r: Rendition) => void;
 };
 
 export function Inspector(p: Props) {
@@ -45,10 +48,18 @@ export function Inspector(p: Props) {
   const idiom = p.platform === "watchOS" ? "watchOS" : "iOS";
   const get = (prop: string, scoped: boolean) => (node ? resolve(node, prop, scoped ? r.appearance : "", idiom) : undefined);
   // `color`: a secao Color, que numa rendicao Dark/Mono escreve a variacao.
-  const set = (prop: string, value: unknown, color: boolean) => {
+  const set = (prop: string, value: unknown, color: boolean, coalesce = false) => {
     if (!node) return;
-    p.onEdit(p.selection, writeScope(node, prop, color ? r.appearance : "", idiom, color), prop, value);
+    p.onEdit(p.selection, writeScope(node, prop, color ? r.appearance : "", idiom, color), prop, value, coalesce);
   };
+  // O seletor do cabeçalho de Color: troca a rendicao (Default, Dark, Mono).
+  const renditionPicker = (
+    <ScopeMenu
+      value={r.label}
+      options={RENDITIONS.map((x) => x.label)}
+      onChange={(label) => p.onRendition(RENDITIONS.find((x) => x.label === label)!.id)}
+    />
+  );
 
   return (
     <aside className="inspector">
@@ -69,7 +80,7 @@ export function Inspector(p: Props) {
         ) : p.pane === "document" ? (
           <DocumentPane doc={p.doc} onSet={(prop, v) => p.onEdit({ kind: "icon" }, { appearance: "", idiom: "" }, prop, v)} />
         ) : p.selection.kind === "icon" ? (
-          <BackgroundPane get={get} set={set} rendition={r.label} />
+          <BackgroundPane get={get} set={set} picker={renditionPicker} />
         ) : (
           <MemberPane
             node={node}
@@ -77,7 +88,7 @@ export function Inspector(p: Props) {
             get={get}
             set={set}
             assets={p.assets}
-            rendition={r.label}
+            picker={renditionPicker}
             varied={(prop) => hasOwnVariation(node, prop, r.appearance)}
           />
         )}
@@ -87,7 +98,7 @@ export function Inspector(p: Props) {
 }
 
 type Getter = (prop: string, scoped: boolean) => Json | undefined;
-type Setter = (prop: string, value: unknown, color: boolean) => void;
+type Setter = (prop: string, value: unknown, color: boolean, coalesce?: boolean) => void;
 
 const LAYER_FILLS = ["Automatic", "None", "Solid", "Gradient"] as const;
 const BACKGROUND_FILLS = ["Automatic", "Solid", "Gradient", "System Light", "System Dark"] as const;
@@ -142,7 +153,7 @@ function FillRows({ get, set, kinds }: { get: Getter; set: Setter; kinds: readon
             unit="%"
             min={0}
             max={100}
-            onChange={(v) => set("fill", { solid: srgbSpec(seed[0], seed[1], seed[2], v / 100) }, true)}
+            onChange={(v, c) => set("fill", { solid: srgbSpec(seed[0], seed[1], seed[2], v / 100) }, true, c)}
           />
         </div>
       )}
@@ -161,7 +172,7 @@ function MemberPane({
   get,
   set,
   assets,
-  rendition,
+  picker,
   varied,
 }: {
   node: Node;
@@ -169,7 +180,7 @@ function MemberPane({
   get: Getter;
   set: Setter;
   assets: string[];
-  rendition: string;
+  picker: React.ReactNode;
   varied: (prop: string) => boolean;
 }) {
   const opacity = get("opacity", true);
@@ -180,21 +191,21 @@ function MemberPane({
   const scale = pos?.scale ?? 1;
   const tx = pos?.["translation-in-points"]?.[0] ?? 0;
   const ty = pos?.["translation-in-points"]?.[1] ?? 0;
-  const setPos = (s: number, x: number, y: number) =>
-    set("position", { scale: s, "translation-in-points": [x, y] }, false);
+  const setPos = (s: number, x: number, y: number, c?: boolean) =>
+    set("position", { scale: s, "translation-in-points": [x, y] }, false, c);
   const image = get("image-name", false);
   const blendKeys = Object.keys(BLEND_LABELS);
 
   return (
     <>
-      <Section title="Color" scope={rendition}>
+      <Section title="Color" scope={picker}>
         <Line icon={<Sym name="Opacity" custom image size={16} />} label="Opacity" varied={varied("opacity")}>
           <NumberBox
             value={Math.round((typeof opacity === "number" ? opacity : 1) * 100)}
             unit="%"
             min={0}
             max={100}
-            onChange={(v) => set("opacity", v / 100, true)}
+            onChange={(v, c) => set("opacity", v / 100, true, c)}
           />
         </Line>
         <Line icon={<Sym name="Blendmode" custom image size={18} />} label="Blend Mode" varied={varied("blend-mode")}>
@@ -232,12 +243,12 @@ function MemberPane({
           </Line>
         )}
         <Line icon={<Sym name="arrow.up.left.and.down.right.and.arrow.up.right.and.down.left" size={15} />} label="Layout">
-          <NumberBox prefix="x" value={tx} unit="pt" onChange={(v) => setPos(scale, v, ty)} />
-          <NumberBox prefix="y" value={ty} unit="pt" onChange={(v) => setPos(scale, tx, v)} />
+          <NumberBox prefix="x" value={tx} unit="pt" onChange={(v, c) => setPos(scale, v, ty, c)} />
+          <NumberBox prefix="y" value={ty} unit="pt" onChange={(v, c) => setPos(scale, tx, v, c)} />
         </Line>
         <div className="subline">
           <Sym name="arrow.up.left.and.arrow.down.right" size={13} className="muted-sym" />
-          <NumberBox value={Math.round(scale * 100)} unit="%" min={1} onChange={(v) => setPos(v / 100, tx, ty)} />
+          <NumberBox value={Math.round(scale * 100)} unit="%" min={1} onChange={(v, c) => setPos(v / 100, tx, ty, c)} />
         </div>
       </Section>
       {!isLayer && node.name === undefined && null}
@@ -265,7 +276,7 @@ function GroupGlass({ get, set }: { get: Getter; set: Setter }) {
           unit="%"
           min={0}
           max={100}
-          onChange={(v) => set("blur-material", v > 0 ? v / 100 : null, false)}
+          onChange={(v, c) => set("blur-material", v > 0 ? v / 100 : null, false, c)}
         />
       </Line>
       <Line icon={<Sym name="translucency" custom size={16} />} label="Translucency">
@@ -275,7 +286,7 @@ function GroupGlass({ get, set }: { get: Getter; set: Setter }) {
           unit="%"
           min={0}
           max={100}
-          onChange={(v) => set("translucency", { enabled: tr.enabled !== false, value: v / 100 }, false)}
+          onChange={(v, c) => set("translucency", { enabled: tr.enabled !== false, value: v / 100 }, false, c)}
         />
       </Line>
       <Line icon={<Sym name="shadow" custom size={16} />} label="Shadow">
@@ -294,7 +305,7 @@ function GroupGlass({ get, set }: { get: Getter; set: Setter }) {
             value={Math.round((shadow.opacity ?? 0.5) * 100)}
             unit="%"
             min={0}
-            onChange={(v) => set("shadow", { kind, opacity: v / 100 }, false)}
+            onChange={(v, c) => set("shadow", { kind, opacity: v / 100 }, false, c)}
           />
         </div>
       )}
@@ -302,9 +313,9 @@ function GroupGlass({ get, set }: { get: Getter; set: Setter }) {
   );
 }
 
-function BackgroundPane({ get, set, rendition }: { get: Getter; set: Setter; rendition: string }) {
+function BackgroundPane({ get, set, picker }: { get: Getter; set: Setter; picker: React.ReactNode }) {
   return (
-    <Section title="Background" scope={rendition}>
+    <Section title="Background" scope={picker}>
       <FillRows get={get} set={set} kinds={BACKGROUND_FILLS} />
     </Section>
   );
@@ -349,15 +360,15 @@ function DocumentPane({ doc, onSet }: { doc: Node; onSet: (prop: string, v: unkn
   );
 }
 
-function Section({ title, scope, children }: { title: string; scope: string; children: React.ReactNode }) {
+function Section({ title, scope, children }: { title: string; scope: React.ReactNode; children: React.ReactNode }) {
   return (
     <section className="isection">
       <header className="isection-head">
         <span>{title}</span>
-        {scope && (
-          <span className="scope" title="Opens menu to choose variation type">
-            {scope} <Sym name="chevron.down" size={7} />
-          </span>
+        {typeof scope === "string" ? (
+          scope && <span className="scope scope-fixed">{scope}</span>
+        ) : (
+          scope
         )}
       </header>
       <div className="isection-box">{children}</div>
@@ -393,11 +404,11 @@ function NumberBox({
   prefix?: string;
   min?: number;
   max?: number;
-  onChange: (v: number) => void;
+  onChange: (v: number, continuing?: boolean) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState("");
-  const drag = useRef<{ x: number; start: number; moved: boolean } | null>(null);
+  const drag = useRef<{ x: number; start: number; moved: boolean; sent: boolean } | null>(null);
   const clamp = (v: number) => Math.min(max, Math.max(min, v));
   const shown = Number.isInteger(value) ? String(value) : value.toFixed(2);
 
@@ -430,7 +441,7 @@ function NumberBox({
     <span
       className="numbox scrub"
       onPointerDown={(e) => {
-        drag.current = { x: e.clientX, start: value, moved: false };
+        drag.current = { x: e.clientX, start: value, moved: false, sent: false };
         (e.currentTarget as Element).setPointerCapture(e.pointerId);
       }}
       onPointerMove={(e) => {
@@ -440,7 +451,11 @@ function NumberBox({
         if (Math.abs(dx) > 2) d.moved = true;
         if (d.moved) {
           const next = clamp(Math.round(d.start + dx * (e.shiftKey ? 0.1 : 1)));
-          if (next !== value) onChange(next);
+          if (next !== value) {
+            // O primeiro passo do arraste abre a entrada no desfazer; os outros juntam.
+            onChange(next, d.sent);
+            d.sent = true;
+          }
         }
       }}
       onPointerUp={() => {
@@ -512,5 +527,21 @@ function ColorWell({ color, onChange }: { color: [number, number, number, number
         }}
       />
     </label>
+  );
+}
+
+// O seletor de escopo do cabecalho, sobre o menu do sistema.
+function ScopeMenu({ value, options, onChange }: { value: string; options: string[]; onChange: (v: string) => void }) {
+  return (
+    <span className="scope" title="Opens menu to choose variation type">
+      {value} <Sym name="chevron.down" size={7} />
+      <select className="popup-select" value={value} onChange={(e) => onChange(e.target.value)}>
+        {options.map((o) => (
+          <option key={o} value={o}>
+            {o}
+          </option>
+        ))}
+      </select>
+    </span>
   );
 }

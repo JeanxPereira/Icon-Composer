@@ -166,10 +166,11 @@ async fn core_render(
     idiom: String,
     tile: [i64; 4],
     subdivisions: u32,
+    effects: Option<bool>,
 ) -> Result<tauri::ipc::Response, String> {
     let s = state.inner().clone();
     let bytes = tauri::async_runtime::spawn_blocking(move || {
-        with_core(&s, |c| c.render(size, &appearance, &idiom, tile, subdivisions))
+        with_core(&s, |c| c.render(size, &appearance, &idiom, tile, subdivisions, effects.unwrap_or(true)))
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -185,10 +186,11 @@ async fn core_set(
     idiom: String,
     prop: String,
     value: String,
+    coalesce: Option<bool>,
 ) -> Result<String, String> {
     let s = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        with_core(&s, |c| c.set(group, layer, &appearance, &idiom, &prop, &value))
+        with_core(&s, |c| c.set(group, layer, &appearance, &idiom, &prop, &value, coalesce.unwrap_or(false)))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -202,6 +204,28 @@ async fn core_history(state: tauri::State<'_, CoreState>, step: String) -> Resul
     }
     let s = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || with_core(&s, |c| c.history(&step)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn core_node(
+    state: tauri::State<'_, CoreState>,
+    op: String,
+    group: i64,
+    layer: i64,
+    arg: String,
+) -> Result<String, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || with_core(&s, |c| c.node(&op, group, layer, &arg)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn core_import(state: tauri::State<'_, CoreState>, file: String) -> Result<String, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || with_core(&s, |c| c.import(&file)))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -229,7 +253,9 @@ pub fn run() {
             core_render,
             core_set,
             core_history,
-            core_save
+            core_save,
+            core_node,
+            core_import
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -14,10 +14,13 @@
 //   doc <n>\n<n bytes de icon.json>
 //       troca o documento em memoria (as edicoes da UI chegam assim)
 //       -> "ok\n" | "err <motivo>\n"
-//   render <size> <appearance|-> <idiom|-> <x> <y> <w> <h> [subdivisions]
+//   render <size> <appearance|-> <idiom|-> <x> <y> <w> <h> [subdivisions] [effects]
 //       w = h = 0 e o canvas inteiro; senao, o ladrilho (IconViewport).
 //       subdivisions: segmentos por cubica (padrao 16); a UI sobe com o zoom,
 //       senao uma curva vira poligono visivel a 8x.
+//       effects: 1 (padrao) ou 0 -- o "Liquid Glass Effects Disabled" do
+//       `EffectsRenderModePicker`: o quadro sai com `glass` desligado em toda
+//       camada, sem tocar no documento.
 //       -> "frame <w> <h> <originX> <originY> <ms> <n>\n" + n bytes RGBA8
 //          (straight, com dithering: ver `toRgba8Dithered`)
 //        | "err <motivo>\n"
@@ -26,6 +29,16 @@
 //       escopo, com `icf::setProperty` -- a mesma escrita do inspetor antigo,
 //       na grafia da Apple. O valor `null` remove a entrada do escopo.
 //       -> "json <n>\n" + o icon.json inteiro | "err <motivo>\n"
+//   set ... com um `c` depois de <n>: mesma escrita, sem entrada nova no
+//       desfazer -- um arraste e UM passo, nao um por quadro.
+//   node <op> <g> <l> <n>\n<n bytes de argumento>
+//       a estrutura, com as funcoes de Edit.h: add-group (arg: nome),
+//       add-layer (g; arg: image-name, que vira tambem o nome), remove,
+//       duplicate, move (arg: -1 ou 1), rename (arg: nome)
+//       -> "json <n>\n" + o icon.json | "err <motivo>\n"
+//   import <n>\n<n bytes: caminho de um arquivo>
+//       copia o arquivo para Assets/ (`IconBundle::importAsset`, no disco ja)
+//       -> "asset <nome>\n" | "err <motivo>\n"
 //   undo | redo   -> "json <n>\n" + o icon.json | "err nada a desfazer"
 //   get           -> "json <n>\n" + o icon.json
 //   save          -> "ok\n" | "err <motivo>\n"   (grava no .icon aberto)
@@ -47,6 +60,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -196,6 +210,8 @@ int main(int argc, char** argv) {
             std::string appearance, idiom, prop;
             std::size_t n = 0;
             in >> g >> l >> appearance >> idiom >> prop >> n;
+            std::string coalesce;
+            in >> coalesce;
             std::string text(n, '\0');
             std::cin.read(text.data(), static_cast<std::streamsize>(n));
             if (!bundle) {
@@ -232,12 +248,82 @@ int main(int argc, char** argv) {
                 fail("no inexistente");
                 continue;
             }
-            undo.push_back(icf::json::write(bundle->json()));
+            if (coalesce != "c" || undo.empty()) undo.push_back(icf::json::write(bundle->json()));
             redo.clear();
             std::optional<icf::json::Value> v;
             if (value->kind() != icf::json::Value::Kind::Null) v = std::move(*value);
             icf::setProperty(*node, prop, scope, std::move(v));
             replyJson(bundle->json());
+            continue;
+        }
+
+        if (cmd == "node") {
+            std::string op;
+            int g = -1, l = -1;
+            std::size_t n = 0;
+            in >> op >> g >> l >> n;
+            std::string arg(n, '\0');
+            std::cin.read(arg.data(), static_cast<std::streamsize>(n));
+            if (!bundle) {
+                fail("node antes de open");
+                continue;
+            }
+            icf::json::Value& root = bundle->json();
+            icf::NodePath path;
+            if (g >= 0) path.group = static_cast<std::size_t>(g);
+            if (g >= 0 && l >= 0) path.layer = static_cast<std::size_t>(l);
+            const std::string before = icf::json::write(root);
+            bool done = false;
+            if (op == "add-group") {
+                icf::addGroup(root, arg.empty() ? "Group" : arg);
+                done = true;
+            } else if (op == "add-layer") {
+                icf::json::Value* group = icf::nodeAt(root, icf::NodePath{path.group, std::nullopt});
+                if (group && path.group) {
+                    std::string name = arg;
+                    const std::size_t dot = name.find_last_of('.');
+                    if (dot != std::string::npos && dot > 0) name = name.substr(0, dot);
+                    icf::addLayer(*group, name, arg);
+                    done = true;
+                }
+            } else if (op == "remove") {
+                done = icf::removeNode(root, path);
+            } else if (op == "duplicate") {
+                done = icf::duplicateNode(root, path);
+            } else if (op == "move") {
+                done = icf::moveNode(root, path, std::atoi(arg.c_str()));
+            } else if (op == "rename") {
+                done = icf::setName(root, path, arg);
+            } else {
+                fail("operacao desconhecida: " + op);
+                continue;
+            }
+            if (!done) {
+                fail(op + ": no inexistente ou na borda");
+                continue;
+            }
+            undo.push_back(before);
+            redo.clear();
+            replyJson(root);
+            continue;
+        }
+
+        if (cmd == "import") {
+            std::size_t n = 0;
+            in >> n;
+            std::string file(n, '\0');
+            std::cin.read(file.data(), static_cast<std::streamsize>(n));
+            if (!bundle) {
+                fail("import antes de open");
+                continue;
+            }
+            const std::string why = bundle->importAsset(std::filesystem::u8path(file));
+            if (!why.empty()) {
+                fail(why);
+                continue;
+            }
+            const std::u8string name = std::filesystem::u8path(file).filename().u8string();
+            reply("asset " + std::string(name.begin(), name.end()));
             continue;
         }
 
@@ -291,6 +377,8 @@ int main(int argc, char** argv) {
             int subdivisions = 16;
             in >> size >> appearance >> idiom >> x >> y >> w >> h;
             if (!(in >> subdivisions)) subdivisions = 16;
+            int effects = 1;
+            if (!(in >> effects)) effects = 1;
             if (subdivisions < 1 || subdivisions > 256) {
                 fail("subdivisions fora de 1..256");
                 continue;
@@ -321,8 +409,27 @@ int main(int argc, char** argv) {
                 io.context.idiom = *d;
             }
             const auto t0 = std::chrono::steady_clock::now();
-            auto icon = gpu ? rb::renderIconGpu(*device, *bundle, io)
-                            : rb::renderIcon(*device, *bundle, io);
+            // Efeitos desligados: uma COPIA com `glass` falso em toda camada (a
+            // lista de especializacao de `glass` sai junto, senao ela ganharia
+            // da chave simples). O documento aberto nao muda.
+            std::optional<icf::IconBundle> flat;
+            if (effects == 0) {
+                flat = bundle->clone();
+                if (icf::json::Value* groups = flat->json().find("groups")) {
+                    for (icf::json::Value& grp : groups->elements()) {
+                        icf::json::Value* layers = grp.find("layers");
+                        if (!layers) continue;
+                        for (icf::json::Value& layer : layers->elements()) {
+                            auto& m = layer.members();
+                            std::erase_if(m, [](const auto& kv) { return kv.first == "glass-specializations"; });
+                            layer.set("glass", icf::json::Value::boolean(false));
+                        }
+                    }
+                }
+            }
+            const icf::IconBundle& target = flat ? *flat : *bundle;
+            auto icon = gpu ? rb::renderIconGpu(*device, target, io)
+                            : rb::renderIcon(*device, target, io);
             const double ms =
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
             if (!icon) {

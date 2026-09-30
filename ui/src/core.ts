@@ -13,6 +13,7 @@ export type RenderParams = {
   idiom: string;
   tile?: [number, number, number, number];
   subdivisions?: number;
+  effects?: boolean;
 };
 
 async function renderNow(p: RenderParams): Promise<Frame> {
@@ -22,6 +23,7 @@ async function renderNow(p: RenderParams): Promise<Frame> {
     idiom: p.idiom,
     tile: p.tile ?? [0, 0, 0, 0],
     subdivisions: p.subdivisions ?? 16,
+    effects: p.effects ?? true,
   });
   const v = new DataView(buf);
   const width = v.getUint32(0, true);
@@ -88,8 +90,10 @@ export async function coreSet(
   scope: { appearance: string; idiom: string },
   prop: string,
   value: unknown,
+  coalesce = false,
 ): Promise<string> {
   return invoke<string>("core_set", {
+    coalesce,
     group,
     layer,
     appearance: scope.appearance,
@@ -105,4 +109,16 @@ export function coreHistory(step: "undo" | "redo" | "get"): Promise<string> {
 
 export function coreSave(): Promise<void> {
   return invoke("core_save");
+}
+
+export type NodeOp = "add-group" | "add-layer" | "remove" | "duplicate" | "move" | "rename";
+
+// A estrutura, pelo nucleo (Edit.h): devolve o icon.json depois da operacao.
+export function coreNode(op: NodeOp, group: number, layer: number, arg = ""): Promise<string> {
+  return invoke<string>("core_node", { op, group, layer, arg });
+}
+
+// Copia um arquivo para Assets/ do documento aberto; devolve o nome la dentro.
+export function coreImport(file: string): Promise<string> {
+  return invoke<string>("core_import", { file });
 }

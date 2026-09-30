@@ -10,6 +10,8 @@ import { Stage } from "./Stage";
 export type EffectsMode = "disabled" | "gen26" | "gen27";
 export type Background = { kind: "solid"; tone: "light" | "dark" } | { kind: "image"; file: string };
 
+export const PREVIEW_SIZES = [0, 1024, 256, 128, 64, 32] as const;
+
 export const BACKGROUNDS = [
   "1 - sine-purple-orange.jpeg",
   "2 - sine-gasflame.jpeg",
@@ -38,6 +40,8 @@ type Props = {
   onBackground: (b: Background) => void;
   grid: boolean;
   onGrid: (g: boolean) => void;
+  gridStyle: "light" | "dark";
+  onGridStyle: (s: "light" | "dark") => void;
   zoom: number;
   onZoom: (z: number) => void;
   onOpen: () => void;
@@ -47,6 +51,9 @@ type Props = {
 
 export function Canvas(p: Props) {
   const [bgMenu, setBgMenu] = useState(false);
+  const [menu, setMenu] = useState<"grid" | "size" | null>(null);
+  const px = Math.round(512 * p.zoom);
+  const previewLabel = (PREVIEW_SIZES as readonly number[]).includes(px) && px !== 512 ? `${px} pt` : "Full size";
   const [hoverRendition, setHoverRendition] = useState<Rendition | null>(null);
   const caption = RENDITIONS.find((r) => r.id === (hoverRendition ?? p.rendition))!.label;
   return (
@@ -66,8 +73,8 @@ export function Canvas(p: Props) {
           {(
             [
               ["disabled", "slash.circle", "Liquid Glass Effects Disabled"],
-              ["gen26", "26.circle", "Design Generation 26"],
-              ["gen27", "27.circle", "Design Generation 27"],
+              ["gen26", "26.circle", "Design Generation 26 (este render ainda nao distingue 26 de 27)"],
+              ["gen27", "27.circle", "Design Generation 27 (este render ainda nao distingue 26 de 27)"],
             ] as const
           ).map(([id, sym, tip]) => (
             <button
@@ -123,14 +130,51 @@ export function Canvas(p: Props) {
           >
             <Sym name={p.grid ? "toolbar-grid-on" : "toolbar-grid-off"} custom size={17} />
           </button>
-          <button className="cap-btn narrow" title="Grid Style" disabled>
+          <button className="cap-btn narrow" title="Grid Style" onClick={() => setMenu(menu === "grid" ? null : "grid")}>
             <Sym name="chevron.down" size={10} />
           </button>
+          {menu === "grid" && (
+            <div className="menu down" onMouseLeave={() => setMenu(null)}>
+              {(["light", "dark"] as const).map((st) => (
+                <button
+                  key={st}
+                  className={p.gridStyle === st ? "checked" : ""}
+                  onClick={() => {
+                    p.onGridStyle(st);
+                    p.onGrid(true);
+                    setMenu(null);
+                  }}
+                >
+                  {st === "light" ? "Light" : "Dark"}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
-        <button className="capsule text-cap" title="Select preview size" disabled>
-          Full size <Sym name="chevron.down" size={9} />
-        </button>
+        {/* `IconPreviewDimensionsSettings`: o icone no tamanho de uma prévia. "Full
+            size" e o enquadramento; os outros poem o icone com N px na tela. */}
+        <div className="capsule-wrap">
+          <button className="capsule text-cap" title="Select preview size" onClick={() => setMenu(menu === "size" ? null : "size")}>
+            {previewLabel} <Sym name="chevron.down" size={9} />
+          </button>
+          {menu === "size" && (
+            <div className="menu down" onMouseLeave={() => setMenu(null)}>
+              {PREVIEW_SIZES.map((n) => (
+                <button
+                  key={n}
+                  className={previewLabel === (n ? `${n} pt` : "Full size") ? "checked" : ""}
+                  onClick={() => {
+                    p.onZoom(n ? n / 512 : 1);
+                    setMenu(null);
+                  }}
+                >
+                  {n ? `${n} pt` : "Full size"}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
 
         <div className="capsule text-cap zoom" title="Change zoom level">
           <span>{Math.round(p.zoom * 100)}%</span>
@@ -151,6 +195,7 @@ export function Canvas(p: Props) {
           frame={p.frame}
           tile={p.tile}
           grid={p.grid}
+          gridStyle={p.gridStyle}
           platform={p.platform}
           zoom={p.zoom}
           onZoom={p.onZoom}

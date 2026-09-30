@@ -792,3 +792,89 @@ button:disabled {
   height: 100%;
   cursor: default;
 }
+
+/* ---- a lista editavel ---- */
+.row-hidden {
+  display: grid;
+  opacity: 0;
+  color: var(--text-2);
+}
+
+.row:hover .row-hidden,
+.row-hidden.on {
+  opacity: 1;
+}
+
+.row.is-hidden .row-label,
+.row.is-hidden .row-icon {
+  opacity: 0.45;
+}
+
+.row-edit {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 4px;
+  outline: 2px solid var(--accent);
+  background: #fff;
+  color: var(--text);
+}
+
+.add-wrap {
+  position: relative;
+}
+
+.menu {
+  position: absolute;
+  bottom: 24px;
+  left: -6px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+  padding: 5px;
+  border-radius: 9px;
+  background: rgba(252, 251, 250, 0.97);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22), 0 0 0 0.5px rgba(0, 0, 0, 0.1);
+}
+
+.menu button {
+  text-align: left;
+  padding: 5px 10px;
+  border-radius: 5px;
+  color: var(--text);
+}
+
+.menu button:hover {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.menu.down {
+  top: 40px;
+  bottom: auto;
+  left: auto;
+  right: 0;
+}
+
+.menu button.checked::before {
+  content: "✓ ";
+}
+
+.scope {
+  position: relative;
+}
+
+.scope-fixed {
+  color: var(--text-2);
+}
+
+.capsule-wrap {
+  position: relative;
+}
+
+.grid-overlay.light {
+  filter: invert(1);
+}
