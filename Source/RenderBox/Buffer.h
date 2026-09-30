@@ -1,9 +1,10 @@
 #pragma once
 // A buffer and its memory, as one object.
 //
-// Vulkan separates the two, and every place this tower needs a buffer it needs
-// exactly one allocation bound to exactly one buffer. Keeping them apart would
-// buy sub-allocation nobody has asked for and cost a lifetime rule to get wrong.
+// Vulkan separates the two, and almost every place this tower needs a buffer it
+// needs exactly one allocation bound to exactly one buffer. The exception is the
+// resident chain, whose buffers are ranges of one big allocation (`createPlaced`,
+// GpuResident.h): there the allocation outlives the buffer and is not its to free.
 #include <cstdint>
 #include <vector>
 
@@ -15,6 +16,26 @@ class Buffer {
 public:
     static Result<Buffer> create(Device& device, VkDeviceSize size, VkBufferUsageFlags usage,
                                  VkMemoryPropertyFlags properties);
+
+    // A buffer bound to memory somebody else owns -- a range of a bigger
+    // allocation (the resident heap, GpuResident.h). `place` gets the buffer's
+    // requirements and answers the memory and the offset to bind at; the buffer
+    // never frees that memory. `vkAllocateMemory` is the expensive call (~7 ms
+    // for 16 MB on the RX 6750 XT); `vkCreateBuffer` + bind is microseconds.
+    struct Placement {
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkDeviceSize offset = 0;
+    };
+    template <class Place>
+    static Result<Buffer> createPlaced(Device& device, VkDeviceSize size, VkBufferUsageFlags usage,
+                                       Place&& place) {
+        auto b = createUnbound(device, size, usage);
+        if (!b) return b;
+        const Result<Placement> at = place(b->requirements());
+        if (!at) return std::unexpected(at.error());
+        if (auto ok = b->bindTo(at->memory, at->offset); !ok) return std::unexpected(ok.error());
+        return b;
+    }
 
     Buffer() = default;
     ~Buffer();
@@ -33,6 +54,10 @@ public:
 
 private:
     void destroy();
+    static Result<Buffer> createUnbound(Device& device, VkDeviceSize size,
+                                        VkBufferUsageFlags usage);
+    VkMemoryRequirements requirements() const;
+    Result<void> bindTo(VkDeviceMemory memory, VkDeviceSize offset);
 
     VkDevice device_ = VK_NULL_HANDLE;
     // The dispatch of the device above, so that destroy() can free without being

@@ -64,6 +64,39 @@ Result<Buffer> Buffer::create(Device& device, VkDeviceSize size, VkBufferUsageFl
     return b;
 }
 
+Result<Buffer> Buffer::createUnbound(Device& device, VkDeviceSize size, VkBufferUsageFlags usage) {
+    if (!device.valid()) return std::unexpected(std::string("Buffer::create on an invalid device"));
+    if (size == 0) return std::unexpected(std::string("a buffer size of zero is not allocatable"));
+    Buffer b;
+    b.device_ = device.handle();
+    b.api_ = &device.api();
+    b.size_ = size;
+    VkBufferCreateInfo bci{};
+    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size = size;
+    bci.usage = usage;
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (VkResult r = b.api_->vkCreateBuffer(b.device_, &bci, nullptr, &b.buffer_); r != VK_SUCCESS) {
+        return std::unexpected(std::string("vkCreateBuffer: ") + describe(r));
+    }
+    return b;
+}
+
+VkMemoryRequirements Buffer::requirements() const {
+    VkMemoryRequirements req{};
+    api_->vkGetBufferMemoryRequirements(device_, buffer_, &req);
+    return req;
+}
+
+Result<void> Buffer::bindTo(VkDeviceMemory memory, VkDeviceSize offset) {
+    // `memory_` stays null: the memory is the owner's, and `destroy` frees only
+    // what this object allocated.
+    if (VkResult r = api_->vkBindBufferMemory(device_, buffer_, memory, offset); r != VK_SUCCESS) {
+        return std::unexpected(std::string("vkBindBufferMemory: ") + describe(r));
+    }
+    return {};
+}
+
 void Buffer::destroy() {
     if (device_ == VK_NULL_HANDLE) return;
     if (mapped_ != nullptr) api_->vkUnmapMemory(device_, memory_);
