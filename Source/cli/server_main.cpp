@@ -335,7 +335,16 @@ int main(int argc, char** argv) {
             } else if (op == "duplicate") {
                 done = icf::duplicateNode(root, path);
             } else if (op == "move") {
-                done = icf::moveNode(root, path, std::atoi(arg.c_str()));
+                // |delta| > 1 anda um passo por vez ate a borda (Bring to Front /
+                // Send to Back): uma entrada so no desfazer.
+                const int delta = std::atoi(arg.c_str());
+                const int step = delta < 0 ? -1 : 1;
+                for (int i = 0; i != delta; i += step) {
+                    if (!icf::moveNode(root, path, step)) break;
+                    done = true;
+                    if (g >= 0 && l >= 0) path.layer = *path.layer + step;
+                    else if (g >= 0) path.group = *path.group + step;
+                }
             } else if (op == "rename") {
                 done = icf::setName(root, path, arg);
             } else {

@@ -63,7 +63,25 @@ fn open_document(path: String) -> Result<OpenedDocument, String> {
 // A arte de uma camada, como data URL, para a miniatura da lista.
 #[tauri::command]
 fn read_asset(path: String, name: String) -> Result<String, String> {
-    let file = PathBuf::from(&path).join("Assets").join(&name);
+    data_url(PathBuf::from(&path).join("Assets").join(&name))
+}
+
+// Uma imagem qualquer do disco (o "Add Background..."), como data URL.
+#[tauri::command]
+fn read_image(path: String) -> Result<String, String> {
+    data_url(PathBuf::from(&path))
+}
+
+// O Export: o PNG vem do front em base64 e e gravado onde a pessoa escolheu.
+#[tauri::command]
+fn write_file(path: String, base64: String) -> Result<(), String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64)
+        .map_err(|e| e.to_string())?;
+    std::fs::write(&path, bytes).map_err(|e| format!("{path}: {e}"))
+}
+
+fn data_url(file: PathBuf) -> Result<String, String> {
     let bytes = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
     let mime = match file.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()) {
         Some(ref e) if e == "svg" => "image/svg+xml",
@@ -247,6 +265,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_document,
             read_asset,
+            read_image,
+            write_file,
             render_bundle,
             core_open,
             core_set_doc,

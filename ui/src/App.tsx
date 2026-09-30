@@ -1,11 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { Sidebar, SidebarActions } from "./Sidebar";
-import { Background, Canvas, EffectsMode } from "./Canvas";
+import { Background, BACKGROUNDS, Canvas, EffectsMode } from "./Canvas";
 import { Edit, Inspector, Pane } from "./Inspector";
+import { Menu, Menubar } from "./Menubar";
+import { ExportChoice, ExportSheet } from "./ExportSheet";
 import { groups, layers, Node, Platform, Rendition, RENDITIONS, Selection, supportedPlatforms } from "./doc";
-import { coreHistory, coreImport, coreNode, coreOpen, coreSave, coreSet, Frame, frameToDataUrl, NodeOp, requestFrame } from "./core";
+import {
+  blobToBase64,
+  coreHistory,
+  coreImport,
+  coreNode,
+  coreOpen,
+  coreSave,
+  coreSet,
+  Frame,
+  frameToDataUrl,
+  frameToPng,
+  NodeOp,
+  requestFrame,
+} from "./core";
 import "./App.css";
 
 type Opened = { name: string; json: string; assets: string[] };
@@ -38,7 +53,10 @@ export default function App() {
   const [pane, setPane] = useState<Pane>("content");
   const [sidebarHidden, setSidebarHidden] = useState(false);
   const [effects, setEffects] = useState<EffectsMode>("gen27");
-  const [background, setBackground] = useState<Background>({ kind: "image", file: "1 - sine-purple-orange.jpeg" });
+  const [background, setBackground] = useState<Background>({ kind: "image", url: `/apple/backgrounds/${BACKGROUNDS[0]}` });
+  // Os fundos que a pessoa acrescentou ("Add Background..."), como data URL.
+  const [userBackgrounds, setUserBackgrounds] = useState<string[]>([]);
+  const [exporting, setExporting] = useState(false);
   const [grid, setGrid] = useState(false);
   const [gridStyle, setGridStyle] = useState<"light" | "dark">("dark");
   const [zoom, setZoom] = useState(1);
@@ -171,33 +189,197 @@ export default function App() {
   };
 
   // Desfazer, refazer e salvar, pelo nucleo.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!e.ctrlKey || !path) return;
-      const k = e.key.toLowerCase();
-      if (k === "z" || k === "y") {
-        const target = e.target as HTMLElement;
-        if (target.tagName === "INPUT") return;
-        e.preventDefault();
-        const step = k === "y" || e.shiftKey ? "redo" : "undo";
-        edits.current = edits.current
-          .then(() => coreHistory(step))
-          .then((json) => {
-            adopt(json);
-            setDirty(true);
-          })
-          .catch(() => {});
-      } else if (k === "s") {
-        e.preventDefault();
-        edits.current = edits.current
-          .then(() => coreSave())
-          .then(() => setDirty(false))
-          .catch((err) => setError(String(err)));
-      }
+  const history = (step: "undo" | "redo") => {
+    edits.current = edits.current
+      .then(() => coreHistory(step))
+      .then((json) => {
+        adopt(json);
+        setDirty(true);
+      })
+      .catch(() => {});
+  };
+  const saveDoc = () => {
+    edits.current = edits.current
+      .then(() => coreSave())
+      .then(() => setDirty(false))
+      .catch((err) => setError(String(err)));
+  };
+
+  // Um PNG do documento como esta no nucleo (editado ou nao).
+  const renderPng = async (c: ExportChoice) => {
+    await edits.current;
+    const f = await requestFrame("export", {
+      size: c.size,
+      appearance: appearanceOf(c.rendition),
+      idiom: c.platform,
+      subdivisions: subdivisionsFor(c.size / 512),
+      effects: effects !== "disabled",
+    });
+    return frameToPng(f);
+  };
+  const exportIcon = async (c: ExportChoice) => {
+    setExporting(false);
+    const base = docName.replace(/\.icon$/i, "") || "Icon";
+    const suffix = c.rendition === "default" ? "" : `-${c.rendition}`;
+    const target = await save({
+      title: "Export Icon as Image",
+      defaultPath: `${base}${suffix}-${c.size}.png`,
+      filters: [{ name: "PNG", extensions: ["png"] }],
+    });
+    if (!target) return;
+    try {
+      const png = await renderPng(c);
+      await invoke("write_file", { path: target, base64: await blobToBase64(png) });
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+  const copyImage = async () => {
+    try {
+      const png = await renderPng({ platform, rendition, size: 1024 });
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const selectParent = () => setSelection((s) => (s.kind === "layer" ? { kind: "group", g: s.g } : { kind: "icon" }));
+  // O indice 0 e a FRENTE (o render compoe de tras para a frente invertendo).
+  const arrange = (delta: number) => {
+    if (selection.kind !== "icon") sidebarActions.move(selection, delta);
+  };
+  const zoomBy = (f: number) => setZoom((z) => Math.min(MAX_ZOOM, Math.max(0.25, z * f)));
+
+  const addBackground = async () => {
+    const file = await open({
+      title: "Add Background",
+      multiple: false,
+      filters: [{ name: "Image", extensions: ["png", "jpg", "jpeg", "webp", "bmp"] }],
+    });
+    if (typeof file !== "string") return;
+    try {
+      const url = await invoke<string>("read_image", { path: file });
+      setUserBackgrounds((b) => [...b, url]);
+      setBackground({ kind: "image", url });
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  // "Replace..." da linha Image: importa o arquivo e aponta a camada para ele.
+  const replaceImage = async () => {
+    if (selection.kind !== "layer") return;
+    const file = await open({
+      title: "Replace Image",
+      multiple: false,
+      filters: [{ name: "Image", extensions: ["svg", "png"] }],
+    });
+    if (typeof file !== "string") return;
+    const sel = selection;
+    edits.current = edits.current
+      .then(async () => {
+        const name = await coreImport(file);
+        setAssets((a) => (a.includes(name) ? a : [...a, name].sort()));
+        return coreSet(sel.g, sel.l, { appearance: "", idiom: "" }, "image-name", name);
+      })
+      .then((json) => {
+        adopt(json);
+        setDirty(true);
+      })
+      .catch((e) => setError(String(e)));
+  };
+
+  const hasDoc = !!path;
+  const member = selection.kind !== "icon";
+  const menus: Menu[] = [
+    {
+      title: "File",
+      items: [
+        { label: "Open…", shortcut: "Ctrl+O", action: pick },
+        { label: "Save", shortcut: "Ctrl+S", action: saveDoc, disabled: !hasDoc },
+        "-",
+        { label: "Export…", shortcut: "Ctrl+Shift+E", action: () => setExporting(true), disabled: !hasDoc },
+        { label: "Copy Icon as Image", shortcut: "Ctrl+Shift+C", action: copyImage, disabled: !hasDoc },
+      ],
+    },
+    {
+      title: "Edit",
+      items: [
+        { label: "Undo", shortcut: "Ctrl+Z", action: () => history("undo"), disabled: !hasDoc },
+        { label: "Redo", shortcut: "Ctrl+Y", action: () => history("redo"), disabled: !hasDoc },
+        "-",
+        { label: "Duplicate", shortcut: "Ctrl+D", action: sidebarActions.duplicate, disabled: !member },
+        { label: "Delete", shortcut: "Del", action: sidebarActions.remove, disabled: !member },
+        "-",
+        { label: "Select Parent", shortcut: "Ctrl+↑", action: selectParent, disabled: !member },
+        { label: "Deselect All", shortcut: "Esc", action: () => setSelection({ kind: "icon" }), disabled: !member },
+      ],
+    },
+    {
+      title: "View",
+      items: [
+        { label: sidebarHidden ? "Show Sidebar" : "Hide Sidebar", shortcut: "Ctrl+Alt+S", action: () => setSidebarHidden((h) => !h) },
+        { label: "Style Inspector", shortcut: "Ctrl+1", action: () => setPane("content"), checked: pane === "content" },
+        { label: "Document Settings Inspector", shortcut: "Ctrl+2", action: () => setPane("document"), checked: pane === "document" },
+        "-",
+        { label: "Zoom In", shortcut: "Ctrl+=", action: () => zoomBy(1.25) },
+        { label: "Zoom Out", shortcut: "Ctrl+-", action: () => zoomBy(1 / 1.25) },
+        { label: "Actual Size", shortcut: "Ctrl+0", action: () => setZoom(1) },
+        "-",
+        { label: grid ? "Hide Grid" : "Show Grid", shortcut: "Ctrl+'", action: () => setGrid((g) => !g) },
+      ],
+    },
+    {
+      title: "Arrange",
+      items: [
+        { label: "Bring Forward", shortcut: "Ctrl+]", action: () => arrange(-1), disabled: !member },
+        { label: "Bring to Front", shortcut: "Ctrl+Shift+]", action: () => arrange(-9999), disabled: !member },
+        { label: "Send Backward", shortcut: "Ctrl+[", action: () => arrange(1), disabled: !member },
+        { label: "Send to Back", shortcut: "Ctrl+Shift+[", action: () => arrange(9999), disabled: !member },
+      ],
+    },
+  ];
+
+  // Um ouvinte so para os atalhos dos menus; os da lista (Delete, F2,
+  // Alt+setas, Ctrl+D) moram na Sidebar. A ref deixa o ouvinte ver o estado novo.
+  const keys = useRef<(e: KeyboardEvent) => void>(() => {});
+  keys.current = (e: KeyboardEvent) => {
+    const t = e.target as HTMLElement;
+    const typing = t.tagName === "INPUT" || t.tagName === "SELECT";
+    if (exporting || typing) return;
+    if (e.key === "Escape" && member) {
+      setSelection({ kind: "icon" });
+      return;
+    }
+    if (!e.ctrlKey) return;
+    const run = (f: () => void) => {
+      e.preventDefault();
+      f();
     };
+    const c = e.code;
+    if (c === "KeyO") run(pick);
+    else if (!hasDoc) return;
+    else if (c === "KeyZ") run(() => history(e.shiftKey ? "redo" : "undo"));
+    else if (c === "KeyY") run(() => history("redo"));
+    else if (c === "KeyS" && e.altKey) run(() => setSidebarHidden((h) => !h));
+    else if (c === "KeyS") run(saveDoc);
+    else if (c === "KeyE" && e.shiftKey) run(() => setExporting(true));
+    else if (c === "KeyC" && e.shiftKey) run(copyImage);
+    else if (c === "Digit1") run(() => setPane("content"));
+    else if (c === "Digit2") run(() => setPane("document"));
+    else if (c === "Equal" || c === "NumpadAdd") run(() => zoomBy(1.25));
+    else if (c === "Minus" || c === "NumpadSubtract") run(() => zoomBy(1 / 1.25));
+    else if (c === "Digit0" || c === "Numpad0") run(() => setZoom(1));
+    else if (c === "Quote" || c === "Backquote") run(() => setGrid((g) => !g));
+    else if (c === "ArrowUp" && !e.altKey && member) run(selectParent);
+    else if (c === "BracketRight" && member) run(() => arrange(e.shiftKey ? -9999 : -1));
+    else if (c === "BracketLeft" && member) run(() => arrange(e.shiftKey ? 9999 : 1));
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keys.current(e);
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [path]);
+  }, []);
 
   const dpr = window.devicePixelRatio;
   const fullPx = Math.round(512 * zoom * dpr);
@@ -279,9 +461,7 @@ export default function App() {
   // O fundo do viewport cobre a JANELA INTEIRA; a barra lateral e o inspetor
   // sao vidro fosco sobre ele, como no alvo.
   const backdrop =
-    background.kind === "image"
-      ? { backgroundImage: `url("/apple/backgrounds/${background.file}")` }
-      : { background: background.tone === "dark" ? "#1e1e20" : "#f2f2f4" };
+    background.kind === "image" ? { backgroundImage: `url("${background.url}")` } : { background: background.color };
 
   return (
     <div className={`window${sidebarHidden ? " no-sidebar" : ""}`} style={backdrop}>
@@ -313,6 +493,9 @@ export default function App() {
         onEffects={setEffects}
         background={background}
         onBackground={setBackground}
+        userBackgrounds={userBackgrounds}
+        onAddBackground={addBackground}
+        menubar={<Menubar menus={menus} />}
         grid={grid}
         onGrid={setGrid}
         gridStyle={gridStyle}
@@ -333,7 +516,16 @@ export default function App() {
         onPane={setPane}
         onEdit={onEdit}
         onRendition={setRendition}
+        onReplaceImage={replaceImage}
       />
+      {exporting && (
+        <ExportSheet
+          platforms={doc ? supportedPlatforms(doc) : ["iOS"]}
+          initial={{ platform, rendition, size: 1024 }}
+          onExport={exportIcon}
+          onCancel={() => setExporting(false)}
+        />
+      )}
     </div>
   );
 }

@@ -83,6 +83,21 @@ export function frameToDataUrl(f: Frame): string {
   return c.toDataURL();
 }
 
+export function frameToPng(f: Frame): Promise<Blob> {
+  const c = document.createElement("canvas");
+  c.width = f.width;
+  c.height = f.height;
+  c.getContext("2d")!.putImageData(f.image, 0, 0);
+  return new Promise((done, fail) => c.toBlob((b) => (b ? done(b) : fail("toBlob falhou")), "image/png"));
+}
+
+export async function blobToBase64(b: Blob): Promise<string> {
+  const bytes = new Uint8Array(await b.arrayBuffer());
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
 // A escrita: o nucleo aplica `setProperty` sob o escopo e devolve o icon.json.
 export async function coreSet(
   group: number,

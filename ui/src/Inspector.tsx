@@ -40,6 +40,7 @@ type Props = {
   onPane: (p: Pane) => void;
   onEdit: Edit;
   onRendition: (r: Rendition) => void;
+  onReplaceImage: () => void;
 };
 
 export function Inspector(p: Props) {
@@ -90,6 +91,7 @@ export function Inspector(p: Props) {
             assets={p.assets}
             picker={renditionPicker}
             varied={(prop) => hasOwnVariation(node, prop, r.appearance)}
+            onReplaceImage={p.onReplaceImage}
           />
         )}
       </div>
@@ -99,6 +101,9 @@ export function Inspector(p: Props) {
 
 type Getter = (prop: string, scoped: boolean) => Json | undefined;
 type Setter = (prop: string, value: unknown, color: boolean, coalesce?: boolean) => void;
+
+// O item do alvo ("Replace...") no fim da lista de imagens do documento.
+const REPLACE = "Replace…";
 
 const LAYER_FILLS = ["Automatic", "None", "Solid", "Gradient"] as const;
 const BACKGROUND_FILLS = ["Automatic", "Solid", "Gradient", "System Light", "System Dark"] as const;
@@ -174,6 +179,7 @@ function MemberPane({
   assets,
   picker,
   varied,
+  onReplaceImage,
 }: {
   node: Node;
   isLayer: boolean;
@@ -182,6 +188,7 @@ function MemberPane({
   assets: string[];
   picker: React.ReactNode;
   varied: (prop: string) => boolean;
+  onReplaceImage: () => void;
 }) {
   const opacity = get("opacity", true);
   const blend = (get("blend-mode", true) as string) ?? "normal";
@@ -236,9 +243,9 @@ function MemberPane({
           <Line icon={<Sym name="photo" size={16} />} label="Image">
             <Select
               value={typeof image === "string" ? image : "—"}
-              options={assets.length ? assets : [typeof image === "string" ? image : "—"]}
+              options={[...(assets.length ? assets : [typeof image === "string" ? image : "—"]), REPLACE]}
               chevron="down"
-              onChange={(name) => set("image-name", name, false)}
+              onChange={(name) => (name === REPLACE ? onReplaceImage() : set("image-name", name, false))}
             />
           </Line>
         )}

@@ -8,7 +8,11 @@ import { Stage } from "./Stage";
 // (§4) e a barra de rendicoes no rodape (§5).
 
 export type EffectsMode = "disabled" | "gen26" | "gen27";
-export type Background = { kind: "solid"; tone: "light" | "dark" } | { kind: "image"; file: string };
+export type Background = { kind: "solid"; color: string } | { kind: "image"; url: string };
+
+// `BackgroundColorPopoverContent`: as cores prontas do fundo solido, mais o
+// seletor do sistema.
+const SOLID_COLORS = ["#ffffff", "#f2f2f4", "#c7c7cc", "#8e8e93", "#48484a", "#1e1e20", "#000000"];
 
 export const PREVIEW_SIZES = [0, 1024, 256, 128, 64, 32] as const;
 
@@ -38,6 +42,9 @@ type Props = {
   onEffects: (m: EffectsMode) => void;
   background: Background;
   onBackground: (b: Background) => void;
+  userBackgrounds: string[];
+  onAddBackground: () => void;
+  menubar: React.ReactNode;
   grid: boolean;
   onGrid: (g: boolean) => void;
   gridStyle: "light" | "dark";
@@ -50,7 +57,15 @@ type Props = {
 };
 
 export function Canvas(p: Props) {
-  const [bgMenu, setBgMenu] = useState(false);
+  const [bgMenu, setBgMenu] = useState<"solid" | "image" | null>(null);
+  // O ultimo de cada tipo, para o clique na amostra voltar a ele.
+  const [lastSolid, setLastSolid] = useState("#1e1e20");
+  const [lastImage, setLastImage] = useState(`/apple/backgrounds/${BACKGROUNDS[0]}`);
+  const pickBackground = (b: Background) => {
+    if (b.kind === "solid") setLastSolid(b.color);
+    else setLastImage(b.url);
+    p.onBackground(b);
+  };
   const [menu, setMenu] = useState<"grid" | "size" | null>(null);
   const px = Math.round(512 * p.zoom);
   const previewLabel = (PREVIEW_SIZES as readonly number[]).includes(px) && px !== 512 ? `${px} pt` : "Full size";
@@ -64,6 +79,7 @@ export function Canvas(p: Props) {
             <Sym name="sidebar.left" size={17} />
           </button>
         )}
+        {p.menubar}
         <button className="doc-title" onClick={p.onOpen} title="Abrir .icon">
           {p.title}
         </button>
@@ -88,36 +104,72 @@ export function Canvas(p: Props) {
           ))}
         </div>
 
+        {/* `BackgroundKindPickerButton`: o clique numa amostra ja selecionada
+            abre o popover dela; numa nao selecionada, volta ao ultimo do tipo. */}
         <div className="capsule bg-chooser" title="Choose background">
           <button
-            className={`swatch dark${p.background.kind === "solid" ? " on" : ""}`}
+            className={`swatch${p.background.kind === "solid" ? " on" : ""}`}
             title="Solid Color Background"
-            onClick={() => p.onBackground({ kind: "solid", tone: "dark" })}
+            style={{ background: lastSolid }}
+            onClick={() =>
+              p.background.kind === "solid"
+                ? setBgMenu(bgMenu === "solid" ? null : "solid")
+                : pickBackground({ kind: "solid", color: lastSolid })
+            }
           />
           <button
             className={`swatch image${p.background.kind === "image" ? " on" : ""}`}
             title="Image Background"
-            style={
+            style={{ backgroundImage: `url("${lastImage}")` }}
+            onClick={() =>
               p.background.kind === "image"
-                ? { backgroundImage: `url("/apple/backgrounds/${p.background.file}")` }
-                : undefined
+                ? setBgMenu(bgMenu === "image" ? null : "image")
+                : pickBackground({ kind: "image", url: lastImage })
             }
-            onClick={() => setBgMenu((v) => !v)}
           />
-          {bgMenu && (
-            <div className="popover" onMouseLeave={() => setBgMenu(false)}>
-              {BACKGROUNDS.map((f) => (
+          {bgMenu === "solid" && (
+            <div className="popover solid-pop" onMouseLeave={() => setBgMenu(null)}>
+              {SOLID_COLORS.map((c) => (
                 <button
-                  key={f}
-                  className="bg-tile"
-                  style={{ backgroundImage: `url("/apple/backgrounds/${f}")` }}
-                  title={f.replace(/^\d - /, "").replace(/\.jpeg$/, "")}
+                  key={c}
+                  className={`color-dot${p.background.kind === "solid" && p.background.color === c ? " on" : ""}`}
+                  style={{ background: c }}
+                  onClick={() => pickBackground({ kind: "solid", color: c })}
+                />
+              ))}
+              <label className="color-dot custom" title="Opens system color picker">
+                <input
+                  type="color"
+                  value={p.background.kind === "solid" ? p.background.color : lastSolid}
+                  onChange={(e) => pickBackground({ kind: "solid", color: e.target.value })}
+                />
+              </label>
+            </div>
+          )}
+          {bgMenu === "image" && (
+            <div className="popover" onMouseLeave={() => setBgMenu(null)}>
+              {[...BACKGROUNDS.map((f) => `/apple/backgrounds/${f}`), ...p.userBackgrounds].map((url, i) => (
+                <button
+                  key={i}
+                  className={`bg-tile${p.background.kind === "image" && p.background.url === url ? " on" : ""}`}
+                  style={{ backgroundImage: `url("${url}")` }}
+                  title={i < BACKGROUNDS.length ? BACKGROUNDS[i].replace(/^\d - /, "").replace(/\.jpeg$/, "") : "Custom"}
                   onClick={() => {
-                    p.onBackground({ kind: "image", file: f });
-                    setBgMenu(false);
+                    pickBackground({ kind: "image", url });
+                    setBgMenu(null);
                   }}
                 />
               ))}
+              <button
+                className="bg-tile add"
+                title="Add Background…"
+                onClick={() => {
+                  setBgMenu(null);
+                  p.onAddBackground();
+                }}
+              >
+                <Sym name="plus" size={16} />
+              </button>
             </div>
           )}
         </div>

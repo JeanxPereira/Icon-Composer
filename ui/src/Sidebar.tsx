@@ -13,7 +13,8 @@ export type SidebarActions = {
   remove: () => void;
   toggleHidden: (sel: Selection, hidden: boolean) => void;
   rename: (sel: Selection, name: string) => void;
-  move: (sel: Selection, delta: -1 | 1) => void;
+  // Negativo vai para a frente (indice 0); |delta| > 1 anda ate a borda.
+  move: (sel: Selection, delta: number) => void;
   duplicate: () => void;
 };
 
