@@ -218,10 +218,11 @@ async fn core_render(
     subdivisions: u32,
     effects: Option<bool>,
     tint: Option<[f64; 4]>,
+    clear: Option<[f64; 3]>,
 ) -> Result<tauri::ipc::Response, String> {
     let s = state.inner().clone();
     let bytes = tauri::async_runtime::spawn_blocking(move || {
-        with_core(&s, |c| c.render(size, &appearance, &idiom, tile, subdivisions, effects.unwrap_or(true), tint))
+        with_core(&s, |c| c.render(size, &appearance, &idiom, tile, subdivisions, effects.unwrap_or(true), tint, clear))
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -289,6 +290,23 @@ async fn core_rects(state: tauri::State<'_, CoreState>, appearance: String, idio
         .map_err(|e| e.to_string())?
 }
 
+// O fundo vem em base64 (so muda quando o fundo ou a janela muda).
+#[tauri::command]
+async fn core_backdrop(
+    state: tauri::State<'_, CoreState>,
+    width: u32,
+    height: u32,
+    rgba: String,
+) -> Result<(), String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(rgba)
+        .map_err(|e| e.to_string())?;
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || with_core(&s, |c| c.backdrop(width, height, &bytes)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn core_save(state: tauri::State<'_, CoreState>) -> Result<(), String> {
     let s = state.inner().clone();
@@ -319,7 +337,8 @@ pub fn run() {
             core_save,
             core_node,
             core_import,
-            core_rects
+            core_rects,
+            core_backdrop
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

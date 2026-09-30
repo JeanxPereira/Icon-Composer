@@ -16,6 +16,8 @@ export type RenderParams = {
   effects?: boolean;
   // Tinted Dark: [r, g, b, saturation] (`tintColor` em doc.ts).
   tint?: [number, number, number, number];
+  // Clear: o quadrado do canvas em pixels do backdrop (`coreBackdrop`).
+  clear?: [number, number, number];
 };
 
 async function renderNow(p: RenderParams): Promise<Frame> {
@@ -27,6 +29,7 @@ async function renderNow(p: RenderParams): Promise<Frame> {
     subdivisions: p.subdivisions ?? 16,
     effects: p.effects ?? true,
     tint: p.tint ?? null,
+    clear: p.clear ?? null,
   });
   const v = new DataView(buf);
   const width = v.getUint32(0, true);
@@ -95,7 +98,10 @@ export function frameToPng(f: Frame): Promise<Blob> {
 }
 
 export async function blobToBase64(b: Blob): Promise<string> {
-  const bytes = new Uint8Array(await b.arrayBuffer());
+  return bytesToBase64(new Uint8Array(await b.arrayBuffer()));
+}
+
+export function bytesToBase64(bytes: Uint8Array): string {
   let s = "";
   for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   return btoa(s);
@@ -156,4 +162,10 @@ export function coreNode(op: NodeOp, group: number, layer: number, arg = ""): Pr
 // Copia um arquivo para Assets/ do documento aberto; devolve o nome la dentro.
 export function coreImport(file: string): Promise<string> {
   return invoke<string>("core_import", { file });
+}
+
+// O fundo da janela como a tela o mostra, para o Clear: ele e ENTRADA do
+// render (a composicao do alvo e sobre o fundo).
+export function coreBackdrop(width: number, height: number, rgba: Uint8Array): Promise<void> {
+  return invoke("core_backdrop", { width, height, rgba: bytesToBase64(rgba) });
 }

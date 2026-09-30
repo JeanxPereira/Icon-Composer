@@ -120,3 +120,51 @@ seleção por localização no contexto de render e a UI de idiomas.
   **reconferido**), guardadas em UserDefaults `"recentIconColors"` (0x1DBC40).
 
 **Implementado** (commit 92f752f).
+
+## 5. Clear (e Tinted Light): a receita, e o que a v1 implementa
+
+Investigação de 30/09, sobre as correções da §1.4. Valores reconferidos contra
+o laudo de 20/09 §2 antes de virar código.
+
+**O que o IconRendering desenha.** Uma MÁSCARA codificada por canal, não o
+ícone:
+
+- `ClearMode` vai para `ctx+0x4600` só em Clear Light/Dark e em Tinted Light
+  (0x42C14–0x42DCC); nos outros é nil (0x4D0F0). Fundo transparente; os
+  darklights do chiclet ficam para o sistema (0x47874, `leaveChicletDarklightsToSystem`).
+- Matriz do CONTEÚDO, por camada (0x4AF20; cópia em 0x44140):
+  `R' = 0,85·R`, `G' = cD·G + (1 − cD) = 1`, `B' = 0`, `A' = A`.
+- Matriz TOTAL, em volta do ícone inteiro (0x47D2C, 0x47DC0–0x48250), com
+  ColorClamp 0…1: `R'' = 1,0·R'`, `G'' = 0,3·(1 − G')`, `B'' = 1,0·B'`.
+- Leitura `[INF]`: R = quanto clarear, G = quanto escurecer, B = quanto realçar.
+  Conteúdo só clareia (0,85·R); o que é desenhado FORA da matriz do conteúdo
+  (realces brancos da borda, sombra preta) alimenta escurecer e realçar.
+
+**Como o fundo é composto** (fábrica 0x3FAE4; três camadas com o mesmo
+conteúdo, `drawByReference`). Ordem por `passOrder` (0x40398): L, D, H.
+
+- L: `colorMatrix` (branco, α = R) + `vibrantColorMatrix(lighteningVCM
+  [0,9, 2,5, 2,0, 1,2])`, consciente do fundo: `lerp(fundo, VCM(fundo), α)`.
+- D (padrão, `darkeningUsesVCM = false`): `1 − G` + `plusD`.
+- H: branco, α = B + `vibrantColorMatrix(highlightsVCM [0,2, 1,35, 1,4, 1,2])`.
+- O VCM é a cadeia BT.709 que `rb::applyGlyphVCM` já transcreve. A matemática
+  do `vibrant`, do `plusL` e do `plusD` veio do AquaKit
+  (`docs/re/2026-09-11-the-vibrant-color-matrix-is-not-the-vibrant-blend.md`,
+  `2026-09-17-plus-lighter-loading-composition.md`).
+
+**A v1 (`rb::applyClearLightening`) faz o passe L**, que é tudo o que o
+CONTEÚDO alimenta com os padrões: `α = 0,85·R·A` e a cor `VCM(fundo)`, e o
+chamador compõe sobre o mesmo fundo. O fundo é entrada: a casca manda uma
+cópia da janela como a tela a mostra (`backdrop`) e, a cada render, onde está
+o quadrado do canvas nela.
+
+**Abertos `[OBS]`, com o peso de cada um:**
+
+- Quais elementos entram na máscara além do conteúdo (realces por referência,
+  sombra, especular do glifo). Movem a borda (passes D e H), não o miolo.
+- Se H e L leem o fundo original ou o resultado corrente: só onde as máscaras
+  se sobrepõem.
+- Fosco/desfoque: nada nesta cadeia borra o fundo. Se a prévia do alvo mostra
+  fosco, ele vem do host.
+- O que um PNG exportado em Clear contém: a máscara crua ou a composição. A v1
+  exporta a composição sobre o fundo da tela.

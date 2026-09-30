@@ -157,6 +157,16 @@ impl Core {
         self.read_json()
     }
 
+    // O fundo da janela como a tela o mostra (RGBA8), para o Clear.
+    pub fn backdrop(&mut self, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
+        self.stdin
+            .write_all(format!("backdrop {w} {h} {}\n", rgba.len()).as_bytes())
+            .and_then(|_| self.stdin.write_all(rgba))
+            .and_then(|_| self.stdin.flush())
+            .map_err(|e| e.to_string())?;
+        self.expect_ok()
+    }
+
     pub fn save(&mut self) -> Result<(), String> {
         self.send("save")?;
         self.expect_ok()
@@ -173,13 +183,17 @@ impl Core {
         subdivisions: u32,
         effects: bool,
         tint: Option<[f64; 4]>,
+        clear: Option<[f64; 3]>,
     ) -> Result<Vec<u8>, String> {
         let a = if appearance.is_empty() { "-" } else { appearance };
         let i = if idiom.is_empty() { "-" } else { idiom };
         // Tinted Dark: `tint r g b saturation` no fim da linha.
-        let t = tint
-            .map(|t| format!(" tint {} {} {} {}", t[0], t[1], t[2], t[3]))
-            .unwrap_or_default();
+        // Ou o Clear: `clear x y lado`, o quadrado do canvas no backdrop.
+        let t = match (tint, clear) {
+            (Some(t), _) => format!(" tint {} {} {} {}", t[0], t[1], t[2], t[3]),
+            (None, Some(c)) => format!(" clear {} {} {}", c[0], c[1], c[2]),
+            _ => String::new(),
+        };
         self.send(&format!(
             "render {size} {a} {i} {} {} {} {} {subdivisions} {}{t}",
             tile[0], tile[1], tile[2], tile[3], if effects { 1 } else { 0 }

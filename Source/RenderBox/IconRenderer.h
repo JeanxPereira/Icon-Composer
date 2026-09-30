@@ -273,6 +273,34 @@ struct RenderedIcon {
 // e a propria imagem.
 void applyTintedDark(RenderedIcon& icon, const IconRenderOptions::TintRecolour& tint);
 
+// O FUNDO atras do icone, como a tela o mostra (RGBA8 sRGB codificado, sem
+// pre-multiplicar): o Clear e composto SOBRE ele, entao ele e entrada.
+struct ClearBackdrop {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::vector<std::uint8_t> rgba;
+};
+
+// CLEAR (Clear Light / Clear Dark, e Tinted Light, que vai pela mesma cadeia
+// quando `applyToLightTintToo`), o PASSE DE CLAREAR, sobre a imagem pronta.
+// Receita: Docs/Laudos/2026-09-30-tinted-export-localizacao.md §5. Em uma linha:
+//
+//   mascara  a = totalLightening * contentLightening * R * A     (0x4AF20, 0x47D2C)
+//   saida    rgb = VCM(fundo; 0.9, 2.5, 2.0), alfa = a            (0x3FAE4, 0x406E8)
+//
+// que, composta pelo chamador sobre o mesmo fundo, e o `lerp(fundo,
+// VCM(fundo), a)` da vibrantColorMatrix consciente do fundo. `icon` e
+// reescrito no lugar: a cor vira a do fundo transformado e o alfa vira a
+// mascara. `squareX/Y/Side` e o quadrado do CANVAS INTEIRO (nao do ladrilho)
+// em pixels de `backdrop`; `canvasSize` e o lado do canvas em pixels do render.
+//
+// `[OBS]` Ficam de fora os passes de ESCURECER e de REALCE: com os padroes o
+// conteudo so alimenta o de clarear, e o que alimenta os outros dois (os
+// realces da borda e a sombra, desenhados fora da matriz do conteudo) nao foi
+// separado elemento a elemento no alvo.
+void applyClearLightening(RenderedIcon& icon, const ClearBackdrop& backdrop, double squareX,
+                          double squareY, double squareSide, std::uint32_t canvasSize);
+
 // The placement of one layer's art on the canvas, in the target's own terms.
 // Exposed so the transform can be checked without a GPU.
 struct LayerPlacement {

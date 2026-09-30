@@ -43,6 +43,11 @@
 //       -> "asset <nome>\n" | "err <motivo>\n"
 //   undo | redo   -> "json <n>\n" + o icon.json | "err nada a desfazer"
 //   get           -> "json <n>\n" + o icon.json
+//   backdrop <w> <h> <n>\n<n bytes RGBA8>
+//       o fundo da janela como a tela o mostra, para o Clear -> "ok\n"
+//   render ... clear <x> <y> <lado>, depois de effects: o Clear (passe de
+//       clarear, `rb::applyClearLightening`), com o quadrado do canvas em
+//       pixels do backdrop; a cor sai do fundo transformado e o alfa e a mascara
 //   rects <appearance|-> <idiom|->
 //       o retangulo de cada camada em pontos do canvas (0..1024), para o
 //       destaque da selecao e o clique no canvas
@@ -66,6 +71,7 @@
 #include "Source/RenderBox/Parallel.h"
 #include "Source/RenderBox/RenderCache.h"
 
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -296,6 +302,7 @@ int main(int argc, char** argv) {
     rb::RenderCache cache;
     std::optional<icf::IconBundle> bundle;
     BoxCache boxes;
+    rb::ClearBackdrop backdrop;   // o fundo da tela, para o Clear
     // O desfazer guarda o documento INTEIRO antes de cada escrita: o texto e
     // pequeno, e restaurar o texto e restaurar os bytes, sem inverter edicao.
     std::vector<std::string> undo, redo;
@@ -476,6 +483,21 @@ int main(int argc, char** argv) {
             continue;
         }
 
+        if (cmd == "backdrop") {
+            std::uint32_t w = 0, h = 0;
+            std::size_t n = 0;
+            in >> w >> h >> n;
+            std::vector<std::uint8_t> bytes(n);
+            std::cin.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(n));
+            if (n != static_cast<std::size_t>(w) * h * 4) {
+                fail("backdrop: n != w*h*4");
+                continue;
+            }
+            backdrop = rb::ClearBackdrop{w, h, std::move(bytes)};
+            reply("ok");
+            continue;
+        }
+
         if (cmd == "rects") {
             std::string appearance, idiom;
             in >> appearance >> idiom;
@@ -561,10 +583,15 @@ int main(int argc, char** argv) {
             if (!(in >> effects)) effects = 1;
             // Tinted Dark: `tint r g b saturation` depois de `effects`.
             std::optional<rb::IconRenderOptions::TintRecolour> tint;
+            std::optional<std::array<double, 3>> clear;   // o quadrado no fundo
             {
                 std::string word;
                 rb::IconRenderOptions::TintRecolour t;
-                if (in >> word && word == "tint" && in >> t.r >> t.g >> t.b >> t.saturation) tint = t;
+                std::array<double, 3> sq{};
+                if (in >> word) {
+                    if (word == "tint" && in >> t.r >> t.g >> t.b >> t.saturation) tint = t;
+                    else if (word == "clear" && in >> sq[0] >> sq[1] >> sq[2]) clear = sq;
+                }
             }
             if (subdivisions < 1 || subdivisions > 256) {
                 fail("subdivisions fora de 1..256");
@@ -580,6 +607,9 @@ int main(int argc, char** argv) {
             io.viewport = rb::IconViewport{x, y, w, h};
             io.subdivisions = subdivisions;
             io.tint = tint;
+            // O Clear tambem nao e `.color`: a sombra vira `neutral` (0x49F40).
+            // Uma recoloracao identidade liga so esse portao.
+            if (clear && !tint) io.tint = rb::IconRenderOptions::TintRecolour{};
             if (appearance != "-") {
                 auto a = icf::appearanceFromString(appearance);
                 if (!a) {
@@ -629,6 +659,13 @@ int main(int argc, char** argv) {
                 continue;
             }
             if (tint) rb::applyTintedDark(*icon, *tint);
+            if (clear) {
+                if (backdrop.width == 0) {
+                    fail("clear sem backdrop");
+                    continue;
+                }
+                rb::applyClearLightening(*icon, backdrop, (*clear)[0], (*clear)[1], (*clear)[2], size);
+            }
             const std::vector<std::uint8_t> bytes =
                 toRgba8Dithered(icon->rgba, icon->width, icon->originX, icon->originY);
             char head[160];

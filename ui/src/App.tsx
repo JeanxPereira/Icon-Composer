@@ -7,10 +7,12 @@ import { Sidebar, SidebarActions } from "./Sidebar";
 import { Background, Canvas, EffectsMode, solidCss } from "./Canvas";
 import { Edit, Inspector, Pane } from "./Inspector";
 import { Menu, Menubar } from "./Menubar";
+import { snapshotBackdrop } from "./backdrop";
 import { ExportSheet } from "./ExportSheet";
-import { DEFAULT_TINT, groups, layers, Node, nodeAt, Platform, Rendition, RENDITIONS, resolve, Selection, supportedPlatforms, Tint, tintColor, writeScope } from "./doc";
+import { DEFAULT_TINT, MONO_MODES, groups, layers, Node, nodeAt, Platform, Rendition, RENDITIONS, resolve, Selection, supportedPlatforms, Tint, tintColor, writeScope } from "./doc";
 import {
   coreHistory,
+  coreBackdrop,
   coreImport,
   coreNode,
   coreOpen,
@@ -63,12 +65,23 @@ export default function App() {
   const [exporting, setExporting] = useState(false);
   const [grid, setGrid] = useState(false);
   const [snap, setSnap] = useState(true);
-  // O tint da rendicao Mono (popover "Options..." da barra de rendicoes).
-  // Ligado, o Mono e o Tinted Dark do alvo; desligado, a fatia `tinted` do
-  // documento desenhada em cor, como antes.
+  // O Mono e seus quatro modos (popover "Options..." da barra de rendicoes):
+  // Tinted Dark pela receita do tint; Clear Light/Dark e Tinted Light pela
+  // cadeia do Clear, que clareia o FUNDO sob a arte.
   const [tint, setTint] = useState<Tint>(DEFAULT_TINT);
-  const tintFor = (r: Rendition) => (r === "mono" && tint.on ? tintColor(tint) : undefined);
-  const tintKey = JSON.stringify(tint);
+  const tintFor = (r: Rendition) => (r === "mono" && tint.mode === "tinted-dark" ? tintColor(tint) : undefined);
+  const usesClear = rendition === "mono" && tint.mode !== "tinted-dark";
+  // A copia do fundo, enviada ao nucleo quando o Clear esta na tela; o
+  // contador diz que o nucleo ja a tem.
+  const [backdropRev, setBackdropRev] = useState(0);
+  const clearFor = (r: Rendition): [number, number, number] | undefined => {
+    if (r !== "mono" || tint.mode === "tinted-dark" || backdropRev === 0) return undefined;
+    const w = document.querySelector(".window")?.getBoundingClientRect();
+    const sq = document.querySelector(".stage .icon-wrap")?.getBoundingClientRect();
+    if (!w || !sq) return undefined;
+    return [sq.left - w.left, sq.top - w.top, sq.width];
+  };
+  const tintKey = JSON.stringify(tint) + `|${backdropRev}`;
   // O tema da casca: o do sistema, ou o escolhido em View > Appearance. So a
   // casca; o canvas mostra o icone na rendicao escolhida, como no alvo.
   const [theme, setTheme] = useState<"system" | "light" | "dark">(() => {
@@ -353,6 +366,7 @@ export default function App() {
       subdivisions: subdivisionsFor(px / 512),
       effects: effects !== "disabled",
       tint: tintFor(r),
+      clear: clearFor(r),
     });
     return frameToPng(f);
   };
@@ -532,7 +546,7 @@ export default function App() {
     const forPath = path;
     const size = tiled ? BASE_PX : fullPx;
     setBusy(true);
-    requestFrame("canvas", { size, appearance: appearanceOf(rendition), idiom: platform, subdivisions: subdivisionsFor(size / (512 * dpr)), effects: effects !== "disabled", tint: tintFor(rendition) })
+    requestFrame("canvas", { size, appearance: appearanceOf(rendition), idiom: platform, subdivisions: subdivisionsFor(size / (512 * dpr)), effects: effects !== "disabled", tint: tintFor(rendition), clear: clearFor(rendition) })
       .then((f) => {
         if (seq < shownSeq.current || pathRef.current !== forPath) return;
         shownSeq.current = seq;
@@ -541,7 +555,7 @@ export default function App() {
       })
       .catch((e) => e !== "substituido" && seq >= shownSeq.current && setError(String(e)))
       .finally(() => seq === frameSeq.current && setBusy(false));
-  }, [path, platform, rendition, fullPx, tiled, rev, effects, tintKey]);
+  }, [path, platform, rendition, fullPx, tiled, rev, effects, tintKey, usesClear ? JSON.stringify(view) : ""]);
 
   // O ladrilho: so a parte visivel, na resolucao da tela, pedida de novo a
   // cada rolagem ou zoom.
@@ -565,6 +579,7 @@ export default function App() {
         subdivisions: subdivisionsFor(zoom),
         effects: effects !== "disabled",
         tint: tintFor(rendition),
+        clear: clearFor(rendition),
       })
         .then((f) => alive && setTile({ ...f, rev }))
         .catch((e) => alive && e !== "substituido" && setError(String(e)));
@@ -591,6 +606,29 @@ export default function App() {
     };
   }, [path, rev, rendition, platform]);
 
+  const [winSize, setWinSize] = useState(`${window.innerWidth}x${window.innerHeight}`);
+  useEffect(() => {
+    const on = () => setWinSize(`${window.innerWidth}x${window.innerHeight}`);
+    window.addEventListener("resize", on);
+    return () => window.removeEventListener("resize", on);
+  }, []);
+  useEffect(() => {
+    if (!usesClear || !path) return;
+    const el = document.querySelector(".window") as HTMLElement | null;
+    if (!el) return;
+    let alive = true;
+    const timer = window.setTimeout(() => {
+      snapshotBackdrop(background, el)
+        .then((b) => (alive ? coreBackdrop(b.w, b.h, b.rgba) : undefined))
+        .then(() => alive && setBackdropRev((n) => n + 1))
+        .catch((e) => setError(String(e)));
+    }, 120);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [usesClear, path, JSON.stringify(background), theme, winSize]);
+
   // As miniaturas da barra de rendicoes, do mesmo nucleo, depois do canvas.
   useEffect(() => {
     if (!path || !doc) return;
@@ -602,7 +640,7 @@ export default function App() {
     // Espera a edicao assentar: um arraste nao refaz cinco miniaturas por passo.
     const timer = window.setTimeout(() => {
       for (const [key, idiom, appearance, r] of jobs) {
-        requestFrame(`thumb:${key}`, { size: THUMB, idiom, appearance, effects: effects !== "disabled", tint: tintFor(r) })
+        requestFrame(`thumb:${key}`, { size: THUMB, idiom, appearance, effects: effects !== "disabled", tint: tintFor(r), clear: clearFor(r) })
           .then((f) => alive && setThumbs((t) => ({ ...t, [key]: frameToDataUrl(f) })))
           .catch(() => {});
       }
@@ -695,7 +733,7 @@ export default function App() {
           platforms={doc ? supportedPlatforms(doc) : ["iOS"]}
           initial={{ platform, rendition }}
           render={renderPng}
-          renditionName={(r) => (r === "default" ? "Default" : r === "dark" ? "Dark" : tint.on ? "TintedDark" : "Mono")}
+          renditionName={(r) => (r === "default" ? "Default" : r === "dark" ? "Dark" : MONO_MODES.find((m) => m.id === tint.mode)!.file)}
           onDone={(err) => {
             setExporting(false);
             if (err) setError(err);

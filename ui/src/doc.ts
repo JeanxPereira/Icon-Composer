@@ -201,10 +201,21 @@ export function supportedPlatforms(doc: Node): Platform[] {
 // do SwiftUI entre elas e `[INF]` linear em sRGB, com as paradas igualmente
 // espacadas. `RenderingMode.tinted(with:)` guarda a cor com alfa 1 e o alfa
 // como `saturation` `[BIN]` (IconRendering 0x5A6F4).
-export type Tint = { on: boolean; position: number; alpha: number };
+// Os quatro modos do Mono (`InspectedTintMode {lightTint, darkTint,
+// lightClear, darkClear}` [BIN]). O padrao e Clear Light:
+// `Appearance.tinted.defaultRendition` (laudo de 19/09 §2.7).
+export type MonoMode = "clear-light" | "clear-dark" | "tinted-light" | "tinted-dark";
+// `file`: o nome da rendicao no arquivo exportado (tabela Kit 0x185438).
+export const MONO_MODES: { id: MonoMode; label: string; file: string }[] = [
+  { id: "clear-light", label: "Clear Light", file: "ClearLight" },
+  { id: "clear-dark", label: "Clear Dark", file: "ClearDark" },
+  { id: "tinted-light", label: "Tinted Light", file: "TintedLight" },
+  { id: "tinted-dark", label: "Tinted Dark", file: "TintedDark" },
+];
+export type Tint = { mode: MonoMode; position: number; alpha: number };
 // `tintSpectrumPosition = 0.75`, `tintAlpha = 0.625` `[BIN]`; o alfa anda em
 // 0.25...1 (`tintStrength = (tintAlpha - 0.25) / 0.75`).
-export const DEFAULT_TINT: Tint = { on: true, position: 0.75, alpha: 0.625 };
+export const DEFAULT_TINT: Tint = { mode: "clear-light", position: 0.75, alpha: 0.625 };
 export const TINT_SPECTRUM = ["#ff0e00", "#ff9b00", "#ffd400", "#00d721", "#0007ff", "#a100f2", "#ff0e00"];
 
 export function tintColor(t: Tint): [number, number, number, number] {

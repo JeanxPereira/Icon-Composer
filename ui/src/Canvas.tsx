@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Sym } from "./Sym";
-import { Platform, Rendition, RENDITIONS, Selection, Tint, TINT_SPECTRUM } from "./doc";
+import { MONO_MODES, Platform, Rendition, RENDITIONS, Selection, Tint, TINT_SPECTRUM } from "./doc";
 import { Frame, LayerRect } from "./core";
 import { Stage } from "./Stage";
 import { TrafficLights } from "./TrafficLights";
@@ -338,23 +338,22 @@ export function Canvas(p: Props) {
   );
 }
 
-// O popover de tinta do alvo (`RenditionBar._showTintedOptionsPopover`):
-// "Enable or disable tinted appearance", "Tint color" (a posicao no espectro) e
-// "Tint intensity" (o alfa, 0.25...1). Com o tint ligado o Mono e o Tinted Dark.
-// `[OBS]` Tinted Light e Clear: a cor final deles e composta fora do
-// IconRendering (QuartzCore), e nao ha render deles aqui.
+// O popover de tinta do alvo (`RenditionBar._showTintedOptionsPopover`,
+// "Opens tint options"): os quatro modos do Mono (`InspectedTintMode`), "Tint
+// color" (a posicao no espectro) e "Tint intensity" (o alfa, 0.25...1). A cor e
+// a intensidade so desenham no Tinted Dark: no Tinted Light e no Clear o alvo
+// nao le a cor do tint no caminho principal (laudo de 30/09 §1.3).
 function TintPopover({ tint, onTint, onClose }: { tint: Tint; onTint: (t: Tint) => void; onClose: () => void }) {
+  const tinted = tint.mode === "tinted-dark";
   return (
     <div className="popover tint-pop" onMouseLeave={onClose}>
-      <label className="tint-row">
-        <span>Tinted</span>
-        <input
-          type="checkbox"
-          title="Enable or disable tinted appearance"
-          checked={tint.on}
-          onChange={(e) => onTint({ ...tint, on: e.target.checked })}
-        />
-      </label>
+      <div className="tint-modes">
+        {MONO_MODES.map((m) => (
+          <button key={m.id} className={tint.mode === m.id ? "on" : ""} onClick={() => onTint({ ...tint, mode: m.id })}>
+            {m.label}
+          </button>
+        ))}
+      </div>
       <label className="tint-row col">
         <span>Tint color</span>
         <input
@@ -365,7 +364,7 @@ function TintPopover({ tint, onTint, onClose }: { tint: Tint; onTint: (t: Tint) 
           max={1}
           step={0.005}
           value={tint.position}
-          disabled={!tint.on}
+          disabled={!tinted}
           onChange={(e) => onTint({ ...tint, position: Number(e.target.value) })}
         />
       </label>
@@ -377,10 +376,11 @@ function TintPopover({ tint, onTint, onClose }: { tint: Tint; onTint: (t: Tint) 
           max={1}
           step={0.005}
           value={tint.alpha}
-          disabled={!tint.on}
+          disabled={!tinted}
           onChange={(e) => onTint({ ...tint, alpha: Number(e.target.value) })}
         />
       </label>
+      {!tinted && <p className="tint-note">Cor e intensidade valem no Tinted Dark.</p>}
     </div>
   );
 }
