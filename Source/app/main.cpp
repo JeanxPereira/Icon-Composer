@@ -8,7 +8,7 @@
 // through the synchronous scheduler, so the pixels and the round-trip are both
 // answered on a machine nobody is looking at.
 #include "Source/IconComposerKit/SelfTest.h"
-#include "Source/app/OnyxPorts.h"
+#include "Source/app/AppPorts.h"
 #include "Source/app/Window.h"
 
 #include <cstdio>

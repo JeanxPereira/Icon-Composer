@@ -1,16 +1,17 @@
 #pragma once
-// The Kit's two ports, made of Onyx and of the RenderBox device.
+// The Kit's two ports, made of the app's own window and of the RenderBox device.
 //
 // Spec 13/09 §3: the Kit declares `TextureSink` and `RenderScheduler` and never
 // implements them. Here is where they become a real GPU upload and a real
-// worker thread -- and this file is on the only side of the wall that is
-// allowed to say the word Onyx.
+// worker thread -- and this file is on the only side of the wall that knows
+// there is a window at all.
 #include "Source/IconComposerKit/Ports.h"
 #include "Source/RenderBox/Device.h"
 #include "Source/RenderBox/RenderCache.h"
 
-#include <Onyx/App/TexturePool.h>
-#include <Onyx/Services/Jobs.h>
+#include "Source/app/Dialogs.h"
+#include "Source/app/JobQueue.h"
+#include "Source/app/TexturePool.h"
 
 #include <condition_variable>
 #include <filesystem>
@@ -20,19 +21,19 @@
 
 namespace icapp {
 
-class OnyxTextureSink : public ick::TextureSink {
+class PoolTextureSink : public ick::TextureSink {
 public:
-    explicit OnyxTextureSink(Onyx::Rendering::VkContext& ctx) : pool_(ctx) {}
+    explicit PoolTextureSink(const Gpu& gpu) : pool_(gpu) {}
     ImTextureID create(std::uint32_t w, std::uint32_t h, const std::uint8_t* rgba8) override;
     bool update(ImTextureID id, std::uint32_t w, std::uint32_t h, const std::uint8_t* rgba8) override;
-    void remove(ImTextureID id) override { pool_.Remove(id); }
+    void remove(ImTextureID id) override { pool_.remove(id); }
     // Once per drawn frame. The pool retires nothing until this has walked
-    // `kFramesInFlight` past the Remove() -- a frame still on the GPU may hold
-    // a draw command against the id (Onyx/App/TexturePool.h).
-    void advanceFrame() { pool_.AdvanceFrame(); }
+    // `kFramesInFlight` past the remove() -- a frame still on the GPU may hold
+    // a draw command against the id (TexturePool.h).
+    void advanceFrame() { pool_.advanceFrame(); }
 
 private:
-    Onyx::App::TexturePool pool_;
+    TexturePool pool_;
 };
 
 // One lane, one device -- and the lane is NOT the whole of the exclusion
@@ -58,7 +59,7 @@ private:
 // The latest request replaces any earlier one still pending.
 class JobScheduler : public ick::RenderScheduler {
 public:
-    JobScheduler(Onyx::Services::JobQueue& jobs, rb::Device& device) : jobs_(jobs), device_(device) {}
+    JobScheduler(JobQueue& jobs, rb::Device& device) : jobs_(jobs), device_(device) {}
     // Waits for a render that is ON a worker right now. The job's Work closure
     // holds `this` and `device_`, and the JobQueue outlives this object (the
     // Window owns the Workspace that owns it), so without the wait a render in
@@ -70,7 +71,7 @@ public:
 
 private:
     void submitPending();
-    Onyx::Services::JobQueue& jobs_;
+    JobQueue& jobs_;
     rb::Device& device_;
     std::mutex mutex_;
     std::condition_variable idle_;
@@ -106,13 +107,14 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
 // caller cannot tell them apart otherwise, and the difference is the whole
 // diagnosis when someone reports that "the menu does nothing" -- measured
 // 18/09 against a report of exactly that, where the cause turned out to be a
-// DIFFERENT File menu (Onyx draws one above ours) and not this port at all.
+// DIFFERENT File menu (the old toolkit drew one above ours) and not this
+// port at all.
 // A probe of this function's COM path, everything up to `Show()`, passes both
 // with a virgin apartment and with the one GLFW has already entered.
 //
-// The picker itself is now Onyx's (`SystemOpenFolderDialog`, UIHelpers.h) --
-// asking for a DIRECTORY is not an icon problem, it is every host whose
-// document is a bundle. What stays here is the part that is about `.icon`:
+// The picker itself is `openFolderDialog` (Dialogs.h) -- asking for a
+// DIRECTORY is not an icon problem, it is every host whose document is a
+// bundle. What stays here is the part that is about `.icon`:
 //
 // `startIn` is the folder whose CONTENTS the dialog lists, and it decides
 // whether this dialog is usable at all. Pass the PARENT of a bundle, never a

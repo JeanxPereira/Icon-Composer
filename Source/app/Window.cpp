@@ -5,16 +5,18 @@
 #include "Source/IconComposerKit/RenderCoordinator.h"
 #include "Source/IconComposerKit/Renditions.h"
 #include "Source/IconComposerKit/Session.h"
+#include "Source/IconComposerKit/Theme.h"
 #include "Source/IconComposerKit/WindowLayout.h"
-#include "Source/app/OnyxPorts.h"
+#include "Source/app/AppPorts.h"
+#include "Source/app/Dialogs.h"
+#include "Source/app/JobQueue.h"
+#include "Source/app/NativeWindow.h"
+#include "Source/app/Shell.h"
 
-#include <Onyx/App/App.h>
-#include <Onyx/App/IPanel.h>
-#include <Onyx/App/UIHelpers.h>
-#include <Onyx/App/Window.h>
-#include <Onyx/Services/Threading.h>
 #include "imgui.h"
 #include "imgui_internal.h"
+#define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
 
 #include <algorithm>
 #include <cmath>
@@ -35,7 +37,7 @@ namespace {
 namespace fs = std::filesystem;
 
 // A `.icon` is a DIRECTORY (spec 13/09 §4), and the dialog that asks for one
-// is `SystemOpenBundleDialog` (OnyxPorts.h), which on Windows hands back the
+// is `SystemOpenBundleDialog` (AppPorts.h), which on Windows hands back the
 // folder itself. This stays because the answer is not a bundle on every path
 // into it: the fallback dialog off Windows still returns a FILE, and a file
 // inside the bundle names the bundle -- picking `Foo.icon/icon.json` opens
@@ -49,12 +51,9 @@ fs::path bundleDirOf(const fs::path& picked) {
 
 // Everything the panels share, owned by run() so destruction order is stated
 // once: the coordinator returns its texture before the sink that owns the pool
-// goes, and the sink goes before the VkContext (the window outlives this).
+// goes, and the sink goes before the Shell's device (the Shell outlives this).
 struct State {
-    // The window handle, kept because `glfwGetCurrentContext()` is an OpenGL
-    // call and returns null in a Vulkan app -- Quit through it would silently
-    // do nothing.
-    GLFWwindow* window = nullptr;
+    Shell* shell = nullptr;
     std::optional<ick::Session> session;
     // O MESMO dispositivo que o agendador usa. A exportação renderiza na
     // thread principal (ver `drainExport`), e não por um `RenderScheduler`:
@@ -77,7 +76,7 @@ struct State {
     // `drainExport` agora arrenda o dispositivo do multiplexador
     // (`SharedScheduler::tryLease`, Renditions.h) antes de tocar nele.
     rb::Device* device = nullptr;
-    std::unique_ptr<OnyxTextureSink> sink;
+    std::unique_ptr<PoolTextureSink> sink;
     std::unique_ptr<JobScheduler> scheduler;
     // DOIS CONSUMIDORES, UM AGENDADOR (T4). O canal do `RenderScheduler` é de
     // um resultado por vez e `JobScheduler` é UMA raia e UM dispositivo: um
@@ -89,7 +88,6 @@ struct State {
     std::unique_ptr<ick::RenderCoordinator> coordinator;
     std::unique_ptr<ick::RenditionThumbnails> thumbs;
     ick::MenuActions actions;
-    Onyx::App::App* app = nullptr;
     bool quit = false;
     // WHY A DROP IS QUEUED AND NOT ACTED ON. GLFW delivers it from inside
     // `glfwPollEvents`, i.e. mid-frame, and `adopt()` destroys the session the
@@ -175,7 +173,7 @@ struct State {
         //
         // E O ARRENDAMENTO DEVOLVE-SE SOZINHO (revisão 19/09, N3). Entre pegar
         // e devolver corre `renderExportFile`, que a 1024 px aloca o ladrilho
-        // inteiro -- o MESMO escape que `OnyxPorts.cpp` já nomeia no `Work` do
+        // inteiro -- o MESMO escape que `AppPorts.cpp` já nomeia no `Work` do
         // job ("`bad_alloc` é o escape que se espera de verdade aqui") e por
         // causa do qual aquele lado tem um `struct Release` e um `try/catch`.
         // Um `throw` aqui, com o par cru, deixava `leased_` de pé para sempre:
@@ -286,7 +284,7 @@ struct State {
         ick::MenuActions a = actions;
         actions = {};
         if (a.newDocument) {
-            const std::string p = SystemSaveFileDialog("Untitled.icon");
+            const std::string p = saveFileDialog("Untitled.icon").string();
             if (!p.empty()) {
                 auto s = ick::Session::create(p);
                 if (!s) {
@@ -301,7 +299,7 @@ struct State {
             std::string why;
             // ONDE O SELETOR ABRE. O PAI do bundle, nunca o bundle: dentro
             // dele a lista mostra o `Assets/` e o `.icon` nao esta na tela
-            // para ser escolhido (OnyxPorts.h). Com um documento aberto, o
+            // para ser escolhido (AppPorts.h). Com um documento aberto, o
             // vizinho dele e o palpite certo -- os `.icon` de uma pessoa
             // moram juntos. Sem documento, o ultimo lugar de onde abrimos; e
             // sem isso, vazio, que deixa o dialogo lembrar sozinho.
@@ -316,9 +314,7 @@ struct State {
             }
         }
         // A `.icon` is a folder, so DRAGGING IT IN is the gesture the format
-        // actually suggests -- and it is the one path into the document that
-        // does not depend on finding the right `File` menu (Onyx draws one of
-        // its own, above ours, whose Open cannot accept a folder at all).
+        // actually suggests.
         if (dropped) {
             const fs::path p = *dropped;
             dropped.reset();
@@ -335,7 +331,7 @@ struct State {
             else fail("save: " + r);
         }
         if (a.saveAs && session) {
-            const std::string p = SystemSaveFileDialog(session->bundle().path().filename().string());
+            const std::string p = saveFileDialog(session->bundle().path().filename().string()).string();
             if (!p.empty()) {
                 const std::string r = session->saveAs(p);
                 if (r.empty()) trouble.clear();
@@ -354,10 +350,10 @@ struct State {
         // copia onde esta, que `unusedAssets()` nomeia no Diagnostics.
         if (a.importAsset && session) {
             // Os filtros sao os dois formatos que o motor le (doc 04), mais o
-            // "All Files" que o proprio Onyx acrescenta -- quem tem um `.SVG`
+            // "All Files" que `openFileDialog` acrescenta -- quem tem um `.SVG`
             // em maiusculas ou um arquivo sem extensao continua podendo
             // escolher, e `importAsset` recusa o que nao for arquivo.
-            const std::string picked = SystemOpenFileDialog({{"Artwork (svg, png)", {"svg", "png"}}});
+            const std::string picked = openFileDialog({{"Artwork (svg, png)", {"svg", "png"}}}).string();
             if (!picked.empty()) {
                 const fs::path file(picked);
                 const std::string why = session->bundle().importAsset(file);
@@ -385,7 +381,7 @@ struct State {
                 sheet.status = "Nothing to export.";
                 sheet.busy = false;
             } else {
-                Onyx::App::FolderDialogOptions options;
+                FolderDialogOptions options;
                 options.title = "Export icon as image";
                 // Ao lado do bundle: e onde os arquivos de uma pessoa moram.
                 options.startIn = session->bundle().path().parent_path();
@@ -393,7 +389,7 @@ struct State {
                 // sem chave, um Save As em outro canto decide onde este abre.
                 options.mruKey = "icon-composer/export-image";
                 std::string why;
-                const fs::path dir = Onyx::App::SystemOpenFolderDialog(options, &why);
+                const fs::path dir = openFolderDialog(options, &why);
                 if (dir.empty()) {
                     sheet.busy = false;
                     if (why.empty()) {
@@ -420,16 +416,19 @@ struct State {
         if (a.quit) quit = true;
     }
 
-    void title() {
-        if (!app) return;
-        auto* config = app->getConfig();
-        if (!config) return;
+    // O titulo da janela do sistema (a barra de tarefas, o Alt+Tab). O que a
+    // barra desenhada mostra e `titleBarText`, sem o nome do app.
+    std::string title() const {
         std::string t = "Icon Composer";
         if (session) {
             t += " - " + session->bundle().path().filename().string();
             if (session->isDirty()) t += " *";
         }
-        config->windowTitle = t;
+        return t;
+    }
+    std::string titleBarText() const {
+        if (!session) return "Icon Composer";
+        return session->bundle().path().stem().string();
     }
 };
 
@@ -499,134 +498,97 @@ void clampDockedWidths() {
     capOne(inspectorNode, ick::capPanelShare(inspectorNode->Size.x, total - sidebar));
 }
 
-struct LayersPanel : Onyx::App::IPanel {
-    explicit LayersPanel(State& s) : st(s) {}
-    void Draw() override {
-        if (st.session) {
-            ick::drawLayers(*st.session);
-        } else {
-            ImGui::Begin(ick::kLayersWindow);
-            ImGui::TextDisabled("No document");
-            ImGui::End();
-        }
-    }
-    std::string_view getName() const override { return ick::kLayersWindow; }
-    State& st;
-};
+// ---- os paineis, na ordem em que desenham -----------------------------------
 
-// Where a dropped path goes. See the note at the `glfwSetDropCallback` call:
-// the GLFW window's user pointer belongs to Onyx, and a GLFW callback carries
-// no user data of its own.
+void drawLayersPanel(State& st) {
+    if (st.session) {
+        ick::drawLayers(*st.session);
+    } else {
+        ImGui::Begin(ick::kLayersWindow);
+        ImGui::TextDisabled("No document");
+        ImGui::End();
+    }
+}
+
+// Where a dropped path goes. GLFW passes no user data to a callback, so the one
+// window this process owns is reached through a file-static; `run()` is the
+// only writer and there is exactly one `State` per process.
 State* g_dropTarget = nullptr;
 
-struct CanvasPanel : Onyx::App::IPanel {
-    explicit CanvasPanel(State& s) : st(s) {}
-    void Draw() override {
-        if (st.coordinator && st.session) {
-            // The coordinator ticks BEFORE the canvas draws: it may create or
-            // replace the texture the canvas is about to show (spec 13/09 §6).
-            st.coordinator->tick(*st.session);
-            ick::drawCanvas(*st.session, st.coordinator->view(), st.actions, st.trouble);
-            // FORA da janela do canvas, de proposito: um popup nasce no stack
-            // de IDs de quem o abre, e este modal cobre a janela inteira --
-            // ele nao e do canvas, so e pedido pelo menu que o canvas
-            // desenha. Chamado aqui porque este painel e o unico que existe
-            // com documento aberto e sem o qual o menu tambem nao existiria.
-            ick::drawExportSheet(*st.session, st.actions);
-        } else {
-            // With no document the Kit's menu bar has nothing to hang from, so
-            // the empty canvas carries the two items that can still be acted on.
-            ImGui::Begin(ick::kCanvasWindow, nullptr, ImGuiWindowFlags_MenuBar);
-            if (ImGui::BeginMenuBar()) {
-                if (ImGui::BeginMenu("File")) {
-                    if (ImGui::MenuItem("New...", "Ctrl+N")) st.actions.newDocument = true;
-                    if (ImGui::MenuItem("Open...", "Ctrl+O")) st.actions.open = true;
-                    if (ImGui::MenuItem("Quit", "Ctrl+Q")) st.actions.quit = true;
-                    ImGui::EndMenu();
-                }
-                ImGui::EndMenuBar();
-            }
-            // A BUTTON AND NOT A LABEL. `TextDisabled` read as a caption for a
-            // window that had nothing to press, and the only working Open was
-            // in the menu above -- next to Onyx's own `File > Open`, which is
-            // drawn higher, looks more like the one you want, and cannot take
-            // a folder. The empty canvas now carries the action itself.
-            if (ImGui::Button("Open a .icon bundle...")) st.actions.open = true;
-            ImGui::SameLine();
-            ImGui::TextDisabled("or drag one in");
-            if (!st.trouble.empty()) {
-                ImGui::Spacing();
-                ImGui::TextWrapped("%s", st.trouble.c_str());
-            }
-            ImGui::End();
-        }
+void drawCanvasPanel(State& st) {
+    if (st.coordinator && st.session) {
+        // The coordinator ticks BEFORE the canvas draws: it may create or
+        // replace the texture the canvas is about to show (spec 13/09 §6).
+        st.coordinator->tick(*st.session);
+        ick::drawCanvas(*st.session, st.coordinator->view(), st.actions, st.trouble);
+        // FORA da janela do canvas, de proposito: um popup nasce no stack
+        // de IDs de quem o abre, e este modal cobre a janela inteira --
+        // ele nao e do canvas, so e pedido pelo menu que o canvas desenha.
+        ick::drawExportSheet(*st.session, st.actions);
+        return;
     }
-    std::string_view getName() const override { return ick::kCanvasWindow; }
-    State& st;
-};
+    // With no document the Kit's menu bar has nothing to hang from, so the
+    // empty canvas carries the items that can still be acted on.
+    ImGui::Begin(ick::kCanvasWindow, nullptr, ImGuiWindowFlags_MenuBar);
+    if (ImGui::BeginMenuBar()) {
+        if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("New...", "Ctrl+N")) st.actions.newDocument = true;
+            if (ImGui::MenuItem("Open...", "Ctrl+O")) st.actions.open = true;
+            if (ImGui::MenuItem("Quit", "Ctrl+Q")) st.actions.quit = true;
+            ImGui::EndMenu();
+        }
+        ImGui::EndMenuBar();
+    }
+    // Os atalhos valem sem documento tambem; com documento quem os le e o
+    // menu do Kit (MenuBar.cpp).
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_N, ImGuiInputFlags_RouteGlobal)) st.actions.newDocument = true;
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_O, ImGuiInputFlags_RouteGlobal)) st.actions.open = true;
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Q, ImGuiInputFlags_RouteGlobal)) st.actions.quit = true;
+    if (ImGui::Button("Open a .icon bundle...")) st.actions.open = true;
+    ImGui::SameLine();
+    ImGui::TextDisabled("or drag one in");
+    if (!st.trouble.empty()) {
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Text, ick::theme::kDanger);
+        ImGui::TextWrapped("%s", st.trouble.c_str());
+        ImGui::PopStyleColor();
+    }
+    ImGui::End();
+}
 
 // A BARRA DE RENDITIONS (T4). Painel próprio, ancorado acima do canvas em
 // `defaultLayout`: o alvo a desenha fora do canvas, e uma janela própria é
 // também o que deixa fechá-la num documento pesado, quando as miniaturas não
 // valem o render.
-struct RenditionsPanel : Onyx::App::IPanel {
-    explicit RenditionsPanel(State& s) : st(s) {}
-    void Draw() override {
-        if (st.session) {
-            // `thumbs` pode faltar num caminho sem sessão; a barra aceita nulo
-            // e desenha a forma sem os pixels, dizendo isso na nota.
-            ick::drawRenditions(*st.session, st.thumbs.get());
-        } else {
-            ImGui::Begin(ick::kRenditionsWindow);
-            ImGui::TextDisabled("No document");
-            ImGui::End();
-        }
+void drawRenditionsPanel(State& st) {
+    if (st.session) {
+        // `thumbs` pode faltar num caminho sem sessão; a barra aceita nulo
+        // e desenha a forma sem os pixels, dizendo isso na nota.
+        ick::drawRenditions(*st.session, st.thumbs.get());
+    } else {
+        ImGui::Begin(ick::kRenditionsWindow);
+        ImGui::TextDisabled("No document");
+        ImGui::End();
     }
-    std::string_view getName() const override { return ick::kRenditionsWindow; }
-    State& st;
-};
+}
 
-struct InspectorPanel : Onyx::App::IPanel {
-    explicit InspectorPanel(State& s) : st(s) {}
-    void Draw() override {
-        if (st.session) {
-            ick::drawInspector(*st.session, st.actions);
-        } else {
-            ImGui::Begin(ick::kInspectorWindow);
-            ImGui::End();
-        }
+void drawInspectorPanel(State& st) {
+    if (st.session) {
+        ick::drawInspector(*st.session, st.actions);
+    } else {
+        ImGui::Begin(ick::kInspectorWindow);
+        ImGui::End();
     }
-    std::string_view getName() const override { return ick::kInspectorWindow; }
-    State& st;
-};
+}
 
-struct DiagnosticsPanel : Onyx::App::IPanel {
-    explicit DiagnosticsPanel(State& s) : st(s) {}
-    void Draw() override {
-        if (st.session && st.coordinator) {
-            ick::drawDiagnostics(*st.session, st.coordinator->view(), st.trouble);
-        } else {
-            ImGui::Begin(ick::kDiagnosticsWindow);
-            ImGui::End();
-        }
-        // End of frame work, here because this panel is registered LAST: `act()`
-        // can replace or close the session, and a swap mid-frame would leave the
-        // panels after it drawing against state that changed under them.
-        // `advanceFrame` likewise belongs after every upload this frame made.
-        st.sink->advanceFrame();
-        // Depois de todo painel ter desenhado: os nos de dock ja existem e ja
-        // foram redimensionados por este quadro.
-        clampDockedWidths();
-        st.act();
-        // DEPOIS de `act()`, que e quem enfileira: assim o primeiro item ja
-        // tem o quadro do anuncio neste mesmo frame, e nao no seguinte.
-        st.drainExport();
-        st.title();
-        if (st.quit && st.window) glfwSetWindowShouldClose(st.window, 1);
+void drawDiagnosticsPanel(State& st) {
+    if (st.session && st.coordinator) {
+        ick::drawDiagnostics(*st.session, st.coordinator->view(), st.trouble);
+    } else {
+        ImGui::Begin(ick::kDiagnosticsWindow);
+        ImGui::End();
     }
-    std::string_view getName() const override { return ick::kDiagnosticsWindow; }
-    State& st;
-};
+}
 
 // `[BIN]` As larguras dos dois paineis sao as do alvo, lidas em 19/09 de
 // `WindowLayoutConstants` (laudo §4.2) e transcritas em
@@ -667,10 +629,9 @@ struct DiagnosticsPanel : Onyx::App::IPanel {
 // `canvas_fit_fits_exactly_and_centres` afirma hoje que o Fit encosta EXATO
 // no eixo curto. Trocar isso e uma decisao com teste proprio, nao um efeito
 // colateral desta linha.
-void defaultLayout(ImGuiID dockspaceId) {
+void defaultLayout(ImGuiID dockspaceId, ImVec2 work) {
     ImGui::DockBuilderRemoveNode(dockspaceId);
     ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
-    const ImVec2 work = ImGui::GetMainViewport()->WorkSize;
     ImGui::DockBuilderSetNodeSize(dockspaceId, work);
 
     const float total = work.x > 1.0f ? work.x : 1.0f;
@@ -701,176 +662,201 @@ void defaultLayout(ImGuiID dockspaceId) {
     ImGui::DockBuilderDockWindow(ick::kRenditionsWindow, top);
     ImGui::DockBuilderDockWindow(ick::kCanvasWindow, centre);
     ImGui::DockBuilderDockWindow(ick::kInspectorWindow, right);
-    // "Log" is Onyx's and this tree does not create it, but it is worth
-    // keeping -- it prints the adapter and the swapchain. Undocked it floats
-    // over the Layers tree, so it goes to the bottom as a tab, and
-    // Diagnostics is docked LAST so it is the tab that comes up selected.
-#ifndef ONYX_HAS_DOCUMENT_WINDOW_VISIBILITY
-    // Onyx's "Viewer" is its DocumentWindow's tab host. Our documents are the
-    // Session's and never become tabs there, so it can only ever say "No
-    // documents open" -- which, next to an open icon, reads as the open
-    // having failed. The registrar hides it outright; on an SDK pin that
-    // predates `SetVisible` it cannot be hidden, and then docking it here at
-    // least keeps it from floating over the Layers tree.
-    ImGui::DockBuilderDockWindow("Viewer", bottom);
-#endif
-    ImGui::DockBuilderDockWindow("Log", bottom);
     ImGui::DockBuilderDockWindow(ick::kDiagnosticsWindow, bottom);
     ImGui::DockBuilderFinish(dockspaceId);
 }
 
 }  // namespace
 
+namespace {
+
+// ---- a barra de titulo ------------------------------------------------------
+//
+// As tres luzes do macOS a esquerda e o nome do documento no meio, como no
+// Tauri (ui/src/TrafficLights.tsx). Geometria do alvo: botao de 14 pt, 9 pt
+// entre eles, a primeira a 16 pt da borda. O glifo so aparece com o mouse
+// sobre o GRUPO, as tres juntas; o ponto de "nao salvo" fica sempre.
+void drawTrafficLights(Shell& shell, bool dirty, float barH) {
+    const float k = ImGui::GetStyle().FontScaleDpi;
+    const float d = 14.0f * k, gap = 9.0f * k, left = 16.0f * k;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 origin = ImGui::GetWindowPos();
+    const float cy = origin.y + barH * 0.5f;
+    const ImVec2 groupMin(origin.x + left, cy - d * 0.5f);
+    const ImVec2 groupMax(origin.x + left + 3 * d + 2 * gap, cy + d * 0.5f);
+    const bool groupHover = ImGui::IsMouseHoveringRect(groupMin, groupMax, false);
+    const bool focused = shell.focused();
+
+    struct Light {
+        const char* id;
+        ImU32 body, glyph;
+    };
+    const Light lights[3] = {
+        {"##close", IM_COL32(0xff, 0x5f, 0x57, 255), IM_COL32(0x4d, 0x00, 0x00, 200)},
+        {"##minimize", IM_COL32(0xfe, 0xbc, 0x2e, 255), IM_COL32(0x99, 0x57, 0x00, 200)},
+        {"##zoom", IM_COL32(0x28, 0xc8, 0x40, 255), IM_COL32(0x00, 0x65, 0x00, 200)},
+    };
+    for (int i = 0; i < 3; ++i) {
+        const ImVec2 c(groupMin.x + d * 0.5f + i * (d + gap), cy);
+        ImGui::SetCursorScreenPos(ImVec2(c.x - d * 0.5f, c.y - d * 0.5f));
+        const bool clicked = ImGui::InvisibleButton(lights[i].id, ImVec2(d, d));
+        const bool held = ImGui::IsItemActive();
+        // Fora de foco, cinza -- menos com o mouse em cima, como no sistema.
+        const ImU32 body = focused || groupHover ? lights[i].body : IM_COL32(0x4a, 0x4a, 0x4e, 255);
+        dl->AddCircleFilled(c, d * 0.5f, body, 24);
+        if (held) dl->AddCircleFilled(c, d * 0.5f, IM_COL32(0, 0, 0, 50), 24);
+        const ImU32 g = lights[i].glyph;
+        const float r = d * 0.22f;
+        if (i == 0 && dirty && !groupHover) {
+            dl->AddCircleFilled(c, d * 0.16f, g, 12);
+        } else if (groupHover) {
+            if (i == 0) {
+                dl->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), g, 1.3f * k);
+                dl->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y - r), g, 1.3f * k);
+            } else if (i == 1) {
+                dl->AddLine(ImVec2(c.x - r * 1.2f, c.y), ImVec2(c.x + r * 1.2f, c.y), g, 1.5f * k);
+            } else {
+                dl->AddTriangleFilled(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r * 0.5f, c.y - r),
+                                      ImVec2(c.x - r, c.y + r * 0.5f), g);
+                dl->AddTriangleFilled(ImVec2(c.x + r, c.y + r), ImVec2(c.x - r * 0.5f, c.y + r),
+                                      ImVec2(c.x + r, c.y - r * 0.5f), g);
+            }
+        }
+        if (clicked) {
+            if (i == 0) shell.close();
+            else if (i == 1) shell.minimize();
+            else shell.toggleMaximize();
+        }
+    }
+}
+
+// A janela hospedeira: a barra de titulo em cima e o dockspace embaixo. O
+// nome dela e o que `NativeWindow` reconhece como "barra", para arrastar.
+void drawHost(State& st, Shell& shell) {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float barH = ick::theme::kTitleBarH * ImGui::GetStyle().FontScaleDpi;
+    shell.setTitleBarHeight(barH);
+
+    ImGui::SetNextWindowPos(vp->WorkPos);
+    ImGui::SetNextWindowSize(vp->WorkSize);
+    ImGui::SetNextWindowViewport(vp->ID);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                   ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                   ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoSavedSettings;
+    ImGui::Begin(NativeWindow::kHostWindow, nullptr, flags);
+    ImGui::PopStyleVar(3);
+
+    const bool dirty = st.session && st.session->isDirty();
+    drawTrafficLights(shell, dirty, barH);
+
+    // O titulo, centrado na JANELA e nao no que sobra depois das luzes.
+    const std::string text = st.titleBarText();
+    const ImVec2 ts = ImGui::CalcTextSize(text.c_str());
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 origin = ImGui::GetWindowPos();
+    dl->AddText(ImVec2(origin.x + (vp->WorkSize.x - ts.x) * 0.5f, origin.y + (barH - ts.y) * 0.5f),
+                ick::theme::u32(shell.focused() ? ick::theme::kText : ick::theme::kText3), text.c_str());
+    dl->AddLine(ImVec2(origin.x, origin.y + barH - 0.5f),
+                ImVec2(origin.x + vp->WorkSize.x, origin.y + barH - 0.5f), ick::theme::u32(ick::theme::kSep));
+
+    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + barH));
+    const ImGuiID dockspace = ImGui::GetID("IconComposerDock");
+    // Sem layout salvo (primeiro uso, ou `imgui.ini` apagado), o do alvo.
+    if (!ImGui::DockBuilderGetNode(dockspace))
+        defaultLayout(dockspace, ImVec2(vp->WorkSize.x, vp->WorkSize.y - barH));
+    ImGui::DockSpace(dockspace, ImVec2(0, 0), ImGuiDockNodeFlags_None);
+    ImGui::End();
+}
+
+}  // namespace
+
 int run(const fs::path& initial) {
     // Validation off: nobody here is checking the driver, and the tower's
-    // default (on) costs every frame (spec 13/09 §6). Two VkInstances in one
-    // process -- Onyx's and RenderBox's -- is that section's decision too.
+    // default (on) costs every frame (spec 13/09 §6).
     //
-    // AND WHAT MAKES THAT SAFE IS NOT THIS LINE. It is that RenderBox reaches
-    // every device-level entry point through a table loaded from ITS OWN device
-    // (`volkLoadDeviceTable`, Source/RenderBox/VulkanApi.h). Onyx calls
-    // `volkLoadDevice` (VkContext.cpp:362), which owns volk's GLOBAL table for
-    // the rest of the process; a second device that read that table would post
-    // this render to ONYX's device, and post it without crashing. So the
-    // condition is exact and it is checkable: this second device is legal only
-    // while `IC_RB_DEVICE_FUNCTIONS` names every device-level function the tower
-    // calls. Writing a bare `vkFoo(device, ...)` anywhere in RenderBox -- rather
-    // than `api().vkFoo(...)` -- compiles in both builds and re-opens the hole in
-    // the UI build alone, where nothing would report it.
-    //
-    // This was challenged on 15/09 by a branch that adopted Onyx's device
-    // instead, on the premise that one dispatch table per process leaves no
-    // choice. Measured and rejected: laudo 2026-09-15-device-do-onyx.md.
+    // DOIS DISPOSITIVOS NO PROCESSO: o da tela (Shell) e este, o do render. A
+    // exportacao e os ladrilhos do canvas ficam longe da fila da swapchain, e
+    // os pixels passam de um para o outro pela CPU (TexturePool). Sem volk
+    // desde 30/09, cada um chama o loader com o proprio `VkDevice`; a tabela
+    // por dispositivo da RenderBox (Source/RenderBox/VulkanApi.h) continua
+    // valendo, so deixou de ser a unica coisa entre os dois.
     auto device = rb::Device::create(rb::DeviceOptions{.validation = false});
     if (!device) {
         std::fprintf(stderr, "iconcomposer: no Vulkan device: %s\n", device.error().c_str());
         return 2;
     }
 
-    Onyx::Threading::MarkMainThread();
-    Onyx::App::Window::initNative();
-    Onyx::App::Window window;
+    std::string why;
+    std::unique_ptr<Shell> shell = Shell::create("Icon Composer", &why);
+    if (!shell) {
+        std::fprintf(stderr, "iconcomposer: no window: %s\n", why.c_str());
+        return 2;
+    }
 
+    // A ordem de destruicao e a inversa desta: o estado (e com ele o
+    // coordenador, que devolve a textura) antes do pool, o pool antes da fila
+    // de trabalho, e tudo antes do Shell, que e dono do dispositivo da tela.
+    JobQueue jobs;
     State state;
-    state.window = window.getGLFWwindow();
+    state.shell = shell.get();
     // O dispositivo da exportacao e o mesmo do agendador -- ver `State::device`.
     state.device = &*device;
-    state.sink = std::make_unique<OnyxTextureSink>(window.vkContext());
-    state.scheduler = std::make_unique<JobScheduler>(window.workspace().Jobs(), *device);
+    state.sink = std::make_unique<PoolTextureSink>(shell->gpu());
+    state.scheduler = std::make_unique<JobScheduler>(jobs, *device);
     // O multiplexador vive tanto quanto o agendador, e não por documento: ele
     // não guarda nada do documento, só de quem é o render em voo.
     state.mux = std::make_unique<ick::SharedScheduler>(*state.scheduler);
 
-    // DROPPING A `.icon` ON THE WINDOW OPENS IT. Onyx installs an EMPTY drop
-    // callback of its own (`Source/App/Window.cpp:191` on the dddce38
-    // checkout), so until now every drop was swallowed without a trace. This
-    // replaces it: GLFW keeps one callback per window and the last writer
-    // wins, so this must run after the `Window` constructor.
-    //
-    // Only the FIRST path is taken. A multi-selection drop has no meaning for
-    // an editor that holds one document, and picking one silently beats
-    // opening the last of several.
-    // THE USER POINTER IS NOT OURS. Onyx stores its own `Window*` there
-    // (`Source/App/Window.cpp:305`) and casts it back in three callbacks
-    // (:310, :319, :404); writing ours over it made those read a `State` as a
-    // `Window` and the process died on the first resize -- measured, not
-    // feared. GLFW passes no user data to a callback, so the one window this
-    // process owns is reached through a file-static instead. `run()` is the
-    // only writer and there is exactly one `State` per process.
-    if (GLFWwindow* w = window.getGLFWwindow()) {
-        g_dropTarget = &state;
-        glfwSetDropCallback(w, [](GLFWwindow*, int count, const char** paths) {
-            if (count < 1 || !paths || !paths[0]) return;
-            if (g_dropTarget) g_dropTarget->dropped = fs::path(paths[0]);
-        });
-    }
+    // DROPPING A `.icon` ON THE WINDOW OPENS IT. Only the FIRST path is taken:
+    // a multi-selection drop has no meaning for an editor that holds one
+    // document, and picking one silently beats opening the last of several.
+    // O callback so ANOTA; quem abre e `act()`, depois do quadro.
+    g_dropTarget = &state;
+    glfwSetDropCallback(shell->window(), [](GLFWwindow*, int count, const char** paths) {
+        if (count < 1 || !paths || !paths[0]) return;
+        if (g_dropTarget) g_dropTarget->dropped = fs::path(paths[0]);
+    });
 
-    window.app().SetDefaultLayout(&defaultLayout);
-    window.app().SetRegistrar([&state, initial](Onyx::App::App& app) {
-        state.app = &app;
-        if (auto* config = app.getConfig()) config->windowTitle = "Icon Composer";
-#ifdef ONYX_HAS_OPEN_FILE_HANDLER
-        // ONYX'S `File > Open` IS THE ONE PEOPLE CLICK, so it is the one that
-        // has to work. Left to itself it builds its filters from the Workspace
-        // modules and probes the path for an owner; this app registers no
-        // module, so the filters collapse to "All Files", the dialog is for
-        // FILES and a `.icon` is a DIRECTORY, and anything picked is dropped
-        // with a warning nobody reads. Claiming it points that item at the
-        // same action our own menu raises, and takes Onyx's global Ctrl+O with
-        // it so one keystroke stops opening two dialogs.
-        //
-        // Only the REQUEST is recorded here: this runs mid-frame, and `act()`
-        // swaps the session after the panels have drawn.
-        //
-        // The `#ifdef` is not decoration -- `IC_ONYX_SOURCE_DIR` may be absent
-        // and the SHA pinned in CMakeLists.txt predates the hook, so this file
-        // has to compile against both.
-        app.SetOpenFileHandler([&state] { state.actions.open = true; });
-#endif
-        // Onyx's generic panels are for game archives; ours replace them.
-        app.setPanelVisible("Documents", false);
-        app.setPanelVisible("Inspector", false);
-#ifdef ONYX_HAS_MENU_ENTRY_FILTER
-        // A barra do Onyx fica ACIMA da nossa e tem a cara de menu principal,
-        // entao o que esta nela e inerte aqui e pior do que ausente: e um
-        // convite. Tres entradas sao dessa especie, medidas 18/09 contra o
-        // checkout `dddce38`:
-        //
-        //   `Export`          -- glTF, DDS e Copy Hash, permanentemente
-        //                        cinzas, e o comentario do proprio Onyx diz
-        //                        que nunca tiveram corpo. Num editor de icone
-        //                        e ruido, e contradiz o nosso `File > Export
-        //                        Icon as Image...` logo abaixo.
-        //   `File > Close All`-- fecha documentos do Workspace e abas do
-        //                        DocumentWindow. Nao registramos nenhum
-        //                        documento la e escondemos o DocumentWindow,
-        //                        entao o item nao faz nada -- e parece o
-        //                        fechar do app, que e o nosso `File > Close`.
-        //   `File > Recent Files` -- os recentes do Onyx, rotulados com dica
-        //                        de jogo (GOW1/GOW2/GOWR) e abertos pelo
-        //                        Workspace. Para nos, lista vazia ou arquivos
-        //                        de outro app.
-        //
-        // `File > Open` fica (nos o reivindicamos acima), `File > Exit` fica
-        // (desde esta rodada ele fecha pela porta normal em vez de `exit(0)`),
-        // `Options` e `View` ficam, porque funcionam.
-        app.SetMenuEntryFilter([](std::string_view menu, std::string_view item) {
-            if (menu == "Export") return false;
-            if (menu == "File" && (item == "Close All" || item == "Recent Files")) return false;
-            return true;
-        });
-#endif
-#ifdef ONYX_HAS_DOCUMENT_WINDOW_VISIBILITY
-        // And "Viewer" is not a panel, so `setPanelVisible` never reached it:
-        // it is the DocumentWindow's own tab host, drawn straight from
-        // `App::frame()`. Our documents belong to the Session, not to Onyx's
-        // Workspace (Rule 2 of the architecture spec -- the same reason this
-        // app registers no GameModule), so no tab is ever added to it and the
-        // window has exactly one thing it can say: "No documents open."
-        // Measured 18/09 with `AppIcon-27.icon` open on screen and that line
-        // underneath it -- true about that tab host, and read by anyone
-        // looking at the screen as the open having silently failed. It is the
-        // same trap as the File menu that swallowed the pick, one panel down.
-        app.getDocumentWindow().SetVisible(false);
-#endif
-        app.addPanel(std::make_unique<LayersPanel>(state));
-        app.addPanel(std::make_unique<CanvasPanel>(state));
+    if (!initial.empty()) state.open(initial);
+
+    shell->run([&] {
+        // Os `done` dos renders rodam aqui, na thread principal, antes de
+        // qualquer painel perguntar pelo resultado.
+        jobs.pump();
+        drawHost(state, *shell);
+        drawLayersPanel(state);
+        drawCanvasPanel(state);
         // DEPOIS do canvas, e isto é a prioridade em ato. O multiplexador
         // (Renditions.h) põe o canvas na frente quando as DUAS filas estão
         // cheias, mas não interrompe um render em voo -- com a raia livre,
-        // quem pede primeiro sai primeiro. O coordenador do canvas pede dentro
-        // de `CanvasPanel::Draw`, e o tick das miniaturas dentro de
-        // `drawRenditions`; nesta ordem o pedido de 512 px sai antes do de 128
-        // em todo quadro em que os dois nascem juntos.
-        app.addPanel(std::make_unique<RenditionsPanel>(state));
-        app.addPanel(std::make_unique<InspectorPanel>(state));
-        app.addPanel(std::make_unique<DiagnosticsPanel>(state));
-        if (!initial.empty()) state.open(initial);
+        // quem pede primeiro sai primeiro. Nesta ordem o pedido de 512 px sai
+        // antes do de 128 em todo quadro em que os dois nascem juntos.
+        drawRenditionsPanel(state);
+        drawInspectorPanel(state);
+        drawDiagnosticsPanel(state);
+
+        // End of frame work: `act()` can replace or close the session, and a
+        // swap mid-frame would leave the panels after it drawing against state
+        // that changed under them. `advanceFrame` likewise belongs after every
+        // upload this frame made.
+        state.sink->advanceFrame();
+        // Depois de todo painel ter desenhado: os nos de dock ja existem e ja
+        // foram redimensionados por este quadro.
+        clampDockedWidths();
+        state.act();
+        // DEPOIS de `act()`, que e quem enfileira: assim o primeiro item ja
+        // tem o quadro do anuncio neste mesmo frame, e nao no seguinte.
+        state.drainExport();
+        shell->setTitle(state.title());
+        if (state.quit) shell->close();
     });
-    window.run();
-    // The coordinator returns its texture to the pool before the pool goes, and
-    // the pool goes before the VkContext (the window outlives `state`).
+
+    // The coordinator returns its texture to the pool before the pool goes.
     state.close();
+    g_dropTarget = nullptr;
     return 0;
 }
 

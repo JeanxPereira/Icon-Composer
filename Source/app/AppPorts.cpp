@@ -1,4 +1,4 @@
-#include "Source/app/OnyxPorts.h"
+#include "Source/app/AppPorts.h"
 
 #include "Source/RenderBox/IconRenderer.h"
 
@@ -7,22 +7,25 @@
 #include <string>
 #include <utility>
 
-// O seletor de pasta e do Onyx desde 19/09 (`SystemOpenFolderDialog`), entao
-// nada de COM mora mais aqui -- este arquivo voltou a ser so a ponte.
-#include <Onyx/App/UIHelpers.h>
+// O seletor de pasta mora em Dialogs.cpp, entao nada de COM mora aqui --
+// este arquivo e so a ponte.
 
 namespace icapp {
 
-ImTextureID OnyxTextureSink::create(std::uint32_t w, std::uint32_t h, const std::uint8_t* rgba8) {
+ImTextureID PoolTextureSink::create(std::uint32_t w, std::uint32_t h, const std::uint8_t* rgba8) {
     std::string err;
-    return pool_.Create(w, h, rgba8, err);
+    const ImTextureID id = pool_.create(w, h, rgba8, &err);
+    if (!id) std::fprintf(stderr, "iconcomposer: texture: %s\n", err.c_str());
+    return id;
 }
 
-bool OnyxTextureSink::update(ImTextureID id, std::uint32_t, std::uint32_t, const std::uint8_t* rgba8) {
+bool PoolTextureSink::update(ImTextureID id, std::uint32_t, std::uint32_t, const std::uint8_t* rgba8) {
     // The pool takes no size here: it refuses a resize in place, and the
     // coordinator already removes and recreates when the size moved.
     std::string err;
-    return pool_.Update(id, rgba8, err);
+    const bool ok = pool_.update(id, rgba8, &err);
+    if (!ok) std::fprintf(stderr, "iconcomposer: texture: %s\n", err.c_str());
+    return ok;
 }
 
 ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
@@ -139,16 +142,15 @@ void JobScheduler::submitPending() {
     auto req = std::make_shared<ick::RenderRequest>(std::move(*pending_));
     pending_.reset();
     auto result = std::make_shared<ick::RenderResult>();
-    jobs_.Submit(
-        /*lane*/ 1,
-        [this, req, result](Onyx::Services::Progress&) {
+    jobs_.submit(
+        [this, req, result] {
             // A LIBERACAO SAI DO CAMINHO FELIZ. `~JobScheduler` espera em
             // `!working_`, e so estas duas linhas o baixam -- qualquer escape
             // entre aqui e elas fecharia a janela em cima de uma espera que
-            // nunca termina. Onyx CONTEM o throw (Jobs.cpp:180-185: o job
-            // "still completes normally"), entao nada aqui aborta o processo
-            // e nada aqui reclama: o destrutor simplesmente nunca voltaria.
-            // Num destrutor, por isso, e sem lancar.
+            // nunca termina. A `JobQueue` CONTEM o throw (JobQueue.cpp), entao
+            // nada aqui aborta o processo e nada aqui reclama: o destrutor
+            // simplesmente nunca voltaria. Num destrutor, por isso, e sem
+            // lancar.
             struct Release {
                 JobScheduler* s;
                 ~Release() {
@@ -174,7 +176,7 @@ void JobScheduler::submitPending() {
             }
         },
         [this, result] {
-            // Done runs on the main thread, inside Pump().
+            // Done runs on the main thread, inside pump().
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 done_ = std::move(*result);
@@ -209,7 +211,7 @@ std::filesystem::path SystemOpenBundleDialog(const std::filesystem::path& startI
     // `Assets/` do proprio bundle e o `.icon` nao estava na tela para ser
     // escolhido -- "nao da pra abrir a porra do icon" dito de novo, por outro
     // motivo. Um pacote e escolhivel quando o PAI dele e o que esta listado.
-    Onyx::App::FolderDialogOptions options;
+    FolderDialogOptions options;
     options.title = "Open a .icon bundle";
     options.startIn = startIn;
     // Um balde de MRU so deste pedido: sem GUID, todo dialogo do processo
@@ -217,7 +219,7 @@ std::filesystem::path SystemOpenBundleDialog(const std::filesystem::path& startI
     // abre.
     options.mruKey = "icon-composer/open-bundle";
 
-    fs::path picked = Onyx::App::SystemOpenFolderDialog(options, why);
+    fs::path picked = openFolderDialog(options, why);
     if (picked.empty()) return picked;   // cancelou, ou `why` ja diz o que houve
 
     // PERDAO DE UM NIVEL. A pessoa que entra no bundle para "ver se e esse" e
