@@ -3,8 +3,9 @@
 // O `icrender` abre o dispositivo, renderiza um PNG e morre: cada quadro paga o
 // Vulkan, o parse e um render frio. Este processo abre o dispositivo uma vez e
 // guarda um `rb::RenderCache` entre quadros, entao uma edicao so refaz o que
-// mudou. Todo pixel continua saindo de `rb::renderIcon`, a mesma cadeia que o
-// gate do corpus mede -- a UI nao desenha nada, so mostra.
+// mudou. Desde a G5 o quadro sai de `rb::renderIconGpu` (a cadeia residente;
+// `icfidelity` a mede contra `rb::renderIcon`, o gabarito, no corpus inteiro).
+// `icserver --cpu` volta ao caminho de CPU. A UI nao desenha nada, so mostra.
 //
 // Protocolo: uma linha de comando no stdin, uma resposta no stdout.
 //
@@ -30,6 +31,7 @@
 #include "Source/IconComposerFoundation/Json.h"
 #include "Source/RenderBox/Device.h"
 #include "Source/RenderBox/IconRenderer.h"
+#include "Source/RenderBox/Parallel.h"
 #include "Source/RenderBox/RenderCache.h"
 
 #include <chrono>
@@ -80,32 +82,43 @@ float ditherAt(std::int64_t x, std::int64_t y) {
 
 std::vector<std::uint8_t> toRgba8Dithered(const std::vector<float>& in, std::uint32_t width,
                                           std::int32_t originX, std::int32_t originY) {
+    // Por linha e em paralelo: serial, esta conversao custava mais que o render
+    // da GPU inteiro (Kenzu 1024 px: render 14 ms, ida e volta 80 ms). O
+    // arredondamento e `+0.5` e truncar, que para valores >= 0 e o mesmo
+    // `lround` sem a chamada.
     std::vector<std::uint8_t> out(in.size());
-    const std::size_t texels = in.size() / 4;
-    for (std::size_t t = 0; t < texels; ++t) {
-        const std::int64_t x = originX + static_cast<std::int64_t>(t % width);
-        const std::int64_t y = originY + static_cast<std::int64_t>(t / width);
-        const float n = ditherAt(x, y);
-        for (int c = 0; c < 4; ++c) {
-            float v = in[t * 4 + c];
-            if (v < 0.0f) v = 0.0f;
-            if (v > 1.0f) v = 1.0f;
-            float scaled = v * 255.0f;
-            if (c < 3) scaled = std::fmin(255.0f, std::fmax(0.0f, scaled + n));
-            out[t * 4 + c] = static_cast<std::uint8_t>(std::lround(scaled));
+    const std::size_t rows = width ? in.size() / 4 / width : 0;
+    rb::parallelRanges(rows, in.size() * 8, [&](std::size_t y0, std::size_t y1) {
+        for (std::size_t yy = y0; yy < y1; ++yy) {
+            const std::int64_t y = originY + static_cast<std::int64_t>(yy);
+            for (std::uint32_t xx = 0; xx < width; ++xx) {
+                const std::size_t t = yy * width + xx;
+                const float n = ditherAt(originX + static_cast<std::int64_t>(xx), y);
+                for (int c = 0; c < 4; ++c) {
+                    float v = in[t * 4 + c];
+                    v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+                    float scaled = v * 255.0f;
+                    if (c < 3) scaled = scaled + n < 0.0f ? 0.0f : (scaled + n > 255.0f ? 255.0f : scaled + n);
+                    out[t * 4 + c] = static_cast<std::uint8_t>(scaled + 0.5f);
+                }
+            }
         }
-    }
+    });
     return out;
 }
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    bool gpu = true;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--cpu") gpu = false;
+    }
 #ifdef _WIN32
     _setmode(_fileno(stdout), _O_BINARY);
     _setmode(_fileno(stdin), _O_BINARY);
 #endif
-    auto device = rb::Device::create();
+    auto device = rb::Device::create(rb::DeviceOptions{.validation = false});
     if (!device) {
         fail("no Vulkan device: " + device.error());
         return 2;
@@ -196,7 +209,8 @@ int main() {
                 io.context.idiom = *d;
             }
             const auto t0 = std::chrono::steady_clock::now();
-            auto icon = rb::renderIcon(*device, *bundle, io);
+            auto icon = gpu ? rb::renderIconGpu(*device, *bundle, io)
+                            : rb::renderIcon(*device, *bundle, io);
             const double ms =
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
             if (!icon) {
