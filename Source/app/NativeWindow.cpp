@@ -8,10 +8,12 @@
 #include <windowsx.h>
 #include <dwmapi.h>
 
+#if defined(IC_SHELL_GLFW)
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
+#endif
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -33,17 +35,23 @@
 namespace icapp::NativeWindow {
 namespace {
 
+#if defined(IC_SHELL_GLFW)
 WNDPROC g_previous = nullptr;
+#endif
+#if defined(IC_SHELL_GLFW)
 GLFWwindow* g_window = nullptr;
+#endif
 float g_titleBar = 0.0f;
 struct Rect {
     float x0, y0, x1, y1;
 };
 std::vector<Rect> g_controls;
 
+#if defined(IC_SHELL_GLFW)
 LRESULT callPrevious(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return CallWindowProcW(g_previous, hwnd, msg, wp, lp);
 }
+#endif
 
 // O cursor do ImGui, porque sem moldura o Win32 nao sabe qual pedir.
 void setCursorFromImGui() {
@@ -63,7 +71,9 @@ void setCursorFromImGui() {
 }
 
 LRESULT hitTest(HWND hwnd, LPARAM lp) {
+#if defined(IC_SHELL_GLFW)
     if (g_window && glfwGetWindowMonitor(g_window)) return HTCLIENT;   // tela cheia
+#endif
     RECT r;
     if (!GetWindowRect(hwnd, &r)) return HTNOWHERE;
     const POINT c{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
@@ -107,7 +117,7 @@ LRESULT hitTest(HWND hwnd, LPARAM lp) {
     return HTCLIENT;
 }
 
-LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+bool borderless(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT& out) {
     switch (msg) {
         case WM_NCCALCSIZE:
             // A area cliente e a janela inteira. Maximizada, o Windows poe a
@@ -123,28 +133,48 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     p->rgrc[0].top += by;
                     p->rgrc[0].bottom -= by;
                 }
-                return 0;
+                out = 0;
+                return true;
             }
             break;
         case WM_NCHITTEST:
-            return hitTest(hwnd, lp);
+            out = hitTest(hwnd, lp);
+            return true;
         case WM_SETCURSOR:
             if (LOWORD(lp) == HTCLIENT) {
                 setCursorFromImGui();
-                return TRUE;
+                out = TRUE;
+                return true;
             }
             break;
         case WM_NCACTIVATE:
             // -1 no lParam: o DWM nao repinta uma moldura que nao existe.
-            return DefWindowProcW(hwnd, msg, wp, -1);
+            out = DefWindowProcW(hwnd, msg, wp, -1);
+            return true;
         default:
             break;
     }
+    return false;
+}
+
+#if defined(IC_SHELL_GLFW)
+LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    LRESULT out = 0;
+    if (borderless(hwnd, msg, wp, lp, out)) return out;
     return callPrevious(hwnd, msg, wp, lp);
 }
+#endif
 
 }  // namespace
 
+bool handleBorderless(void* hwnd, unsigned msg, std::uintptr_t wp, std::intptr_t lp, std::intptr_t& result) {
+    LRESULT out = 0;
+    const bool done = borderless(static_cast<HWND>(hwnd), msg, static_cast<WPARAM>(wp), static_cast<LPARAM>(lp), out);
+    if (done) result = static_cast<std::intptr_t>(out);
+    return done;
+}
+
+#if defined(IC_SHELL_GLFW)
 void install(GLFWwindow* window) {
     g_window = window;
     HWND hwnd = glfwGetWin32Window(window);
@@ -172,6 +202,8 @@ void install(GLFWwindow* window) {
     SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                  SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER);
 }
+
+#endif
 
 void setTitleBarHeight(float px) { g_titleBar = px; }
 void clearControlRects() { g_controls.clear(); }

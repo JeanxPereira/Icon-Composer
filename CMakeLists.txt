@@ -60,7 +60,13 @@ if(IC_BUILD_UI)
     set(_ic_dep_opts "${_ic_saved_opts}")
     list(REMOVE_ITEM _ic_dep_opts -Wall -Wextra -Wpedantic /W4 /permissive-)
     set_directory_properties(PROPERTIES COMPILE_OPTIONS "${_ic_dep_opts}")
-    FetchContent_MakeAvailable(glfw imgui)
+    # A GLFW so e a casca fora do Windows (Shell.h); no Windows a janela e
+    # Win32 direta, para poder nascer com alfa por pixel.
+    if(WIN32)
+        FetchContent_MakeAvailable(imgui)
+    else()
+        FetchContent_MakeAvailable(glfw imgui)
+    endif()
 
     # O nucleo do ImGui, sem janela: e o que o Kit e o `ic_tests` linkam.
     add_library(imgui_lib STATIC
@@ -73,11 +79,18 @@ if(IC_BUILD_UI)
     # Os backends, so para o executavel. Sem volk: o loader do Vulkan direto,
     # o mesmo caminho que a RenderBox ja faz quando nao ha volk no build.
     find_package(Vulkan REQUIRED)
-    add_library(imgui_backends STATIC
-        ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
-        ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp)
+    if(WIN32)
+        add_library(imgui_backends STATIC
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp)
+        target_link_libraries(imgui_backends PUBLIC imgui_lib Vulkan::Vulkan dwmapi)
+    else()
+        add_library(imgui_backends STATIC
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp)
+        target_link_libraries(imgui_backends PUBLIC imgui_lib glfw Vulkan::Vulkan)
+    endif()
     target_include_directories(imgui_backends SYSTEM PUBLIC ${imgui_SOURCE_DIR}/backends)
-    target_link_libraries(imgui_backends PUBLIC imgui_lib glfw Vulkan::Vulkan)
     set_directory_properties(PROPERTIES COMPILE_OPTIONS "${_ic_saved_opts}")
 
     add_subdirectory(Source/IconComposerKit)

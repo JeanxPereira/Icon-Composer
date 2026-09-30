@@ -52,18 +52,33 @@ constexpr std::uint32_t kMinImageCount = 2;
 
 }  // namespace
 
-struct Shell::Vk {
+// A implementacao dos outros sistemas: GLFW e uma swapchain Vulkan opaca. No
+// Windows e ShellWin32.cpp.
+struct Shell::Impl {
     VkInstance instance = VK_NULL_HANDLE;
     ImGui_ImplVulkanH_Window wd;
+    GLFWwindow* window_ = nullptr;
+    Gpu gpu_;
+    std::string title_;
+    bool rebuild_ = false;
+    float scale_ = 1.0f;
+    std::function<void(const std::filesystem::path&)> drop_;
+
+    bool init(const std::string& title, std::string* why);
+    ~Impl();
+    void rebuildSwapchain(int w, int h);
+    void renderFrame();
+    void present();
 };
 
 std::unique_ptr<Shell> Shell::create(const std::string& title, std::string* why) {
     std::unique_ptr<Shell> s(new Shell());
-    if (!s->init(title, why)) return nullptr;
+    s->impl_ = std::make_unique<Impl>();
+    if (!s->impl_->init(title, why)) return nullptr;
     return s;
 }
 
-bool Shell::init(const std::string& title, std::string* why) {
+bool Shell::Impl::init(const std::string& title, std::string* why) {
     auto fail = [why](const char* what) {
         if (why) *why = what;
         return false;
@@ -80,13 +95,13 @@ bool Shell::init(const std::string& title, std::string* why) {
     glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     const float scale = ImGui_ImplGlfw_GetContentScaleForMonitor(glfwGetPrimaryMonitor());
+    scale_ = scale;
     title_ = title;
     window_ = glfwCreateWindow(static_cast<int>(1440 * scale), static_cast<int>(900 * scale),
                                title.c_str(), nullptr, nullptr);
     if (!window_) return fail("GLFW could not create the window");
 
-    vk_ = std::make_unique<Vk>();
-
+    
     // ---- instancia ----------------------------------------------------------
     std::uint32_t glfwCount = 0;
     const char** glfwExts = glfwGetRequiredInstanceExtensions(&glfwCount);
@@ -104,11 +119,11 @@ bool Shell::init(const std::string& title, std::string* why) {
     ici.pApplicationInfo = &app;
     ici.enabledExtensionCount = static_cast<std::uint32_t>(exts.size());
     ici.ppEnabledExtensionNames = exts.data();
-    if (vkCreateInstance(&ici, nullptr, &vk_->instance) != VK_SUCCESS)
+    if (vkCreateInstance(&ici, nullptr, &instance) != VK_SUCCESS)
         return fail("vkCreateInstance failed");
 
     // ---- dispositivo --------------------------------------------------------
-    gpu_.physical = ImGui_ImplVulkanH_SelectPhysicalDevice(vk_->instance);
+    gpu_.physical = ImGui_ImplVulkanH_SelectPhysicalDevice(instance);
     if (gpu_.physical == VK_NULL_HANDLE) return fail("no Vulkan physical device");
     gpu_.queueFamily = ImGui_ImplVulkanH_SelectQueueFamilyIndex(gpu_.physical);
     if (gpu_.queueFamily == static_cast<std::uint32_t>(-1)) return fail("no graphics queue");
@@ -129,12 +144,12 @@ bool Shell::init(const std::string& title, std::string* why) {
 
     // ---- superficie e swapchain ---------------------------------------------
     VkSurfaceKHR surface = VK_NULL_HANDLE;
-    if (glfwCreateWindowSurface(vk_->instance, window_, nullptr, &surface) != VK_SUCCESS)
+    if (glfwCreateWindowSurface(instance, window_, nullptr, &surface) != VK_SUCCESS)
         return fail("glfwCreateWindowSurface failed");
     VkBool32 wsi = VK_FALSE;
     vkGetPhysicalDeviceSurfaceSupportKHR(gpu_.physical, gpu_.queueFamily, surface, &wsi);
     if (wsi != VK_TRUE) return fail("the graphics queue cannot present to this window");
-    auto& wd = vk_->wd;
+    auto& wd = wd;
     wd.Surface = surface;
     const VkFormat formats[] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
     wd.SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(gpu_.physical, surface, formats, 2,
@@ -157,7 +172,7 @@ bool Shell::init(const std::string& title, std::string* why) {
     ImGui_ImplGlfw_InitForVulkan(window_, true);
     ImGui_ImplVulkan_InitInfo ii{};
     ii.ApiVersion = VK_API_VERSION_1_3;
-    ii.Instance = vk_->instance;
+    ii.Instance = instance;
     ii.PhysicalDevice = gpu_.physical;
     ii.Device = gpu_.device;
     ii.QueueFamily = gpu_.queueFamily;
@@ -176,12 +191,19 @@ bool Shell::init(const std::string& title, std::string* why) {
     // DEPOIS do backend da GLFW: ele instala os callbacks dele, e o
     // procedimento de janela do Win32 tem de ficar por fora de tudo.
     NativeWindow::install(window_);
+    glfwSetWindowUserPointer(window_, this);
+    glfwSetDropCallback(window_, [](GLFWwindow* w, int count, const char** paths) {
+        auto* self = static_cast<Impl*>(glfwGetWindowUserPointer(w));
+        if (self && self->drop_ && count > 0 && paths && paths[0]) self->drop_(paths[0]);
+    });
     glfwShowWindow(window_);
     return true;
 }
 
-Shell::~Shell() {
-    if (!vk_) {
+Shell::~Shell() = default;
+
+Shell::Impl::~Impl() {
+    if (!instance) {
         if (window_) glfwDestroyWindow(window_);
         glfwTerminate();
         return;
@@ -193,24 +215,24 @@ Shell::~Shell() {
         ImGui::DestroyContext();
     }
     if (gpu_.device) {
-        ImGui_ImplVulkanH_DestroyWindow(vk_->instance, gpu_.device, &vk_->wd, nullptr);
+        ImGui_ImplVulkanH_DestroyWindow(instance, gpu_.device, &wd, nullptr);
         vkDestroyDevice(gpu_.device, nullptr);
     }
-    if (vk_->wd.Surface) vkDestroySurfaceKHR(vk_->instance, vk_->wd.Surface, nullptr);
-    if (vk_->instance) vkDestroyInstance(vk_->instance, nullptr);
+    if (wd.Surface) vkDestroySurfaceKHR(instance, wd.Surface, nullptr);
+    if (instance) vkDestroyInstance(instance, nullptr);
     if (window_) glfwDestroyWindow(window_);
     glfwTerminate();
 }
 
-void Shell::rebuildSwapchain(int w, int h) {
-    ImGui_ImplVulkanH_CreateOrResizeWindow(vk_->instance, gpu_.physical, gpu_.device, &vk_->wd,
+void Shell::Impl::rebuildSwapchain(int w, int h) {
+    ImGui_ImplVulkanH_CreateOrResizeWindow(instance, gpu_.physical, gpu_.device, &wd,
                                            gpu_.queueFamily, nullptr, w, h, kMinImageCount, 0);
-    vk_->wd.FrameIndex = 0;
+    wd.FrameIndex = 0;
     rebuild_ = false;
 }
 
-void Shell::renderFrame() {
-    auto& wd = vk_->wd;
+void Shell::Impl::renderFrame() {
+    auto& wd = wd;
     VkSemaphore acquired = wd.FrameSemaphores[wd.SemaphoreIndex].ImageAcquiredSemaphore;
     VkSemaphore complete = wd.FrameSemaphores[wd.SemaphoreIndex].RenderCompleteSemaphore;
     VkResult err = vkAcquireNextImageKHR(gpu_.device, wd.Swapchain, UINT64_MAX, acquired,
@@ -255,9 +277,9 @@ void Shell::renderFrame() {
     checkVk(vkQueueSubmit(gpu_.queue, 1, &si, fd->Fence));
 }
 
-void Shell::present() {
+void Shell::Impl::present() {
     if (rebuild_) return;
-    auto& wd = vk_->wd;
+    auto& wd = wd;
     VkSemaphore complete = wd.FrameSemaphores[wd.SemaphoreIndex].RenderCompleteSemaphore;
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     pi.waitSemaphoreCount = 1;
@@ -273,13 +295,18 @@ void Shell::present() {
 }
 
 void Shell::run(const std::function<void()>& frame) {
+    Impl& m = *impl_;
+    auto& window_ = m.window_;
+    auto& wd = m.wd;
+    auto& rebuild_ = m.rebuild_;
+    auto& gpu_ = m.gpu_;
     while (!glfwWindowShouldClose(window_)) {
         glfwPollEvents();
         int w = 0, h = 0;
         glfwGetFramebufferSize(window_, &w, &h);
-        if (w > 0 && h > 0 && (rebuild_ || vk_->wd.Width != w || vk_->wd.Height != h)) {
+        if (w > 0 && h > 0 && (rebuild_ || wd.Width != w || wd.Height != h)) {
             ImGui_ImplVulkan_SetMinImageCount(kMinImageCount);
-            rebuildSwapchain(w, h);
+            m.rebuildSwapchain(w, h);
         }
         if (glfwGetWindowAttrib(window_, GLFW_ICONIFIED)) {
             ImGui_ImplGlfw_Sleep(10);
@@ -293,28 +320,33 @@ void Shell::run(const std::function<void()>& frame) {
         ImGui::Render();
         const ImDrawData* dd = ImGui::GetDrawData();
         if (dd->DisplaySize.x > 0.0f && dd->DisplaySize.y > 0.0f) {
-            renderFrame();
-            present();
+            m.renderFrame();
+            m.present();
         }
     }
     vkDeviceWaitIdle(gpu_.device);
 }
 
+const Gpu& Shell::gpu() const { return impl_->gpu_; }
+float Shell::dpiScale() const { return impl_->scale_; }
+
 void Shell::setTitle(const std::string& title) {
-    if (title == title_) return;
-    title_ = title;
-    glfwSetWindowTitle(window_, title.c_str());
+    if (title == impl_->title_) return;
+    impl_->title_ = title;
+    glfwSetWindowTitle(impl_->window_, title.c_str());
 }
 
 void Shell::setTitleBarHeight(float px) { NativeWindow::setTitleBarHeight(px); }
+void Shell::onDrop(std::function<void(const std::filesystem::path&)> handler) { impl_->drop_ = std::move(handler); }
 
-void Shell::close() { glfwSetWindowShouldClose(window_, GLFW_TRUE); }
-void Shell::minimize() { glfwIconifyWindow(window_); }
+void Shell::close() { glfwSetWindowShouldClose(impl_->window_, GLFW_TRUE); }
+void Shell::minimize() { glfwIconifyWindow(impl_->window_); }
 void Shell::toggleMaximize() {
-    if (maximized()) glfwRestoreWindow(window_);
-    else glfwMaximizeWindow(window_);
+    if (maximized()) glfwRestoreWindow(impl_->window_);
+    else glfwMaximizeWindow(impl_->window_);
 }
-bool Shell::maximized() const { return glfwGetWindowAttrib(window_, GLFW_MAXIMIZED) != 0; }
-bool Shell::focused() const { return glfwGetWindowAttrib(window_, GLFW_FOCUSED) != 0; }
+bool Shell::maximized() const { return glfwGetWindowAttrib(impl_->window_, GLFW_MAXIMIZED) != 0; }
+bool Shell::focused() const { return glfwGetWindowAttrib(impl_->window_, GLFW_FOCUSED) != 0; }
+float Shell::cornerRadius() const { return maximized() ? 0.0f : ick::theme::kDwmRadius; }
 
 }  // namespace icapp

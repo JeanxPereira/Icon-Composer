@@ -13,13 +13,22 @@ add_executable(iconcomposer
     Dialogs.cpp
     JobQueue.cpp
     NativeWindow.cpp
-    Shell.cpp
     Symbols.cpp
     TexturePool.cpp
     TrafficLights.cpp
     Window.cpp
 )
 target_link_libraries(iconcomposer PRIVATE IconComposer::Kit imgui_backends)
+
+# A CASCA, uma por sistema (Shell.h): no Windows a janela Win32 com o
+# DirectComposition (o canto e a sombra do macOS 27); nos outros a GLFW.
+if(WIN32)
+    target_sources(iconcomposer PRIVATE ShellWin32.cpp)
+    target_link_libraries(iconcomposer PRIVATE d3d11 dxgi dcomp)
+else()
+    target_sources(iconcomposer PRIVATE ShellGlfw.cpp)
+    target_compile_definitions(iconcomposer PRIVATE IC_SHELL_GLFW)
+endif()
 
 # `dwmapi` e a moldura (sombra, cantos, modo escuro); `ole32` e `uuid` sao o
 # IFileDialog -- `uuid` carrega CLSID_FileOpenDialog e IID_IFileOpenDialog

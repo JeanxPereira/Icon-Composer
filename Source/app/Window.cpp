@@ -18,8 +18,6 @@
 
 #include "imgui.h"
 #include "imgui_internal.h"
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
 
 #include <algorithm>
 #include <cmath>
@@ -93,8 +91,8 @@ struct State {
     ick::MenuActions actions;
     bool quit = false;
     bool showDiagnostics = false;
-    // WHY A DROP IS QUEUED AND NOT ACTED ON. GLFW delivers it from inside
-    // `glfwPollEvents`, i.e. mid-frame, and `adopt()` destroys the session the
+    // WHY A DROP IS QUEUED AND NOT ACTED ON. The shell delivers it from inside
+    // its message pump (Shell.h, `onDrop`), and `adopt()` destroys the session the
     // panels after it are about to draw -- the same reason `act()` runs LAST,
     // from the diagnostics panel. The callback only records; `act()` opens.
     std::optional<fs::path> dropped;
@@ -468,7 +466,7 @@ void clampDockedWidths() {
     if (!vp) return;
     const float total = vp->WorkSize.x;
     // O tamanho de janela em que o grampo ja foi aplicado. Um por processo,
-    // como `g_dropTarget`, e pela mesma razao: ha exatamente uma janela.
+    // e pela mesma razao que o resto do app: ha exatamente uma janela.
     static float appliedAt = -1.0f;
     if (std::fabs(total - appliedAt) < 0.5f) return;
 
@@ -515,11 +513,6 @@ void drawLayersPanel(State& st) {
         ImGui::End();
     }
 }
-
-// Where a dropped path goes. GLFW passes no user data to a callback, so the one
-// window this process owns is reached through a file-static; `run()` is the
-// only writer and there is exactly one `State` per process.
-State* g_dropTarget = nullptr;
 
 void drawCanvasPanel(State& st) {
     if (st.coordinator && st.session) {
@@ -762,7 +755,7 @@ void drawRim(Shell& shell) {
     ImDrawList* fg = ImGui::GetForegroundDrawList();
     const ImVec2 a(vp->Pos.x + w * 0.5f, vp->Pos.y + w * 0.5f);
     const ImVec2 b(vp->Pos.x + vp->Size.x - w * 0.5f, vp->Pos.y + vp->Size.y - w * 0.5f);
-    fg->AddRect(a, b, ick::theme::u32(ick::theme::kRimInner), ick::theme::kDwmRadius, 0, w);
+    fg->AddRect(a, b, ick::theme::u32(ick::theme::kRimInner), shell.cornerRadius(), 0, w);
 }
 
 }  // namespace
@@ -824,11 +817,7 @@ int run(const fs::path& initial) {
     // a multi-selection drop has no meaning for an editor that holds one
     // document, and picking one silently beats opening the last of several.
     // O callback so ANOTA; quem abre e `act()`, depois do quadro.
-    g_dropTarget = &state;
-    glfwSetDropCallback(shell->window(), [](GLFWwindow*, int count, const char** paths) {
-        if (count < 1 || !paths || !paths[0]) return;
-        if (g_dropTarget) g_dropTarget->dropped = fs::path(paths[0]);
-    });
+    shell->onDrop([&state](const fs::path& p) { state.dropped = p; });
 
     if (!initial.empty()) state.open(initial);
 
@@ -876,7 +865,6 @@ int run(const fs::path& initial) {
     // The coordinator returns its texture to the pool before the pool goes.
     state.close();
     ick::setSymbolSource(nullptr);
-    g_dropTarget = nullptr;
     return 0;
 }
 
