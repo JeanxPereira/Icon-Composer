@@ -1,0 +1,274 @@
+#version 450
+// O CAMPO EXATO, NA GPU (frente GPU, G2): `exactFieldFromContours` de
+// DistanceField.cpp, com o mesmo numero por pixel.
+//
+// A CPU varre blocos de 8x8; para o centro `P` de um bloco acha `dP`, a distancia
+// exata ao contorno, e toma como candidatos os segmentos a no maximo `dP + 2h` de
+// `P` (`h` a meia-diagonal do bloco); cada pixel faz o minimo exato sobre eles,
+// em double, com empate decidido pela ORDEM dos segmentos. Aqui um grupo de
+// trabalho e um bloco, e o que muda e so COMO os candidatos sao achados:
+//
+//   1. `dP` sai de uma coroa de celulas limitada por baixo e por cima pela
+//      transformada de distancia da grade de ocupacao (`cellDist`, feita na CPU),
+//      em float e com folga -- `dP` so escolhe celulas, nao entra em pixel;
+//   2. cada pixel percorre as celulas da coroa `[dP, dP + 2h]` (com folga para o
+//      lado de visitar MAIS) e faz o minimo EXATO em double, com o empate pelo
+//      menor indice de segmento -- o `std::sort` + `<` estrito da CPU.
+//
+// Um superconjunto dos candidatos da CPU que contem todo segmento que pode ser o
+// mais proximo da o MESMO pe: o minimo lexicografico `(d2, indice)` nao depende
+// de quem mais estava na lista. Toda conta que chega ao pixel e `precise`, para
+// que o compilador nao funda `a * b + c` numa fma que a CPU (x86-64 sem FMA) nao
+// faz.
+//
+// O SINAL vem de `inside` (a mascara de `rasteriseContours`, feita na CPU); o
+// pixel cujo centro cai EXATAMENTE no contorno refaz a diferenca central de
+// `FieldShape::distanceAt` sobre todos os segmentos, como a CPU.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(std430, binding = 0) writeonly buffer Field { vec4 field[]; };
+layout(std430, binding = 1) readonly buffer Segs { vec4 segs[]; };        // x0 y0 x1 y1
+layout(std430, binding = 2) readonly buffer Grid { uint grid[]; };        // start[] ++ items[]
+layout(std430, binding = 3) readonly buffer CellDist { float cellDist[]; };
+layout(std430, binding = 4) readonly buffer Inside { uint inside[]; };    // bytes
+
+layout(push_constant) uniform Push {
+    uint W, H;
+    int ox, oy;
+    uint nx, ny;
+    uint itemsBase;
+    uint nseg;
+    float gx0, gy0, cell;
+    float aa;
+    uint rule;   // 0 non-zero, 1 even-odd
+} p;
+
+shared float partial[64];
+
+bool insideAt(uint t) {
+    uint word = inside[t >> 2u];
+    return ((word >> ((t & 3u) * 8u)) & 0xFFu) != 0u;
+}
+
+float segDist2f(uint s, vec2 q) {
+    vec4 g = segs[s];
+    vec2 a = g.xy, b = g.zw;
+    vec2 d = b - a;
+    float len2 = dot(d, d);
+    float t = 0.0;
+    if (len2 > 0.0) t = clamp(dot(q - a, d) / len2, 0.0, 1.0);
+    vec2 e = q - (a + t * d);
+    return dot(e, e);
+}
+
+// `closestOnSegment` de DistanceField.cpp, termo a termo.
+void closestD(uint s, double px, double py, out double d2, out double cx, out double cy) {
+    vec4 g = segs[s];
+    double ax = double(g.x), ay = double(g.y), bx = double(g.z), by = double(g.w);
+    precise double dx = bx - ax;
+    precise double dy = by - ay;
+    precise double len2 = dx * dx + dy * dy;
+    precise double t = 0.0lf;
+    if (len2 > 0.0lf) {
+        precise double num = (px - ax) * dx + (py - ay) * dy;
+        t = num / len2;
+        t = t < 0.0lf ? 0.0lf : (t > 1.0lf ? 1.0lf : t);
+    }
+    precise double ccx = ax + t * dx;
+    precise double ccy = ay + t * dy;
+    precise double ex = px - ccx;
+    precise double ey = py - ccy;
+    precise double dd = ex * ex + ey * ey;
+    d2 = dd;
+    cx = ccx;
+    cy = ccy;
+}
+
+// `FieldShape::distanceAt`: todos os segmentos, float na entrada e na saida.
+float distanceAtAll(float x, float y) {
+    double px = double(x), py = double(y);
+    double best = -1.0lf;
+    int winding = 0;
+    bool parity = false;
+    for (uint s = 0u; s < p.nseg; ++s) {
+        double d2, cx, cy;
+        closestD(s, px, py, d2, cx, cy);
+        if (best < 0.0lf || d2 < best) best = d2;
+        vec4 g = segs[s];
+        double ax = double(g.x), ay = double(g.y), bx = double(g.z), by = double(g.w);
+        if (p.rule == 0u) {
+            precise double left = (bx - ax) * (py - ay) - (px - ax) * (by - ay);
+            if (ay <= py) {
+                if (by > py && left > 0.0lf) ++winding;
+            } else {
+                if (by <= py && left < 0.0lf) --winding;
+            }
+        } else {
+            if ((ay > py) != (by > py)) {
+                precise double t = (py - ay) / (by - ay);
+                precise double xi = ax + t * (bx - ax);
+                if (px < xi) parity = !parity;
+            }
+        }
+    }
+    bool isIn = p.rule == 0u ? winding != 0 : parity;
+    double d = sqrt(best);
+    return float(isIn ? -d : d);
+}
+
+// As celulas da coroa `[rIn, rOut]` em volta de `c`, linha a linha; `forAnnulus`
+// de DistanceField.cpp com a folga ja somada por quem chama.
+#define ANNULUS_ROWS(c, rIn, rOut, J0, J1)                                           \
+    int J0 = max(int(floor(((c).y - (rOut) - p.gy0) / p.cell)), 0);                 \
+    int J1 = min(int(floor(((c).y + (rOut) - p.gy0) / p.cell)), int(p.ny) - 1);
+
+void rowSpan(vec2 c, float rIn, float rOut, int j, out int i0, out int i1, out int k0,
+             out int k1, out bool any) {
+    float ya = p.gy0 + float(j) * p.cell;
+    float yb = ya + p.cell;
+    float dyMin = c.y < ya ? ya - c.y : (c.y > yb ? c.y - yb : 0.0);
+    any = dyMin <= rOut;
+    i0 = 0;
+    i1 = -1;
+    k0 = 1;
+    k1 = 0;
+    if (!any) return;
+    float so = sqrt(max(rOut * rOut - dyMin * dyMin, 0.0));
+    i0 = max(int(floor((c.x - so - p.gx0) / p.cell)), 0);
+    i1 = min(int(floor((c.x + so - p.gx0) / p.cell)), int(p.nx) - 1);
+    float dyMax = max(abs(c.y - ya), abs(c.y - yb));
+    if (rIn > dyMax) {
+        float si = sqrt(rIn * rIn - dyMax * dyMax);
+        k0 = int(ceil((c.x - si - p.gx0) / p.cell));
+        k1 = int(floor((c.x + si - p.gx0) / p.cell)) - 1;
+    }
+}
+
+void main() {
+    uint lid = gl_LocalInvocationIndex;
+    int bx = int(gl_WorkGroupID.x), by = int(gl_WorkGroupID.y);
+    int x0 = bx * 8, y0 = by * 8;
+    int x1 = min(int(p.W), x0 + 8), y1 = min(int(p.H), y0 + 8);
+
+    // O centro do bloco e a meia-diagonal, absolutos. So escolhem celulas.
+    vec2 c0 = vec2(float(x0 + p.ox) + 0.5, float(y0 + p.oy) + 0.5);
+    vec2 c1 = vec2(float(x1 - 1 + p.ox) + 0.5, float(y1 - 1 + p.oy) + 0.5);
+    vec2 P = 0.5 * (c0 + c1);
+    float h = 0.5 * length(c1 - c0);
+    float slack = 0.01 + 1e-5 * (abs(P.x) + abs(P.y)) + 1e-4 * p.cell;
+
+    // ---- 1. dP, de uma coroa limitada pela grade de ocupacao ------------------
+    int ci = clamp(int(floor((P.x - p.gx0) / p.cell)), 0, int(p.nx) - 1);
+    int cj = clamp(int(floor((P.y - p.gy0) / p.cell)), 0, int(p.ny) - 1);
+    vec2 centre = vec2(p.gx0 + (float(ci) + 0.5) * p.cell, p.gy0 + (float(cj) + 0.5) * p.cell);
+    float E = cellDist[uint(cj) * p.nx + uint(ci)];
+    float off = length(P - centre) + 0.70711 * p.cell;
+    float L = max(E - off - slack, 0.0);
+    float U = E + off + slack;
+
+    float best = 3.0e38;
+    {
+        ANNULUS_ROWS(P, L, U, j0, j1)
+        for (int j = j0 + int(lid); j <= j1; j += 64) {
+            int i0, i1, k0, k1;
+            bool any;
+            rowSpan(P, L, U, j, i0, i1, k0, k1, any);
+            if (!any) continue;
+            for (int i = i0; i <= i1; ++i) {
+                if (i >= k0 && i <= k1) {
+                    i = k1;
+                    continue;
+                }
+                uint cidx = uint(j) * p.nx + uint(i);
+                for (uint k = grid[cidx]; k < grid[cidx + 1u]; ++k) {
+                    best = min(best, segDist2f(grid[p.itemsBase + k], P));
+                }
+            }
+        }
+    }
+    partial[lid] = best;
+    barrier();
+    for (uint stride = 32u; stride > 0u; stride >>= 1u) {
+        if (lid < stride) partial[lid] = min(partial[lid], partial[lid + stride]);
+        barrier();
+    }
+    float dP = sqrt(partial[0]);
+
+    // ---- 2. o minimo exato por pixel ------------------------------------------
+    int x = x0 + int(gl_LocalInvocationID.x);
+    int y = y0 + int(gl_LocalInvocationID.y);
+    bool mine = x < x1 && y < y1;
+    double qx = double(x + p.ox) + 0.5lf;
+    double qy = double(y + p.oy) + 0.5lf;
+
+    double b2 = -1.0lf, fx = 0.0lf, fy = 0.0lf;
+    uint bestSeg = 0xFFFFFFFFu;
+    float rIn = max(dP - 2.0 * slack, 0.0);
+    float rOut = dP + 2.0 * h + 2.0 * slack;
+    {
+        ANNULUS_ROWS(P, rIn, rOut, j0, j1)
+        for (int j = j0; j <= j1; ++j) {
+            int i0, i1, k0, k1;
+            bool any;
+            rowSpan(P, rIn, rOut, j, i0, i1, k0, k1, any);
+            if (!any) continue;
+            for (int i = i0; i <= i1; ++i) {
+                if (i >= k0 && i <= k1) {
+                    i = k1;
+                    continue;
+                }
+                uint cidx = uint(j) * p.nx + uint(i);
+                for (uint k = grid[cidx]; k < grid[cidx + 1u]; ++k) {
+                    uint s = grid[p.itemsBase + k];
+                    double d2, cx, cy;
+                    closestD(s, qx, qy, d2, cx, cy);
+                    if (b2 < 0.0lf || d2 < b2 || (d2 == b2 && s < bestSeg)) {
+                        b2 = d2;
+                        fx = cx;
+                        fy = cy;
+                        bestSeg = s;
+                    }
+                }
+            }
+        }
+    }
+    if (!mine) return;
+
+    uint t = uint(y) * p.W + uint(x);
+    bool isIn = insideAt(t);
+    double sgn = isIn ? -1.0lf : 1.0lf;
+    double d = sqrt(b2 < 0.0lf ? 0.0lf : b2);
+    double gx = 0.0lf, gy = 0.0lf;
+    if (d > 0.0lf) {
+        precise double ux = qx - fx;
+        precise double uy = qy - fy;
+        gx = sgn * ux / d;
+        gy = sgn * uy / d;
+    } else {
+        float fqx = float(qx), fqy = float(qy);
+        gx = double(distanceAtAll(float(qx + 0.5lf), fqy)) - double(distanceAtAll(float(qx - 0.5lf), fqy));
+        gy = double(distanceAtAll(fqx, float(qy + 0.5lf))) - double(distanceAtAll(fqx, float(qy - 0.5lf)));
+    }
+    if (isIn) {
+        double bx0 = double(x) + 0.5lf;
+        double by0 = double(y) + 0.5lf;
+        double bx1 = double(p.W) - bx0;
+        double by1 = double(p.H) - by0;
+        if (bx0 < d) { d = bx0; gx = -1.0lf; gy = 0.0lf; }
+        if (by0 < d) { d = by0; gx = 0.0lf; gy = -1.0lf; }
+        if (bx1 < d) { d = bx1; gx = 1.0lf; gy = 0.0lf; }
+        if (by1 < d) { d = by1; gx = 0.0lf; gy = 1.0lf; }
+    }
+    vec4 o = vec4(0.0);
+    o.x = float(sgn * d);
+    precise double len2 = gx * gx + gy * gy;
+    double len = sqrt(len2);
+    if (len > 0.0lf) {
+        o.y = float(gx / len);
+        o.z = float(gy / len);
+    }
+    double aa = double(p.aa) > 0.0lf ? double(p.aa) : 1.0lf;
+    precise double cov = -double(o.x) / aa + 0.5lf;
+    o.w = float(cov < 0.0lf ? 0.0lf : (cov > 1.0lf ? 1.0lf : cov));
+    field[t] = o;
+}

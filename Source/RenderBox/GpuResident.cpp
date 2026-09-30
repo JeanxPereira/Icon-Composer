@@ -24,6 +24,9 @@ static const std::uint32_t kMaskSpirv[] =
 static const std::uint32_t kRasterSpirv[] =
 #include "icon_raster.comp.inc"
     ;
+static const std::uint32_t kFieldSpirv[] =
+#include "icon_field.comp.inc"
+    ;
 
 namespace rb::gpu {
 namespace {
@@ -189,6 +192,18 @@ Result<Resident*> Resident::of(Device& device) {
         auto k = Kernel::create(device, s.code, s.bytes, s.bindings, s.push);
         if (!k) return std::unexpected(k.error());
         *s.k = std::move(*k);
+    }
+    // Os kernels em double so existem onde o aparelho tem `shaderFloat64`; sem
+    // eles o vidro fica na CPU (`Resident::float64`).
+    if (device.float64()) {
+        const Spec wide[] = {
+            {&r->field, kFieldSpirv, sizeof kFieldSpirv, 5, 52},
+        };
+        for (const Spec& s : wide) {
+            auto k = Kernel::create(device, s.code, s.bytes, s.bindings, s.push);
+            if (!k) return std::unexpected(k.error());
+            *s.k = std::move(*k);
+        }
     }
     auto pass = CoveragePass::create(device);
     if (!pass) return std::unexpected(pass.error());

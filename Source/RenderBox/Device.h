@@ -94,6 +94,9 @@ public:
     // that cannot have changed.
     const VkPhysicalDeviceLimits& limits() const { return limits_; }
 
+    // `shaderFloat64` ligado neste aparelho (ligado sempre que o adaptador tem).
+    bool float64() const { return float64_; }
+
     // Records a one-shot command buffer, submits it, and waits on a fence. Every
     // headless operation in this tower is built on this one primitive.
     Result<void> submitAndWait(const std::function<void(VkCommandBuffer)>& record);
@@ -122,6 +125,7 @@ private:
     std::uint32_t queueFamily_ = 0;
     std::string name_;
     VkPhysicalDeviceLimits limits_{};   // see limits()
+    bool float64_ = false;              // see float64()
     std::shared_ptr<void> resident_;    // see residentState()
 };
 

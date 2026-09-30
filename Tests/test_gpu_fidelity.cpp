@@ -17,12 +17,19 @@
 // tem clip-path, override de camada e sombra.
 #include "check.h"
 #include "Source/IconComposerFoundation/IconBundle.h"
+#include "Source/RenderBox/ChicletShape.h"
+#include "Source/RenderBox/DistanceField.h"
+#include "Source/RenderBox/GpuGlass.h"
 #include "Source/RenderBox/IconRenderer.h"
 #include "Source/RenderBox/RenderCache.h"
 #include "Source/cli/Fidelity.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <mutex>
 #include <filesystem>
 #include <string>
 
@@ -32,7 +39,7 @@ namespace {
 
 namespace fs = std::filesystem;
 
-Device& gpu() {
+Device& gpuDevice() {
     static Device* d = [] {
         auto made = Device::create();
         if (!made) {
@@ -68,7 +75,7 @@ const char* const kDocuments[] = {
 }  // namespace
 
 TEST_CASE(gpu_fidelity_within_ceiling_on_the_corpus_sample) {
-    Device& device = gpu();
+    Device& device = gpuDevice();
     REQUIRE(device.valid());
     REQUIRE(std::getenv("IC_CORPUS_DIR") != nullptr);
     for (const char* name : kDocuments) {
@@ -90,7 +97,7 @@ TEST_CASE(gpu_fidelity_within_ceiling_on_the_corpus_sample) {
 // O mesmo teto sob o outro idioma que muda a pastilha (watchOS: um circulo com
 // meio pixel de recuo) e sob o escuro.
 TEST_CASE(gpu_fidelity_within_ceiling_under_other_contexts) {
-    Device& device = gpu();
+    Device& device = gpuDevice();
     REQUIRE(device.valid());
     auto bundle = icf::IconBundle::open(corpus("Apollo-Reborn__Apollo-Reborn__AppIcon"));
     REQUIRE(bundle.has_value());
@@ -109,7 +116,7 @@ TEST_CASE(gpu_fidelity_within_ceiling_under_other_contexts) {
 // o recorte do render cheio -- aqui "igual" e dentro do teto, e as decisoes
 // iguais. O ladrilho escolhido corta a pastilha e a arte do Apollo.
 TEST_CASE(gpu_viewport_tile_equals_the_crop_of_a_full_render) {
-    Device& device = gpu();
+    Device& device = gpuDevice();
     REQUIRE(device.valid());
     auto bundle = icf::IconBundle::open(corpus("Apollo-Reborn__Apollo-Reborn__AppIcon"));
     REQUIRE(bundle.has_value());
@@ -158,7 +165,7 @@ TEST_CASE(gpu_viewport_tile_equals_the_crop_of_a_full_render) {
 // segunda chamada com o mesmo cache devolve os MESMOS floats da primeira e de uma
 // chamada sem cache -- as funcoes cacheadas sao as do caminho de CPU.
 TEST_CASE(gpu_render_with_a_warm_cache_is_the_render_without_one) {
-    Device& device = gpu();
+    Device& device = gpuDevice();
     REQUIRE(device.valid());
     auto bundle = icf::IconBundle::open(corpus("Aeastr__NotchMyProblem__icon"));
     REQUIRE(bundle.has_value());
@@ -176,4 +183,96 @@ TEST_CASE(gpu_render_with_a_warm_cache_is_the_render_without_one) {
     CHECK(cold->rgba == base->rgba);
     CHECK(warm->rgba == base->rgba);
     CHECK(warm->notes == base->notes);
+}
+
+// G2: O CAMPO DA GPU E O DA CPU, BIT A BIT. `icon_field.comp` faz em double a mesma
+// conta de `exactFieldFromContours`, com o empate pela ordem dos segmentos, e o
+// sinal e a mesma mascara -- entao nao ha teto aqui: cada float tem de ser igual.
+// A pastilha (a forma de todo render), uma estrela even-odd com vertices sobre
+// centros de pixel, e uma nuvem de quadrilateros sobrepostos sob non-zero, no
+// canvas inteiro e num ladrilho com origem.
+TEST_CASE(gpu_field_is_the_cpu_field_bit_for_bit) {
+    Device& device = gpuDevice();
+    REQUIRE(device.valid());
+    if (!device.float64()) {
+        std::printf("  (sem shaderFloat64 neste aparelho: o campo fica na CPU)\n");
+        return;
+    }
+    auto resident = gpu::Resident::of(device);
+    REQUIRE(resident.has_value());
+    gpu::Resident& r = **resident;
+
+    std::vector<std::pair<std::vector<FieldContour>, FieldRule>> shapes;
+    {
+        FieldContour c;
+        for (const icf::svg::Point& q : chicletPolygon(512)) {
+            c.xy.push_back(static_cast<float>(q.x));
+            c.xy.push_back(static_cast<float>(q.y));
+        }
+        shapes.push_back({{c}, FieldRule::NonZero});
+    }
+    {
+        FieldContour c;
+        for (int k = 0; k < 5; ++k) {
+            const double a = k * 4.0 * 3.14159265358979 / 5.0;
+            c.xy.push_back(static_cast<float>(std::floor(256.0 + 200.0 * std::sin(a)) + 0.5));
+            c.xy.push_back(static_cast<float>(std::floor(256.0 - 200.0 * std::cos(a)) + 0.5));
+        }
+        shapes.push_back({{c}, FieldRule::EvenOdd});
+    }
+    {
+        std::vector<FieldContour> cloud;
+        std::uint32_t seed = 12345;
+        auto next = [&] {
+            seed = seed * 1664525u + 1013904223u;
+            return static_cast<float>((seed >> 8) % 4800u) / 10.0f + 16.0f;
+        };
+        for (int k = 0; k < 40; ++k) {
+            FieldContour c;
+            const float cx = next(), cy = next();
+            for (int v = 0; v < 4; ++v) {
+                c.xy.push_back(cx + (next() - 256.0f) * 0.15f);
+                c.xy.push_back(cy + (next() - 256.0f) * 0.15f);
+            }
+            cloud.push_back(c);
+        }
+        shapes.push_back({cloud, FieldRule::NonZero});
+    }
+
+    struct Frame {
+        std::uint32_t w, h;
+        std::int32_t ox, oy;
+    };
+    for (const auto& [contours, rule] : shapes) {
+        for (const Frame f : {Frame{512, 512, 0, 0}, Frame{150, 97, 37, 181}}) {
+            FieldOptions fo;
+            fo.rule = rule;
+            fo.originX = f.ox;
+            fo.originY = f.oy;
+            const FieldImage cpu = generateFieldFromContours(contours, f.w, f.h, fo, 1);
+            std::lock_guard<std::mutex> lock(r.mutex());
+            auto made = gpu::fieldFromContours(r, contours, f.w, f.h, fo, 1);
+            REQUIRE(made.has_value());
+            CHECK_EQ(made->width, cpu.width);
+            if (cpu.width == 0) {
+                REQUIRE(r.flush().has_value());
+                continue;
+            }
+            std::vector<float> got(cpu.rgba.size());
+            REQUIRE(r.download(made->data, got.data(), got.size() * sizeof(float)).has_value());
+            std::size_t differ = 0;
+            float worst = 0.0f;
+            for (std::size_t i = 0; i < got.size(); ++i) {
+                if (std::memcmp(&got[i], &cpu.rgba[i], sizeof(float)) != 0) {
+                    ++differ;
+                    worst = std::max(worst, std::fabs(got[i] - cpu.rgba[i]));
+                }
+            }
+            if (differ) {
+                std::printf("  campo %ux%u@(%d,%d): %zu floats diferem, pior %g\n", f.w, f.h,
+                            f.ox, f.oy, differ, static_cast<double>(worst));
+            }
+            CHECK_EQ(differ, std::size_t{0});
+        }
+    }
 }

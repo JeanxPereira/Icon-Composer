@@ -1381,6 +1381,40 @@ FieldImage generateFieldFromAlpha(const std::vector<float>& rgba, std::uint32_t 
     return made;
 }
 
+std::size_t fieldInsideMask(const std::vector<FieldContour>& contours, std::uint32_t width,
+                            std::uint32_t height, const FieldOptions& options,
+                            std::uint32_t superSample, std::vector<char>& inside) {
+    inside.clear();
+    if (width == 0 || height == 0) return 0;
+    // As mesmas linhas da primeira metade de `generateFieldFromContours`, abaixo.
+    int ss = superSample < 1 ? 1 : static_cast<int>(superSample);
+    if ((ss & 1) == 0) --ss;
+    if (ss < 1) ss = 1;
+    const int W = static_cast<int>(width);
+    const int H = static_cast<int>(height);
+    const int mw = W * ss;
+    const int mh = H * ss;
+    std::vector<char> fine;
+    std::size_t insideCount = 0;
+    rasteriseContours(contours, options.originX * ss, options.originY * ss, mw, mh, options.rule,
+                      static_cast<double>(ss), fine, insideCount);
+    if (insideCount == 0) return 0;
+    if (ss == 1) {
+        inside = std::move(fine);
+        return insideCount;
+    }
+    inside.assign(static_cast<std::size_t>(W) * H, 0);
+    const int half = ss / 2;
+    for (int y = 0; y < H; ++y) {
+        for (int x = 0; x < W; ++x) {
+            inside[static_cast<std::size_t>(y) * W + x] =
+                fine[static_cast<std::size_t>(y * ss + half) * mw + (x * ss + half)];
+        }
+    }
+    // A contagem que `generateFieldFromContours` testa e a da grade FINA.
+    return insideCount;
+}
+
 FieldImage generateFieldFromContours(const std::vector<FieldContour>& contours,
                                      std::uint32_t width, std::uint32_t height,
                                      FieldOptions options, std::uint32_t superSample) {

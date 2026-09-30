@@ -28,8 +28,15 @@
 //   [UP3] raster de vidro: colocado na CPU (exato) e sobe, porque o campo sai do
 //         alfa dele -- `placeRaster` abaixo diz o que foi medido. (Era [RT5], um
 //         readback da colocacao da GPU, e reprovou o teto em quatro documentos.)
-// O campo de um vetor nao e ida e volta: sai dos contornos, que ja estao na CPU.
-// G2-G4 tiram RT1-RT4 e RT6 (e, com o campo na GPU, UP3).
+//   [RT7] campo de um vetor (G2): o SINAL sai da CPU (`fieldInsideMask`, sobe
+//         um byte por pixel) e a DISTANCIA exata e `icon_field.comp`, em double,
+//         bit a bit a da CPU; o campo desce porque os tres consumidores dele
+//         (refracao, mascara, especular) ainda sao de CPU. Com um cache, o
+//         buffer do campo fica guardado na GPU e o proximo render nao o refaz.
+// O campo de um raster segue na CPU (`generateFieldFromAlpha` sobre a copia de
+// [UP3]): as duas transformadas de Felzenszwalb com a semente sub-texel ficam
+// para depois, e o raster de vidro e minoria no corpus.
+// G3-G4 tiram RT1-RT4, RT6 e RT7.
 //
 // O CACHE (`RenderCache.h`) continua valendo para o que ficou na CPU: campo,
 // sombra e realces da pastilha passam pelas mesmas funcoes cacheadas de
@@ -40,11 +47,13 @@
 #include <map>
 
 #include "Source/RenderBox/ChicletShape.h"
+#include "Source/RenderBox/GpuGlass.h"
 #include "Source/RenderBox/GpuResident.h"
 #include "Source/RenderBox/IconRenderer.h"
 #include "Source/RenderBox/IconSurface.h"
 #include "Source/RenderBox/PathBuffer.h"
 #include "Source/RenderBox/PathResolveOracle.h"
+#include "Source/RenderBox/RenderCache.h"
 #include "Source/RenderBox/StrokeRender.h"
 #include "Source/RenderBox/SvgRenderer.h"
 
@@ -136,6 +145,31 @@ Result<Range> stageStops(Resident& r, const std::vector<RampPoint>& stops) {
 }
 
 Slab artSlab(const SurfaceArt& art) { return std::static_pointer_cast<Buffer>(art.resident); }
+Slab fieldSlab(const SurfaceField& f) { return std::static_pointer_cast<Buffer>(f.resident); }
+
+// ---- o cache residente ------------------------------------------------------------
+//
+// O QUE UM RENDER DEIXA NA GPU PARA O PROXIMO. As entradas moram no MESMO
+// `RenderCache` do caminho de CPU (a mesma chave de conteudo, o mesmo teto, o
+// mesmo LRU), com um dominio proprio e um tipo proprio: um buffer da GPU nunca
+// responde por um valor de CPU. Um buffer guardado e so LIDO por quem o recebe;
+// quem precisa escrever copia antes. O `RenderCache` tem de morrer antes do
+// `Device` (o buffer volta ao pool do aparelho, ou e destruido com ele).
+
+struct GpuCachedField {
+    Slab data;
+    std::uint32_t width = 0, height = 0;
+    std::int32_t originX = 0, originY = 0;
+};
+
+void hashField(KeyHasher& h, const std::vector<FieldContour>& contours, std::uint32_t width,
+               std::uint32_t height, const FieldOptions& o, std::uint32_t ss) {
+    h.value(contours.size());
+    for (const FieldContour& c : contours) h.span(c.xy.data(), c.xy.size());
+    h.value(width).value(height).value(ss);
+    static_assert(sizeof(FieldOptions) == 20, "a FieldOptions field is missing from the key");
+    h.value(o.rule).value(o.aaWidth).value(o.originX).value(o.originY).value(o.subpixelSeed);
+}
 
 // ---- o SVG residente --------------------------------------------------------------
 
@@ -599,6 +633,69 @@ public:
         return &art.rgba;
     }
 
+    Result<SurfaceField> contourField(RenderCache* cache, const std::vector<FieldContour>& contours,
+                                      std::uint32_t width, std::uint32_t height,
+                                      const FieldOptions& fo, std::uint32_t ss) override {
+        if (!r_.float64()) {
+            // Sem double na GPU o campo e o de CPU.
+            return cpuField(fieldFromContoursCached(cache, contours, width, height, fo, ss));
+        }
+        CacheKey key;
+        if (cache) {
+            KeyHasher h("gpu-field-contours");
+            hashField(h, contours, width, height, fo, ss);
+            key = h.finish();
+            if (auto hit = cache->find<GpuCachedField>(key)) {
+                SurfaceField f;
+                f.resident = hit->data;
+                f.width = hit->width;
+                f.height = hit->height;
+                f.originX = hit->originX;
+                f.originY = hit->originY;
+                return f;
+            }
+        }
+        auto made = gpu::fieldFromContours(r_, contours, width, height, fo, ss);
+        if (!made) return std::unexpected(made.error());
+        SurfaceField f;
+        f.resident = made->data;
+        f.width = made->width;
+        f.height = made->height;
+        f.originX = made->originX;
+        f.originY = made->originY;
+        if (cache) {
+            const std::size_t bytes = made->data ? made->data->size() : 0;
+            cache->store(key, GpuCachedField{made->data, f.width, f.height, f.originX, f.originY},
+                         bytes);
+        }
+        return f;
+    }
+
+    // O raster de vidro tem a copia de CPU de [UP3]; o campo dele segue na CPU.
+    Result<SurfaceField> alphaField(RenderCache* cache, SurfaceArt& art, std::uint32_t width,
+                                    std::uint32_t height, const FieldOptions& fo) override {
+        auto onCpu = artOnCpu(art);
+        if (!onCpu) return std::unexpected(onCpu.error());
+        return cpuField(fieldFromAlphaCached(cache, **onCpu, width, height, fo));
+    }
+
+    // [RT7] o campo desce para os consumidores que ainda sao de CPU.
+    Result<std::shared_ptr<const FieldImage>> fieldOnCpu(SurfaceField& field) override {
+        if (field.cpu) return field.cpu;
+        FieldImage img;
+        img.width = field.width;
+        img.height = field.height;
+        img.originX = field.originX;
+        img.originY = field.originY;
+        img.rgba.resize(static_cast<std::size_t>(field.width) * field.height * 4);
+        const Slab s = fieldSlab(field);
+        if (auto ok = r_.download(s, img.rgba.data(), img.rgba.size() * sizeof(float)); !ok) {
+            return std::unexpected(ok.error());
+        }
+        field.cpu = std::make_shared<const FieldImage>(std::move(img));
+        return field.cpu;
+    }
+
     // [RT6]: a mascara sobe, a contagem desce.
     Result<std::size_t> applyMask(SurfaceArt& art, const OpacityMask& mask,
                                   std::size_t& painted) override {
@@ -662,6 +759,16 @@ public:
     }
 
 private:
+    static SurfaceField cpuField(std::shared_ptr<const FieldImage> image) {
+        SurfaceField f;
+        f.width = image->width;
+        f.height = image->height;
+        f.originX = image->originX;
+        f.originY = image->originY;
+        f.cpu = std::move(image);
+        return f;
+    }
+
     VkDeviceSize bytes() const { return static_cast<VkDeviceSize>(grid_.texels()) * 16; }
     const Slab& target() const { return group_ ? group_ : acc_; }
 

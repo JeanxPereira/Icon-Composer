@@ -18,6 +18,7 @@
 // A `[BIN]` seal on part two would be a lie about provenance, which is the one
 // failure this repository cannot absorb: every other reader downstream trusts
 // the seal to mean "somebody read this out of a binary".
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -516,5 +517,14 @@ FieldImage generateFieldFromContours(const std::vector<FieldContour>& contours,
                                      std::uint32_t width, std::uint32_t height,
                                      FieldOptions options = FieldOptions{},
                                      std::uint32_t superSample = 1);
+
+// O SINAL de `generateFieldFromContours`, sozinho: a mascara dentro/fora que ele
+// le (a mesma `rasteriseContours`, a mesma subamostragem), uma entrada por pixel
+// do buffer. Devolve a contagem que ele testa -- zero quer dizer "campo vazio"
+// -- e deixa `inside` vazio nesse caso. Existe para o caminho residente
+// (`GpuGlass.cpp`): a distancia exata vai para a GPU, o sinal fica aqui.
+std::size_t fieldInsideMask(const std::vector<FieldContour>& contours, std::uint32_t width,
+                            std::uint32_t height, const FieldOptions& options,
+                            std::uint32_t superSample, std::vector<char>& inside);
 
 }  // namespace rb

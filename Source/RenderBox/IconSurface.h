@@ -34,6 +34,7 @@
 #include "Source/IconComposerFoundation/Png.h"
 #include "Source/RenderBox/BlendMode.h"
 #include "Source/RenderBox/ChicletShape.h"
+#include "Source/RenderBox/DistanceField.h"
 #include "Source/RenderBox/GlassTranslucency.h"
 #include "Source/RenderBox/IconRenderer.h"
 #include "Source/RenderBox/RenderCache.h"
@@ -50,6 +51,19 @@ struct SurfaceArt {
     std::shared_ptr<void> resident;
     // O que o render do SVG nao desenhou, com o indice da forma.
     std::vector<SkippedShape> skipped;
+};
+
+// O campo de distancia de UMA camada de vidro, onde a superficie o guarda. Na CPU
+// e o `FieldImage`; na GPU e um buffer (`cpu` so e preenchido por `fieldOnCpu`).
+// `width == 0` e o campo vazio -- o `FieldImage` vazio de sempre, que vira nota.
+struct SurfaceField {
+    std::shared_ptr<const FieldImage> cpu;
+    std::shared_ptr<void> resident;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::int32_t originX = 0;
+    std::int32_t originY = 0;
+    bool empty() const { return width == 0; }
 };
 
 class IconSurface {
@@ -94,6 +108,22 @@ public:
     // sombra. Na GPU: readback.
     virtual Result<const std::vector<float>*> artOnCpu(SurfaceArt& art) = 0;
 
+    // O campo de uma camada de vidro. `contourField` e `fieldFromContoursCached`
+    // (os contornos de `flattenSvgToContours`); `alphaField` e
+    // `fieldFromAlphaCached` sobre o alfa da arte colocada. Na GPU o primeiro e
+    // `icon_field.comp` e o segundo segue na CPU (a arte de um raster de vidro ja
+    // tem a copia de CPU, [UP3]).
+    virtual Result<SurfaceField> contourField(RenderCache* cache,
+                                              const std::vector<FieldContour>& contours,
+                                              std::uint32_t width, std::uint32_t height,
+                                              const FieldOptions& options,
+                                              std::uint32_t superSample) = 0;
+    virtual Result<SurfaceField> alphaField(RenderCache* cache, SurfaceArt& art,
+                                            std::uint32_t width, std::uint32_t height,
+                                            const FieldOptions& options) = 0;
+    // O campo na CPU, para quem ainda so existe la. Na GPU: readback.
+    virtual Result<std::shared_ptr<const FieldImage>> fieldOnCpu(SurfaceField& field) = 0;
+
     // `opacityMaskMissedPixels` seguido de `applyOpacityMask`: devolve os
     // perdidos e escreve os pintados em `painted`.
     virtual Result<std::size_t> applyMask(SurfaceArt& art, const OpacityMask& mask,
@@ -109,6 +139,15 @@ public:
     virtual Result<std::vector<float>> finish(std::int32_t cropX, std::int32_t cropY,
                                               std::uint32_t width, std::uint32_t height) = 0;
 };
+
+// Os campos com o `RenderCache` de IconRenderer.cpp (nulo = sem cache).
+std::shared_ptr<const FieldImage> fieldFromContoursCached(
+    RenderCache* cache, const std::vector<FieldContour>& contours, std::uint32_t width,
+    std::uint32_t height, const FieldOptions& fo, std::uint32_t superSample);
+std::shared_ptr<const FieldImage> fieldFromAlphaCached(RenderCache* cache,
+                                                       const std::vector<float>& rgba,
+                                                       std::uint32_t width, std::uint32_t height,
+                                                       const FieldOptions& fo);
 
 // `placeRaster` de IconRenderer.cpp, a colocacao de CPU, para a superficie da GPU.
 std::vector<float> placeRasterOnCpu(const icf::DecodedPng& png, const LayerPlacement& placement,

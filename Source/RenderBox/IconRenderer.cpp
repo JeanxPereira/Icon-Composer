@@ -406,6 +406,8 @@ Result<RenderedImage> svgRenderCached(Device& device, RenderCache* cache,
     return drew;
 }
 
+}  // namespace
+
 std::shared_ptr<const FieldImage> fieldFromContoursCached(
     RenderCache* cache, const std::vector<FieldContour>& contours, std::uint32_t width,
     std::uint32_t height, const FieldOptions& fo, std::uint32_t superSample) {
@@ -442,6 +444,8 @@ std::shared_ptr<const FieldImage> fieldFromAlphaCached(RenderCache* cache,
     const std::size_t bytes = bytesOf(made.rgba);
     return cache->store(key, std::move(made), bytes);
 }
+
+namespace {
 
 std::shared_ptr<const std::vector<float>> shadowImageCached(
     RenderCache* cache, const std::vector<float>& art, std::uint32_t width,
@@ -860,6 +864,18 @@ public:
         return art;
     }
     Result<const std::vector<float>*> artOnCpu(SurfaceArt& art) override { return &art.rgba; }
+    Result<SurfaceField> contourField(RenderCache* cache, const std::vector<FieldContour>& contours,
+                                      std::uint32_t width, std::uint32_t height,
+                                      const FieldOptions& fo, std::uint32_t ss) override {
+        return fieldOf(fieldFromContoursCached(cache, contours, width, height, fo, ss));
+    }
+    Result<SurfaceField> alphaField(RenderCache* cache, SurfaceArt& art, std::uint32_t width,
+                                    std::uint32_t height, const FieldOptions& fo) override {
+        return fieldOf(fieldFromAlphaCached(cache, art.rgba, width, height, fo));
+    }
+    Result<std::shared_ptr<const FieldImage>> fieldOnCpu(SurfaceField& field) override {
+        return field.cpu;
+    }
     Result<std::size_t> applyMask(SurfaceArt& art, const OpacityMask& mask,
                                   std::size_t& painted) override {
         const std::size_t missed = opacityMaskMissedPixels(art.rgba, mask, painted);
@@ -893,6 +909,16 @@ public:
 
 private:
     std::vector<float>& target() { return isolated_ ? groupAcc_ : acc_; }
+
+    static SurfaceField fieldOf(std::shared_ptr<const FieldImage> image) {
+        SurfaceField f;
+        f.width = image->width;
+        f.height = image->height;
+        f.originX = image->originX;
+        f.originY = image->originY;
+        f.cpu = std::move(image);
+        return f;
+    }
 
     Device& device_;
     PixelGrid grid_;
@@ -1652,7 +1678,7 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                 const bool haveShape = svg.has_value();
                 std::string fieldGap;
 
-                std::shared_ptr<const FieldImage> field;
+                std::optional<SurfaceField> field;
                 if (haveShape) {
                     const GlassContours shape =
                         flattenSvgToContours(*svg, placeOnCanvas(svg->viewBox, lp, options.size),
@@ -1689,10 +1715,12 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                         // desenho"). Com origem zero a aritmetica e a de antes.
                         fo.originX = grid.originX;
                         fo.originY = grid.originY;
-                        std::shared_ptr<const FieldImage> fromShape = fieldFromContoursCached(
-                            options.cache, shape.contours, grid.width, grid.height, fo,
-                            kFieldSuperSample);
-                        if (fromShape->width == 0) {
+                        // Na GPU e `icon_field.comp`: o sinal na CPU, a distancia la.
+                        auto fromShape = surface.contourField(options.cache, shape.contours,
+                                                              grid.width, grid.height, fo,
+                                                              kFieldSuperSample);
+                        if (!fromShape) return std::unexpected(fromShape.error());
+                        if (fromShape->empty()) {
                             // Contours that close but cover no sample point --
                             // a hairline, a shape smaller than a texel. The
                             // brute force would have signed it anyway, from
@@ -1701,7 +1729,7 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                             fieldGap = "vidro: a arte fecha contornos mas nenhum ponto de amostra "
                                        "cai dentro deles nesta resolucao (" + *imageName + ")";
                         } else {
-                            field = std::move(fromShape);
+                            field = std::move(*fromShape);
                             note(out.notes, kGlassVectorFieldNote);
                         }
                     }
@@ -1713,12 +1741,12 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                     FieldOptions fo;
                     fo.originX = grid.originX;
                     fo.originY = grid.originY;
-                    // Na GPU e um readback da arte: o campo ainda e de CPU.
-                    auto alphaSource = surface.artOnCpu(*rasterPlaced);
-                    if (!alphaSource) return std::unexpected(alphaSource.error());
-                    std::shared_ptr<const FieldImage> fromAlpha = fieldFromAlphaCached(
-                        options.cache, **alphaSource, grid.width, grid.height, fo);
-                    if (fromAlpha->width == 0) {
+                    // Na GPU o campo de um raster segue na CPU, sobre a copia de
+                    // [UP3] -- sem readback.
+                    auto fromAlpha = surface.alphaField(options.cache, *rasterPlaced, grid.width,
+                                                        grid.height, fo);
+                    if (!fromAlpha) return std::unexpected(fromAlpha.error());
+                    if (fromAlpha->empty()) {
                         // No texel reaches `alpha >= 0.5`: there is no contour to
                         // sign, so there is no field. A raster that faint has
                         // nothing for the glass to bend around, and saying so is
@@ -1727,7 +1755,7 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                         fieldGap = "vidro sobre raster: nenhum texel da arte chega a alpha >= 0.5, "
                                    "entao nao ha contorno para assinar (" + *imageName + ")";
                     } else {
-                        field = std::move(fromAlpha);
+                        field = std::move(*fromAlpha);
                         note(out.notes, kGlassRasterFieldNote);
                     }
                 } else {
@@ -1749,11 +1777,16 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                     // Translucency alone: draw opaque, and say so.
                     if (wantsTranslucency) note(out.notes, fieldGap);
                 } else {
-                    if (wantsHighlight) specularField = field;
+                    // Os tres consumidores do campo ainda sao de CPU: na GPU isto
+                    // e um readback do campo.
+                    auto onCpu = surface.fieldOnCpu(*field);
+                    if (!onCpu) return std::unexpected(onCpu.error());
+                    const std::shared_ptr<const FieldImage> fieldCpu = *onCpu;
+                    if (wantsHighlight) specularField = fieldCpu;
                     if (wantsRefraction) {
                         // Na GPU e uma ida e volta do alvo: a refracao e de CPU.
                         if (auto ok = surface.onTarget([&](std::vector<float>& target) {
-                                glassOver(target, grid, glassDisplacementMap(*field, refraction),
+                                glassOver(target, grid, glassDisplacementMap(*fieldCpu, refraction),
                                           refraction);
                             });
                             !ok) {
@@ -1784,7 +1817,7 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                         args.bounds[1] = static_cast<float>(r.y);
                         args.bounds[2] = static_cast<float>(r.width);
                         args.bounds[3] = static_cast<float>(r.height);
-                        mask = glassOpacityMask(*field, args);
+                        mask = glassOpacityMask(*fieldCpu, args);
                         note(out.notes, kTranslucencyBoundsNote);
                     }
                 }

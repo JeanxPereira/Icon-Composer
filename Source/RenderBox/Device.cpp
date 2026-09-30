@@ -140,10 +140,20 @@ Result<Device> Device::create(DeviceOptions options) {
     qci.queueCount = 1;
     qci.pQueuePriorities = &priority;
 
+    // `shaderFloat64` quando o aparelho tem: o campo de distancia do caminho
+    // residente (`icon_field.comp`) faz em double a mesma conta que a CPU faz em
+    // double. Sem ele o campo fica na CPU e sobe.
+    VkPhysicalDeviceFeatures available{};
+    vkGetPhysicalDeviceFeatures(d.physical_, &available);
+    VkPhysicalDeviceFeatures enabled{};
+    enabled.shaderFloat64 = available.shaderFloat64;
+    d.float64_ = available.shaderFloat64 == VK_TRUE;
+
     VkDeviceCreateInfo dci{};
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
+    dci.pEnabledFeatures = &enabled;
     if (VkResult r = vkCreateDevice(d.physical_, &dci, nullptr, &d.device_); r != VK_SUCCESS) {
         return std::unexpected(fail("vkCreateDevice", r));
     }
@@ -186,7 +196,7 @@ Device::Device(Device&& other) noexcept
     : api_(std::move(other.api_)),
       instance_(other.instance_), physical_(other.physical_), device_(other.device_),
       queue_(other.queue_), pool_(other.pool_), queueFamily_(other.queueFamily_),
-      name_(std::move(other.name_)), limits_(other.limits_),
+      name_(std::move(other.name_)), limits_(other.limits_), float64_(other.float64_),
       resident_(std::move(other.resident_)) {
     other.instance_ = VK_NULL_HANDLE;
     other.physical_ = VK_NULL_HANDLE;
@@ -207,6 +217,7 @@ Device& Device::operator=(Device&& other) noexcept {
         queueFamily_ = other.queueFamily_;
         name_ = std::move(other.name_);
         limits_ = other.limits_;
+        float64_ = other.float64_;
         resident_ = std::move(other.resident_);
         other.instance_ = VK_NULL_HANDLE;
         other.physical_ = VK_NULL_HANDLE;
