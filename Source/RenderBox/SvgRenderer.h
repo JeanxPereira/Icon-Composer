@@ -169,7 +169,10 @@ struct ResolvedGradient {
 // Resolves an SVG paint reference against the document's gradients, for a shape
 // whose user-space bounding box is `bx0..by1` -- which `objectBoundingBox`
 // needs and `userSpaceOnUse` ignores.
+// `ctm` is the referencing shape's `Shape::ctm`: a `userSpaceOnUse` gradient is
+// measured in that shape's own user space.
 ResolvedGradient resolveGradient(const icf::svg::SvgDocument& doc, const std::string& id,
-                                 double bx0, double by0, double bx1, double by1);
+                                 double bx0, double by0, double bx1, double by1,
+                                 const icf::svg::Transform& ctm = icf::svg::Transform{});
 
 }  // namespace rb

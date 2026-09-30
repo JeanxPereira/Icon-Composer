@@ -92,6 +92,16 @@ struct Shape {
     Path path;                 // already in the document's user space
     std::string element;       // the element it came from: path, rect, circle...
 
+    // The transform from the element's OWN user space to the document's: every
+    // `transform` of the element and of its ancestors. `path` is already baked
+    // through it, but a `userSpaceOnUse` gradient is measured in the element's
+    // user space (SVG 1.1 §13.2.2), so its coordinates have to go through it
+    // too. `[ART]` Without it the ImHex background -- 114 hex digits under a
+    // `<g transform>` of scale 5.79, each with a radial gradient -- put the
+    // spotlight in the corner at 1/5.79 of its size (Edge, as reference, puts
+    // it in the middle).
+    Transform ctm;
+
     // SVG's initial values, and they are not symmetric: an unpainted shape is
     // BLACK, and an unstroked one is not stroked at all.
     Paint fill;

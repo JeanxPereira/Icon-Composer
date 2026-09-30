@@ -482,7 +482,7 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
                     continue;
                 }
             } else {
-                ramp = resolveGradient(doc, shape.fill.reference, bx0, by0, bx1, by1);
+                ramp = resolveGradient(doc, shape.fill.reference, bx0, by0, bx1, by1, shape.ctm);
                 if (!ramp.ok) {
                     out.skipped.push_back({i, shape.element, ramp.why});
                     continue;
@@ -731,7 +731,8 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
 
 
 ResolvedGradient resolveGradient(const icf::svg::SvgDocument& doc, const std::string& id,
-                                 double bx0, double by0, double bx1, double by1) {
+                                 double bx0, double by0, double bx1, double by1,
+                                 const icf::svg::Transform& ctm) {
     ResolvedGradient out;
     const auto it = doc.gradients.find(id);
     if (it == doc.gradients.end()) {
@@ -760,10 +761,15 @@ ResolvedGradient resolveGradient(const icf::svg::SvgDocument& doc, const std::st
 
     // `objectBoundingBox` is the SVG default and the coordinates are fractions
     // of the shape's box, so that box becomes part of the map. `userSpaceOnUse`
-    // -- 159 of the corpus's 161 -- leaves the coordinates alone.
-    double toUser[6] = {1, 0, 0, 0, 1, 0};
+    // -- 159 of the corpus's 161 -- is the referencing element's OWN user space,
+    // so the map is that element's transform (`Shape::ctm`): identity for a
+    // shape with no `transform` above it, which is why this read "leaves the
+    // coordinates alone" until a document nested its gradients in a scaled `g`.
+    double toUser[6] = {ctm.a, ctm.c, ctm.e, ctm.b, ctm.d, ctm.f};
     if (!g.userSpace) {
         const double w = bx1 - bx0, h = by1 - by0;
+        toUser[1] = 0.0;
+        toUser[3] = 0.0;
         toUser[0] = w != 0.0 ? w : 1.0;
         toUser[2] = bx0;
         toUser[4] = h != 0.0 ? h : 1.0;
@@ -773,7 +779,16 @@ ResolvedGradient resolveGradient(const icf::svg::SvgDocument& doc, const std::st
     double full[6];
     const double gt[6] = {g.transform.a, g.transform.c, g.transform.e,
                           g.transform.b, g.transform.d, g.transform.f};
-    compose2x3(toUser, gt, full);
+    // `compose2x3(a, b)` applies `a` FIRST. For `userSpaceOnUse` SVG wants the
+    // gradient's own transform first and the element's user space after it
+    // (document = ctm . gradientTransform . gradient). The bounding-box branch
+    // keeps the order it always had: it is the 2 corpus gradients' reading, and
+    // changing it is not this fix.
+    if (g.userSpace) {
+        compose2x3(gt, toUser, full);
+    } else {
+        compose2x3(toUser, gt, full);
+    }
 
     // Now the inverse: user space -> gradient space. `[BIN]` For the linear
     // geometry the target's `Gradient::value` is literally `p.x`, so this map

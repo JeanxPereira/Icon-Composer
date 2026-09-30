@@ -394,7 +394,7 @@ Result<RenderedImage> svgResident(Resident& r, Device& device, const icf::svg::S
         if (!overridden && shape.fill.kind == icf::svg::PaintKind::Reference) {
             double bx0, by0, bx1, by1;
             svgPathBounds(shape.path, bx0, by0, bx1, by1);
-            ramp = resolveGradient(doc, shape.fill.reference, bx0, by0, bx1, by1);
+            ramp = resolveGradient(doc, shape.fill.reference, bx0, by0, bx1, by1, shape.ctm);
             if (!ramp.ok) {
                 out.skipped.push_back({i, shape.element, ramp.why});
                 continue;

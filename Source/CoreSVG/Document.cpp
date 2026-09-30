@@ -1121,6 +1121,7 @@ struct Builder {
         Shape shape;
         shape.path = std::move(path);
         shape.element = e.name;
+        shape.ctm = here;
         shape.fill = withOpacity(inherited.fill, inherited.fillOpacity);
         shape.stroke = withOpacity(inherited.stroke, inherited.strokeOpacity);
         shape.fillRule = inherited.fillRule;
