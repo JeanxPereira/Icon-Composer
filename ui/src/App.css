@@ -160,8 +160,10 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  /* As luzes trazem o proprio inset de 9 pt (`_minXTitlebarWidgetInset`). */
-  padding: 0 12px 0 0;
+  /* O primeiro disco a 16 pt da borda da janela, medido na captura do alvo
+     (imagem de referencia: borda do disco na coluna do conteudo da lista):
+     7 aqui + os 9 de `_minXTitlebarWidgetInset` que as luzes trazem. */
+  padding: 0 12px 0 7px;
   flex: none;
 }
 
@@ -1421,3 +1423,10 @@ button.varied {
 .tl-minimize .tl-glyph { background: var(--tl-minimize-glyph); }
 .tl-zoom .tl-glyph { background: var(--tl-zoom-glyph); }
 .traffic-lights.dimmed .tl-glyph { background: #000; }
+
+/* Sem a barra lateral as luzes ficam no mesmo lugar da janela: a barra de
+   ferramentas tem 20 de recuo, entao 20 - 13 + 9 = 16. */
+.toolbar > .traffic-lights:first-child {
+  margin-left: -13px;
+  margin-right: 8px;
+}
