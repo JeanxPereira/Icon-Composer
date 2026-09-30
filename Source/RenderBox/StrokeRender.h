@@ -80,4 +80,22 @@ std::vector<float> rasteriseStroke(const icf::svg::Shape& shape,
                                    int subdivisions, const StrokeParams& base,
                                    std::int32_t originX = 0, std::int32_t originY = 0);
 
+// O MESMO TRACO, EM REGISTROS PARA A GPU (``icon_stroke.comp``, frente GPU, UP1).
+// ``rasteriseStroke`` percorre, por segmento desenhado, a caixa que ele pode tocar
+// e guarda o MAXIMO de ``strokeCoverageAt``; aqui cada segmento vira um registro
+// com o que ``strokeCoverageAt`` le do fluxo de pontos (as duas pontas, raios e
+// alfas, e se cada ponta e uma tampa) e a caixa, ja grampeada no buffer, em
+// pixels absolutos. A GPU faz a mesma conta em double e o maximo por
+// ``atomicMax``. ``drawn`` e o ``!empty()`` de ``rasteriseStroke``: ha traco mesmo
+// que nenhum segmento cubra pixel.
+inline constexpr std::size_t kStrokeRecordStride = 16;
+struct StrokeInstances {
+    bool drawn = false;
+    std::vector<double> records;   // kStrokeRecordStride por segmento
+};
+StrokeInstances strokeInstances(const icf::svg::Shape& shape, const StrokePlacement& placement,
+                                std::uint32_t width, std::uint32_t height, int subdivisions,
+                                const StrokeParams& base, std::int32_t originX,
+                                std::int32_t originY);
+
 }  // namespace rb

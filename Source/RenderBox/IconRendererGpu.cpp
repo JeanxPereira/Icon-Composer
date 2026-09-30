@@ -123,6 +123,14 @@ struct FinishPush {
 static_assert(sizeof(FinishPush) == 20);
 
 
+struct StrokePush {
+    std::uint32_t w, h;
+    std::int32_t ox, oy;
+    std::uint32_t cap;
+    std::uint32_t hard;
+};
+static_assert(sizeof(StrokePush) == 24);
+
 struct RasterPush {
     std::uint32_t w, h;
     std::uint32_t iw, ih;
@@ -484,14 +492,50 @@ Result<RenderedImage> svgResident(Resident& r, Device& device, const icf::svg::S
                 params.cap = LineCap::Butt;
                 params.join = LineJoin::Miter;
                 params.miterLimit = 4.0;
-                // [UP1] a cobertura do traco e de CPU e sobe.
-                const std::vector<float> cov =
-                    rasteriseStroke(shape, sp, w, h, options.subdivisions, params,
-                                    options.originX, options.originY);
-                if (!cov.empty()) {
+                // A cobertura do traco: `icon_stroke` (era [UP1]) -- os segmentos e
+                // as caixas saem da CPU (`strokeInstances`), a varredura e o maximo
+                // sao da GPU. Sem double, a de CPU sobe como antes.
+                bool drawn = false;
+                Range covRange = dummy;
+                if (r.float64()) {
+                    const StrokeInstances inst =
+                        strokeInstances(shape, sp, w, h, options.subdivisions, params,
+                                        options.originX, options.originY);
+                    drawn = inst.drawn;
+                    if (drawn) {
+                        auto buf = r.acquire(texels * 4);
+                        if (!buf) return std::unexpected(buf.error());
+                        r.fill(*buf, 0);
+                        const std::size_t n = inst.records.size() / kStrokeRecordStride;
+                        if (n > 0) {
+                            auto recs = r.stage(inst.records.data(),
+                                                inst.records.size() * sizeof(double));
+                            if (!recs) return std::unexpected(recs.error());
+                            const StrokePush push{w, h, options.originX, options.originY,
+                                                  static_cast<std::uint32_t>(params.cap),
+                                                  params.hardCoverage ? 1u : 0u};
+                            if (auto ok = r.dispatch(r.stroke, {whole(*buf), *recs}, &push,
+                                                     static_cast<std::uint32_t>(n), 1);
+                                !ok) {
+                                return std::unexpected(ok.error());
+                            }
+                        }
+                        covRange = whole(*buf);
+                    }
+                } else {
+                    const std::vector<float> cov =
+                        rasteriseStroke(shape, sp, w, h, options.subdivisions, params,
+                                        options.originX, options.originY);
+                    drawn = !cov.empty();
+                    if (drawn) {
+                        auto staged = r.stage(cov.data(), cov.size() * sizeof(float));
+                        if (!staged) return std::unexpected(staged.error());
+                        covRange = *staged;
+                    }
+                }
+                if (drawn) {
                     if (shape.stroke.color.displayP3) out.unconvertedP3.push_back(i);
-                    auto staged = r.stage(cov.data(), cov.size() * sizeof(float));
-                    if (!staged) return std::unexpected(staged.error());
+                    const Range* staged = &covRange;
                     SvgPush sp2 = basePush();
                     sp2.mode = 1;
                     sp2.colour[0] = static_cast<float>(shape.stroke.color.r);

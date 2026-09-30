@@ -45,6 +45,9 @@ static const std::uint32_t kShadowSpirv[] =
 static const std::uint32_t kBlurSpirv[] =
 #include "icon_blur.comp.inc"
     ;
+static const std::uint32_t kStrokeSpirv[] =
+#include "icon_stroke.comp.inc"
+    ;
 
 namespace rb::gpu {
 namespace {
@@ -226,6 +229,7 @@ Result<Resident*> Resident::of(Device& device) {
             {&r->glassMask, kGlassMaskSpirv, sizeof kGlassMaskSpirv, 3, 48},
             {&r->displace, kDisplaceSpirv, sizeof kDisplaceSpirv, 2, 44},
             {&r->refract, kRefractSpirv, sizeof kRefractSpirv, 3, 32},
+            {&r->stroke, kStrokeSpirv, sizeof kStrokeSpirv, 2, 24},
         };
         for (const Spec& s : wide) {
             auto k = Kernel::create(device, s.code, s.bytes, s.bindings, s.push);

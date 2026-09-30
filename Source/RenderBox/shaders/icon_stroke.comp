@@ -1,0 +1,134 @@
+#version 450
+// A COBERTURA DE UM TRACO, NA GPU (frente GPU, era [UP1]): o laco de
+// `rasteriseStroke` (StrokeRender.cpp) -- por segmento desenhado, a caixa que ele
+// pode tocar, `strokeCoverageAt` (StrokeGeometry.cpp) em cada pixel, e o MAXIMO
+// com o que ja estava. Um grupo de trabalho por segmento; os 256 invocacoes
+// varrem a caixa. A conta e a da CPU em double, termo a termo, com `precise` para
+// que nada vire fma; o maximo e um `atomicMax` sobre os bits do float (uma
+// cobertura nao e negativa, e para floats nao negativos a ordem dos bits e a
+// ordem dos valores), entao a ordem dos segmentos nao importa, como na CPU.
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) buffer Coverage { uint cov[]; };
+layout(std430, binding = 1) readonly buffer Records { double rec[]; };
+
+layout(push_constant) uniform Push {
+    uint w, h;          // o buffer
+    int ox, oy;         // a origem dele na grade do canvas
+    uint cap;           // LineCap
+    uint hard;          // StrokeParams::hardCoverage
+} p;
+
+const uint kStride = 16u;
+
+double sat(double v) { return v < 0.0lf ? 0.0lf : (v > 1.0lf ? 1.0lf : v); }
+
+double smoothstep01(double t) {
+    double c = sat(t);
+    precise double r = c * c * (3.0lf - 2.0lf * c);
+    return r;
+}
+
+// `strokeCapDistance`.
+double capDistance(uint cap, double ov, double d, double r, double s, bool alongPositive) {
+    if (cap == 0u) { precise double q = ov * ov + d * d; return sqrt(q); }
+    if (cap == 1u) return max(ov, d);
+    if (cap == 2u) { precise double q = r + ov - s; return max(q, d); }
+    if (cap == 3u) { precise double q = d + ov; return q; }
+    if (cap == 4u) { precise double q = r + ov - d; return max(q, d); }
+    if (cap == 5u) { precise double q = (alongPositive ? d : (r - d)) + ov; return max(q, d); }
+    if (cap == 6u) { precise double q = (alongPositive ? (r - d) : d) + ov; return max(q, d); }
+    precise double q = ov * ov + d * d;
+    return sqrt(q);
+}
+
+double coverageAt(uint base, double px, double py) {
+    double p0x = rec[base + 0u], p0y = rec[base + 1u];
+    double p1x = rec[base + 2u], p1y = rec[base + 3u];
+    double ar = rec[base + 4u], br = rec[base + 5u];
+    double aa = rec[base + 6u], ba = rec[base + 7u];
+    bool startCapped = rec[base + 8u] != 0.0lf;
+    bool endCapped = rec[base + 9u] != 0.0lf;
+    double s = rec[base + 14u];
+
+    precise double wx = p1x - p0x;
+    precise double wy = p1y - p0y;
+    precise double wl2 = wx * wx + wy * wy;
+    double wholeLen = sqrt(wl2);
+    if (wholeLen == 0.0lf) return 0.0lf;
+    precise double dirx = wx / wholeLen;
+    precise double diry = wy / wholeLen;
+
+    if (p.cap == 2u && wholeLen > s) {
+        if (startCapped) {
+            precise double nx = p0x + s * dirx;
+            precise double ny = p0y + s * diry;
+            p0x = nx;
+            p0y = ny;
+        }
+        if (endCapped) {
+            precise double nx = p1x - s * dirx;
+            precise double ny = p1y - s * diry;
+            p1x = nx;
+            p1y = ny;
+        }
+    }
+
+    precise double sx = p1x - p0x;
+    precise double sy = p1y - p0y;
+    precise double l2 = sx * sx + sy * sy;
+    double L = sqrt(l2);
+    if (L <= 0.0lf) return 0.0lf;
+
+    precise double u = (px - p0x) * dirx + (py - p0y) * diry;
+    precise double dd = -(px - p0x) * diry + (py - p0y) * dirx;
+    double d = abs(dd);
+
+    precise double t = u / L;
+    double ts = t < 0.0lf ? 0.0lf : (t > 1.0lf ? 1.0lf : t);
+    precise double r = ar + (br - ar) * ts;
+
+    double rEff = p.hard != 0u ? r : max(r, s * 0.5lf);
+    precise double alpha = p.hard != 0u ? 1.0lf : (rEff == 0.0lf ? 1.0lf : r / rEff);
+    precise double fade = aa + (ba - aa) * ts;
+    alpha = alpha * fade;
+
+    double dist;
+    if (ts != t) {
+        precise double lu = L - u;
+        double ov = abs(min(u, lu));
+        bool startIsEnd = t < 0.0lf;
+        bool flagged = startIsEnd ? startCapped : endCapped;
+        if (flagged) {
+            dist = capDistance(p.cap, ov, d, rEff, s, !startIsEnd);
+        } else {
+            precise double q = ov * ov + d * d;
+            dist = sqrt(q);
+        }
+    } else {
+        dist = d;
+    }
+
+    precise double sd = dist - rEff;
+    precise double halfPx = s * 0.5lf;
+    if (p.hard != 0u) return sd < halfPx ? alpha : 0.0lf;
+    precise double arg = (halfPx - sd) / s;
+    precise double c = alpha * smoothstep01(arg);
+    return c;
+}
+
+void main() {
+    uint base = gl_WorkGroupID.x * kStride;
+    int px0 = int(rec[base + 10u]), py0 = int(rec[base + 11u]);
+    int px1 = int(rec[base + 12u]), py1 = int(rec[base + 13u]);
+    uint bw = uint(px1 - px0 + 1), bh = uint(py1 - py0 + 1);
+    uint n = bw * bh;
+    for (uint k = gl_LocalInvocationIndex; k < n; k += 256u) {
+        int x = px0 + int(k % bw);
+        int y = py0 + int(k / bw);
+        double c = coverageAt(base, double(x) + 0.5lf, double(y) + 0.5lf);
+        if (c <= 0.0lf) continue;
+        uint t = uint(y - p.oy) * p.w + uint(x - p.ox);
+        atomicMax(cov[t], floatBitsToUint(float(c)));
+    }
+}
