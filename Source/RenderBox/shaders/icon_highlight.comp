@@ -28,6 +28,8 @@ layout(push_constant) uniform Push {
     uint useVCM;         // especular: `args.useVCM`
     uint clampPlus;      // especular: `args.clampPlusLighter`
     uint slot;           // o contador
+    uint fw;             // o campo pode ser de outra grade: a largura dele e
+    int fx, fy;          // onde o pixel (0, 0) do alvo cai nele
 } p;
 
 // O registro de um realce.
@@ -103,11 +105,21 @@ void main() {
     bool hit = false;
     if (g.x < p.w && g.y < p.h) {
         uint i = g.y * p.w + g.x;
-        vec4 f = field[i];
+        vec4 f = field[uint(int(g.y) + p.fy) * p.fw + uint(int(g.x) + p.fx)];
         double sd = -double(f.x);
         double nx = double(f.y);
         double ny = double(f.z);
         bool skip = (nx == 0.0lf && ny == 0.0lf) || (p.chiclet != 0u && sd < -2.0lf);
+        // Fora da banda de todo realce `fragmentOf` devolve 0 (`b0` ou `b1` <= 0)
+        // e o pixel nao muda: pula sem as divisoes em double. A folga de meia
+        // banda para cada lado deixa o teste do lado de NAO pular.
+        bool reached = false;
+        for (uint s = 0u; s < p.nslots && !skip && !reached; ++s) {
+            double d = sd - at(s, kInset);
+            double w = at(s, kBand);
+            reached = at(s, kHeight) > 0.0lf && d > -w && d < at(s, kHeight) + w;
+        }
+        if (!reached) skip = true;
         vec4 px = acc[i];
         for (uint s = 0u; s < p.nslots && !skip; ++s) {
             double clip = 1.0lf;

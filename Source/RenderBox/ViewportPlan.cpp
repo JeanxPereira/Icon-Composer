@@ -103,7 +103,7 @@ std::uint32_t blurLadderAlignment(double sigmaPixels) {
 }
 
 Result<ViewportPlan> planViewport(const IconViewport& v, std::uint32_t size,
-                                  const DocumentReach& reach) {
+                                  const DocumentReach& reach, std::uint32_t lattice) {
     ViewportPlan p;
     const std::uint32_t w = v.width ? v.width : size;
     const std::uint32_t h = v.height ? v.height : size;
@@ -149,6 +149,40 @@ Result<ViewportPlan> planViewport(const IconViewport& v, std::uint32_t size,
     // volta ao canvas inteiro), entao esta linha so pode RECUSAR mais do que a
     // anterior, nunca menos.
     p.overCap = !p.crop.isFull() && p.buffer.texels() > kViewportAreaCap;
+
+    // A GRADE DE LADRILHOS (so quem pede, e so um ladrilho que cabe no teto). A
+    // origem desce a um multiplo de `lattice` que tambem e multiplo do
+    // alinhamento da escada (os dois sao potencias de dois, ou `lattice` e
+    // alinhado abaixo), e o fim sobe; o canvas grampeia os dois.
+    if (lattice > 0 && !p.crop.isFull() && !p.overCap) {
+        const std::int64_t L = std::max<std::int64_t>(lattice, p.alignment) / p.alignment *
+                               p.alignment;
+        auto up = [&](std::int64_t e) {
+            return std::min<std::int64_t>(size, (e + L - 1) / L * L);
+        };
+        const std::int64_t sx0 = x0 / L * L, sy0 = y0 / L * L;
+        const std::int64_t sx1 = up(x1), sy1 = up(y1);
+        const PixelGrid snapped{size, static_cast<std::int32_t>(sx0), static_cast<std::int32_t>(sy0),
+                                static_cast<std::uint32_t>(sx1 - sx0),
+                                static_cast<std::uint32_t>(sy1 - sy0)};
+        if (snapped.texels() <= kViewportAreaCap) p.buffer = snapped;
+    }
+
+    // A ESTREITA: o recorte mais o alcance encadeado (o que uma refracao pode ler
+    // do acumulador, somado ao longo da cadeia), com 4 px de folga para a
+    // amostragem bilinear, dentro do buffer.
+    {
+        const std::int64_t c = static_cast<std::int64_t>(std::ceil(reach.chainedPoints * k)) + 4;
+        const std::int64_t bx0 = p.buffer.originX, by0 = p.buffer.originY;
+        const std::int64_t bx1 = bx0 + p.buffer.width, by1 = by0 + p.buffer.height;
+        const std::int64_t nx0 = std::max<std::int64_t>(bx0, v.originX - c);
+        const std::int64_t ny0 = std::max<std::int64_t>(by0, v.originY - c);
+        const std::int64_t nx1 = std::min<std::int64_t>(bx1, static_cast<std::int64_t>(v.originX) + w + c);
+        const std::int64_t ny1 = std::min<std::int64_t>(by1, static_cast<std::int64_t>(v.originY) + h + c);
+        p.narrow = PixelGrid{size, static_cast<std::int32_t>(nx0), static_cast<std::int32_t>(ny0),
+                             static_cast<std::uint32_t>(nx1 - nx0),
+                             static_cast<std::uint32_t>(ny1 - ny0)};
+    }
     return p;
 }
 

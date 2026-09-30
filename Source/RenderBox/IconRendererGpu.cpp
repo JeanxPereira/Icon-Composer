@@ -39,7 +39,10 @@
 // O CACHE (`RenderCache.h`) guarda buffers da GPU com chave de conteudo -- ver
 // "o cache residente" abaixo.
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 
@@ -91,8 +94,10 @@ struct BlendPush {
     std::uint32_t mode;
     std::uint32_t premultipliedSource;
     float alpha;
+    std::uint32_t sw;
+    std::int32_t sx, sy;
 };
-static_assert(sizeof(BlendPush) == 20);
+static_assert(sizeof(BlendPush) == 32);
 
 struct SvgPush {
     float colour[4];
@@ -155,21 +160,40 @@ Slab fieldSlab(const SurfaceField& f) { return std::static_pointer_cast<Buffer>(
 //     (`SurfaceArt::shared`): a mascara, a unica que escreve na arte, copia antes;
 //   - o campo de um vetor: os contornos (a chave de `fieldFromContoursCached`);
 //     o de um raster: a chave da arte; o da pastilha: a grade e a plataforma;
-//   - a sombra e o overdraw: a chave da arte COMO ELA ESTA -- a do render
-//     encadeada com a do campo e os argumentos da mascara, quando houve uma.
+//   - a sombra DESFOCADA (antes da translacao e do overdraw): a chave da arte
+//     COMO ELA ESTA -- a do render encadeada com a do campo e os argumentos da
+//     mascara, quando houve uma. A translacao e o overdraw sao refeitos a cada
+//     render, na grade estreita.
 // Um passo cujo insumo nao mudou nao roda. O que roda todo quadro e o que le o
 // acumulador (refracao, especular, realces da pastilha) e as mesclas.
 //
-// `[ART]` O PRECO DO PRIMEIRO QUADRO: um buffer guardado nao volta ao pool, entao
-// o primeiro render com um cache vazio aloca um buffer novo por entrada, e neste
-// aparelho (RX 6750 XT) um `vkAllocateMemory` de 16 MB custa ~7 ms, com ou sem a
-// camada de validacao. No Apollo a 1024 px isso e ~50 ms a mais no frio (148 ms
-// contra 88 ms sem cache) para um quente de 13 ms em vez de 32 ms. Depois que o
-// cache enche, o que ele despeja volta ao pool e nada mais e alocado.
-
+// O PRECO DO PRIMEIRO QUADRO, que era de alocacao: um buffer guardado nao volta
+// ao heap, e ate 29/09 cada buffer novo era um `vkAllocateMemory` (`[ART]` ~7 ms
+// para 16 MB neste aparelho) -- o Apollo a 1024 px saia em 148 ms no frio COM
+// cache contra 88 ms sem. Agora os buffers sao pedacos de blocos grandes
+// (GpuResident.h), e o frio com cache so aloca quando o heap nao cabe.
+//
+// O ZOOM PROFUNDO (duas grades). `planViewport` da ao buffer a margem da sombra
+// (sigma e deslocamento em PONTOS: a 8192 px ~880 px por lado), e um ladrilho de
+// 1000x800 vivia num buffer de ~2800x2600 -- ~9x a area pedida -- em que TODO
+// passo rodava. So a arte, o campo que a mascara le e a sombra precisam dessa
+// margem; o acumulador so precisa do recorte mais o alcance encadeado das
+// refracoes (a `narrow` do plano). Entao o acumulador, o fundo, a pastilha, os
+// realces, o especular, a refracao e as mesclas moram na grade ESTREITA, e leem
+// a arte, o campo e a sombra da LARGA por um deslocamento (`SourceView`). E as
+// bordas do buffer de um ladrilho caem numa grade de `kTileLattice` px, para que
+// um pan curto ache a arte, o campo e a sombra no cache.
 // Os contadores de um render: uma palavra por contagem pedida (`CountSink`,
 // `MaskSink`), descidos todos juntos no `finish`.
 constexpr std::uint32_t kCounterWords = 1024;
+
+// A grade dos buffers de ladrilho (`planViewport`, `lattice`). Um pan curto no
+// zoom profundo cai quase sempre no MESMO buffer, e a arte, o campo e a sombra
+// -- guardados pela grade -- saem do cache; o preco e ate 511 px de margem a
+// mais num ladrilho novo.
+constexpr std::uint32_t kTileLattice = 512;
+// A grade do retangulo em que o campo de um glifo tem a banda do acumulador.
+constexpr std::uint32_t kNearLattice = 256;
 
 struct GpuCachedField {
     Slab data;
@@ -182,9 +206,10 @@ struct GpuCachedArt {
     std::vector<SkippedShape> skipped;
 };
 
+// A sombra desfocada, antes da translacao e do overdraw (`gpu::shadowBlur`).
 struct GpuCachedShadow {
     Slab image;
-    Slab overdraw;
+    bool blurred = false;
 };
 
 // Os mesmos campos que `hashInto` de IconRenderer.cpp nomeia, com o mesmo
@@ -503,8 +528,13 @@ class GpuSurface final : public IconSurface {
 public:
     GpuSurface(Device& device, Resident& r) : device_(device), r_(r) {}
 
-    Result<void> begin(const PixelGrid& grid) override {
+    std::uint32_t bufferLattice() const override { return kTileLattice; }
+
+    Result<void> begin(const PixelGrid& grid, const PixelGrid& narrow) override {
         grid_ = grid;
+        // A GRADE ESTREITA so vale com o vidro na GPU: as quedas de CPU (aparelho
+        // sem double) levam o alvo e o campo juntos, na mesma grade.
+        narrow_ = r_.float64() ? narrow : grid;
         auto a = r_.acquire(bytes());
         if (!a) return std::unexpected(a.error());
         acc_ = *a;
@@ -523,24 +553,24 @@ public:
         p.m1 = static_cast<float>(paint.m[1]);
         p.m2 = static_cast<float>(paint.m[2]);
         p.kind = paint.kind == FillOverride::Kind::Ramp ? 1u : 0u;
-        p.w = grid_.width;
-        p.h = grid_.height;
-        p.ox = grid_.originX;
-        p.oy = grid_.originY;
+        p.w = narrow_.width;
+        p.h = narrow_.height;
+        p.ox = narrow_.originX;
+        p.oy = narrow_.originY;
         p.smoothRamp = paint.smooth ? 1u : 0u;
         p.nstops = static_cast<std::uint32_t>(paint.stops.size());
         auto stops = stageStops(r_, paint.stops);
         if (!stops) return std::unexpected(stops.error());
-        return r_.dispatch(r_.paint, {whole(acc_), *stops}, &p, groups16(grid_.width),
-                           groups16(grid_.height));
+        return r_.dispatch(r_.paint, {whole(acc_), *stops}, &p, groups16(narrow_.width),
+                           groups16(narrow_.height));
     }
 
     Result<void> clipToChiclet(IconPlatform platform) override {
-        if (grid_.size == 0 || grid_.width == 0 || grid_.height == 0) {
+        if (narrow_.size == 0 || narrow_.width == 0 || narrow_.height == 0) {
             r_.fill(acc_, 0);
             return {};
         }
-        const std::vector<icf::svg::Point> poly = chicletPolygon(grid_.size, platform);
+        const std::vector<icf::svg::Point> poly = chicletPolygon(narrow_.size, platform);
         if (poly.size() < 3) {   // a CPU devolve cobertura zero, e o fundo some
             r_.fill(acc_, 0);
             return {};
@@ -553,18 +583,18 @@ public:
         }
         auto staged = r_.stage(xy.data(), xy.size() * sizeof(float));
         if (!staged) return std::unexpected(staged.error());
-        auto spans = r_.acquire(static_cast<VkDeviceSize>(grid_.height) * 4 * 9 * sizeof(float));
+        auto spans = r_.acquire(static_cast<VkDeviceSize>(narrow_.height) * 4 * 9 * sizeof(float));
         if (!spans) return std::unexpected(spans.error());
-        ChicletPush p{grid_.width, grid_.height, grid_.originX, grid_.originY, grid_.size,
+        ChicletPush p{narrow_.width, narrow_.height, narrow_.originX, narrow_.originY, narrow_.size,
                       static_cast<std::uint32_t>(poly.size()), 0};
         if (auto ok = r_.dispatch(r_.chiclet, {whole(acc_), *staged, whole(*spans)}, &p, 1,
-                                  groups16(grid_.height));
+                                  groups16(narrow_.height));
             !ok) {
             return ok;
         }
         p.pass = 1;
         return r_.dispatch(r_.chiclet, {whole(acc_), *staged, whole(*spans)}, &p,
-                           groups16(grid_.width), groups16(grid_.height));
+                           groups16(narrow_.width), groups16(narrow_.height));
     }
 
     // Os realces da pastilha (G4, era [RT1]): o campo da pastilha na GPU,
@@ -577,9 +607,21 @@ public:
         const bool transcribed = gpu::resolveHighlights(slots, count, args, records);
         if (!r_.float64() || !transcribed) {
             // A ida e volta de antes: o alvo desce, `drawChicletHighlights`, sobe.
+            // Com a grade estreita o alvo entra num buffer da grade larga (zerado
+            // fora dela -- alfa 0, que o recorte pelo alfa pula), para que o campo
+            // grampeie na borda do buffer como na CPU.
             std::size_t drawn = 0;
             if (auto ok = onTarget([&](std::vector<float>& acc) {
-                    drawn = drawChicletHighlights(acc, grid_, args, platform);
+                    if (sameGrids()) {
+                        drawn = drawChicletHighlights(acc, grid_, args, platform);
+                        return;
+                    }
+                    std::vector<float> wide(grid_.texels() * 4, 0.0f);
+                    copyRows(acc, narrow_.width, 0, 0, wide, grid_.width, dx(), dy(),
+                             narrow_.width, narrow_.height);
+                    drawn = drawChicletHighlights(wide, grid_, args, platform);
+                    copyRows(wide, grid_.width, dx(), dy(), acc, narrow_.width, 0, 0,
+                             narrow_.width, narrow_.height);
                 });
                 !ok) {
                 return ok;
@@ -587,29 +629,48 @@ public:
             sink(drawn);
             return {};
         }
-        if (grid_.size == 0 || grid_.width == 0 || grid_.height == 0) {
+        if (narrow_.size == 0 || narrow_.width == 0 || narrow_.height == 0) {
             sink(0);
             return {};
         }
+        // O ALCANCE DOS REALCES. `fragmentOf` (icon_highlight.comp) zera o realce
+        // quando `sd - inset > height + banda/2`, e fora da pastilha o laco pula
+        // `sd < -2`: alem de `inset + height + banda` para dentro e de 2 para fora
+        // o campo nao muda pixel nenhum. Entao ele so e exato ate ai (`farBand`):
+        // no zoom profundo o miolo da pastilha fica a milhares de pixels do
+        // contorno, e a busca exata la custava `[ART]` ~90 ms de GPU num
+        // ladrilho do Kenzu a 8192 px (12 785 segmentos), para valores que
+        // nenhum realce le.
+        double reach = 2.0;
+        for (std::size_t i = 0; i + gpu::kHighlightStride <= records.size();
+             i += gpu::kHighlightStride) {
+            reach = std::max(reach, std::fabs(records[i + 0]) + records[i + 1] + records[i + 13]);
+        }
+        const float farBand = static_cast<float>(std::ceil(reach)) + 2.0f;
         CacheKey key;
         std::optional<GpuCachedField> field;
         if (cache) {
             KeyHasher h("gpu-chiclet-field");
-            h.value(grid_.size).value(grid_.originX).value(grid_.originY);
-            h.value(grid_.width).value(grid_.height).value(platform);
+            h.value(narrow_.size).value(narrow_.originX).value(narrow_.originY);
+            h.value(narrow_.width).value(narrow_.height).value(platform).value(farBand);
+            h.value(grid_.originX).value(grid_.originY).value(grid_.width).value(grid_.height);
             key = h.finish();
             if (auto hit = cache->find<GpuCachedField>(key)) field = *hit;
         }
         if (!field) {
             // `drawChicletHighlights`: o contorno do canvas inteiro, o campo com a
-            // origem do buffer, uma amostra por pixel.
-            const std::vector<FieldContour> contours = chicletFieldContours(grid_.size, platform);
+            // origem do buffer, uma amostra por pixel -- aqui na grade ESTREITA,
+            // a unica que os realces tocam, com o grampo de dentro na borda do
+            // buffer (a larga), como o `FieldImage` da CPU.
+            const std::vector<FieldContour> contours = chicletFieldContours(narrow_.size, platform);
             GpuCachedField made;
             if (!contours.empty()) {
                 FieldOptions fo;
-                fo.originX = grid_.originX;
-                fo.originY = grid_.originY;
-                auto f = gpu::fieldFromContours(r_, contours, grid_.width, grid_.height, fo, 1);
+                fo.originX = narrow_.originX;
+                fo.originY = narrow_.originY;
+                const gpu::FieldClamp clamp{dx(), dy(), grid_.width, grid_.height};
+                auto f = gpu::fieldFromContours(r_, contours, narrow_.width, narrow_.height, fo, 1,
+                                                farBand, &clamp);
                 if (!f) return std::unexpected(f.error());
                 made = GpuCachedField{f->data, f->width, f->height, f->originX, f->originY};
             }
@@ -621,7 +682,7 @@ public:
             return {};
         }
         const std::uint32_t slot = counterSlot(1);
-        if (auto ok = gpu::highlights(r_, target(), field->data, grid_.width, grid_.height,
+        if (auto ok = gpu::highlights(r_, target(), field->data, narrow_.width, narrow_.height,
                                       records, true, false, false, counters_, slot);
             !ok) {
             return ok;
@@ -644,9 +705,10 @@ public:
         Slab g = std::move(group_);
         group_.reset();
         if (!g || !blend) return {};
-        BlendPush p{grid_.width, grid_.height, static_cast<std::uint32_t>(*blend), 1u, 1.0f};
-        return r_.dispatch(r_.blend, {whole(acc_), whole(g)}, &p, groups16(grid_.width),
-                           groups16(grid_.height));
+        BlendPush p{narrow_.width, narrow_.height, static_cast<std::uint32_t>(*blend), 1u, 1.0f,
+                    narrow_.width, 0, 0};
+        return r_.dispatch(r_.blend, {whole(acc_), whole(g)}, &p, groups16(narrow_.width),
+                           groups16(narrow_.height));
     }
 
     // Com cache, a arte fica guardada na GPU pela chave de `svgRenderCached` (o
@@ -723,7 +785,7 @@ public:
 
     Result<SurfaceArt> placeRasterUncached(const icf::DecodedPng& png, const LayerPlacement& lp,
                                            bool feedsField) {
-        auto a = r_.acquire(bytes());
+        auto a = r_.acquire(wideBytes());
         if (!a) return std::unexpected(a.error());
         SurfaceArt art;
         art.resident = *a;
@@ -787,15 +849,30 @@ public:
 
     Result<SurfaceField> contourField(RenderCache* cache, const std::vector<FieldContour>& contours,
                                       std::uint32_t width, std::uint32_t height,
-                                      const FieldOptions& fo, std::uint32_t ss) override {
+                                      const FieldOptions& fo, std::uint32_t ss,
+                                      const FieldBands& bands) override {
         if (!r_.float64()) {
             // Sem double na GPU o campo e o de CPU.
             return cpuField(fieldFromContoursCached(cache, contours, width, height, fo, ss));
         }
-        CacheKey key;
+        // A banda do acumulador vale na estreita, alargada ate a grade de
+        // `kNearLattice` px: um pan curto cai no mesmo retangulo e acha o campo no
+        // cache. Fora dela so a mascara le o campo (`FieldBands`).
+        const gpu::FieldNear nearRect = nearOf(fo, width, height, bands.accumulator);
+        // DUAS CHAVES. `content` e o que a mascara le -- o campo ate a banda da
+        // arte, igual em qualquer retangulo --, e e ela que encadeia a arte
+        // mascarada e a sombra: um pan que move o retangulo nao invalida a sombra.
+        // `key` e o buffer inteiro, com o retangulo.
+        CacheKey key, content;
         if (cache) {
-            KeyHasher h("gpu-field-contours");
-            hashField(h, contours, width, height, fo, ss);
+            KeyHasher c("gpu-field-contours");
+            hashField(c, contours, width, height, fo, ss);
+            c.value(bands.art);
+            content = c.finish();
+            KeyHasher h("gpu-field-contours-near");
+            hashKey(h, content);
+            h.value(nearRect.band);
+            h.value(nearRect.x0).value(nearRect.y0).value(nearRect.x1).value(nearRect.y1);
             key = h.finish();
             if (auto hit = cache->find<GpuCachedField>(key)) {
                 SurfaceField f;
@@ -804,12 +881,13 @@ public:
                 f.height = hit->height;
                 f.originX = hit->originX;
                 f.originY = hit->originY;
-                f.key = key;
+                f.key = content;
                 f.keyed = true;
                 return f;
             }
         }
-        auto made = gpu::fieldFromContours(r_, contours, width, height, fo, ss);
+        auto made = gpu::fieldFromContours(r_, contours, width, height, fo, ss, bands.art,
+                                           nullptr, &nearRect);
         if (!made) return std::unexpected(made.error());
         SurfaceField f;
         f.resident = made->data;
@@ -818,7 +896,7 @@ public:
         f.originX = made->originX;
         f.originY = made->originY;
         if (cache) {
-            f.key = key;
+            f.key = content;
             f.keyed = true;
             const std::size_t bytes = made->data ? made->data->size() : 0;
             cache->store(key, GpuCachedField{made->data, f.width, f.height, f.originX, f.originY},
@@ -873,7 +951,8 @@ public:
                 glassOver(t, grid_, glassDisplacementMap(*field.cpu, refraction), refraction);
             });
         }
-        return gpu::refract(r_, target(), fieldSlab(field), grid_, refraction);
+        const gpu::SourceView view = viewOf(field);
+        return gpu::refract(r_, target(), fieldSlab(field), narrow_, refraction, &view);
     }
 
     // A mascara (G4, era [RT6]) e feita na passada que a aplica.
@@ -944,9 +1023,24 @@ public:
             SurfaceField copy = field;
             auto onCpu = fieldOnCpu(copy);
             if (!onCpu) return std::unexpected(onCpu.error());
+            // O campo e da grade larga e o alvo da estreita: o pedaco dela (o campo
+            // amostra absoluto, entao recortar e so mover o indice).
+            std::shared_ptr<const FieldImage> fieldHere = *onCpu;
+            if (!sameGrids()) {
+                FieldImage part;
+                part.width = narrow_.width;
+                part.height = narrow_.height;
+                part.originX = narrow_.originX;
+                part.originY = narrow_.originY;
+                part.rgba.assign(narrow_.texels() * 4, 0.0f);
+                const gpu::SourceView v = viewOf(copy);
+                copyRows((*onCpu)->rgba, v.width, v.x, v.y, part.rgba, narrow_.width, 0, 0,
+                         narrow_.width, narrow_.height);
+                fieldHere = std::make_shared<const FieldImage>(std::move(part));
+            }
             std::size_t moved = 0;
             if (auto ok = onTarget([&](std::vector<float>& t) {
-                    moved = drawSpecular(t, **onCpu, args);
+                    moved = drawSpecular(t, *fieldHere, args);
                 });
                 !ok) {
                 return ok;
@@ -955,9 +1049,10 @@ public:
             return {};
         }
         const std::uint32_t slot = counterSlot(1);
-        if (auto ok = gpu::highlights(r_, target(), fieldSlab(field), grid_.width, grid_.height,
+        const gpu::SourceView view = viewOf(field);
+        if (auto ok = gpu::highlights(r_, target(), fieldSlab(field), narrow_.width, narrow_.height,
                                       records, false, args.useVCM, args.clampPlusLighter,
-                                      counters_, slot);
+                                      counters_, slot, &view);
             !ok) {
             return ok;
         }
@@ -983,7 +1078,7 @@ public:
     }
 
     Result<void> blendArt(const SurfaceArt& art, float alpha, BlendMode mode) override {
-        return blendRange(whole(artSlab(art)), alpha, mode);
+        return blendRange(whole(artSlab(art)), alpha, mode, wideView());
     }
 
     // A sombra da arte residente (G3): `icon_ring`, `icon_shadow`, `icon_blur`,
@@ -1005,8 +1100,11 @@ public:
             s.hasOverdraw = !s.overdraw.empty();
             return s;
         }
-        // Com cache, a sombra fica na GPU pela chave da arte como ela esta agora
-        // (a do render, encadeada com a da mascara quando houve uma).
+        // Com cache, a sombra DESFOCADA (a parte cara, na grade larga) fica na GPU
+        // pela chave da arte como ela esta agora (a do render, encadeada com a da
+        // mascara quando houve uma). A translacao e o overdraw sao refeitos a cada
+        // render, na grade estreita -- sao duas passadas por pixel, e a estreita
+        // muda a cada pan.
         CacheKey key;
         const bool keyed = cache && art.keyed;
         if (keyed) {
@@ -1017,37 +1115,40 @@ public:
             h.value(geometry.offsetX).value(geometry.offsetY).value(geometry.blurRadius);
             h.value(geometry.ringWidth.has_value());
             if (geometry.ringWidth) h.value(*geometry.ringWidth);
-            h.value(overdrawAlpha);
             key = h.finish();
-            if (auto hit = cache->find<GpuCachedShadow>(key)) {
-                s.residentImage = hit->image;
-                s.residentOverdraw = hit->overdraw;
-                s.hasOverdraw = hit->overdraw != nullptr;
-                return s;
-            }
         }
-        auto made = gpu::shadow(r_, artSlab(art), grid_.width, grid_.height, style, geometry,
-                                overdrawAlpha);
+        std::optional<gpu::ShadowBlur> blur;
+        if (keyed) {
+            if (auto hit = cache->find<GpuCachedShadow>(key)) blur = gpu::ShadowBlur{hit->image, hit->blurred};
+        }
+        if (!blur) {
+            auto made = gpu::shadowBlur(r_, artSlab(art), grid_.width, grid_.height, style, geometry);
+            if (!made) return std::unexpected(made.error());
+            blur = *made;
+            if (keyed) cache->store(key, GpuCachedShadow{blur->image, blur->blurred}, blur->image->size());
+        }
+        auto made = gpu::shadowPlace(r_, *blur, artSlab(art), grid_.width, grid_.height, geometry,
+                                     overdrawAlpha,
+                                     gpu::ShadowOutput{narrow_.width, narrow_.height, dx(), dy()});
         if (!made) return std::unexpected(made.error());
         s.residentImage = made->image;
         s.residentOverdraw = made->overdraw;
         s.hasOverdraw = made->overdraw != nullptr;
-        if (keyed) {
-            const std::size_t bytes =
-                made->image->size() + (made->overdraw ? made->overdraw->size() : 0);
-            cache->store(key, GpuCachedShadow{made->image, made->overdraw}, bytes);
-        }
         return s;
     }
 
     Result<void> blendShadow(const SurfaceShadow& shadow, bool overdraw, float alpha,
                              BlendMode mode) override {
         const std::shared_ptr<void>& slab = overdraw ? shadow.residentOverdraw : shadow.residentImage;
-        if (slab) return blendRange(whole(std::static_pointer_cast<Buffer>(slab)), alpha, mode);
+        if (slab) {
+            // A sombra residente ja e da grade estreita (`shadowPlace`).
+            return blendRange(whole(std::static_pointer_cast<Buffer>(slab)), alpha, mode,
+                              gpu::SourceView{narrow_.width, 0, 0});
+        }
         const std::vector<float>& img = overdraw ? shadow.overdraw : *shadow.image;
         auto staged = r_.stage(img.data(), img.size() * sizeof(float));
         if (!staged) return std::unexpected(staged.error());
-        return blendRange(*staged, alpha, mode);
+        return blendRange(*staged, alpha, mode, wideView());
     }
 
     Result<std::vector<float>> finish(std::int32_t cropX, std::int32_t cropY, std::uint32_t viewW,
@@ -1060,7 +1161,8 @@ public:
         }
         auto out = r_.acquire(n * sizeof(float));
         if (!out) return std::unexpected(out.error());
-        FinishPush p{viewW, viewH, grid_.width, cropX, cropY};
+        // O recorte vem na grade larga; o acumulador e a estreita.
+        FinishPush p{viewW, viewH, narrow_.width, cropX - dx(), cropY - dy()};
         if (auto ok = r_.dispatch(r_.finish, {whole(acc_), whole(*out)}, &p, groups16(viewW),
                                   groups16(viewH));
             !ok) {
@@ -1079,7 +1181,7 @@ private:
     // Uma ida e volta do alvo, para as quedas de CPU (aparelho sem double, ou um
     // modo de mescla de realce que `icon_highlight` nao transcreve).
     Result<void> onTarget(const std::function<void(std::vector<float>&)>& step) {
-        std::vector<float> host(grid_.texels() * 4);
+        std::vector<float> host(narrow_.texels() * 4);
         const Slab& t = target();
         if (auto ok = r_.download(t, host.data(), bytes()); !ok) return ok;
         step(host);
@@ -1147,24 +1249,173 @@ private:
         return f;
     }
 
-    VkDeviceSize bytes() const { return static_cast<VkDeviceSize>(grid_.texels()) * 16; }
+    // O acumulador e o alvo de grupo moram na grade estreita; a arte, o campo e a
+    // sombra na larga.
+    VkDeviceSize bytes() const { return static_cast<VkDeviceSize>(narrow_.texels()) * 16; }
+    VkDeviceSize wideBytes() const { return static_cast<VkDeviceSize>(grid_.texels()) * 16; }
+    // A estreita no campo (origem `fo`), alargada ate a grade de `kNearLattice`.
+    gpu::FieldNear nearOf(const FieldOptions& fo, std::uint32_t width, std::uint32_t height,
+                          float band) const {
+        constexpr std::int32_t L = static_cast<std::int32_t>(kNearLattice);
+        auto down = [](std::int32_t v) { return (v >= 0 ? v : v - (L - 1)) / L * L; };
+        auto up = [&](std::int32_t v) { return down(v + L - 1); };
+        gpu::FieldNear n;
+        n.x0 = std::max(0, down(narrow_.originX) - fo.originX);
+        n.y0 = std::max(0, down(narrow_.originY) - fo.originY);
+        n.x1 = std::min(static_cast<std::int32_t>(width),
+                        up(narrow_.originX + static_cast<std::int32_t>(narrow_.width)) - fo.originX);
+        n.y1 = std::min(static_cast<std::int32_t>(height),
+                        up(narrow_.originY + static_cast<std::int32_t>(narrow_.height)) - fo.originY);
+        n.band = band;
+        return n;
+    }
+    bool sameGrids() const {
+        return narrow_.originX == grid_.originX && narrow_.originY == grid_.originY &&
+               narrow_.width == grid_.width && narrow_.height == grid_.height;
+    }
+    std::int32_t dx() const { return narrow_.originX - grid_.originX; }
+    std::int32_t dy() const { return narrow_.originY - grid_.originY; }
+    gpu::SourceView wideView() const { return gpu::SourceView{grid_.width, dx(), dy()}; }
+    gpu::SourceView viewOf(const SurfaceField& f) const {
+        return gpu::SourceView{f.width, narrow_.originX - f.originX, narrow_.originY - f.originY};
+    }
+    static void copyRows(const std::vector<float>& from, std::uint32_t fromW, std::int32_t fx,
+                         std::int32_t fy, std::vector<float>& to, std::uint32_t toW,
+                         std::int32_t tx, std::int32_t ty, std::uint32_t w, std::uint32_t h) {
+        for (std::uint32_t y = 0; y < h; ++y) {
+            const std::size_t s = ((static_cast<std::size_t>(y) + fy) * fromW + fx) * 4;
+            const std::size_t d = ((static_cast<std::size_t>(y) + ty) * toW + tx) * 4;
+            std::copy(from.begin() + s, from.begin() + s + w * 4, to.begin() + d);
+        }
+    }
     const Slab& target() const { return group_ ? group_ : acc_; }
 
-    Result<void> blendRange(Range src, float alpha, BlendMode mode) {
-        BlendPush p{grid_.width, grid_.height, static_cast<std::uint32_t>(mode), 0u, alpha};
-        return r_.dispatch(r_.blend, {whole(target()), src}, &p, groups16(grid_.width),
-                           groups16(grid_.height));
+    Result<void> blendRange(Range src, float alpha, BlendMode mode, const gpu::SourceView& sv) {
+        BlendPush p{narrow_.width, narrow_.height, static_cast<std::uint32_t>(mode), 0u, alpha,
+                    sv.width, sv.x, sv.y};
+        return r_.dispatch(r_.blend, {whole(target()), src}, &p, groups16(narrow_.width),
+                           groups16(narrow_.height));
     }
 
     Device& device_;
     Resident& r_;
-    PixelGrid grid_;
+    PixelGrid grid_;     // o buffer do render (a grade larga)
+    PixelGrid narrow_;   // a estreita: o recorte mais o alcance encadeado
     Slab acc_;
     Slab group_;
     Slab counters_;
     std::uint32_t nextCounter_ = 0;
     std::vector<std::uint32_t> counts_;
     std::vector<std::function<void()>> pending_;
+};
+
+// ---- o perfil (IC_GPU_PROFILE) ----------------------------------------------------
+//
+// Para MEDIR onde vai o tempo de um render residente: cada chamada da superficie
+// esvazia o lote (`flush`) ao sair, entao o relogio de cada metodo e a CPU dele
+// MAIS a GPU que ele gravou. Com o perfil o render e mais lento (uma espera por
+// passo em vez de uma so); o que ele mede e a PARTILHA. Desligado, nada disto roda.
+class ProfiledSurface final : public IconSurface {
+    struct Spent {
+        double ms = 0.0;
+        int calls = 0;
+    };
+    template <class F>
+    auto time(const char* name, F&& f) {
+        const auto t0 = std::chrono::steady_clock::now();
+        auto result = f();
+        (void)r_.flush();
+        Spent& s = spent_[name];
+        s.ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+                    .count();
+        ++s.calls;
+        return result;
+    }
+public:
+    ProfiledSurface(IconSurface& inner, Resident& r) : in_(inner), r_(r) {}
+    ~ProfiledSurface() override {
+        double total = 0.0;
+        for (const auto& [name, t] : spent_) total += t.ms;
+        std::fprintf(stderr, "[perfil] %-18s %8.2f ms\n", "total", total);
+        for (const auto& [name, t] : spent_) {
+            std::fprintf(stderr, "[perfil] %-18s %8.2f ms  x%d\n", name.c_str(), t.ms, t.calls);
+        }
+    }
+
+    std::uint32_t bufferLattice() const override { return in_.bufferLattice(); }
+    Result<void> begin(const PixelGrid& g, const PixelGrid& n) override {
+        std::fprintf(stderr, "[perfil] buffer %ux%u origem (%d,%d) canvas %u\n", g.width,
+                     g.height, g.originX, g.originY, g.size);
+        std::fprintf(stderr, "[perfil] estreita %ux%u origem (%d,%d)\n", n.width, n.height,
+                     n.originX, n.originY);
+        return time("begin", [&] { return in_.begin(g, n); });
+    }
+    Result<void> paintBackground(const FillOverride& p) override {
+        return time("paintBackground", [&] { return in_.paintBackground(p); });
+    }
+    Result<void> clipToChiclet(IconPlatform p) override {
+        return time("clipToChiclet", [&] { return in_.clipToChiclet(p); });
+    }
+    Result<void> chicletHighlights(RenderCache* c, const SpecularArguments& a, IconPlatform p,
+                                   CountSink s) override {
+        return time("chicletHighlights", [&] { return in_.chicletHighlights(c, a, p, s); });
+    }
+    Result<void> beginGroup(bool i) override {
+        return time("beginGroup", [&] { return in_.beginGroup(i); });
+    }
+    Result<void> endGroup(std::optional<BlendMode> b) override {
+        return time("endGroup", [&] { return in_.endGroup(b); });
+    }
+    Result<SurfaceArt> drawSvg(RenderCache* c, const std::string& t,
+                               const icf::svg::SvgDocument& s, const PathGlobals& p,
+                               const RenderOptions& o) override {
+        return time("drawSvg", [&] { return in_.drawSvg(c, t, s, p, o); });
+    }
+    Result<SurfaceArt> placeRaster(RenderCache* c, const icf::DecodedPng& png,
+                                   const LayerPlacement& lp, bool f) override {
+        return time("placeRaster", [&] { return in_.placeRaster(c, png, lp, f); });
+    }
+    Result<SurfaceField> contourField(RenderCache* c, const std::vector<FieldContour>& k,
+                                      std::uint32_t w, std::uint32_t h, const FieldOptions& o,
+                                      std::uint32_t ss, const FieldBands& b) override {
+        return time("contourField", [&] { return in_.contourField(c, k, w, h, o, ss, b); });
+    }
+    Result<SurfaceField> alphaField(RenderCache* c, SurfaceArt& a, std::uint32_t w,
+                                    std::uint32_t h, const FieldOptions& o) override {
+        return time("alphaField", [&] { return in_.alphaField(c, a, w, h, o); });
+    }
+    Result<void> refract(const SurfaceField& f, const GlassRefraction& g) override {
+        return time("refract", [&] { return in_.refract(f, g); });
+    }
+    Result<SurfaceMask> opacityMask(const SurfaceField& f, const OpacityMaskArguments& a) override {
+        return time("opacityMask", [&] { return in_.opacityMask(f, a); });
+    }
+    Result<void> applyMask(SurfaceArt& a, const SurfaceMask& m, MaskSink s) override {
+        return time("applyMask", [&] { return in_.applyMask(a, m, s); });
+    }
+    Result<void> specular(const SurfaceField& f, const SpecularArguments& a,
+                          CountSink s) override {
+        return time("specular", [&] { return in_.specular(f, a, s); });
+    }
+    Result<void> blendArt(const SurfaceArt& a, float al, BlendMode m) override {
+        return time("blendArt", [&] { return in_.blendArt(a, al, m); });
+    }
+    Result<SurfaceShadow> makeShadow(RenderCache* c, SurfaceArt& a, ShadowStyle s,
+                                     const ShadowGeometry& g, double o) override {
+        return time("makeShadow", [&] { return in_.makeShadow(c, a, s, g, o); });
+    }
+    Result<void> blendShadow(const SurfaceShadow& s, bool o, float a, BlendMode m) override {
+        return time("blendShadow", [&] { return in_.blendShadow(s, o, a, m); });
+    }
+    Result<std::vector<float>> finish(std::int32_t x, std::int32_t y, std::uint32_t w,
+                                      std::uint32_t h) override {
+        return time("finish", [&] { return in_.finish(x, y, w, h); });
+    }
+
+private:
+    IconSurface& in_;
+    Resident& r_;
+    std::map<std::string, Spent> spent_;
 };
 
 }  // namespace
@@ -1175,8 +1426,13 @@ Result<RenderedIcon> renderIconGpu(Device& device, const icf::IconBundle& bundle
     if (!resident) return std::unexpected(resident.error());
     Resident& r = **resident;
     std::lock_guard<std::mutex> lock(r.mutex());
+    static const bool profiled = std::getenv("IC_GPU_PROFILE") != nullptr;
     Result<RenderedIcon> out = [&]() {
         GpuSurface surface(device, r);
+        if (profiled) {
+            ProfiledSurface p(surface, r);
+            return renderIconOn(p, bundle, options);
+        }
         return renderIconOn(surface, bundle, options);
     }();
     // O que um erro deixou gravado roda (e e descartado) aqui, para o lote

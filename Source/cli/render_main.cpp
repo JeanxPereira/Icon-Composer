@@ -17,6 +17,7 @@
 #include "Source/RenderBox/SvgRenderer.h"
 #include "Source/cli/RenderBundle.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <string>
@@ -35,6 +36,8 @@ const char* kUsage =
     "  --repeat N          render a bundle N times sharing one RenderCache, timing each\n"
     "  --warmup            one untimed render first (pipelines built, no cache)\n"
     "  --no-validation     the Vulkan validation layer off (for timing)\n"
+    "  --tile X,Y,W,H      a bundle rendered as that viewport of the canvas (deep-zoom timing)\n"
+    "  --pan DX            with --tile and --repeat: render k moves the tile k*DX px right\n"
     "\n"
     "Flat fills only. Whatever cannot be drawn is named on stderr.\n";
 
@@ -107,6 +110,8 @@ int main(int argc, char** argv) {
     bool warmup = false;
     bool validation = true;
     int repeat = 1;
+    rb::IconViewport viewport;
+    int pan = 0;
     for (std::size_t i = 1; i < args.size(); ++i) {
         // As chaves sem valor.
         if (args[i] == "--gpu") {
@@ -137,6 +142,16 @@ int main(int argc, char** argv) {
         } else if (key == "--repeat") {
             repeat = std::atoi(value.c_str());
             if (repeat < 1 || repeat > 100) return fail("--repeat must be between 1 and 100");
+        } else if (key == "--tile") {
+            int x = 0, y = 0, w = 0, h = 0;
+            if (std::sscanf(value.c_str(), "%d,%d,%d,%d", &x, &y, &w, &h) != 4 || x < 0 ||
+                y < 0 || w <= 0 || h <= 0) {
+                return fail("--tile wants X,Y,W,H");
+            }
+            viewport = rb::IconViewport{x, y, static_cast<std::uint32_t>(w),
+                                        static_cast<std::uint32_t>(h)};
+        } else if (key == "--pan") {
+            pan = std::atoi(value.c_str());
         } else if (key == "--appearance") {
             auto a = icf::appearanceFromString(value);
             if (!a) return fail("unexpected value for --appearance: " + value);
@@ -176,17 +191,25 @@ int main(int argc, char** argv) {
         // no numero frio.
         if (warmup) {
             auto w = iccli::renderBundleIcon(*device, *bundle, options.width,
-                                             options.subdivisions, ctx, gpu);
+                                             options.subdivisions, ctx, gpu, nullptr, viewport);
             if (!w) return fail(w.error());
         }
         rb::RenderCache cache;
         rb::Result<rb::RenderedIcon> icon = std::unexpected(std::string("no render"));
         double elapsed = 0.0;
         for (int r = 0; r < repeat; ++r) {
+            // `--pan`: o ladrilho vizinho, com o mesmo cache (o pan do zoom).
+            rb::IconViewport v = viewport;
+            if (pan != 0 && v.width != 0) {
+                const std::int64_t limit =
+                    static_cast<std::int64_t>(options.width) - static_cast<std::int64_t>(v.width);
+                v.originX = static_cast<std::int32_t>(
+                    std::clamp<std::int64_t>(v.originX + static_cast<std::int64_t>(r) * pan, 0, limit));
+            }
             const Clock clock;
             icon = iccli::renderBundleIcon(*device, *bundle, options.width,
                                            options.subdivisions, ctx, gpu,
-                                           repeat > 1 ? &cache : nullptr);
+                                           repeat > 1 ? &cache : nullptr, v);
             elapsed = clock.seconds();
             if (!icon) return fail(icon.error());
             if (repeat > 1) {

@@ -204,7 +204,7 @@ Result<Resident*> Resident::of(Device& device) {
     const Spec specs[] = {
         {&r->paint, kPaintSpirv, sizeof kPaintSpirv, 2, 56},
         {&r->chiclet, kChicletSpirv, sizeof kChicletSpirv, 3, 28},
-        {&r->blend, kBlendSpirv, sizeof kBlendSpirv, 2, 20},
+        {&r->blend, kBlendSpirv, sizeof kBlendSpirv, 2, 32},
         {&r->svg, kSvgSpirv, sizeof kSvgSpirv, 5, 100},
         {&r->finish, kFinishSpirv, sizeof kFinishSpirv, 2, 20},
         {&r->raster, kRasterSpirv, sizeof kRasterSpirv, 3, 16},
@@ -218,13 +218,13 @@ Result<Resident*> Resident::of(Device& device) {
     // eles o vidro fica na CPU (`Resident::float64`).
     if (device.float64()) {
         const Spec wide[] = {
-            {&r->field, kFieldSpirv, sizeof kFieldSpirv, 5, 52},
+            {&r->field, kFieldSpirv, sizeof kFieldSpirv, 5, 116},
             {&r->ring, kRingSpirv, sizeof kRingSpirv, 2, 12},
-            {&r->shadow, kShadowSpirv, sizeof kShadowSpirv, 4, 64},
+            {&r->shadow, kShadowSpirv, sizeof kShadowSpirv, 4, 80},
             {&r->blur, kBlurSpirv, sizeof kBlurSpirv, 3, 28},
-            {&r->highlight, kHighlightSpirv, sizeof kHighlightSpirv, 4, 28},
+            {&r->highlight, kHighlightSpirv, sizeof kHighlightSpirv, 4, 40},
             {&r->glassMask, kGlassMaskSpirv, sizeof kGlassMaskSpirv, 3, 48},
-            {&r->displace, kDisplaceSpirv, sizeof kDisplaceSpirv, 2, 32},
+            {&r->displace, kDisplaceSpirv, sizeof kDisplaceSpirv, 2, 44},
             {&r->refract, kRefractSpirv, sizeof kRefractSpirv, 3, 32},
         };
         for (const Spec& s : wide) {

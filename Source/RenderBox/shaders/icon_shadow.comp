@@ -33,6 +33,12 @@ layout(push_constant) uniform Push {
     uint premultiply;    // modo 0: pre-multiplica para a escada
     uint blurred;        // modo 1: a entrada saiu da escada, pre-multiplicada
     float k;             // modo 2
+    // Os modos 1 e 2 escrevem numa grade de saida (`ow x oh`) cujo pixel (0, 0)
+    // cai em (ox, oy) da grade de entrada (`w x h`): a sombra posta e o overdraw
+    // so sao lidos pela composicao, na grade estreita (IconRendererGpu.cpp). O
+    // modo 0 escreve na propria grade de entrada.
+    uint ow, oh;
+    int ox, oy;
 } p;
 
 vec4 straightAt(uint t) {
@@ -47,9 +53,13 @@ vec4 straightAt(uint t) {
 }
 
 void main() {
-    uvec2 g = gl_GlobalInvocationID.xy;
+    uvec2 go = gl_GlobalInvocationID.xy;
+    if (p.mode != 0u && (go.x >= p.ow || go.y >= p.oh)) return;
+    // O pixel na grade de entrada, e onde ele e escrito.
+    uvec2 g = p.mode == 0u ? go : uvec2(ivec2(go) + ivec2(p.ox, p.oy));
     if (g.x >= p.w || g.y >= p.h) return;
     uint t = g.y * p.w + g.x;
+    uint to = p.mode == 0u ? t : go.y * p.ow + go.x;
 
     if (p.mode == 0u) {
         vec4 v = src[t];
@@ -93,16 +103,16 @@ void main() {
     }
 
     if (p.mode == 2u) {
-        vec4 s = src[t];
+        vec4 s = src[to];
         float c = aux[t].a * p.k;
         s.a = s.a * c;
-        dst[t] = s;
+        dst[to] = s;
         return;
     }
 
     // mode 1
     if (p.dx == 0.0lf && p.dy == 0.0lf) {
-        dst[t] = straightAt(t);
+        dst[to] = straightAt(t);
         return;
     }
     precise double sxf = double(g.x) - p.dx;
@@ -137,5 +147,5 @@ void main() {
     o.r = acc3 > 0.0lf ? float(acc0 / acc3) : 0.0;
     o.g = acc3 > 0.0lf ? float(acc1 / acc3) : 0.0;
     o.b = acc3 > 0.0lf ? float(acc2 / acc3) : 0.0;
-    dst[t] = o;
+    dst[to] = o;
 }

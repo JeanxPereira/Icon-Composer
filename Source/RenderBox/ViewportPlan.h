@@ -63,12 +63,24 @@ std::uint32_t blurLadderAlignment(double sigmaPixels);
 struct ViewportPlan {
     PixelGrid buffer;
     PixelGrid crop;
+    // Onde o ACUMULADOR tem de estar certo: o recorte mais o alcance encadeado
+    // das refracoes (a unica coisa que le o acumulador fora do proprio pixel),
+    // contido no buffer. A margem da sombra e da banda local e do buffer: a
+    // arte, o campo e a sombra precisam dela, o acumulador nao. So a GPU usa
+    // (IconSurface.h, `begin`); com o canvas inteiro e o buffer.
+    PixelGrid narrow;
     std::uint32_t marginPixels = 0;
     std::uint32_t alignment = 1;
     bool overCap = false;
 };
 
+// `lattice > 0`: as bordas do buffer de um LADRILHO caem numa grade de
+// `lattice` px (para fora, grampeadas no canvas), desde que o buffer continue
+// abaixo do teto. Margem a mais so custa area (o invariante vale para qualquer
+// margem >= a pedida, com a origem alinhada), e dois ladrilhos vizinhos passam a
+// ter o MESMO buffer -- a arte, o campo e a sombra de um servem ao outro pelo
+// cache. A GPU pede (IconRendererGpu.cpp); 0 e o plano de sempre.
 Result<ViewportPlan> planViewport(const IconViewport& viewport, std::uint32_t size,
-                                  const DocumentReach& reach);
+                                  const DocumentReach& reach, std::uint32_t lattice = 0);
 
 }  // namespace rb

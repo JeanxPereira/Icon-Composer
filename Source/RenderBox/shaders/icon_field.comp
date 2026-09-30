@@ -41,9 +41,52 @@ layout(push_constant) uniform Push {
     float gx0, gy0, cell;
     float aa;
     uint rule;   // 0 non-zero, 1 even-odd
+    // A BANDA LONGE: > 0, um bloco cujo limite de baixo da distancia passa dela
+    // nao busca o contorno -- cada pixel sai com `far + 1` (e o sinal, e o grampo
+    // da borda de dentro, como sempre) e uma normal (1, 0). So para quem le o
+    // campo ate uma banda e satura alem dela (os realces da pastilha). 0: exato.
+    float far;
+    // A GRADE GROSSA: a mesma origem, celula `cell2`, `nx2 x ny2`; as partidas em
+    // `grid[start2 ..]` (relativas a `items2`) e as distancias em
+    // `cellDist[dist2 ..]`. Uma coroa a distancia `d` custa ~17,6 d / cell
+    // celulas; longe do contorno (zoom profundo: milhares de pixels) o bloco
+    // anda na grossa. Os candidatos continuam um superconjunto -- a grossa
+    // tambem lista cada segmento em toda celula que ele atravessa -- entao o pe e
+    // o mesmo.
+    uint nx2, ny2;
+    float cell2;
+    uint start2, items2, dist2;
+    // O GRAMPO DE DENTRO e a borda do BUFFER do render (`FieldImage`: um pixel
+    // de dentro nao fica mais longe do que a borda). O campo pode ser feito numa
+    // grade menor que o buffer (a estreita, IconRendererGpu.cpp): (cx, cy) e onde
+    // o pixel (0, 0) dela cai no buffer, cw x ch o buffer.
+    int cx, cy;
+    uint cw, ch;
+    // Um retangulo (coordenadas do campo) com banda propria: onde o acumulador le
+    // o campo, a banda e a dele (0 = exato); fora, `far`.
+    int nx0, ny0, nx1, ny1;
+    float nearFar;
 } p;
 
+// A grade que este bloco percorre.
+uint Lnx, Lny, Lstart, Litems;
+float Lcell;
+
 shared float partial[64];
+
+// Os candidatos da coroa da passada 2, juntados UMA vez por bloco: os 64 pixels
+// de um bloco percorrem a mesma coroa, e a coroa a uma distancia `d` do contorno
+// tem ~2 pi d (2h) / cell^2 celulas -- num canvas grande (zoom profundo) isso e
+// milhares de celulas por pixel. O minimo lexicografico `(d2, indice)` nao
+// depende da ordem nem de repeticoes, entao a lista compartilhada da o mesmo pe.
+const uint kCandidates = 1024u;
+shared uint candidates[kCandidates];
+shared uint candidateCount;
+// Um segmento longo atravessa muitas celulas da coroa e entraria na lista uma vez
+// por celula; cada entrada e um `closestD` em double por pixel. O conjunto de
+// bits tira a repeticao quando os indices cabem nele.
+const uint kSeenWords = 1024u;
+shared uint seen[kSeenWords];
 
 bool insideAt(uint t) {
     uint word = inside[t >> 2u];
@@ -119,13 +162,13 @@ float distanceAtAll(float x, float y) {
 // As celulas da coroa `[rIn, rOut]` em volta de `c`, linha a linha; `forAnnulus`
 // de DistanceField.cpp com a folga ja somada por quem chama.
 #define ANNULUS_ROWS(c, rIn, rOut, J0, J1)                                           \
-    int J0 = max(int(floor(((c).y - (rOut) - p.gy0) / p.cell)), 0);                 \
-    int J1 = min(int(floor(((c).y + (rOut) - p.gy0) / p.cell)), int(p.ny) - 1);
+    int J0 = max(int(floor(((c).y - (rOut) - p.gy0) / Lcell)), 0);                 \
+    int J1 = min(int(floor(((c).y + (rOut) - p.gy0) / Lcell)), int(Lny) - 1);
 
 void rowSpan(vec2 c, float rIn, float rOut, int j, out int i0, out int i1, out int k0,
              out int k1, out bool any) {
-    float ya = p.gy0 + float(j) * p.cell;
-    float yb = ya + p.cell;
+    float ya = p.gy0 + float(j) * Lcell;
+    float yb = ya + Lcell;
     float dyMin = c.y < ya ? ya - c.y : (c.y > yb ? c.y - yb : 0.0);
     any = dyMin <= rOut;
     i0 = 0;
@@ -134,13 +177,13 @@ void rowSpan(vec2 c, float rIn, float rOut, int j, out int i0, out int i1, out i
     k1 = 0;
     if (!any) return;
     float so = sqrt(max(rOut * rOut - dyMin * dyMin, 0.0));
-    i0 = max(int(floor((c.x - so - p.gx0) / p.cell)), 0);
-    i1 = min(int(floor((c.x + so - p.gx0) / p.cell)), int(p.nx) - 1);
+    i0 = max(int(floor((c.x - so - p.gx0) / Lcell)), 0);
+    i1 = min(int(floor((c.x + so - p.gx0) / Lcell)), int(Lnx) - 1);
     float dyMax = max(abs(c.y - ya), abs(c.y - yb));
     if (rIn > dyMax) {
         float si = sqrt(rIn * rIn - dyMax * dyMax);
-        k0 = int(ceil((c.x - si - p.gx0) / p.cell));
-        k1 = int(floor((c.x + si - p.gx0) / p.cell)) - 1;
+        k0 = int(ceil((c.x - si - p.gx0) / Lcell));
+        k1 = int(floor((c.x + si - p.gx0) / Lcell)) - 1;
     }
 }
 
@@ -155,16 +198,70 @@ void main() {
     vec2 c1 = vec2(float(x1 - 1 + p.ox) + 0.5, float(y1 - 1 + p.oy) + 0.5);
     vec2 P = 0.5 * (c0 + c1);
     float h = 0.5 * length(c1 - c0);
-    float slack = 0.01 + 1e-5 * (abs(P.x) + abs(P.y)) + 1e-4 * p.cell;
+
+    // A banda deste bloco: a do retangulo quando o toca (a mais estrita das duas).
+    float far = p.far;
+    if (x1 > p.nx0 && x0 < p.nx1 && y1 > p.ny0 && y0 < p.ny1) {
+        far = (p.nearFar <= 0.0 || far <= 0.0) ? 0.0 : max(far, p.nearFar);
+    }
 
     // ---- 1. dP, de uma coroa limitada pela grade de ocupacao ------------------
-    int ci = clamp(int(floor((P.x - p.gx0) / p.cell)), 0, int(p.nx) - 1);
-    int cj = clamp(int(floor((P.y - p.gy0) / p.cell)), 0, int(p.ny) - 1);
-    vec2 centre = vec2(p.gx0 + (float(ci) + 0.5) * p.cell, p.gy0 + (float(cj) + 0.5) * p.cell);
-    float E = cellDist[uint(cj) * p.nx + uint(ci)];
-    float off = length(P - centre) + 0.70711 * p.cell;
-    float L = max(E - off - slack, 0.0);
-    float U = E + off + slack;
+    Lnx = p.nx;
+    Lny = p.ny;
+    Lcell = p.cell;
+    Lstart = 0u;
+    Litems = p.itemsBase;
+    uint Ldist = 0u;
+    float slack, E, off, L, U;
+    for (int level = 0; level < 2; ++level) {
+        slack = 0.01 + 1e-5 * (abs(P.x) + abs(P.y)) + 1e-4 * Lcell;
+        int ci = clamp(int(floor((P.x - p.gx0) / Lcell)), 0, int(Lnx) - 1);
+        int cj = clamp(int(floor((P.y - p.gy0) / Lcell)), 0, int(Lny) - 1);
+        vec2 centre = vec2(p.gx0 + (float(ci) + 0.5) * Lcell, p.gy0 + (float(cj) + 0.5) * Lcell);
+        E = cellDist[Ldist + uint(cj) * Lnx + uint(ci)];
+        off = length(P - centre) + 0.70711 * Lcell;
+        L = max(E - off - slack, 0.0);
+        U = E + off + slack;
+        // Longe (a coroa fina teria dezenas de celulas grossas de largura): a
+        // grossa. A decisao e do bloco inteiro.
+        if (level == 1 || p.nx2 == 0u || E <= 2.0 * p.cell2) break;
+        if (far > 0.0 && L - h - slack > far) break;
+        Lnx = p.nx2;
+        Lny = p.ny2;
+        Lcell = p.cell2;
+        Lstart = p.start2;
+        Litems = p.items2;
+        Ldist = p.dist2;
+    }
+
+    if (far > 0.0 && L - h - slack > far) {
+        // O bloco inteiro esta alem da banda (a decisao e do bloco: sem barreira
+        // pendente, todos saem juntos).
+        int x = x0 + int(gl_LocalInvocationID.x);
+        int y = y0 + int(gl_LocalInvocationID.y);
+        if (x >= x1 || y >= y1) return;
+        uint t = uint(y) * p.W + uint(x);
+        bool isIn = insideAt(t);
+        double sgn = isIn ? -1.0lf : 1.0lf;
+        double d = double(far) + 1.0lf;
+        double gx = 1.0lf, gy = 0.0lf;
+        if (isIn) {
+            double bx0 = double(x + p.cx) + 0.5lf;
+            double by0 = double(y + p.cy) + 0.5lf;
+            double bx1 = double(p.cw) - bx0;
+            double by1 = double(p.ch) - by0;
+            if (bx0 < d) { d = bx0; gx = -1.0lf; gy = 0.0lf; }
+            if (by0 < d) { d = by0; gx = 0.0lf; gy = -1.0lf; }
+            if (bx1 < d) { d = bx1; gx = 1.0lf; gy = 0.0lf; }
+            if (by1 < d) { d = by1; gx = 0.0lf; gy = 1.0lf; }
+        }
+        vec4 o = vec4(float(sgn * d), float(gx), float(gy), 0.0);
+        double aa = double(p.aa) > 0.0lf ? double(p.aa) : 1.0lf;
+        precise double cov = -double(o.x) / aa + 0.5lf;
+        o.w = float(cov < 0.0lf ? 0.0lf : (cov > 1.0lf ? 1.0lf : cov));
+        field[t] = o;
+        return;
+    }
 
     float best = 3.0e38;
     {
@@ -179,9 +276,9 @@ void main() {
                     i = k1;
                     continue;
                 }
-                uint cidx = uint(j) * p.nx + uint(i);
-                for (uint k = grid[cidx]; k < grid[cidx + 1u]; ++k) {
-                    best = min(best, segDist2f(grid[p.itemsBase + k], P));
+                uint cidx = uint(j) * Lnx + uint(i);
+                for (uint k = grid[Lstart + cidx]; k < grid[Lstart + cidx + 1u]; ++k) {
+                    best = min(best, segDist2f(grid[Litems + k], P));
                 }
             }
         }
@@ -194,6 +291,7 @@ void main() {
     }
     float dP = sqrt(partial[0]);
 
+
     // ---- 2. o minimo exato por pixel ------------------------------------------
     int x = x0 + int(gl_LocalInvocationID.x);
     int y = y0 + int(gl_LocalInvocationID.y);
@@ -205,7 +303,63 @@ void main() {
     uint bestSeg = 0xFFFFFFFFu;
     float rIn = max(dP - 2.0 * slack, 0.0);
     float rOut = dP + 2.0 * h + 2.0 * slack;
+
+    // Os candidatos da coroa, juntados pelo bloco (as linhas repartidas como na
+    // passada 1). Se nao couberem, cada pixel volta a percorrer a coroa sozinho.
+    if (lid == 0u) candidateCount = 0u;
+    const bool dedupe = p.nseg <= kSeenWords * 32u;
+    if (dedupe) {
+        for (uint w = lid; w < kSeenWords; w += 64u) seen[w] = 0u;
+    }
+    barrier();
     {
+        ANNULUS_ROWS(P, rIn, rOut, j0, j1)
+        for (int j = j0 + int(lid); j <= j1; j += 64) {
+            int i0, i1, k0, k1;
+            bool any;
+            rowSpan(P, rIn, rOut, j, i0, i1, k0, k1, any);
+            if (!any) continue;
+            for (int i = i0; i <= i1; ++i) {
+                if (i >= k0 && i <= k1) {
+                    i = k1;
+                    continue;
+                }
+                uint cidx = uint(j) * Lnx + uint(i);
+                uint k0s = grid[Lstart + cidx];
+                uint n = grid[Lstart + cidx + 1u] - k0s;
+                if (n == 0u) continue;
+                if (dedupe) {
+                    for (uint k = 0u; k < n; ++k) {
+                        uint s = grid[Litems + k0s + k];
+                        uint bit = 1u << (s & 31u);
+                        if ((atomicOr(seen[s >> 5u], bit) & bit) != 0u) continue;
+                        uint at = atomicAdd(candidateCount, 1u);
+                        if (at < kCandidates) candidates[at] = s;
+                    }
+                } else {
+                    uint at = atomicAdd(candidateCount, n);
+                    for (uint k = 0u; k < n && at + k < kCandidates; ++k) {
+                        candidates[at + k] = grid[Litems + k0s + k];
+                    }
+                }
+            }
+        }
+    }
+    barrier();
+    const uint nc = candidateCount;
+    if (nc <= kCandidates) {
+        for (uint k = 0u; k < nc; ++k) {
+            uint s = candidates[k];
+            double d2, cx, cy;
+            closestD(s, qx, qy, d2, cx, cy);
+            if (b2 < 0.0lf || d2 < b2 || (d2 == b2 && s < bestSeg)) {
+                b2 = d2;
+                fx = cx;
+                fy = cy;
+                bestSeg = s;
+            }
+        }
+    } else {
         ANNULUS_ROWS(P, rIn, rOut, j0, j1)
         for (int j = j0; j <= j1; ++j) {
             int i0, i1, k0, k1;
@@ -217,9 +371,9 @@ void main() {
                     i = k1;
                     continue;
                 }
-                uint cidx = uint(j) * p.nx + uint(i);
-                for (uint k = grid[cidx]; k < grid[cidx + 1u]; ++k) {
-                    uint s = grid[p.itemsBase + k];
+                uint cidx = uint(j) * Lnx + uint(i);
+                for (uint k = grid[Lstart + cidx]; k < grid[Lstart + cidx + 1u]; ++k) {
+                    uint s = grid[Litems + k];
                     double d2, cx, cy;
                     closestD(s, qx, qy, d2, cx, cy);
                     if (b2 < 0.0lf || d2 < b2 || (d2 == b2 && s < bestSeg)) {
@@ -250,10 +404,10 @@ void main() {
         gy = double(distanceAtAll(fqx, float(qy + 0.5lf))) - double(distanceAtAll(fqx, float(qy - 0.5lf)));
     }
     if (isIn) {
-        double bx0 = double(x) + 0.5lf;
-        double by0 = double(y) + 0.5lf;
-        double bx1 = double(p.W) - bx0;
-        double by1 = double(p.H) - by0;
+        double bx0 = double(x + p.cx) + 0.5lf;
+        double by0 = double(y + p.cy) + 0.5lf;
+        double bx1 = double(p.cw) - bx0;
+        double by1 = double(p.ch) - by0;
         if (bx0 < d) { d = bx0; gx = -1.0lf; gy = 0.0lf; }
         if (by0 < d) { d = by0; gx = 0.0lf; gy = -1.0lf; }
         if (bx1 < d) { d = bx1; gx = 1.0lf; gy = 0.0lf; }
