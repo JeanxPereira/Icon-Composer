@@ -52,6 +52,45 @@ struct BlurPush {
 };
 static_assert(sizeof(BlurPush) == 28);
 
+struct GlassMaskPush {
+    std::uint32_t w, h;
+    std::int32_t originY;
+    std::uint32_t slot;
+    float borderWidth;
+    float ob0, ob1;
+    float cb0, cb1;
+    float boundsY, boundsH;
+    float alphaFloor;
+};
+static_assert(sizeof(GlassMaskPush) == 48);
+
+struct DisplacePush {
+    float params[4];
+    float rot[2];
+    std::uint32_t w, h;
+};
+static_assert(sizeof(DisplacePush) == 32);
+
+struct RefractPush {
+    std::uint32_t w, h;
+    std::int32_t ox, oy;
+    std::uint32_t size;
+    std::uint32_t variant;
+    float scale;
+    float inv;
+};
+static_assert(sizeof(RefractPush) == 32);
+
+struct HighlightPush {
+    std::uint32_t w, h;
+    std::uint32_t nslots;
+    std::uint32_t chiclet;
+    std::uint32_t useVCM;
+    std::uint32_t clampPlus;
+    std::uint32_t slot;
+};
+static_assert(sizeof(HighlightPush) == 28);
+
 Result<Slab> resident(Resident& r, const void* data, std::size_t bytes) {
     auto s = r.acquire(std::max<std::size_t>(bytes, 16));
     if (!s) return s;
@@ -355,6 +394,119 @@ Result<ResidentShadow> shadow(Resident& r, const Slab& art, std::uint32_t width,
         out.overdraw = *od;
     }
     return out;
+}
+
+
+// ---- G4: a mascara, a refracao e os realces --------------------------------------
+
+Result<void> glassMask(Resident& r, const Slab& art, const Slab& field, std::uint32_t width,
+                       std::uint32_t height, std::int32_t originY,
+                       const OpacityMaskArguments& args, const Slab& counters,
+                       std::uint32_t slot) {
+    GlassMaskPush p{};
+    p.w = width;
+    p.h = height;
+    p.originY = originY;
+    p.slot = slot;
+    p.borderWidth = args.borderWidth;
+    p.ob0 = args.opacityBounds[0];
+    p.ob1 = args.opacityBounds[1];
+    p.cb0 = args.contourOpacityBounds[0];
+    p.cb1 = args.contourOpacityBounds[1];
+    p.boundsY = args.bounds[1];
+    p.boundsH = args.bounds[3];
+    // O `alphaFloor` padrao de `opacityMaskMissedPixels`.
+    p.alphaFloor = 0.5f;
+    return r.dispatch(r.glassMask, {whole(art), whole(field), whole(counters)}, &p,
+                      groups16(width), groups16(height));
+}
+
+Result<void> refract(Resident& r, const Slab& target, const Slab& field, const PixelGrid& grid,
+                     const GlassRefraction& g) {
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(grid.texels()) * 16;
+    auto map = r.acquire(bytes);
+    if (!map) return std::unexpected(map.error());
+    DisplacePush d{};
+    d.params[0] = g.heightPixels;
+    d.params[1] = g.curvature;
+    d.params[2] = g.offset;
+    d.params[3] = g.maskOffset;
+    d.rot[0] = g.angleCos;
+    d.rot[1] = g.angleSin;
+    d.w = grid.width;
+    d.h = grid.height;
+    if (auto ok = r.dispatch(r.displace, {whole(*map), whole(field)}, &d, groups16(grid.width),
+                             groups16(grid.height));
+        !ok) {
+        return ok;
+    }
+    // O fundo e uma FOTO do alvo: refratar no lugar realimentaria pixels ja
+    // refratados (o comentario de `glassOver`).
+    auto backdrop = r.acquire(bytes);
+    if (!backdrop) return std::unexpected(backdrop.error());
+    r.copy(whole(target), *backdrop);
+    RefractPush p{};
+    p.w = grid.width;
+    p.h = grid.height;
+    p.ox = grid.originX;
+    p.oy = grid.originY;
+    p.size = grid.size;
+    p.variant = g.variant;
+    p.scale = g.scalePixels;
+    p.inv = 1.0f / static_cast<float>(grid.size);
+    return r.dispatch(r.refract, {whole(target), whole(*backdrop), whole(*map)}, &p,
+                      groups16(grid.width), groups16(grid.height));
+}
+
+bool highlightModeTranscribed(BlendMode m) {
+    return m == BlendMode::Normal || m == BlendMode::PlusLighter || m == BlendMode::PlusDarker;
+}
+
+bool resolveHighlights(const HighlightSlot* slots, std::size_t count,
+                       const SpecularArguments& args, std::vector<double>& records) {
+    records.clear();
+    // `glassHighlightFragment` com `fwidth(sd) == 1`: a largura da banda.
+    constexpr double kEps = 0.0009765625;
+    constexpr double kBandWidth = 0.8330078125;
+    const double band = std::min(std::max(1.0, kEps), 2.0) * kBandWidth;
+    constexpr double kPi = 3.14159265358979323846;
+    for (std::size_t s = 0; s < count; ++s) {
+        const GlassHighlightSettings g = resolveHighlight(slots[s], args);
+        if (g.opacity <= 0.0 || g.height <= 0.0) continue;
+        if (!highlightModeTranscribed(g.blendMode)) return false;
+        const GlyphVCM& vcm = slots[s].isDarklight ? glyphDarklightVCM() : glyphHighlightVCM();
+        double rec[kHighlightStride] = {};
+        rec[0] = g.inset;
+        rec[1] = g.height;
+        rec[2] = g.curvature;
+        rec[3] = (g.spread > kPi) ? -1000.0 : std::cos(g.spread);
+        rec[4] = g.directionX;
+        rec[5] = g.directionY;
+        rec[6] = 1.0 / g.bias - 2.0;
+        rec[7] = g.opacity;
+        rec[8] = g.colour[0];
+        rec[9] = static_cast<double>(static_cast<std::uint32_t>(g.blendMode));
+        rec[10] = vcm.lumaFloor;
+        rec[11] = vcm.lumaCeiling;
+        rec[12] = vcm.saturation;
+        rec[13] = band;
+        records.insert(records.end(), rec, rec + kHighlightStride);
+    }
+    return true;
+}
+
+Result<void> highlights(Resident& r, const Slab& target, const Slab& field, std::uint32_t width,
+                        std::uint32_t height, const std::vector<double>& records, bool chiclet,
+                        bool useVCM, bool clampPlusLighter, const Slab& counters,
+                        std::uint32_t slot) {
+    const std::uint32_t n = static_cast<std::uint32_t>(records.size() / kHighlightStride);
+    if (n == 0) return {};
+    auto staged = resident(r, records.data(), records.size() * sizeof(double));
+    if (!staged) return std::unexpected(staged.error());
+    HighlightPush p{width, height, n, chiclet ? 1u : 0u, useVCM ? 1u : 0u,
+                    clampPlusLighter ? 1u : 0u, slot};
+    return r.dispatch(r.highlight, {whole(target), whole(field), whole(*staged), whole(counters)},
+                      &p, groups16(width), groups16(height));
 }
 
 }  // namespace rb::gpu

@@ -89,9 +89,9 @@ public:
     // Um render residente por vez por aparelho: o lote e a arena sao unicos.
     std::mutex& mutex() { return mutex_; }
 
-    Kernel paint, chiclet, blend, svg, finish, mask, raster;
+    Kernel paint, chiclet, blend, svg, finish, raster;
     // O vidro (GpuGlass.cpp). Os em double so sao montados com `float64()`.
-    Kernel field, ring, shadow, blur;
+    Kernel field, ring, shadow, blur, highlight, glassMask, displace, refract;
     bool float64() const { return device_->float64(); }
     CoveragePass coverage;
 

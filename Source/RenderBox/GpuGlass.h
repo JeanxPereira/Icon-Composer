@@ -13,7 +13,11 @@
 
 #include "Source/RenderBox/BlendMode.h"
 #include "Source/RenderBox/DistanceField.h"
+#include "Source/RenderBox/GlassLayer.h"
 #include "Source/RenderBox/GlassShadow.h"
+#include "Source/RenderBox/GlassSpecular.h"
+#include "Source/RenderBox/GlassTranslucency.h"
+#include "Source/RenderBox/PixelGrid.h"
 #include "Source/RenderBox/GpuResident.h"
 
 namespace rb::gpu {
@@ -45,5 +49,32 @@ struct ResidentShadow {
 Result<ResidentShadow> shadow(Resident& r, const Slab& art, std::uint32_t width,
                               std::uint32_t height, ShadowStyle style,
                               const ShadowGeometry& geometry, double overdrawAlpha);
+
+// `glassOpacityMask` + `opacityMaskMissedPixels` + `applyOpacityMask` sobre a
+// arte `art`, lendo o campo `field` (`icon_glass_mask`). Soma os pintados em
+// `counters[slot]` e os perdidos em `counters[slot + 1]`.
+Result<void> glassMask(Resident& r, const Slab& art, const Slab& field, std::uint32_t width,
+                       std::uint32_t height, std::int32_t originY,
+                       const OpacityMaskArguments& args, const Slab& counters,
+                       std::uint32_t slot);
+
+// `glassOver(target, grid, glassDisplacementMap(field, g), g)`: `icon_displace` e
+// `icon_refract`, sobre uma copia do alvo.
+Result<void> refract(Resident& r, const Slab& target, const Slab& field, const PixelGrid& grid,
+                     const GlassRefraction& g);
+
+// Os realces resolvidos na CPU (`resolveHighlight`), um registro de
+// `kHighlightStride` doubles por realce que pinta, na ordem dos slots. Devolve
+// false quando um modo de mescla nao esta transcrito em `icon_highlight`.
+constexpr std::size_t kHighlightStride = 16;
+bool resolveHighlights(const HighlightSlot* slots, std::size_t count,
+                       const SpecularArguments& args, std::vector<double>& records);
+
+// `drawSpecular` (`chiclet == false`) ou `drawChicletHighlights` sobre `target`,
+// lendo o campo; os pixels mudados somam em `counters[slot]`. Pede `float64()`.
+Result<void> highlights(Resident& r, const Slab& target, const Slab& field, std::uint32_t width,
+                        std::uint32_t height, const std::vector<double>& records, bool chiclet,
+                        bool useVCM, bool clampPlusLighter, const Slab& counters,
+                        std::uint32_t slot);
 
 }  // namespace rb::gpu

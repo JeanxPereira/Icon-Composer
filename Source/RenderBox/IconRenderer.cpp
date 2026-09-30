@@ -69,6 +69,15 @@ LayerPlacement placementOf(const icf::json::Value* position) {
     return p;
 }
 
+// O LUGAR DE UMA NOTA OU LACUNA QUE UMA CONTAGEM AINDA VAI DECIDIR (IconSurface.h,
+// "as contagens chegam depois"). A entrada entra NA POSICAO em que a CPU a teria
+// posto, com este marcador; o `sink` troca pelo texto ou por `kDroppedEntry`, e o
+// fim de `renderIconOn` tira as descartadas -- entao a ordem das notas e das
+// lacunas e a mesma nos dois caminhos. Os dois comecam com um byte de controle,
+// que nenhuma nota real tem.
+const char* const kPendingEntry = "\x01" "pendente";
+const char* const kDroppedEntry = "\x02" "descartada";
+
 // A sentence said once per render, however many layers provoke it.
 void note(std::vector<std::string>& notes, const std::string& text) {
     if (text.empty()) return;
@@ -832,8 +841,9 @@ public:
         rb::clipToChiclet(acc_, grid_, platform);
         return {};
     }
-    Result<void> onTarget(const std::function<void(std::vector<float>&)>& step) override {
-        step(target());
+    Result<void> chicletHighlights(RenderCache* cache, const SpecularArguments& args,
+                                   IconPlatform platform, CountSink sink) override {
+        sink(chicletHighlightsCached(cache, target(), grid_, args, platform));
         return {};
     }
     Result<void> beginGroup(bool isolated) override {
@@ -872,14 +882,29 @@ public:
                                     std::uint32_t height, const FieldOptions& fo) override {
         return fieldOf(fieldFromAlphaCached(cache, art.rgba, width, height, fo));
     }
-    Result<std::shared_ptr<const FieldImage>> fieldOnCpu(SurfaceField& field) override {
-        return field.cpu;
+    Result<void> refract(const SurfaceField& field, const GlassRefraction& refraction) override {
+        glassOver(target(), grid_, glassDisplacementMap(*field.cpu, refraction), refraction);
+        return {};
     }
-    Result<std::size_t> applyMask(SurfaceArt& art, const OpacityMask& mask,
-                                  std::size_t& painted) override {
-        const std::size_t missed = opacityMaskMissedPixels(art.rgba, mask, painted);
-        applyOpacityMask(art.rgba, mask);
-        return missed;
+    Result<SurfaceMask> opacityMask(const SurfaceField& field,
+                                    const OpacityMaskArguments& args) override {
+        SurfaceMask m;
+        m.cpu = std::make_shared<const OpacityMask>(glassOpacityMask(*field.cpu, args));
+        m.field = field;
+        m.args = args;
+        return m;
+    }
+    Result<void> specular(const SurfaceField& field, const SpecularArguments& args,
+                          CountSink sink) override {
+        sink(drawSpecular(target(), *field.cpu, args));
+        return {};
+    }
+    Result<void> applyMask(SurfaceArt& art, const SurfaceMask& mask, MaskSink sink) override {
+        std::size_t painted = 0;
+        const std::size_t missed = opacityMaskMissedPixels(art.rgba, *mask.cpu, painted);
+        applyOpacityMask(art.rgba, *mask.cpu);
+        sink(missed, painted);
+        return {};
     }
     Result<void> blendArt(const SurfaceArt& art, float alpha, BlendMode mode) override {
         blendOver(target(), art.rgba, alpha, mode);
@@ -1064,17 +1089,20 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                     chicletArgs.sizeClass = options.sizeClass;
                     chicletArgs.pixelsPerPoint =
                         static_cast<double>(options.size) / kCanvasPoints;
-                    // Na GPU e uma ida e volta: ver `onTarget`.
-                    std::size_t highlighted = 0;
-                    if (auto ok = surface.onTarget([&](std::vector<float>& acc) {
-                            highlighted = chicletHighlightsCached(options.cache, acc, grid,
-                                                                  chicletArgs, platform);
-                        });
+                    // A nota depende de quantos pixels mudaram: o lugar dela fica
+                    // guardado ate a contagem chegar (na GPU, no `finish`).
+                    const std::size_t noteAt = out.notes.size();
+                    out.notes.push_back(kPendingEntry);
+                    std::vector<std::string>* notes = &out.notes;
+                    if (auto ok = surface.chicletHighlights(
+                            options.cache, chicletArgs, platform,
+                            [notes, noteAt, appearance, lum](std::size_t highlighted) {
+                                (*notes)[noteAt] = highlighted > 0
+                                                       ? chicletHighlightsNote(appearance, lum)
+                                                       : std::string(kDroppedEntry);
+                            });
                         !ok) {
                         return std::unexpected(ok.error());
-                    }
-                    if (highlighted > 0) {
-                        note(out.notes, chicletHighlightsNote(appearance, lum));
                     }
                 }
                 if (paint.kind == FillOverride::Kind::Ramp) {
@@ -1643,8 +1671,8 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
             // The highlight rides the SAME distance field as the other two, so
             // it joins the same gate rather than building a second one.
             const bool wantsHighlight = isGlass && wantsSpecular;
-            std::optional<OpacityMask> mask;
-            std::shared_ptr<const FieldImage> specularField;
+            std::optional<SurfaceMask> mask;
+            std::optional<SurfaceField> specularField;
 
             if (wantsRefraction || wantsTranslucency || wantsHighlight) {
                 // THE RASTER TAKES THE SAME DOOR AS THE VECTOR, AS OF THIS FRONT.
@@ -1788,19 +1816,9 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                     // Translucency alone: draw opaque, and say so.
                     if (wantsTranslucency) note(out.notes, fieldGap);
                 } else {
-                    // Os tres consumidores do campo ainda sao de CPU: na GPU isto
-                    // e um readback do campo.
-                    auto onCpu = surface.fieldOnCpu(*field);
-                    if (!onCpu) return std::unexpected(onCpu.error());
-                    const std::shared_ptr<const FieldImage> fieldCpu = *onCpu;
-                    if (wantsHighlight) specularField = fieldCpu;
+                    if (wantsHighlight) specularField = *field;
                     if (wantsRefraction) {
-                        // Na GPU e uma ida e volta do alvo: a refracao e de CPU.
-                        if (auto ok = surface.onTarget([&](std::vector<float>& target) {
-                                glassOver(target, grid, glassDisplacementMap(*fieldCpu, refraction),
-                                          refraction);
-                            });
-                            !ok) {
+                        if (auto ok = surface.refract(*field, refraction); !ok) {
                             return std::unexpected(ok.error());
                         }
                         note(out.notes, glassRulerNote(options.size));
@@ -1828,7 +1846,9 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                         args.bounds[1] = static_cast<float>(r.y);
                         args.bounds[2] = static_cast<float>(r.width);
                         args.bounds[3] = static_cast<float>(r.height);
-                        mask = glassOpacityMask(*fieldCpu, args);
+                        auto made = surface.opacityMask(*field, args);
+                        if (!made) return std::unexpected(made.error());
+                        mask = std::move(*made);
                         note(out.notes, kTranslucencyBoundsNote);
                     }
                 }
@@ -1953,24 +1973,32 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                     // a silent miss for one the art painted anyway. Counted
                     // against the art's alpha so the sentence carries a number
                     // instead of a worry.
-                    std::size_t painted = 0;
-                    auto counted = surface.applyMask(*drew, *mask, painted);
+                    const std::size_t gapAt = out.shapeGaps.size();
+                    out.shapeGaps.push_back(kPendingEntry);
+                    std::vector<std::string>* gaps = &out.shapeGaps;
+                    const std::string prefix = name + " / " + *imageName + ": ";
+                    auto counted = surface.applyMask(
+                        *drew, *mask,
+                        [gaps, gapAt, prefix](std::size_t missed, std::size_t painted) {
+                            if (!(missed > 0 && painted > 0)) {
+                                (*gaps)[gapAt] = kDroppedEntry;
+                                return;
+                            }
+                            char buf[420];
+                            std::snprintf(
+                                buf, sizeof(buf),
+                                "translucidez aplicada com buraco: %zu de %zu pixels pintados "
+                                "(%.1f%%) caem FORA do campo de distancia e ficaram opacos -- "
+                                "flattenSvgToContours funde todo subcaminho pintado num conjunto "
+                                "so, assinado por uma regra so, entao subcaminhos sobrepostos de "
+                                "orientacao contraria se cancelam sob non-zero (a ressalva de "
+                                "DistanceField.h). O mesmo buraco vale para a refracao.",
+                                missed, painted,
+                                100.0 * static_cast<double>(missed) /
+                                    static_cast<double>(painted));
+                            (*gaps)[gapAt] = prefix + buf;
+                        });
                     if (!counted) return std::unexpected(counted.error());
-                    const std::size_t missed = *counted;
-                    if (missed > 0 && painted > 0) {
-                        char buf[420];
-                        std::snprintf(
-                            buf, sizeof(buf),
-                            "translucidez aplicada com buraco: %zu de %zu pixels pintados "
-                            "(%.1f%%) caem FORA do campo de distancia e ficaram opacos -- "
-                            "flattenSvgToContours funde todo subcaminho pintado num conjunto "
-                            "so, assinado por uma regra so, entao subcaminhos sobrepostos de "
-                            "orientacao contraria se cancelam sob non-zero (a ressalva de "
-                            "DistanceField.h). O mesmo buraco vale para a refracao.",
-                            missed, painted,
-                            100.0 * static_cast<double>(missed) / static_cast<double>(painted));
-                        out.shapeGaps.push_back(name + " / " + *imageName + ": " + buf);
-                    }
                     ++out.glassTranslucent;
                 }
                 if (auto ok = castShadow(*drew); !ok) return std::unexpected(ok.error());
@@ -1996,15 +2024,14 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                 if (specularField) {
                     SpecularArguments layerSpecular = specularArgs;
                     layerSpecular.layerOpacity = opacity;
-                    // Na GPU e uma ida e volta do alvo: o especular e de CPU.
-                    std::size_t moved = 0;
-                    if (auto ok = surface.onTarget([&](std::vector<float>& target) {
-                            moved = drawSpecular(target, *specularField, layerSpecular);
-                        });
+                    std::size_t* specularCount = &out.glassSpecular;
+                    if (auto ok = surface.specular(*specularField, layerSpecular,
+                                                   [specularCount](std::size_t moved) {
+                                                       if (moved > 0) ++*specularCount;
+                                                   });
                         !ok) {
                         return std::unexpected(ok.error());
                     }
-                    if (moved > 0) ++out.glassSpecular;
                     note(out.notes, specularDrawnNote());
                 }
                 ++out.drawn;
@@ -2024,22 +2051,30 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                 // for this front and both are in the laudo.
                 SurfaceArt& placed = *rasterPlaced;
                 if (mask) {
-                    std::size_t painted = 0;
-                    auto counted = surface.applyMask(placed, *mask, painted);
+                    const std::size_t gapAt = out.shapeGaps.size();
+                    out.shapeGaps.push_back(kPendingEntry);
+                    std::vector<std::string>* gaps = &out.shapeGaps;
+                    const std::string prefix = name + " / " + *imageName + ": ";
+                    auto counted = surface.applyMask(
+                        placed, *mask,
+                        [gaps, gapAt, prefix](std::size_t missed, std::size_t painted) {
+                            if (!(missed > 0 && painted > 0)) {
+                                (*gaps)[gapAt] = kDroppedEntry;
+                                return;
+                            }
+                            char buf[420];
+                            std::snprintf(
+                                buf, sizeof(buf),
+                                "translucidez aplicada com buraco: %zu de %zu pixels pintados "
+                                "(%.1f%%) caem FORA do campo de distancia e ficaram opacos -- "
+                                "num raster o campo e assinado pelo contorno alpha >= 0.5, entao "
+                                "todo pixel pintado com alpha ABAIXO do limiar fica de fora.",
+                                missed, painted,
+                                100.0 * static_cast<double>(missed) /
+                                    static_cast<double>(painted));
+                            (*gaps)[gapAt] = prefix + buf;
+                        });
                     if (!counted) return std::unexpected(counted.error());
-                    const std::size_t missed = *counted;
-                    if (missed > 0 && painted > 0) {
-                        char buf[420];
-                        std::snprintf(
-                            buf, sizeof(buf),
-                            "translucidez aplicada com buraco: %zu de %zu pixels pintados "
-                            "(%.1f%%) caem FORA do campo de distancia e ficaram opacos -- "
-                            "num raster o campo e assinado pelo contorno alpha >= 0.5, entao "
-                            "todo pixel pintado com alpha ABAIXO do limiar fica de fora.",
-                            missed, painted,
-                            100.0 * static_cast<double>(missed) / static_cast<double>(painted));
-                        out.shapeGaps.push_back(name + " / " + *imageName + ": " + buf);
-                    }
                     ++out.glassTranslucent;
                 }
                 if (auto ok = castShadow(placed); !ok) return std::unexpected(ok.error());
@@ -2052,15 +2087,14 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                     // The same backdrop reading as the vector branch above.
                     SpecularArguments layerSpecular = specularArgs;
                     layerSpecular.layerOpacity = opacity;
-                    // Na GPU e uma ida e volta do alvo: o especular e de CPU.
-                    std::size_t moved = 0;
-                    if (auto ok = surface.onTarget([&](std::vector<float>& target) {
-                            moved = drawSpecular(target, *specularField, layerSpecular);
-                        });
+                    std::size_t* specularCount = &out.glassSpecular;
+                    if (auto ok = surface.specular(*specularField, layerSpecular,
+                                                   [specularCount](std::size_t moved) {
+                                                       if (moved > 0) ++*specularCount;
+                                                   });
                         !ok) {
                         return std::unexpected(ok.error());
                     }
-                    if (moved > 0) ++out.glassSpecular;
                     note(out.notes, specularDrawnNote());
                 }
                 ++out.drawn;
@@ -2129,6 +2163,15 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
     auto cropped = surface.finish(cropX, cropY, viewW, viewH);
     if (!cropped) return std::unexpected(cropped.error());
     out.rgba = std::move(*cropped);
+    // As contagens ja chegaram (a GPU as entrega no `finish`): o que nao virou
+    // texto sai.
+    for (std::vector<std::string>* list : {&out.notes, &out.shapeGaps}) {
+        list->erase(std::remove_if(list->begin(), list->end(),
+                                   [](const std::string& e) {
+                                       return e == kDroppedEntry || e == kPendingEntry;
+                                   }),
+                    list->end());
+    }
     return out;
 }
 

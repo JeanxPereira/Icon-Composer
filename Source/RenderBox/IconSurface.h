@@ -17,11 +17,18 @@
 // `GpuSurface` (IconRendererGpu.cpp) guarda o acumulador e a arte em buffers da
 // GPU e so desce para a CPU onde a interface diz.
 //
-// A UNICA PORTA PARA A CPU E `onTarget` (mais `fieldOnCpu` para o campo). Tudo que
-// ainda roda na CPU sobre o acumulador -- a refracao (`glassOver`), o especular
-// (`drawSpecular`) e os realces da pastilha (`drawChicletHighlights`) -- passa
-// por ela; na GPU isso e uma ida e volta (readback + upload) DECLARADA, e as
-// tasks G2-G4 do plano existem para tira-las.
+// NAO HA PORTA PARA A CPU NA INTERFACE desde G4: cada etapa de vidro -- o campo,
+// a sombra, a mascara, a refracao, o especular, os realces da pastilha -- e um
+// metodo, e a `GpuSurface` faz cada uma sobre os buffers dela. O que a GPU ainda
+// faz na CPU (a cobertura de um traco, um SVG com filtro, o campo de um raster)
+// sobe e esta declarado em IconRendererGpu.cpp.
+//
+// AS CONTAGENS CHEGAM DEPOIS. Tres decisoes dependem de um numero que so a
+// passada conhece -- quantos pixels um realce mudou, quantos a mascara pintou e
+// perdeu. Na CPU o numero existe na hora; na GPU ele desce UMA vez, no `finish`.
+// Entao esses metodos entregam o numero a um `sink`, que a CPU chama na hora e
+// a GPU chama no fim, e `renderIconOn` guarda o lugar da nota ou da lacuna que
+// o numero decide (IconRenderer.cpp, `kPendingEntry`).
 //
 // Interno: so IconRenderer.cpp e IconRendererGpu.cpp incluem.
 #include <cstddef>
@@ -35,7 +42,9 @@
 #include "Source/RenderBox/BlendMode.h"
 #include "Source/RenderBox/ChicletShape.h"
 #include "Source/RenderBox/DistanceField.h"
+#include "Source/RenderBox/GlassLayer.h"
 #include "Source/RenderBox/GlassShadow.h"
+#include "Source/RenderBox/GlassSpecular.h"
 #include "Source/RenderBox/GlassTranslucency.h"
 #include "Source/RenderBox/IconRenderer.h"
 #include "Source/RenderBox/RenderCache.h"
@@ -67,6 +76,18 @@ struct SurfaceField {
     bool empty() const { return width == 0; }
 };
 
+// A mascara de translucidez de UMA camada: na CPU, `glassOpacityMask`; na GPU, o
+// campo e os argumentos (a mascara e feita na passada que a aplica).
+struct SurfaceMask {
+    std::shared_ptr<const OpacityMask> cpu;
+    SurfaceField field;
+    OpacityMaskArguments args;
+};
+
+// Onde uma contagem da GPU chega (ver o topo deste arquivo).
+using CountSink = std::function<void(std::size_t)>;
+using MaskSink = std::function<void(std::size_t missed, std::size_t painted)>;
+
 // A sombra de UMA camada e o seu overdraw, feitos da arte ja mascarada. Na CPU
 // sao as imagens de `shadowImageCached`/`shadowOverdrawImage`; na GPU, buffers.
 struct SurfaceShadow {
@@ -90,10 +111,10 @@ public:
     virtual Result<void> paintBackground(const FillOverride& paint) = 0;
     virtual Result<void> clipToChiclet(IconPlatform platform) = 0;
 
-    // Um passo de CPU sobre o ALVO corrente (o acumulador, ou o do grupo quando
-    // o grupo e isolado), pre-multiplicado, no lugar. Na GPU: readback, passo,
-    // upload.
-    virtual Result<void> onTarget(const std::function<void(std::vector<float>&)>& step) = 0;
+    // Os realces da pastilha sobre o alvo corrente: `chicletHighlightsCached`.
+    // `sink` recebe os pixels mudados.
+    virtual Result<void> chicletHighlights(RenderCache* cache, const SpecularArguments& args,
+                                           IconPlatform platform, CountSink sink) = 0;
 
     // Um grupo cuja mescla nao e `normal` desenha num alvo proprio e so no fim
     // entra no acumulador, com `blendPremulOver`. `endGroup` recebe o modo
@@ -128,13 +149,19 @@ public:
     virtual Result<SurfaceField> alphaField(RenderCache* cache, SurfaceArt& art,
                                             std::uint32_t width, std::uint32_t height,
                                             const FieldOptions& options) = 0;
-    // O campo na CPU, para quem ainda so existe la. Na GPU: readback.
-    virtual Result<std::shared_ptr<const FieldImage>> fieldOnCpu(SurfaceField& field) = 0;
+    // A refracao do alvo corrente pelo campo:
+    // `glassOver(alvo, grade, glassDisplacementMap(campo, r), r)`.
+    virtual Result<void> refract(const SurfaceField& field, const GlassRefraction& refraction) = 0;
 
-    // `opacityMaskMissedPixels` seguido de `applyOpacityMask`: devolve os
-    // perdidos e escreve os pintados em `painted`.
-    virtual Result<std::size_t> applyMask(SurfaceArt& art, const OpacityMask& mask,
-                                          std::size_t& painted) = 0;
+    // `glassOpacityMask`, e depois `opacityMaskMissedPixels` seguido de
+    // `applyOpacityMask` sobre a arte; `sink` recebe os perdidos e os pintados.
+    virtual Result<SurfaceMask> opacityMask(const SurfaceField& field,
+                                            const OpacityMaskArguments& args) = 0;
+    virtual Result<void> applyMask(SurfaceArt& art, const SurfaceMask& mask, MaskSink sink) = 0;
+
+    // `drawSpecular` sobre o alvo corrente; `sink` recebe os pixels mudados.
+    virtual Result<void> specular(const SurfaceField& field, const SpecularArguments& args,
+                                  CountSink sink) = 0;
 
     // `blendOver` no alvo corrente, da arte de uma camada.
     virtual Result<void> blendArt(const SurfaceArt& art, float alpha, BlendMode mode) = 0;

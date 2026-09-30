@@ -67,7 +67,7 @@ set(_shader_dir ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${_shader_dir})
 file(GLOB _glsl_deps ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.glsl)
 set(_shader_incs)
-foreach(shader IN ITEMS path_probe.comp path_coverage.comp path_exterior.vert path_exterior.frag gradient_probe.comp glass_probe.comp displacement_probe.comp field_probe.comp mip_reduce.comp glass_background_probe.comp glass_foreground_probe.comp sdf_displacement_probe.comp icon_paint.comp icon_chiclet.comp icon_blend.comp icon_svg.comp icon_finish.comp icon_mask.comp icon_raster.comp icon_field.comp icon_ring.comp icon_shadow.comp icon_blur.comp)
+foreach(shader IN ITEMS path_probe.comp path_coverage.comp path_exterior.vert path_exterior.frag gradient_probe.comp glass_probe.comp displacement_probe.comp field_probe.comp mip_reduce.comp glass_background_probe.comp glass_foreground_probe.comp sdf_displacement_probe.comp icon_paint.comp icon_chiclet.comp icon_blend.comp icon_svg.comp icon_finish.comp icon_raster.comp icon_field.comp icon_ring.comp icon_shadow.comp icon_blur.comp icon_glass_mask.comp icon_displace.comp icon_refract.comp icon_highlight.comp)
     set(_src ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader})
     set(_out ${_shader_dir}/${shader}.inc)
     add_custom_command(OUTPUT ${_out}

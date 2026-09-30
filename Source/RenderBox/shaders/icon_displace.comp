@@ -1,0 +1,66 @@
+#version 450
+// O MAPA DE DESLOCAMENTO DO VIDRO, NA GPU (frente GPU, G4): `glassDisplacementMap`
+// de GlassLayer.cpp -- por texel do campo, `sdfdisp::glassDisplacement` com
+// `fwidth = |gx| + |gy|`, codificado em `(0.5 + 0.5 dx, 0.5 + 0.5 dy, 1, alfa)`.
+//
+// As pecas sao as de `SdfDisplacement.glsl` (a transcricao que o probe mede
+// contra a CPU), menos TRES DIVISOES E UMA RAIZ, que aqui sao exatas: a divisao
+// e a raiz float da GPU nao sao arredondadas corretamente, e a CPU sim. Numa
+// conta suave isso e um ulp; aqui nao e, porque `x = s / height` alimenta um
+// DEGRAU (`flatProfile` cai 0,2929 em `x < 1`) -- com `s == height` a divisao
+// da GPU dava `0,99999994`, o degrau caia do outro lado e o mapa andava 0,018,
+// que a escala da refracao vira meio pixel de fundo (medido em
+// `gpu_glass_steps_are_the_cpu_steps`). Float -> double -> float e a divisao (e
+// a raiz) corretamente arredondada de float: 53 bits cobrem o arredondamento
+// duplo.
+#extension GL_GOOGLE_include_directive : require
+
+#include "SdfDisplacement.glsl"
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) writeonly buffer Map { vec4 dispMap[]; };
+layout(std430, binding = 1) readonly buffer Field { vec4 field[]; };
+
+layout(push_constant) uniform Push {
+    vec4 params;   // height, curvature, offset, maskOffset
+    vec2 rot;      // cos, sin
+    uint w, h;
+} p;
+
+float divExact(float a, float b) { return float(double(a) / double(b)); }
+
+void main() {
+    uvec2 g = gl_GlobalInvocationID.xy;
+    if (g.x >= p.w || g.y >= p.h) return;
+    uint i = g.y * p.w + g.x;
+    vec4 f = field[i];
+    float fw = abs(f.y) + abs(f.z);
+
+    // `sdfdisp::glassDisplacement`, linha a linha.
+    float s = rbSdfDispDepth(f, p.params);
+    float t = s - p.params.w;
+    float w = rbSdfDispFilterWidth(fw);
+    float ramp = clamp(divExact(t, w) + 0.5, 0.0, 1.0);
+    float a = ramp * f.w;
+    a = t < kRbSdfDispBandCutoff ? 0.0 : a;
+
+    float x = clamp(divExact(s, p.params.x), 0.0, 1.0);
+    float flatP = rbSdfDispFlatProfile(x);
+    float u = 1.0 - x;
+    precise float inner = 1.0 - u * u;
+    float circ = float(sqrt(double(inner)));
+    float mag = rbSdfDispMagnitude(flatP, circ, p.params.y);
+
+    vec2 dir = rbSdfDispDirection(f.yz, p.rot);
+    float amount = 1.0 - mag;
+    float dx = amount * dir.x;
+    float dy = amount * dir.y;
+    float fade = clamp(divExact(p.params.x - s, w) + 0.5, 0.0, 1.0);
+    dx = dx * fade;
+    dy = dy * fade;
+
+    precise float mx = 0.5 + 0.5 * dx;
+    precise float my = 0.5 + 0.5 * dy;
+    dispMap[i] = vec4(mx, my, 1.0, a);
+}

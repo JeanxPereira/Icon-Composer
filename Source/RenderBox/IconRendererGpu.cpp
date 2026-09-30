@@ -1,6 +1,6 @@
 // `renderIconGpu` -- as decisoes de `renderIcon`, com os pixels na GPU.
 //
-// O QUE E RESIDENTE (frente GPU, G1 -- `Docs/Plans/2026-09-29-render-gpu.md`)
+// O QUE E RESIDENTE (frente GPU, G1-G4 -- `Docs/Plans/2026-09-29-render-gpu.md`)
 // ----------------------------------------------------------------------------
 // O acumulador, o alvo de um grupo isolado e a arte de cada camada sao buffers da
 // GPU do comeco ao fim. Na GPU, sem nada subir ou descer:
@@ -11,42 +11,39 @@
 //     (`icon_svg`) --, sem o readback por forma do caminho de CPU;
 //   - a colocacao bilinear da arte raster (`icon_raster`), quando o vidro nao
 //     tira o campo do alfa dela (ver [UP3]);
-//   - a mascara de translucidez aplicada a arte (`icon_mask`);
 //   - a composicao com os modos transcritos, grupo isolado incluido (`icon_blend`);
-//   - o recorte e a des-multiplicacao do fim (`icon_finish`), e UM readback.
+//   - o vidro (GpuGlass.cpp): o campo de um vetor (`icon_field`, G2), a sombra
+//     e o overdraw (`icon_ring`, `icon_shadow`, `icon_blur`, G3), a mascara de
+//     translucidez (`icon_glass_mask`), a refracao (`icon_displace`,
+//     `icon_refract`), o especular e os realces da pastilha (`icon_highlight`, G4)
+//     -- o campo, a sombra e os realces bit a bit os da CPU, a mascara e a
+//     refracao a um ulp;
+//   - o recorte e a des-multiplicacao do fim (`icon_finish`), e UM readback, que
+//     traz junto as contagens que decidem notas e lacunas (IconSurface.h).
 //
-// AS IDAS E VOLTAS QUE FICAM, cada uma marcada onde acontece:
-//   [RT1] realces da pastilha: readback do acumulador, `drawChicletHighlights`, upload.
-//   [RT2] refracao: readback do alvo, `glassOver`, upload.
-//   [RT3] especular: readback do alvo, `drawSpecular`, upload.
-//   (A sombra era [RT4]; desde G3 e residente -- `icon_ring`, `icon_shadow`,
-//   `icon_blur` em GpuGlass.cpp, bit a bit a da CPU.)
-//   [RT6] mascara de translucidez: o campo e a mascara sao de CPU; sobem os dois
-//         vetores e desce a contagem de pixels perdidos (8 bytes).
-//   [UP1] traco do SVG: a cobertura e rasterizada na CPU e sobe (so ida).
+// O QUE AINDA SOBE, cada um marcado onde acontece (nada mais DESCE no meio):
+//   [UP1] traco do SVG: a cobertura e rasterizada na CPU e sobe.
 //   [UP2] SVG com filtro, mask, pattern ou mais de um clip: o render inteiro da
-//         camada e o de CPU (`renderSvgPlaced`) e sobe (so ida).
+//         camada e o de CPU (`renderSvgPlaced`) e sobe.
 //   [UP3] raster de vidro: colocado na CPU (exato) e sobe, porque o campo sai do
-//         alfa dele -- `placeRaster` abaixo diz o que foi medido. (Era [RT5], um
-//         readback da colocacao da GPU, e reprovou o teto em quatro documentos.)
-//   [RT7] campo de um vetor (G2): o SINAL sai da CPU (`fieldInsideMask`, sobe
-//         um byte por pixel) e a DISTANCIA exata e `icon_field.comp`, em double,
-//         bit a bit a da CPU; o campo desce porque os tres consumidores dele
-//         (refracao, mascara, especular) ainda sao de CPU. Com um cache, o
-//         buffer do campo fica guardado na GPU e o proximo render nao o refaz.
-// O campo de um raster segue na CPU (`generateFieldFromAlpha` sobre a copia de
-// [UP3]): as duas transformadas de Felzenszwalb com a semente sub-texel ficam
-// para depois, e o raster de vidro e minoria no corpus.
-// G4 tira RT1-RT3, RT6 e RT7.
+//         alfa dele -- `placeRaster` abaixo diz o que foi medido.
+//   [UP4] o campo de um raster (`generateFieldFromAlpha`, sobre a copia de
+//         [UP3]) e feito na CPU e sobe: as duas transformadas de Felzenszwalb com
+//         a semente sub-texel ficam para depois, e o raster de vidro e minoria no
+//         corpus (45 de 171 camadas de vidro).
+//   O sinal do campo de um vetor (`fieldInsideMask`, um byte por pixel) e a
+//   grade de segmentos sobem com ele.
+// Um aparelho sem `shaderFloat64` faz o vidro todo na CPU, pelas idas e voltas
+// de G1 (`onTarget`, `artOnCpu`, `fieldOnCpu` abaixo).
 //
-// O CACHE (`RenderCache.h`) continua valendo para o que ficou na CPU: campo,
-// sombra e realces da pastilha passam pelas mesmas funcoes cacheadas de
-// IconRenderer.cpp. O render do SVG, que aqui e residente, nao e cacheado.
+// O CACHE (`RenderCache.h`) guarda buffers da GPU com chave de conteudo -- ver
+// "o cache residente" abaixo.
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <map>
 
+#include "Source/RenderBox/ChicletHighlights.h"
 #include "Source/RenderBox/ChicletShape.h"
 #include "Source/RenderBox/GpuGlass.h"
 #include "Source/RenderBox/GpuResident.h"
@@ -120,12 +117,6 @@ struct FinishPush {
 };
 static_assert(sizeof(FinishPush) == 20);
 
-struct MaskPush {
-    std::uint32_t w, h;
-    std::uint32_t nA, nCov;
-    float alphaFloor;
-};
-static_assert(sizeof(MaskPush) == 20);
 
 struct RasterPush {
     std::uint32_t w, h;
@@ -156,6 +147,10 @@ Slab fieldSlab(const SurfaceField& f) { return std::static_pointer_cast<Buffer>(
 // responde por um valor de CPU. Um buffer guardado e so LIDO por quem o recebe;
 // quem precisa escrever copia antes. O `RenderCache` tem de morrer antes do
 // `Device` (o buffer volta ao pool do aparelho, ou e destruido com ele).
+
+// Os contadores de um render: uma palavra por contagem pedida (`CountSink`,
+// `MaskSink`), descidos todos juntos no `finish`.
+constexpr std::uint32_t kCounterWords = 1024;
 
 struct GpuCachedField {
     Slab data;
@@ -464,6 +459,10 @@ public:
         if (!a) return std::unexpected(a.error());
         acc_ = *a;
         r_.fill(acc_, 0);
+        auto c = r_.acquire(kCounterWords * 4);
+        if (!c) return std::unexpected(c.error());
+        counters_ = *c;
+        r_.fill(counters_, 0);
         return {};
     }
 
@@ -518,13 +517,67 @@ public:
                            groups16(grid_.width), groups16(grid_.height));
     }
 
-    // [RT1] [RT2] [RT3]: o alvo desce, o passo de CPU roda, o alvo sobe.
-    Result<void> onTarget(const std::function<void(std::vector<float>&)>& step) override {
-        std::vector<float> host(grid_.texels() * 4);
-        const Slab& t = target();
-        if (auto ok = r_.download(t, host.data(), bytes()); !ok) return ok;
-        step(host);
-        return r_.upload(t, host.data(), bytes());
+    // Os realces da pastilha (G4, era [RT1]): o campo da pastilha na GPU,
+    // guardado no cache pela grade e pela plataforma, e `icon_highlight`.
+    Result<void> chicletHighlights(RenderCache* cache, const SpecularArguments& args,
+                                   IconPlatform platform, CountSink sink) override {
+        std::size_t count = 0;
+        const HighlightSlot* slots = chicletHighlightSlots(count);
+        std::vector<double> records;
+        const bool transcribed = gpu::resolveHighlights(slots, count, args, records);
+        if (!r_.float64() || !transcribed) {
+            // A ida e volta de antes: o alvo desce, `drawChicletHighlights`, sobe.
+            std::size_t drawn = 0;
+            if (auto ok = onTarget([&](std::vector<float>& acc) {
+                    drawn = drawChicletHighlights(acc, grid_, args, platform);
+                });
+                !ok) {
+                return ok;
+            }
+            sink(drawn);
+            return {};
+        }
+        if (grid_.size == 0 || grid_.width == 0 || grid_.height == 0) {
+            sink(0);
+            return {};
+        }
+        CacheKey key;
+        std::optional<GpuCachedField> field;
+        if (cache) {
+            KeyHasher h("gpu-chiclet-field");
+            h.value(grid_.size).value(grid_.originX).value(grid_.originY);
+            h.value(grid_.width).value(grid_.height).value(platform);
+            key = h.finish();
+            if (auto hit = cache->find<GpuCachedField>(key)) field = *hit;
+        }
+        if (!field) {
+            // `drawChicletHighlights`: o contorno do canvas inteiro, o campo com a
+            // origem do buffer, uma amostra por pixel.
+            const std::vector<FieldContour> contours = chicletFieldContours(grid_.size, platform);
+            GpuCachedField made;
+            if (!contours.empty()) {
+                FieldOptions fo;
+                fo.originX = grid_.originX;
+                fo.originY = grid_.originY;
+                auto f = gpu::fieldFromContours(r_, contours, grid_.width, grid_.height, fo, 1);
+                if (!f) return std::unexpected(f.error());
+                made = GpuCachedField{f->data, f->width, f->height, f->originX, f->originY};
+            }
+            if (cache) cache->store(key, made, made.data ? made.data->size() : 0);
+            field = made;
+        }
+        if (field->width == 0) {
+            sink(0);
+            return {};
+        }
+        const std::uint32_t slot = counterSlot(1);
+        if (auto ok = gpu::highlights(r_, target(), field->data, grid_.width, grid_.height,
+                                      records, true, false, false, counters_, slot);
+            !ok) {
+            return ok;
+        }
+        pending_.push_back([this, slot, sink = std::move(sink)]() { sink(counted(slot)); });
+        return {};
     }
 
     Result<void> beginGroup(bool isolated) override {
@@ -668,8 +721,89 @@ public:
         return cpuField(fieldFromAlphaCached(cache, **onCpu, width, height, fo));
     }
 
-    // [RT7] o campo desce para os consumidores que ainda sao de CPU.
-    Result<std::shared_ptr<const FieldImage>> fieldOnCpu(SurfaceField& field) override {
+    // A refracao (G4, era [RT2]): `icon_displace` e `icon_refract`, float como a CPU.
+    Result<void> refract(const SurfaceField& field, const GlassRefraction& refraction) override {
+        if (!r_.float64()) {
+            // Sem double: o campo e de CPU e a refracao tambem (o alvo vai e volta).
+            return onTarget([&](std::vector<float>& t) {
+                glassOver(t, grid_, glassDisplacementMap(*field.cpu, refraction), refraction);
+            });
+        }
+        return gpu::refract(r_, target(), fieldSlab(field), grid_, refraction);
+    }
+
+    // A mascara (G4, era [RT6]) e feita na passada que a aplica.
+    Result<SurfaceMask> opacityMask(const SurfaceField& field,
+                                    const OpacityMaskArguments& args) override {
+        SurfaceMask m;
+        m.field = field;
+        m.args = args;
+        return m;
+    }
+
+    Result<void> applyMask(SurfaceArt& art, const SurfaceMask& mask, MaskSink sink) override {
+        if (!r_.float64()) {
+            // Sem double: a arte desce, a mascara de CPU, a arte sobe.
+            auto onCpu = artOnCpu(art);
+            if (!onCpu) return std::unexpected(onCpu.error());
+            std::vector<float> rgba = **onCpu;
+            const OpacityMask m = glassOpacityMask(*mask.field.cpu, mask.args);
+            std::size_t painted = 0;
+            const std::size_t missed = opacityMaskMissedPixels(rgba, m, painted);
+            applyOpacityMask(rgba, m);
+            if (auto ok = r_.upload(artSlab(art), rgba.data(), rgba.size() * sizeof(float)); !ok) {
+                return ok;
+            }
+            art.rgba = std::move(rgba);
+            sink(missed, painted);
+            return {};
+        }
+        const std::uint32_t slot = counterSlot(2);
+        if (auto ok = gpu::glassMask(r_, artSlab(art), fieldSlab(mask.field), grid_.width,
+                                     grid_.height, mask.field.originY, mask.args, counters_, slot);
+            !ok) {
+            return ok;
+        }
+        art.rgba.clear();   // a copia de CPU, se havia, ficou velha
+        pending_.push_back(
+            [this, slot, sink = std::move(sink)]() { sink(counted(slot + 1), counted(slot)); });
+        return {};
+    }
+
+    // O especular (G4, era [RT3]): `icon_highlight` sobre o alvo.
+    Result<void> specular(const SurfaceField& field, const SpecularArguments& args,
+                          CountSink sink) override {
+        std::size_t count = 0;
+        const HighlightSlot* slots = glyphHighlightSlots(count);
+        std::vector<double> records;
+        const bool transcribed = gpu::resolveHighlights(slots, count, args, records);
+        if (!r_.float64() || !transcribed) {
+            SurfaceField copy = field;
+            auto onCpu = fieldOnCpu(copy);
+            if (!onCpu) return std::unexpected(onCpu.error());
+            std::size_t moved = 0;
+            if (auto ok = onTarget([&](std::vector<float>& t) {
+                    moved = drawSpecular(t, **onCpu, args);
+                });
+                !ok) {
+                return ok;
+            }
+            sink(moved);
+            return {};
+        }
+        const std::uint32_t slot = counterSlot(1);
+        if (auto ok = gpu::highlights(r_, target(), fieldSlab(field), grid_.width, grid_.height,
+                                      records, false, args.useVCM, args.clampPlusLighter,
+                                      counters_, slot);
+            !ok) {
+            return ok;
+        }
+        pending_.push_back([this, slot, sink = std::move(sink)]() { sink(counted(slot)); });
+        return {};
+    }
+
+    // [RT7] o campo desce -- so para a queda de CPU acima.
+    Result<std::shared_ptr<const FieldImage>> fieldOnCpu(SurfaceField& field) {
         if (field.cpu) return field.cpu;
         FieldImage img;
         img.width = field.width;
@@ -683,35 +817,6 @@ public:
         }
         field.cpu = std::make_shared<const FieldImage>(std::move(img));
         return field.cpu;
-    }
-
-    // [RT6]: a mascara sobe, a contagem desce.
-    Result<std::size_t> applyMask(SurfaceArt& art, const OpacityMask& mask,
-                                  std::size_t& painted) override {
-        const Slab s = artSlab(art);
-        const std::size_t texels = s->size() / 16;
-        auto a = r_.stage(mask.a.data(), mask.a.size() * sizeof(float));
-        if (!a) return std::unexpected(a.error());
-        auto c = r_.stage(mask.coverage.data(), mask.coverage.size() * sizeof(float));
-        if (!c) return std::unexpected(c.error());
-        auto counters = r_.acquire(16);
-        if (!counters) return std::unexpected(counters.error());
-        r_.fill(*counters, 0);
-        MaskPush p{grid_.width, grid_.height,
-                   static_cast<std::uint32_t>(std::min(mask.a.size(), texels)),
-                   static_cast<std::uint32_t>(std::min(mask.coverage.size(), texels)), 0.5f};
-        if (auto ok = r_.dispatch(r_.mask, {whole(s), *a, *c, whole(*counters)}, &p,
-                                  groups16(grid_.width), groups16(grid_.height));
-            !ok) {
-            return std::unexpected(ok.error());
-        }
-        art.rgba.clear();   // a copia de CPU, se havia, ficou velha
-        std::uint32_t counts[4] = {0, 0, 0, 0};
-        if (auto ok = r_.download(*counters, counts, sizeof counts); !ok) {
-            return std::unexpected(ok.error());
-        }
-        painted = counts[0];
-        return static_cast<std::size_t>(counts[1]);
     }
 
     Result<void> blendArt(const SurfaceArt& art, float alpha, BlendMode mode) override {
@@ -760,7 +865,10 @@ public:
                                       std::uint32_t viewH) override {
         const std::size_t n = static_cast<std::size_t>(viewW) * viewH * 4;
         std::vector<float> rgba(n, 0.0f);
-        if (n == 0) return rgba;
+        if (n == 0) {
+            if (auto ok = resolveCounts(); !ok) return std::unexpected(ok.error());
+            return rgba;
+        }
         auto out = r_.acquire(n * sizeof(float));
         if (!out) return std::unexpected(out.error());
         FinishPush p{viewW, viewH, grid_.width, cropX, cropY};
@@ -770,14 +878,45 @@ public:
             return std::unexpected(ok.error());
         }
         // O UNICO readback do caminho residente quando nenhuma etapa de vidro pede
-        // a CPU.
+        // a CPU -- e, com ele, as contagens.
         if (auto ok = r_.download(*out, rgba.data(), n * sizeof(float)); !ok) {
             return std::unexpected(ok.error());
         }
+        if (auto ok = resolveCounts(); !ok) return std::unexpected(ok.error());
         return rgba;
     }
 
 private:
+    // Uma ida e volta do alvo, para as quedas de CPU (aparelho sem double, ou um
+    // modo de mescla de realce que `icon_highlight` nao transcreve).
+    Result<void> onTarget(const std::function<void(std::vector<float>&)>& step) {
+        std::vector<float> host(grid_.texels() * 4);
+        const Slab& t = target();
+        if (auto ok = r_.download(t, host.data(), bytes()); !ok) return ok;
+        step(host);
+        return r_.upload(t, host.data(), bytes());
+    }
+
+    std::uint32_t counterSlot(std::uint32_t words) {
+        const std::uint32_t at = nextCounter_;
+        nextCounter_ += words;
+        return at;
+    }
+    std::size_t counted(std::uint32_t slot) const {
+        return slot < counts_.size() ? counts_[slot] : 0;
+    }
+    Result<void> resolveCounts() {
+        if (pending_.empty()) return {};
+        if (nextCounter_ > kCounterWords) {
+            return std::unexpected(std::string("contagens demais num render residente"));
+        }
+        counts_.assign(kCounterWords, 0);
+        if (auto ok = r_.download(counters_, counts_.data(), kCounterWords * 4); !ok) return ok;
+        for (auto& resolve : pending_) resolve();
+        pending_.clear();
+        return {};
+    }
+
     // A arte na CPU: a copia de [UP3] quando ha, senao um readback.
     Result<const std::vector<float>*> artOnCpu(SurfaceArt& art) {
         if (art.rgba.empty()) {
@@ -790,12 +929,23 @@ private:
         return &art.rgba;
     }
 
-    static SurfaceField cpuField(std::shared_ptr<const FieldImage> image) {
+    // Um campo feito na CPU (o de um raster, [UP4]; ou qualquer um sem double)
+    // sobe uma vez, para os consumidores residentes.
+    Result<SurfaceField> cpuField(std::shared_ptr<const FieldImage> image) {
         SurfaceField f;
         f.width = image->width;
         f.height = image->height;
         f.originX = image->originX;
         f.originY = image->originY;
+        if (f.width != 0) {
+            auto s = r_.acquire(image->rgba.size() * sizeof(float));
+            if (!s) return std::unexpected(s.error());
+            if (auto ok = r_.upload(*s, image->rgba.data(), image->rgba.size() * sizeof(float));
+                !ok) {
+                return std::unexpected(ok.error());
+            }
+            f.resident = *s;
+        }
         f.cpu = std::move(image);
         return f;
     }
@@ -814,6 +964,10 @@ private:
     PixelGrid grid_;
     Slab acc_;
     Slab group_;
+    Slab counters_;
+    std::uint32_t nextCounter_ = 0;
+    std::vector<std::uint32_t> counts_;
+    std::vector<std::function<void()>> pending_;
 };
 
 }  // namespace

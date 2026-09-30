@@ -18,14 +18,23 @@ static const std::uint32_t kSvgSpirv[] =
 static const std::uint32_t kFinishSpirv[] =
 #include "icon_finish.comp.inc"
     ;
-static const std::uint32_t kMaskSpirv[] =
-#include "icon_mask.comp.inc"
-    ;
 static const std::uint32_t kRasterSpirv[] =
 #include "icon_raster.comp.inc"
     ;
 static const std::uint32_t kFieldSpirv[] =
 #include "icon_field.comp.inc"
+    ;
+static const std::uint32_t kGlassMaskSpirv[] =
+#include "icon_glass_mask.comp.inc"
+    ;
+static const std::uint32_t kDisplaceSpirv[] =
+#include "icon_displace.comp.inc"
+    ;
+static const std::uint32_t kRefractSpirv[] =
+#include "icon_refract.comp.inc"
+    ;
+static const std::uint32_t kHighlightSpirv[] =
+#include "icon_highlight.comp.inc"
     ;
 static const std::uint32_t kRingSpirv[] =
 #include "icon_ring.comp.inc"
@@ -194,7 +203,6 @@ Result<Resident*> Resident::of(Device& device) {
         {&r->blend, kBlendSpirv, sizeof kBlendSpirv, 2, 20},
         {&r->svg, kSvgSpirv, sizeof kSvgSpirv, 5, 100},
         {&r->finish, kFinishSpirv, sizeof kFinishSpirv, 2, 20},
-        {&r->mask, kMaskSpirv, sizeof kMaskSpirv, 4, 20},
         {&r->raster, kRasterSpirv, sizeof kRasterSpirv, 3, 16},
     };
     for (const Spec& s : specs) {
@@ -210,6 +218,10 @@ Result<Resident*> Resident::of(Device& device) {
             {&r->ring, kRingSpirv, sizeof kRingSpirv, 2, 12},
             {&r->shadow, kShadowSpirv, sizeof kShadowSpirv, 4, 64},
             {&r->blur, kBlurSpirv, sizeof kBlurSpirv, 3, 28},
+            {&r->highlight, kHighlightSpirv, sizeof kHighlightSpirv, 4, 28},
+            {&r->glassMask, kGlassMaskSpirv, sizeof kGlassMaskSpirv, 3, 48},
+            {&r->displace, kDisplaceSpirv, sizeof kDisplaceSpirv, 2, 32},
+            {&r->refract, kRefractSpirv, sizeof kRefractSpirv, 3, 32},
         };
         for (const Spec& s : wide) {
             auto k = Kernel::create(device, s.code, s.bytes, s.bindings, s.push);

@@ -17,8 +17,13 @@
 // tem clip-path, override de camada e sombra.
 #include "check.h"
 #include "Source/IconComposerFoundation/IconBundle.h"
+#include "Source/RenderBox/BlendFormula.h"
+#include "Source/RenderBox/ChicletHighlights.h"
 #include "Source/RenderBox/ChicletShape.h"
 #include "Source/RenderBox/DistanceField.h"
+#include "Source/RenderBox/GlassLayer.h"
+#include "Source/RenderBox/GlassSpecular.h"
+#include "Source/RenderBox/GlassTranslucency.h"
 #include "Source/RenderBox/GlassShadow.h"
 #include "Source/RenderBox/GpuGlass.h"
 #include "Source/RenderBox/IconRenderer.h"
@@ -365,5 +370,211 @@ TEST_CASE(gpu_shadow_is_the_cpu_shadow_bit_for_bit) {
                 CHECK_EQ(compare(gotOver, wantOver, "overdraw"), std::size_t{0});
             }
         }
+    }
+}
+
+// G4: CADA PASSO DE VIDRO DA GPU CONTRA O DA CPU, sobre o mesmo campo e o mesmo
+// alvo, num ladrilho com origem. Os realces (especular com e sem VCM, e os da
+// pastilha) sao double como a CPU e tem de sair iguais bit a bit, com a mesma
+// contagem; a mascara e a refracao sao float, e a divisao float da GPU pode errar
+// um ulp, entao ali o teto e o do ulp (1e-6) -- e a contagem da mascara, exata.
+TEST_CASE(gpu_glass_steps_are_the_cpu_steps) {
+    Device& device = gpuDevice();
+    REQUIRE(device.valid());
+    if (!device.float64()) {
+        std::printf("  (sem shaderFloat64 neste aparelho: os realces ficam na CPU)\n");
+        return;
+    }
+    auto resident = gpu::Resident::of(device);
+    REQUIRE(resident.has_value());
+    gpu::Resident& r = **resident;
+
+    const PixelGrid grid{512, 37, 21, 300, 260};
+    // O campo de uma estrela, na grade do ladrilho.
+    FieldContour star;
+    for (int k = 0; k < 10; ++k) {
+        const double a = k * 3.14159265358979 / 5.0;
+        const double rr = (k % 2) ? 90.0 : 200.0;
+        star.xy.push_back(static_cast<float>(250.0 + rr * std::sin(a)));
+        star.xy.push_back(static_cast<float>(240.0 - rr * std::cos(a)));
+    }
+    FieldOptions fo;
+    fo.originX = grid.originX;
+    fo.originY = grid.originY;
+    const FieldImage field = generateFieldFromContours({star}, grid.width, grid.height, fo, 1);
+    REQUIRE(field.width == grid.width);
+
+    // Um alvo pre-multiplicado com cor e alfa variando.
+    std::vector<float> acc(grid.texels() * 4);
+    for (std::uint32_t y = 0; y < grid.height; ++y) {
+        for (std::uint32_t x = 0; x < grid.width; ++x) {
+            float* p = &acc[(static_cast<std::size_t>(y) * grid.width + x) * 4];
+            const float a = 0.25f + 0.75f * static_cast<float>((x * 7 + y * 3) % 97) / 96.0f;
+            p[0] = a * static_cast<float>(x) / grid.width;
+            p[1] = a * 0.5f;
+            p[2] = a * static_cast<float>(y) / grid.height;
+            p[3] = a;
+        }
+    }
+
+    // (REQUIRE sai da funcao com `return;`, entao aqui dentro e CHECK.)
+    auto upload = [&](const std::vector<float>& v) -> gpu::Slab {
+        auto s = r.acquire(v.size() * sizeof(float));
+        CHECK(s.has_value());
+        if (!s) return nullptr;
+        CHECK(r.upload(*s, v.data(), v.size() * sizeof(float)).has_value());
+        return *s;
+    };
+    auto down = [&](const gpu::Slab& s, std::size_t n) -> std::vector<float> {
+        std::vector<float> v(n);
+        CHECK(r.download(s, v.data(), n * sizeof(float)).has_value());
+        return v;
+    };
+    auto differ = [](const std::vector<float>& a, const std::vector<float>& b, float& worst) {
+        std::size_t n = 0;
+        worst = 0.0f;
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            if (std::memcmp(&a[i], &b[i], sizeof(float)) != 0) {
+                ++n;
+                worst = std::max(worst, std::fabs(a[i] - b[i]));
+            }
+        }
+        return n;
+    };
+
+    std::lock_guard<std::mutex> lock(r.mutex());
+    const gpu::Slab fieldSlab = upload(field.rgba);
+    auto counters = r.acquire(64);
+    REQUIRE(counters.has_value());
+    r.fill(*counters, 0);
+
+    // -- os realces ---------------------------------------------------------
+    SpecularArguments args;
+    args.sizeClass = IconSizeClass::Large;
+    args.pixelsPerPoint = 0.5;
+    args.layerOpacity = 0.8;
+    struct Case {
+        const char* name;
+        bool chiclet, vcm;
+        std::uint32_t slot;
+    };
+    for (const Case c : {Case{"especular VCM", false, true, 0}, Case{"especular mescla", false, false, 1},
+                         Case{"pastilha", true, false, 2}}) {
+        SpecularArguments a = args;
+        a.useVCM = c.vcm;
+        std::vector<float> want = acc;
+        std::size_t wantCount = 0;
+        std::size_t n = 0;
+        const HighlightSlot* slots = c.chiclet ? chicletHighlightSlots(n) : glyphHighlightSlots(n);
+        if (c.chiclet) {
+            // `drawChicletHighlights` faz o proprio campo da pastilha: aqui o campo
+            // e o da estrela, entao a referencia e o laco dele sobre ESTE campo.
+            wantCount = 0;
+            std::vector<char> hit(grid.texels(), 0);
+            for (std::size_t s = 0; s < n; ++s) {
+                const GlassHighlightSettings g = resolveHighlight(slots[s], a);
+                if (g.opacity <= 0.0 || g.height <= 0.0) continue;
+                for (std::size_t t = 0; t < grid.texels(); ++t) {
+                    const float* p = &field.rgba[t * 4];
+                    const double sd = -static_cast<double>(p[0]);
+                    if (sd < -2.0) continue;
+                    if (p[1] == 0.0f && p[2] == 0.0f) continue;
+                    const double clip = want[t * 4 + 3];
+                    if (clip <= 0.0) continue;
+                    const double f = glassHighlightFragment(g, sd, p[1], p[2], 1.0);
+                    if (f <= 0.0) continue;
+                    const double alpha = f * g.opacity * clip;
+                    BlendColour src;
+                    for (int k = 0; k < 3; ++k) src.rgba[k] = g.colour[k] * alpha;
+                    src.rgba[3] = alpha;
+                    BlendColour dst;
+                    for (int k = 0; k < 4; ++k) dst.rgba[k] = want[t * 4 + k];
+                    const BlendColour o = blend(g.blendMode, src, dst);
+                    for (int k = 0; k < 4; ++k) {
+                        const double v = o.rgba[k] < 0.0 ? 0.0 : o.rgba[k];
+                        if (static_cast<float>(v) != want[t * 4 + k]) hit[t] = 1;
+                        want[t * 4 + k] = static_cast<float>(v);
+                    }
+                }
+            }
+            for (char h : hit) wantCount += static_cast<std::size_t>(h);
+        } else {
+            wantCount = drawSpecular(want, field, a);
+        }
+        std::vector<double> records;
+        REQUIRE(gpu::resolveHighlights(slots, n, a, records));
+        const gpu::Slab target = upload(acc);
+        REQUIRE(gpu::highlights(r, target, fieldSlab, grid.width, grid.height, records, c.chiclet,
+                                a.useVCM, a.clampPlusLighter, *counters, c.slot)
+                    .has_value());
+        const std::vector<float> got = down(target, acc.size());
+        std::uint32_t counts[16] = {};
+        REQUIRE(r.download(*counters, counts, sizeof counts).has_value());
+        float worst = 0.0f;
+        const std::size_t d = differ(got, want, worst);
+        if (d) std::printf("  %s: %zu floats diferem, pior %g\n", c.name, d, static_cast<double>(worst));
+        CHECK_EQ(d, std::size_t{0});
+        CHECK_EQ(static_cast<std::size_t>(counts[c.slot]), wantCount);
+        CHECK(wantCount > 0);
+    }
+
+    // -- a mascara ------------------------------------------------------------
+    {
+        OpacityMaskArguments ma;
+        ma.borderWidth = 12.0f;
+        ma.opacityBounds[0] = 0.3f;
+        ma.opacityBounds[1] = 0.9f;
+        ma.contourOpacityBounds[0] = 0.6f;
+        ma.contourOpacityBounds[1] = 1.0f;
+        ma.bounds[0] = 40.0f;
+        ma.bounds[1] = 30.0f;
+        ma.bounds[2] = 400.0f;
+        ma.bounds[3] = 420.0f;
+        std::vector<float> want = acc;
+        const OpacityMask mask = glassOpacityMask(field, ma);
+        std::size_t painted = 0;
+        const std::size_t missed = opacityMaskMissedPixels(want, mask, painted);
+        applyOpacityMask(want, mask);
+        const gpu::Slab art = upload(acc);
+        REQUIRE(gpu::glassMask(r, art, fieldSlab, grid.width, grid.height, field.originY, ma,
+                               *counters, 4)
+                    .has_value());
+        const std::vector<float> got = down(art, acc.size());
+        std::uint32_t counts[16] = {};
+        REQUIRE(r.download(*counters, counts, sizeof counts).has_value());
+        float worst = 0.0f;
+        const std::size_t d = differ(got, want, worst);
+        if (d) std::printf("  mascara: %zu floats diferem, pior %g\n", d, static_cast<double>(worst));
+        CHECK(worst <= 1e-6f);
+        CHECK_EQ(static_cast<std::size_t>(counts[4]), painted);
+        CHECK_EQ(static_cast<std::size_t>(counts[5]), missed);
+    }
+
+    // -- a refracao ------------------------------------------------------------
+    for (std::uint32_t variant : {0u, 2u, 3u}) {
+        GlassRefraction g;
+        g.heightPixels = 24.0f;
+        g.curvature = 0.7f;
+        g.angleCos = 0.8f;
+        g.angleSin = 0.6f;
+        g.offset = 1.5f;
+        g.maskOffset = 0.5f;
+        g.scalePixels = 18.0f;
+        g.variant = variant;
+        // A estrela tem pixels com `s == height` exato: e ali que a divisao float da
+        // GPU jogava `flatProfile` para o outro lado do degrau (icon_displace.comp)
+        // e esta comparacao dava meio nivel inteiro de diferenca.
+        std::vector<float> want = acc;
+        glassOver(want, grid, glassDisplacementMap(field, g), g);
+        const gpu::Slab target = upload(acc);
+        REQUIRE(gpu::refract(r, target, fieldSlab, grid, g).has_value());
+        const std::vector<float> got = down(target, acc.size());
+        float worst = 0.0f;
+        const std::size_t d = differ(got, want, worst);
+        if (d) {
+            std::printf("  refracao variante %u: %zu floats diferem, pior %g\n", variant, d,
+                        static_cast<double>(worst));
+        }
+        CHECK(worst <= 1e-5f);
     }
 }

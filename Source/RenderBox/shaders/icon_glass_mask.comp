@@ -1,0 +1,77 @@
+#version 450
+// A MASCARA DE TRANSLUCIDEZ DO CAMPO, NA GPU (frente GPU, G4): `glassOpacityMask`
+// (a mascara e a cobertura de cada texel, tiradas do campo), `opacityMaskMissedPixels`
+// (a contagem, sobre o alfa ANTES) e `applyOpacityMask` (o alfa vezes a mascara),
+// numa invocacao por pixel. Antes (RT6) a mascara era feita na CPU e subia em dois
+// vetores; agora so o campo -- que ja mora aqui -- e lido.
+//
+// Float como a CPU, `precise` em cada `mix` para que o compilador nao troque
+// `x + (y - x) * t` por uma fma, e as duas divisoes corretamente arredondadas
+// (float -> double -> float): a divisao float da GPU nao e, e a mascara saia a um
+// ulp da CPU (icon_displace.comp conta onde isso deixou de ser um ulp).
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) buffer Art { vec4 art[]; };
+layout(std430, binding = 1) readonly buffer Field { vec4 field[]; };
+layout(std430, binding = 2) buffer Counters { uint counters[]; };
+
+layout(push_constant) uniform Push {
+    uint w, h;
+    int originY;
+    uint slot;            // counters[slot] pintados, counters[slot + 1] perdidos
+    float borderWidth;
+    float ob0, ob1;       // opacityBounds
+    float cb0, cb1;       // contourOpacityBounds
+    float boundsY, boundsH;
+    float alphaFloor;
+} p;
+
+shared uint groupPainted;
+shared uint groupMissed;
+
+float saturatef(float x) { return clamp(x, 0.0, 1.0); }
+float divExact(float a, float b) { return float(double(a) / double(b)); }
+
+float mixf(float x, float y, float t) {
+    precise float r = x + (y - x) * t;
+    return r;
+}
+
+void main() {
+    if (gl_LocalInvocationIndex == 0u) {
+        groupPainted = 0u;
+        groupMissed = 0u;
+    }
+    barrier();
+    uvec2 g = gl_GlobalInvocationID.xy;
+    if (g.x < p.w && g.y < p.h) {
+        uint i = g.y * p.w + g.x;
+        // `simplifiedShapeAwareGradientMask`, termo a termo.
+        float py = float(int(g.y) + p.originY) + 0.5;
+        float sd = -field[i].x;
+        float v = p.boundsH != 0.0 ? saturatef(divExact(py - p.boundsY, p.boundsH)) : 0.0;
+        float body = mixf(p.ob1, p.ob0, v);
+        float contour = mixf(p.cb1, p.cb0, v);
+        float a = body;
+        if (p.borderWidth != 0.0) {
+            float u = saturatef(divExact(sd, p.borderWidth));
+            a = mixf(contour, body, u);
+        }
+        a = saturatef(a);
+        precise float sm = a * a * (3.0 - 2.0 * a);
+        float cov = saturatef(sd + 1.0);
+        float m = mixf(1.0, sm, cov);
+
+        float alpha = art[i].a;
+        if (alpha > p.alphaFloor) {
+            atomicAdd(groupPainted, 1u);
+            if (cov == 0.0) atomicAdd(groupMissed, 1u);
+        }
+        art[i].a = alpha * m;
+    }
+    barrier();
+    if (gl_LocalInvocationIndex == 0u) {
+        if (groupPainted > 0u) atomicAdd(counters[p.slot], groupPainted);
+        if (groupMissed > 0u) atomicAdd(counters[p.slot + 1u], groupMissed);
+    }
+}

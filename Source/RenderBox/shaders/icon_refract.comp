@@ -1,0 +1,86 @@
+#version 450
+// A REFRACAO, NA GPU (frente GPU, G4): `glassOver` de GlassLayer.cpp. O fundo e lido
+// de uma COPIA do alvo (`backdrop`, feita antes deste passo), pela transcricao
+// `Displacement.glsl` -- a mesma que o probe mede bit a bit contra o oraculo --, com
+// as duas camadas mapeando o ponto em pixels para a UV do CANVAS (`1/size`) e o
+// amostrador de `sampleBilinear`: grampo na GRADE do canvas, depois o indice no
+// buffer por subtracao inteira da origem, e o grampo de memoria.
+#extension GL_GOOGLE_include_directive : require
+
+#include "Displacement.glsl"
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) buffer Acc { vec4 acc[]; };
+layout(std430, binding = 1) readonly buffer Backdrop { vec4 backdrop[]; };
+layout(std430, binding = 2) readonly buffer Map { vec4 dispMap[]; };
+
+layout(push_constant) uniform Push {
+    uint w, h;        // o buffer
+    int ox, oy;       // a origem do buffer na grade de `size`
+    uint size;        // a grade (o canvas)
+    uint variant;
+    float scale;
+    float inv;        // 1 / size
+} p;
+
+vec4 sampleBuffer(uint which, vec2 uv) {
+    int n = int(p.size);
+    if (n <= 0) return vec4(0.0);
+    precise float fx = uv.x * float(n) - 0.5;
+    precise float fy = uv.y * float(n) - 0.5;
+    float bx = floor(fx);
+    float by = floor(fy);
+    float tx = fx - bx;
+    float ty = fy - by;
+    int x0 = clamp(int(bx), 0, n - 1);
+    int x1 = clamp(int(bx) + 1, 0, n - 1);
+    int y0 = clamp(int(by), 0, n - 1);
+    int y1 = clamp(int(by) + 1, 0, n - 1);
+    int lx0 = clamp(x0 - p.ox, 0, int(p.w) - 1), lx1 = clamp(x1 - p.ox, 0, int(p.w) - 1);
+    int ly0 = clamp(y0 - p.oy, 0, int(p.h) - 1), ly1 = clamp(y1 - p.oy, 0, int(p.h) - 1);
+    uint i00 = uint(ly0) * p.w + uint(lx0), i10 = uint(ly0) * p.w + uint(lx1);
+    uint i01 = uint(ly1) * p.w + uint(lx0), i11 = uint(ly1) * p.w + uint(lx1);
+    vec4 c00, c10, c01, c11;
+    if (which == 0u) {
+        c00 = backdrop[i00]; c10 = backdrop[i10]; c01 = backdrop[i01]; c11 = backdrop[i11];
+    } else {
+        c00 = dispMap[i00]; c10 = dispMap[i10]; c01 = dispMap[i01]; c11 = dispMap[i11];
+    }
+    vec4 r;
+    for (int k = 0; k < 4; ++k) {
+        precise float top = c00[k] + (c10[k] - c00[k]) * tx;
+        precise float bot = c01[k] + (c11[k] - c01[k]) * tx;
+        precise float mid = top + (bot - top) * ty;
+        r[k] = mid;
+    }
+    return r;
+}
+
+vec4 rbDispSampleSource(vec2 uv) { return sampleBuffer(0u, uv); }
+vec4 rbDispSampleMap(vec2 uv) { return sampleBuffer(1u, uv); }
+
+void main() {
+    uvec2 g = gl_GlobalInvocationID.xy;
+    if (g.x >= p.w || g.y >= p.h) return;
+    uint i = g.y * p.w + g.x;
+    float mask = dispMap[i].a;
+    if (mask <= 0.0) return;   // fora da forma: intocado, bit a bit
+
+    RBDispLayer L;
+    L.m0 = vec2(p.inv, 0.0);
+    L.m1 = vec2(0.0, p.inv);
+    L.m2 = vec2(0.0);
+    L.m3 = vec2(0.0);
+    L.m4 = vec2(1.0);
+    vec2 pt = vec2(float(int(g.x) + p.ox) + 0.5, float(int(g.y) + p.oy) + 0.5);
+    vec4 refracted = rbDisplacementMap(p.scale, L, L, p.variant, pt, vec2(1.0, 0.0),
+                                       vec2(0.0, 1.0));
+    vec4 b = backdrop[i];
+    vec4 o;
+    for (int k = 0; k < 4; ++k) {
+        precise float v = b[k] + (refracted[k] - b[k]) * mask;
+        o[k] = v;
+    }
+    acc[i] = o;
+}

@@ -275,6 +275,10 @@ ChicletAppearance classifyChicletAppearance(const ChicletLuminance& l, bool simp
 // glifo, onde `rim` e `nil`) ou apenas nao pinta (como aqui).
 const HighlightSlot* chicletHighlightSlots(std::size_t& count);
 
+// O contorno da pastilha que `drawChicletHighlights` usa para o campo, exposto
+// para o caminho residente (que faz o mesmo campo na GPU).
+std::vector<FieldContour> chicletFieldContours(std::uint32_t size, IconPlatform platform);
+
 // Compoe os realces do chiclet sobre `rgba` (pre-multiplicado, `size` x `size`,
 // ja recortado a pastilha). Devolve quantos pixels distintos moveram.
 //

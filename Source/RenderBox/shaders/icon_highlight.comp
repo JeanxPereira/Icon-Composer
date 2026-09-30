@@ -1,0 +1,188 @@
+#version 450
+// OS REALCES, NA GPU (frente GPU, G4): o laco por pixel de `drawSpecular`
+// (GlassSpecular.cpp) e de `drawChicletHighlights` (ChicletHighlights.cpp) sobre o
+// alvo pre-multiplicado, lendo o campo que ja mora aqui.
+//
+// Os realces chegam RESOLVIDOS da CPU (`resolveHighlight`, com os senos, o cone e
+// o `1/bias - 2` ja calculados la), um registro de 16 doubles por realce, na ordem
+// dos slots; os que a CPU pula (`opacity <= 0` ou `height <= 0`) nem sobem. Cada
+// pixel ve os realces na mesma ordem e le o que o anterior escreveu -- a CPU faz
+// um realce por vez sobre a imagem inteira, e nenhum pixel le outro, entao e a
+// mesma sequencia por pixel.
+//
+// `glassHighlightFragment`, a VCM do glifo e as mesclas `normal`, `plus-lighter`
+// (com o grampo `clampedPlusL` quando pedido) e `plus-darker` em double, como a
+// CPU, com `precise` em toda soma. A contagem e a dos pixels DISTINTOS que algum
+// realce mudou (`hit`), somada por grupo.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) buffer Acc { vec4 acc[]; };
+layout(std430, binding = 1) readonly buffer Field { vec4 field[]; };
+layout(std430, binding = 2) readonly buffer Slots { double slots[]; };
+layout(std430, binding = 3) buffer Counters { uint counters[]; };
+
+layout(push_constant) uniform Push {
+    uint w, h;
+    uint nslots;
+    uint chiclet;        // 1: `drawChicletHighlights` (recorte pelo alfa, sem VCM)
+    uint useVCM;         // especular: `args.useVCM`
+    uint clampPlus;      // especular: `args.clampPlusLighter`
+    uint slot;           // o contador
+} p;
+
+// O registro de um realce.
+const int kInset = 0, kHeight = 1, kCurvature = 2, kCone = 3, kDirX = 4, kDirY = 5,
+          kBiasP = 6, kOpacity = 7, kColour = 8, kMode = 9, kLumaFloor = 10,
+          kLumaCeiling = 11, kSaturation = 12, kBand = 13;
+const int kStride = 16;
+const double kEps = 0.0009765625lf;
+
+shared uint groupHits;
+
+double sat(double v) { return v < 0.0lf ? 0.0lf : (v > 1.0lf ? 1.0lf : v); }
+double at(uint s, int k) { return slots[s * uint(kStride) + uint(k)]; }
+
+double fragmentOf(uint s, double sd, double nx, double ny) {
+    precise double d = sd - at(s, kInset);
+    double height = at(s, kHeight);
+    if (height <= 0.0lf) return 0.0lf;
+    double w = at(s, kBand);
+    precise double b0 = d / w + 0.5lf;
+    precise double hd = height - d;
+    precise double b1 = hd / w + 0.5lf;
+    precise double band = sat(b0) * sat(b1);
+    if (band <= 0.0lf) return 0.0lf;
+    precise double hk = (height - 1.0lf) * 0.5lf;
+    double k = sat(hk);
+    precise double t = k * k * at(s, kCurvature) * (3.0lf - 2.0lf * k);
+    precise double shade = 1.0lf + t * ((1.0lf - sat(d / height)) - 1.0lf);
+    double cone = at(s, kCone);
+    precise double dotv = at(s, kDirX) * nx + (-at(s, kDirY)) * ny;
+    precise double oneMinusCone = 1.0lf - cone;
+    precise double lit0 = (dotv - cone) / max(oneMinusCone, kEps);
+    double lit = sat(lit0);
+    precise double a = lit * shade;
+    precise double denom = 1.0lf + (1.0lf - a) * at(s, kBiasP);
+    precise double r = band * a / max(denom, kEps);
+    return r;
+}
+
+// `applyGlyphVCM`, com as matrizes em float como o alvo as guarda.
+void vcm(uint s, inout double rgb[3]) {
+    const float A[3][5] = float[3][5](float[5](0.2126, 0.7152, 0.0722, 0.0, 0.0),
+                                      float[5](-0.1146, -0.3854, 0.5, 0.0, 0.5),
+                                      float[5](0.5, -0.4542, -0.0458, 0.0, 0.5));
+    const float B[3][5] = float[3][5](float[5](1.0, 0.0, 1.5748, 0.0, -0.7874),
+                                      float[5](1.0, -0.1873, -0.4681, 0.0, 0.3277),
+                                      float[5](1.0, 1.8556, 0.0, 0.0, -0.9278));
+    double ycc[3];
+    for (int r = 0; r < 3; ++r) {
+        precise double v = double(A[r][0]) * rgb[0] + double(A[r][1]) * rgb[1] +
+                           double(A[r][2]) * rgb[2] + double(A[r][4]);
+        ycc[r] = v;
+    }
+    double lo = at(s, kLumaFloor), hi = at(s, kLumaCeiling), sa = at(s, kSaturation);
+    precise double y0 = (hi - lo) * ycc[0] + lo;
+    ycc[0] = y0;
+    precise double kk = 0.5lf - 0.5lf * sa;
+    precise double c1 = sa * ycc[1] + kk;
+    precise double c2 = sa * ycc[2] + kk;
+    ycc[1] = c1;
+    ycc[2] = c2;
+    for (int r = 0; r < 3; ++r) {
+        precise double v = double(B[r][0]) * ycc[0] + double(B[r][1]) * ycc[1] +
+                           double(B[r][2]) * ycc[2] + double(B[r][4]);
+        rgb[r] = v;
+    }
+}
+
+void main() {
+    if (gl_LocalInvocationIndex == 0u) groupHits = 0u;
+    barrier();
+    uvec2 g = gl_GlobalInvocationID.xy;
+    bool hit = false;
+    if (g.x < p.w && g.y < p.h) {
+        uint i = g.y * p.w + g.x;
+        vec4 f = field[i];
+        double sd = -double(f.x);
+        double nx = double(f.y);
+        double ny = double(f.z);
+        bool skip = (nx == 0.0lf && ny == 0.0lf) || (p.chiclet != 0u && sd < -2.0lf);
+        vec4 px = acc[i];
+        for (uint s = 0u; s < p.nslots && !skip; ++s) {
+            double clip = 1.0lf;
+            if (p.chiclet != 0u) {
+                clip = double(px.a);
+                if (clip <= 0.0lf) continue;
+            }
+            double fr = fragmentOf(s, sd, nx, ny);
+            if (fr <= 0.0lf) continue;
+            precise double alpha = fr * at(s, kOpacity);
+            if (p.chiclet != 0u) alpha = alpha * clip;
+
+            if (p.chiclet == 0u && p.useVCM != 0u) {
+                double cov = alpha > 1.0lf ? 1.0lf : alpha;
+                double a = double(px.a);
+                if (a <= 0.0lf) continue;
+                double straight[3];
+                for (int c = 0; c < 3; ++c) straight[c] = double(px[c]) / a;
+                double lifted[3] = double[3](straight[0], straight[1], straight[2]);
+                vcm(s, lifted);
+                for (int c = 0; c < 3; ++c) {
+                    precise double v = (straight[c] + cov * (lifted[c] - straight[c])) * a;
+                    double vv = v < 0.0lf ? 0.0lf : v;
+                    float fv = float(vv);
+                    if (fv != px[c]) hit = true;
+                    px[c] = fv;
+                }
+                continue;
+            }
+
+            double colour = at(s, kColour);
+            precise double sc = colour * alpha;
+            double src[4] = double[4](sc, sc, sc, alpha);
+            double dst[4] = double[4](double(px.r), double(px.g), double(px.b), double(px.a));
+            double o[4];
+            uint mode = uint(at(s, kMode));
+            if (mode == 8u && p.chiclet == 0u && p.clampPlus != 0u) {
+                // `clampedPlusL`
+                double sum[4];
+                for (int k = 0; k < 4; ++k) {
+                    precise double sk = dst[k] + src[k];
+                    sum[k] = sk;
+                }
+                double capped[4];
+                for (int k = 0; k < 3; ++k) capped[k] = min(1.0lf, sum[k]);
+                capped[3] = sat(sum[3]);
+                for (int k = 0; k < 4; ++k) o[k] = max(dst[k], capped[k]);
+            } else if (mode == 8u || mode == 4u) {
+                precise double sum = src[3] + dst[3];
+                double a = sat(sum);
+                o[3] = a;
+                precise double slack = mode == 4u ? (a - sum) : 0.0lf;
+                for (int k = 0; k < 3; ++k) {
+                    precise double v = src[k] + dst[k] + slack;
+                    o[k] = v;
+                }
+            } else {
+                // normal
+                for (int k = 0; k < 4; ++k) {
+                    precise double v = src[k] + dst[k] * (1.0lf - src[3]);
+                    o[k] = v;
+                }
+            }
+            for (int c = 0; c < 4; ++c) {
+                double v = o[c] < 0.0lf ? 0.0lf : o[c];
+                float fv = float(v);
+                if (fv != px[c]) hit = true;
+                px[c] = fv;
+            }
+        }
+        if (hit) {
+            acc[i] = px;
+            atomicAdd(groupHits, 1u);
+        }
+    }
+    barrier();
+    if (gl_LocalInvocationIndex == 0u && groupHits > 0u) atomicAdd(counters[p.slot], groupHits);
+}

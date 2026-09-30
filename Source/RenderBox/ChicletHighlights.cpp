@@ -152,6 +152,10 @@ std::vector<FieldContour> chicletContours(std::uint32_t size, IconPlatform platf
 
 }  // namespace
 
+std::vector<FieldContour> chicletFieldContours(std::uint32_t size, IconPlatform platform) {
+    return chicletContours(size, platform);
+}
+
 ChicletLuminance chicletFillLuminance(const std::vector<RampPoint>& stops) {
     ChicletLuminance out;
     if (stops.empty()) {
