@@ -53,6 +53,7 @@
 #include "Source/IconComposerFoundation/Json.h"
 #include "Source/RenderBox/Device.h"
 #include "Source/RenderBox/IconRenderer.h"
+#include "Source/RenderBox/GpuResident.h"
 #include "Source/RenderBox/Parallel.h"
 #include "Source/RenderBox/RenderCache.h"
 
@@ -139,6 +140,48 @@ void replyJson(const icf::json::Value& root) {
     std::fflush(stdout);
 }
 
+// O AQUECIMENTO, antes do "ready": o estado residente (pipelines e a reserva de
+// 1 GB do heap, `rb::gpu::Resident::of`) e um render de um icone minimo -- um
+// circulo de vidro com sombra e especular sobre o fundo de sistema -- para que
+// cada kernel rode uma vez e o driver compile o que compila no primeiro uso.
+// Sem isto o primeiro documento aberto pagava ~430 ms que nao eram dele.
+// O icone e escrito numa pasta temporaria e apagado; um erro aqui nao impede
+// o servidor de subir, so deixa o primeiro render frio.
+void warmUp(rb::Device& device) {
+    (void)rb::gpu::Resident::of(device);
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path dir = fs::temp_directory_path(ec) / ("icserver-warmup-" + std::to_string(
+                             std::chrono::steady_clock::now().time_since_epoch().count()) + ".icon");
+    if (ec || !fs::create_directories(dir / "Assets", ec)) return;
+    {
+        std::FILE* f = std::fopen((dir / "Assets" / "c.svg").string().c_str(), "wb");
+        if (!f) return;
+        const char svg[] =
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\">"
+            "<circle cx=\"50\" cy=\"50\" r=\"40\" fill=\"#ffffff\"/></svg>";
+        std::fwrite(svg, 1, sizeof svg - 1, f);
+        std::fclose(f);
+    }
+    {
+        std::FILE* f = std::fopen((dir / "icon.json").string().c_str(), "wb");
+        if (!f) return;
+        const char json[] =
+            "{\"fill\":\"system-dark\",\"groups\":[{\"layers\":[{\"image-name\":\"c.svg\","
+            "\"name\":\"c\"}],\"shadow\":{\"kind\":\"neutral\",\"opacity\":0.5},"
+            "\"specular\":true,\"translucency\":{\"enabled\":true,\"value\":0.5}}],"
+            "\"supported-platforms\":{\"squares\":\"shared\"}}";
+        std::fwrite(json, 1, sizeof json - 1, f);
+        std::fclose(f);
+    }
+    if (auto b = icf::IconBundle::open(dir)) {
+        rb::IconRenderOptions io;
+        io.size = 256;
+        (void)rb::renderIconGpu(device, *b, io);
+    }
+    fs::remove_all(dir, ec);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -160,6 +203,7 @@ int main(int argc, char** argv) {
     // O desfazer guarda o documento INTEIRO antes de cada escrita: o texto e
     // pequeno, e restaurar o texto e restaurar os bytes, sem inverter edicao.
     std::vector<std::string> undo, redo;
+    if (gpu) warmUp(*device);
     reply("ready");
 
     std::string line;
