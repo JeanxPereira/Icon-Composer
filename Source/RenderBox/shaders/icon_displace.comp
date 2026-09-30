@@ -26,6 +26,8 @@ layout(push_constant) uniform Push {
     vec4 params;   // height, curvature, offset, maskOffset
     vec2 rot;      // cos, sin
     uint w, h;
+    uint fw;       // o campo pode ser de outra grade: a largura dele e onde o
+    int fx, fy;    // pixel (0, 0) do mapa cai nele
 } p;
 
 float divExact(float a, float b) { return float(double(a) / double(b)); }
@@ -34,7 +36,7 @@ void main() {
     uvec2 g = gl_GlobalInvocationID.xy;
     if (g.x >= p.w || g.y >= p.h) return;
     uint i = g.y * p.w + g.x;
-    vec4 f = field[i];
+    vec4 f = field[uint(int(g.y) + p.fy) * p.fw + uint(int(g.x) + p.fx)];
     float fw = abs(f.y) + abs(f.z);
 
     // `sdfdisp::glassDisplacement`, linha a linha.

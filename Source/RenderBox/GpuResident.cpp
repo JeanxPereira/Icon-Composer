@@ -45,6 +45,9 @@ static const std::uint32_t kShadowSpirv[] =
 static const std::uint32_t kBlurSpirv[] =
 #include "icon_blur.comp.inc"
     ;
+static const std::uint32_t kStrokeSpirv[] =
+#include "icon_stroke.comp.inc"
+    ;
 
 namespace rb::gpu {
 namespace {
@@ -56,8 +59,18 @@ constexpr VkBufferUsageFlags kStorageUsage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT 
 // A arena cresce em pedacos deste tamanho (ou do pedido, se maior).
 constexpr VkDeviceSize kArenaChunk = 16u << 20;
 
-// O teto do pool entre renders. Acima dele `trim` devolve o que sobra.
-constexpr VkDeviceSize kPoolCeiling = 768u << 20;
+// O bloco do heap (ou o pedido, se maior). Grande para que um render inteiro --
+// ate um ladrilho de zoom profundo, com buffers de ~110 MB -- caiba em poucos.
+constexpr VkDeviceSize kHeapBlock = VkDeviceSize{512} << 20;
+
+// O teto do heap entre renders. Acima dele `trim` devolve os blocos vazios.
+// E tambem o que o heap RESERVA quando o aparelho monta o estado residente: a
+// memoria nova custa `[ART]` ~0,1 ms por MB neste aparelho (RX 6750 XT), e o
+// primeiro render com um cache vazio precisa de mais que um render sem cache
+// (o que o cache guarda nao volta) -- no Apollo a 1024 px, um bloco a mais no
+// meio do render: 139 ms com cache contra 85 sem. Reservado junto com os
+// pipelines, esse custo sai do render.
+constexpr VkDeviceSize kPoolCeiling = VkDeviceSize{1024} << 20;
 
 constexpr std::uint32_t kSetsPerPool = 512;
 constexpr std::uint32_t kMaxBindings = 5;
@@ -200,7 +213,7 @@ Result<Resident*> Resident::of(Device& device) {
     const Spec specs[] = {
         {&r->paint, kPaintSpirv, sizeof kPaintSpirv, 2, 56},
         {&r->chiclet, kChicletSpirv, sizeof kChicletSpirv, 3, 28},
-        {&r->blend, kBlendSpirv, sizeof kBlendSpirv, 2, 20},
+        {&r->blend, kBlendSpirv, sizeof kBlendSpirv, 2, 32},
         {&r->svg, kSvgSpirv, sizeof kSvgSpirv, 5, 100},
         {&r->finish, kFinishSpirv, sizeof kFinishSpirv, 2, 20},
         {&r->raster, kRasterSpirv, sizeof kRasterSpirv, 3, 16},
@@ -214,14 +227,15 @@ Result<Resident*> Resident::of(Device& device) {
     // eles o vidro fica na CPU (`Resident::float64`).
     if (device.float64()) {
         const Spec wide[] = {
-            {&r->field, kFieldSpirv, sizeof kFieldSpirv, 5, 52},
+            {&r->field, kFieldSpirv, sizeof kFieldSpirv, 5, 116},
             {&r->ring, kRingSpirv, sizeof kRingSpirv, 2, 12},
-            {&r->shadow, kShadowSpirv, sizeof kShadowSpirv, 4, 64},
+            {&r->shadow, kShadowSpirv, sizeof kShadowSpirv, 4, 80},
             {&r->blur, kBlurSpirv, sizeof kBlurSpirv, 3, 28},
-            {&r->highlight, kHighlightSpirv, sizeof kHighlightSpirv, 4, 28},
+            {&r->highlight, kHighlightSpirv, sizeof kHighlightSpirv, 4, 40},
             {&r->glassMask, kGlassMaskSpirv, sizeof kGlassMaskSpirv, 3, 48},
-            {&r->displace, kDisplaceSpirv, sizeof kDisplaceSpirv, 2, 32},
+            {&r->displace, kDisplaceSpirv, sizeof kDisplaceSpirv, 2, 44},
             {&r->refract, kRefractSpirv, sizeof kRefractSpirv, 3, 32},
+            {&r->stroke, kStrokeSpirv, sizeof kStrokeSpirv, 2, 24},
         };
         for (const Spec& s : wide) {
             auto k = Kernel::create(device, s.code, s.bytes, s.bindings, s.push);
@@ -236,6 +250,7 @@ Result<Resident*> Resident::of(Device& device) {
     auto dummy = r->acquire(16);
     if (!dummy) return std::unexpected(dummy.error());
     r->dummy_ = *dummy;
+    if (auto ok = r->reserve(kPoolCeiling); !ok) return std::unexpected(ok.error());
 
     slot = r;
     return r.get();
@@ -246,28 +261,115 @@ Resident::~Resident() {
     VkDevice dev = device_->handle();
     *alive_ = nullptr;
     for (VkDescriptorPool p : pools_) api.vkDestroyDescriptorPool(dev, p, nullptr);
+    // Um `Slab` que ainda vive (um `RenderCache` que sobrevive a isto) so destroi o
+    // VkBuffer dele depois -- destruir um buffer cuja memoria ja foi liberada e
+    // valido.
+    for (HeapBlock& b : heap_) {
+        if (b.memory) api.vkFreeMemory(dev, b.memory, nullptr);
+    }
     if (covFramebuffer_) api.vkDestroyFramebuffer(dev, covFramebuffer_, nullptr);
 }
 
 void Resident::release(Buffer* b) {
-    const VkDeviceSize size = b->size();
-    free_[size].emplace_back(b);
+    auto it = pieces_.find(b);
+    // O VkBuffer pode estar em passos gravados: morre no proximo `flush`. O
+    // PEDACO volta ja -- reusar a memoria dentro do lote e seguro pela barreira
+    // global, como era reusar o buffer no pool de antes.
+    retired_.emplace_back(b);
+    if (it != pieces_.end()) {
+        inUse_ -= it->second.size;
+        giveBack(it->second);
+        pieces_.erase(it);
+    }
+}
+
+// O menor pedaco livre que cabe (best-fit, para nao picar os grandes), com o
+// offset alinhado; um bloco novo so quando nenhum cabe.
+Result<Buffer::Placement> Resident::carve(const VkMemoryRequirements& req, Piece& piece) {
+    const VkDeviceSize align = std::max<VkDeviceSize>(req.alignment, 256);
+    const VkDeviceSize need = (req.size + align - 1) / align * align;
+    if (heapType_ == UINT32_MAX) {
+        auto index = device_->memoryTypeIndex(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (!index) return std::unexpected(index.error());
+        heapType_ = *index;
+    }
+    if ((req.memoryTypeBits & (1u << heapType_)) == 0) {
+        return std::unexpected(std::string("um buffer de armazenamento fora do tipo de memoria do heap"));
+    }
+    std::size_t bestBlock = heap_.size();
+    VkDeviceSize bestOffset = 0, bestSize = 0, bestAt = 0;
+    for (std::size_t b = 0; b < heap_.size(); ++b) {
+        for (const auto& [offset, size] : heap_[b].free) {
+            const VkDeviceSize at = (offset + align - 1) / align * align;
+            if (at + need > offset + size) continue;
+            if (bestBlock == heap_.size() || size < bestSize) {
+                bestBlock = b;
+                bestOffset = offset;
+                bestSize = size;
+                bestAt = at;
+            }
+        }
+    }
+    if (bestBlock == heap_.size()) {
+        HeapBlock block;
+        block.size = std::max(kHeapBlock, need);
+        VkMemoryAllocateInfo mai{};
+        mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        mai.allocationSize = block.size;
+        mai.memoryTypeIndex = heapType_;
+        if (VkResult r = device_->api().vkAllocateMemory(device_->handle(), &mai, nullptr,
+                                                         &block.memory);
+            r != VK_SUCCESS) {
+            return std::unexpected(std::string("vkAllocateMemory (heap): ") + describe(r));
+        }
+        block.free.emplace(0, block.size);
+        heap_.push_back(std::move(block));
+        bestBlock = heap_.size() - 1;
+        bestOffset = 0;
+        bestSize = heap_.back().size;
+        bestAt = 0;
+    }
+    HeapBlock& block = heap_[bestBlock];
+    block.free.erase(bestOffset);
+    if (bestAt > bestOffset) block.free.emplace(bestOffset, bestAt - bestOffset);
+    if (bestAt + need < bestOffset + bestSize) {
+        block.free.emplace(bestAt + need, bestOffset + bestSize - (bestAt + need));
+    }
+    piece = Piece{bestBlock, bestAt, need};
+    return Buffer::Placement{block.memory, bestAt};
+}
+
+void Resident::giveBack(const Piece& piece) {
+    if (piece.block >= heap_.size()) return;
+    auto& free = heap_[piece.block].free;
+    VkDeviceSize offset = piece.offset, size = piece.size;
+    auto next = free.lower_bound(offset);
+    if (next != free.end() && offset + size == next->first) {
+        size += next->second;
+        next = free.erase(next);
+    }
+    if (next != free.begin()) {
+        auto prev = std::prev(next);
+        if (prev->first + prev->second == offset) {
+            offset = prev->first;
+            size += prev->second;
+            free.erase(prev);
+        }
+    }
+    free.emplace(offset, size);
 }
 
 Result<Slab> Resident::acquire(VkDeviceSize bytes) {
-    std::unique_ptr<Buffer> buf;
-    auto it = free_.find(bytes);
-    if (it != free_.end() && !it->second.empty()) {
-        buf = std::move(it->second.back());
-        it->second.pop_back();
-    } else {
-        auto made = Buffer::create(*device_, bytes, kStorageUsage,
-                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (!made) return std::unexpected(made.error());
-        buf = std::make_unique<Buffer>(std::move(*made));
-    }
+    Piece piece;
+    auto made = Buffer::createPlaced(*device_, bytes, kStorageUsage,
+                                     [&](const VkMemoryRequirements& req) { return carve(req, piece); });
+    if (!made) return std::unexpected(made.error());
+    Buffer* buf = new Buffer(std::move(*made));
+    pieces_.emplace(buf, piece);
+    inUse_ += piece.size;
+    peak_ = std::max(peak_, inUse_);
     std::weak_ptr<Resident*> alive = alive_;
-    return Slab(buf.release(), [alive](Buffer* b) {
+    return Slab(buf, [alive](Buffer* b) {
         if (auto owner = alive.lock(); owner && *owner) {
             (*owner)->release(b);
         } else {
@@ -277,14 +379,53 @@ Result<Slab> Resident::acquire(VkDeviceSize bytes) {
 }
 
 void Resident::trim() {
-    VkDeviceSize held = 0;
-    for (auto& [size, list] : free_) held += size * list.size();
-    for (auto it = free_.rbegin(); it != free_.rend() && held > kPoolCeiling; ++it) {
-        while (!it->second.empty() && held > kPoolCeiling) {
-            held -= it->first;
-            it->second.pop_back();
-        }
+    // So um bloco INTEIRO livre volta ao aparelho, do fim para o comeco, e so o
+    // que passa do teto. O teto acompanha o maior pico dos ultimos oito renders,
+    // em dobro (o cache guarda o que um render usou, e o proximo usa outro tanto):
+    // um ladrilho de zoom profundo do Kenzu a 8192 px pica em ~700 MB, e
+    // devolver os blocos para realoca-los no ladrilho seguinte custa `[ART]`
+    // ~50 ms por bloco de 512 MB neste aparelho (RX 6750 XT).
+    peaks_[nextPeak_++ % peaks_.size()] = peak_;
+    peak_ = inUse_;
+    const VkDeviceSize recent = *std::max_element(peaks_.begin(), peaks_.end());
+    const VkDeviceSize ceiling = std::max(kPoolCeiling, 2 * recent);
+    VkDeviceSize held = heapBytes();
+    for (std::size_t b = heap_.size(); b-- > 0 && held > ceiling;) {
+        HeapBlock& block = heap_[b];
+        const bool empty = block.free.size() == 1 && block.free.begin()->first == 0 &&
+                           block.free.begin()->second == block.size;
+        if (!empty || block.memory == VK_NULL_HANDLE) continue;
+        device_->api().vkFreeMemory(device_->handle(), block.memory, nullptr);
+        held -= block.size;
+        block.memory = VK_NULL_HANDLE;
+        block.size = 0;
+        block.free.clear();   // um bloco morto fica na lista (os indices dos pedacos)
     }
+}
+
+Result<void> Resident::reserve(VkDeviceSize bytes) {
+    while (heapBytes() < bytes) {
+        HeapBlock block;
+        block.size = kHeapBlock;
+        VkMemoryAllocateInfo mai{};
+        mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        mai.allocationSize = block.size;
+        mai.memoryTypeIndex = heapType_;
+        if (VkResult r = device_->api().vkAllocateMemory(device_->handle(), &mai, nullptr,
+                                                         &block.memory);
+            r != VK_SUCCESS) {
+            return std::unexpected(std::string("vkAllocateMemory (heap): ") + describe(r));
+        }
+        block.free.emplace(0, block.size);
+        heap_.push_back(std::move(block));
+    }
+    return {};
+}
+
+VkDeviceSize Resident::heapBytes() const {
+    VkDeviceSize held = 0;
+    for (const HeapBlock& b : heap_) held += b.size;
+    return held;
 }
 
 Result<Range> Resident::stage(const void* data, std::size_t bytes) {
@@ -433,8 +574,10 @@ Result<void> Resident::flush() {
             }
         });
         ops_.clear();
+        retired_.clear();
         if (!ran) return std::unexpected(ran.error());
     }
+    retired_.clear();
     for (ArenaChunk& c : arena_) c.used = 0;
     for (VkDescriptorPool p : pools_) device_->api().vkResetDescriptorPool(device_->handle(), p, 0);
     return {};

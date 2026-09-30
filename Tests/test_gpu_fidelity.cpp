@@ -161,10 +161,90 @@ TEST_CASE(gpu_viewport_tile_equals_the_crop_of_a_full_render) {
     CHECK(s.mean <= iccli::kFidelityMeanCeiling);
     CHECK(s.max <= iccli::kFidelityMaxCeiling);
 
-    // E o ladrilho da GPU contra o ladrilho da CPU.
+    // E o ladrilho da GPU contra o ladrilho da CPU -- os PIXELS. As notas que uma
+    // contagem decide (os realces da pastilha mudaram algum pixel? o especular
+    // moveu algum?) a GPU conta na grade ESTREITA, onde o acumulador mora
+    // (IconRendererGpu.cpp, "O zoom profundo"), e a CPU no buffer inteiro, que
+    // num ladrilho inclui a margem da sombra: a nota de um ladrilho fala do que o
+    // ladrilho mostra. No render cheio as duas grades sao a mesma, e o
+    // `icfidelity` cobra as decisoes iguais nos 145.
     auto cpuPart = renderIcon(device, *bundle, tile);
     REQUIRE(cpuPart.has_value());
-    CHECK(iccli::compareIcons(*cpuPart, *part).withinCeiling());
+    const iccli::FidelityStats vsCpu = iccli::compareIcons(*cpuPart, *part);
+    CHECK(vsCpu.mean <= iccli::kFidelityMeanCeiling);
+    CHECK(vsCpu.max <= iccli::kFidelityMaxCeiling);
+    CHECK(cpuPart->skipped.size() == part->skipped.size());
+    CHECK(cpuPart->shapeGaps == part->shapeGaps);
+}
+
+// O ZOOM PROFUNDO (size 4096): o buffer de um ladrilho e dominado pela margem da
+// sombra, e a GPU guarda o acumulador numa grade estreita, poe as bordas do
+// buffer numa grade de 512 px e tira o campo exato alem da banda que cada
+// consumidor le (IconRendererGpu.cpp). Cada ladrilho -- um no miolo, um na borda
+// da pastilha, um no canto do canvas -- tem de ser o recorte do render cheio da
+// mesma `size`; e um pan de 100 px com o cache do ladrilho anterior, o mesmo que
+// sem cache.
+TEST_CASE(gpu_deep_zoom_tiles_equal_the_crop_of_a_full_render) {
+    Device& device = gpuDevice();
+    REQUIRE(device.valid());
+    auto bundle = icf::IconBundle::open(corpus("Apollo-Reborn__Apollo-Reborn__AppIcon"));
+    REQUIRE(bundle.has_value());
+    IconRenderOptions full;
+    full.size = 4096;
+    auto whole = renderIconGpu(device, *bundle, full);
+    REQUIRE(whole.has_value());
+
+    auto cropOf = [&](const RenderedIcon& part) {
+        RenderedIcon crop = *whole;
+        crop.width = part.width;
+        crop.height = part.height;
+        crop.originX = part.originX;
+        crop.originY = part.originY;
+        crop.rgba.assign(static_cast<std::size_t>(part.width) * part.height * 4, 0.0f);
+        for (std::uint32_t y = 0; y < part.height; ++y) {
+            for (std::uint32_t x = 0; x < part.width; ++x) {
+                const std::size_t s =
+                    ((static_cast<std::size_t>(y) + part.originY) * whole->width + x + part.originX) * 4;
+                const std::size_t d = (static_cast<std::size_t>(y) * part.width + x) * 4;
+                for (int k = 0; k < 4; ++k) crop.rgba[d + k] = whole->rgba[s + k];
+            }
+        }
+        return crop;
+    };
+
+    RenderCache cache;
+    for (const IconViewport v : {IconViewport{1900, 1700, 400, 300},   // o miolo
+                                 IconViewport{180, 1500, 300, 400},    // a borda da pastilha
+                                 IconViewport{0, 0, 250, 200}}) {     // o canto do canvas
+        IconRenderOptions tile = full;
+        tile.viewport = v;
+        auto part = renderIconGpu(device, *bundle, tile);
+        REQUIRE(part.has_value());
+        REQUIRE(part->width == v.width && part->height == v.height);
+        const iccli::FidelityStats s = iccli::compareIcons(cropOf(*part), *part);
+        if (s.mean > iccli::kFidelityMeanCeiling || s.max > iccli::kFidelityMaxCeiling) {
+            std::printf("  ladrilho (%d,%d): media %.4f pior %d em (%u,%u)\n", v.originX,
+                        v.originY, s.mean, s.max, s.worstX, s.worstY);
+        }
+        CHECK(s.mean <= iccli::kFidelityMeanCeiling);
+        CHECK(s.max <= iccli::kFidelityMaxCeiling);
+
+        // O pan: o ladrilho e o vizinho a 100 px, com um cache so; o vizinho com
+        // cache e o vizinho sem cache, float a float.
+        IconRenderOptions cached = tile;
+        cached.cache = &cache;
+        REQUIRE(renderIconGpu(device, *bundle, cached).has_value());
+        IconRenderOptions pan = tile;
+        pan.viewport.originX = std::min<std::int32_t>(v.originX + 100,
+                                                      static_cast<std::int32_t>(4096 - v.width));
+        auto plain = renderIconGpu(device, *bundle, pan);
+        pan.cache = &cache;
+        auto warm = renderIconGpu(device, *bundle, pan);
+        REQUIRE(plain.has_value() && warm.has_value());
+        CHECK(warm->rgba == plain->rgba);
+        CHECK(warm->notes == plain->notes);
+    }
+    CHECK(cache.stats().hits > 0);
 }
 
 // O cache vale para o que ficou na CPU (campo, sombra, realces da pastilha): a

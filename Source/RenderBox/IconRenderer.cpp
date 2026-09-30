@@ -828,7 +828,7 @@ class CpuSurface final : public IconSurface {
 public:
     explicit CpuSurface(Device& device) : device_(device) {}
 
-    Result<void> begin(const PixelGrid& grid) override {
+    Result<void> begin(const PixelGrid& grid, const PixelGrid&) override {
         grid_ = grid;
         acc_.assign(grid.texels() * 4, 0.0f);
         return {};
@@ -875,7 +875,8 @@ public:
     }
     Result<SurfaceField> contourField(RenderCache* cache, const std::vector<FieldContour>& contours,
                                       std::uint32_t width, std::uint32_t height,
-                                      const FieldOptions& fo, std::uint32_t ss) override {
+                                      const FieldOptions& fo, std::uint32_t ss,
+                                      const FieldBands&) override {
         return fieldOf(fieldFromContoursCached(cache, contours, width, height, fo, ss));
     }
     Result<SurfaceField> alphaField(RenderCache* cache, SurfaceArt& art, std::uint32_t width,
@@ -997,7 +998,8 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
     const std::vector<icf::Group> groups = doc.groups();
 
     auto planned = planViewport(options.viewport, options.size,
-                                documentReach(doc, options.context, options.sizeClass));
+                                documentReach(doc, options.context, options.sizeClass),
+                                surface.bufferLattice());
     if (!planned) return std::unexpected(planned.error());
     const PixelGrid grid = planned->buffer;
 
@@ -1014,7 +1016,9 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
     }
     // O acumulador (pre-multiplicado) mora na superficie -- `CpuSurface` diz
     // por que ele e pre-multiplicado.
-    if (auto began = surface.begin(grid); !began) return std::unexpected(began.error());
+    if (auto began = surface.begin(grid, planned->narrow); !began) {
+        return std::unexpected(began.error());
+    }
 
     // Qual pastilha este contexto pede -- `ChicletShape.h`, `platformOverrides`.
     const IconPlatform platform = iconPlatformOf(options.context.idiom);
@@ -1755,9 +1759,41 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                         fo.originX = grid.originX;
                         fo.originY = grid.originY;
                         // Na GPU e `icon_field.comp`: o sinal na CPU, a distancia la.
+                        //
+                        // ATE ONDE O CAMPO PRECISA SER EXATO (a CPU ignora). O
+                        // especular zera alem de `inset + height` + a banda de AA do
+                        // realce mais largo (`glassHighlightFragment`); a mascara de
+                        // translucidez satura alem de `borderWidth` e de 1 px para
+                        // fora (`cov`). A refracao le o campo ate a altura dela, e ela
+                        // e rara (2 documentos do corpus): com ela o campo e exato
+                        // onde o acumulador o le. No zoom profundo a GPU deixa de
+                        // buscar o pe de pixels a milhares de pixels do glifo.
+                        auto bandOf = [](double reach) {
+                            return static_cast<float>(std::ceil(reach)) + 2.0f;
+                        };
+                        const double maskReach =
+                            std::max(std::fabs(static_cast<double>(groupMaskArgs.borderWidth)),
+                                     1.0) + 1.0;
+                        double accReach = 1.0;   // ninguem le: qualquer banda serve
+                        if (wantsHighlight) {
+                            std::size_t n = 0;
+                            const HighlightSlot* slots = glyphHighlightSlots(n);
+                            for (std::size_t s = 0; s < n; ++s) {
+                                const GlassHighlightSettings g =
+                                    resolveHighlight(slots[s], specularArgs);
+                                if (g.opacity <= 0.0 || g.height <= 0.0) continue;
+                                accReach = std::max(accReach, std::fabs(g.inset) + g.height + 2.0);
+                            }
+                        }
+                        FieldBands bands;
+                        bands.art = bandOf(wantsTranslucency ? maskReach : 1.0);
+                        bands.accumulator =
+                            wantsRefraction
+                                ? 0.0f
+                                : bandOf(std::max(accReach, wantsTranslucency ? maskReach : 1.0));
                         auto fromShape = surface.contourField(options.cache, shape.contours,
                                                               grid.width, grid.height, fo,
-                                                              kFieldSuperSample);
+                                                              kFieldSuperSample, bands);
                         if (!fromShape) return std::unexpected(fromShape.error());
                         if (fromShape->empty()) {
                             // Contours that close but cover no sample point --

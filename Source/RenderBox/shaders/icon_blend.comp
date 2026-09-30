@@ -16,6 +16,11 @@ layout(push_constant) uniform Push {
     uint mode;
     uint premultipliedSource;
     float alpha;
+    // A fonte pode ser de outra grade (a arte e a sombra moram na grade LARGA, o
+    // alvo na ESTREITA -- IconRendererGpu.cpp): a largura dela e onde o pixel
+    // (0, 0) do alvo cai nela.
+    uint sw;
+    int sx, sy;
 } p;
 
 #include "BlendFormula.glsl"
@@ -24,7 +29,7 @@ void main() {
     uvec2 g = gl_GlobalInvocationID.xy;
     if (g.x >= p.w || g.y >= p.h) return;
     uint i = g.y * p.w + g.x;
-    vec4 s = src[i];
+    vec4 s = src[uint(int(g.y) + p.sy) * p.sw + uint(int(g.x) + p.sx)];
     vec4 d = dst[i];
     if (p.premultipliedSource != 0u) {
         dst[i] = rbBlend(p.mode, s, d);

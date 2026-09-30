@@ -20,8 +20,16 @@ struct FieldPush {
     float gx0, gy0, cell;
     float aa;
     std::uint32_t rule;
+    float far;
+    std::uint32_t nx2, ny2;
+    float cell2;
+    std::uint32_t start2, items2, dist2;
+    std::int32_t cx, cy;
+    std::uint32_t cw, ch;
+    std::int32_t nx0, ny0, nx1, ny1;
+    float nearFar;
 };
-static_assert(sizeof(FieldPush) == 52);
+static_assert(sizeof(FieldPush) == 116);
 
 struct RingPush {
     std::uint32_t w, h;
@@ -40,8 +48,10 @@ struct ShadowPush {
     std::uint32_t premultiply;
     std::uint32_t blurred;
     float k;
+    std::uint32_t ow, oh;
+    std::int32_t ox, oy;
 };
-static_assert(sizeof(ShadowPush) == 64);
+static_assert(sizeof(ShadowPush) == 80);
 
 struct BlurPush {
     std::uint32_t dw, dh;
@@ -68,8 +78,10 @@ struct DisplacePush {
     float params[4];
     float rot[2];
     std::uint32_t w, h;
+    std::uint32_t fw;
+    std::int32_t fx, fy;
 };
-static_assert(sizeof(DisplacePush) == 32);
+static_assert(sizeof(DisplacePush) == 44);
 
 struct RefractPush {
     std::uint32_t w, h;
@@ -88,8 +100,10 @@ struct HighlightPush {
     std::uint32_t useVCM;
     std::uint32_t clampPlus;
     std::uint32_t slot;
+    std::uint32_t fw;
+    std::int32_t fx, fy;
 };
-static_assert(sizeof(HighlightPush) == 28);
+static_assert(sizeof(HighlightPush) == 40);
 
 Result<Slab> resident(Resident& r, const void* data, std::size_t bytes) {
     auto s = r.acquire(std::max<std::size_t>(bytes, 16));
@@ -117,7 +131,9 @@ Result<Slab> resident(Resident& r, const void* data, std::size_t bytes) {
 // mesmo).
 Result<ResidentField> fieldFromContours(Resident& r, const std::vector<FieldContour>& contours,
                                         std::uint32_t width, std::uint32_t height,
-                                        const FieldOptions& options, std::uint32_t superSample) {
+                                        const FieldOptions& options, std::uint32_t superSample,
+                                        float farBand, const FieldClamp* clamp,
+                                        const FieldNear* nearRect) {
     ResidentField out;
     std::vector<char> inside;
     if (fieldInsideMask(contours, width, height, options, superSample, inside) == 0) return out;
@@ -135,88 +151,145 @@ Result<ResidentField> fieldFromContours(Resident& r, const std::vector<FieldCont
     const std::size_t nseg = segs.size() / 4;
     if (nseg == 0) return out;
 
+    // QUEM ENTRA NA GRADE. Sem banda, todo segmento. Com a banda longe, so os que
+    // chegam a `farBand + 4` do campo: um segmento de fora fica a mais que isso de
+    // todo pixel, entao um pixel ate a banda tem o pe dentro da grade (o mesmo pe
+    // e o mesmo indice -- a lista `segs` continua inteira), e um alem dela sai alem
+    // dela de qualquer jeito. No zoom profundo a pastilha tem ~12 800 segmentos e
+    // um ladrilho do miolo nao chega a nenhum.
     double x0 = static_cast<double>(options.originX), y0 = static_cast<double>(options.originY);
     double x1 = x0 + width, y1 = y0 + height;
-    for (std::size_t k = 0; k < segs.size(); k += 2) {
-        x0 = std::min(x0, static_cast<double>(segs[k]));
-        x1 = std::max(x1, static_cast<double>(segs[k]));
-        y0 = std::min(y0, static_cast<double>(segs[k + 1]));
-        y1 = std::max(y1, static_cast<double>(segs[k + 1]));
+    std::vector<std::uint32_t> gridSegs;
+    gridSegs.reserve(nseg);
+    {
+        // Com um retangulo exato, todo segmento; senao a maior das bandas.
+        const bool exact = farBand <= 0.0f || (nearRect && nearRect->band <= 0.0f);
+        const double reach =
+            static_cast<double>(std::max(farBand, nearRect ? nearRect->band : 0.0f)) + 4.0;
+        const double rx0 = x0 - reach, ry0 = y0 - reach, rx1 = x1 + reach, ry1 = y1 + reach;
+        for (std::size_t s = 0; s < nseg; ++s) {
+            const double ax = segs[s * 4], ay = segs[s * 4 + 1];
+            const double bx = segs[s * 4 + 2], by = segs[s * 4 + 3];
+            if (!exact && (std::max(ax, bx) < rx0 || std::min(ax, bx) > rx1 ||
+                                   std::max(ay, by) < ry0 || std::min(ay, by) > ry1)) {
+                continue;
+            }
+            gridSegs.push_back(static_cast<std::uint32_t>(s));
+        }
+    }
+    for (std::uint32_t s : gridSegs) {
+        for (int e = 0; e < 2; ++e) {
+            const double px = segs[s * 4 + e * 2], py = segs[s * 4 + e * 2 + 1];
+            x0 = std::min(x0, px);
+            x1 = std::max(x1, px);
+            y0 = std::min(y0, py);
+            y1 = std::max(y1, py);
+        }
     }
     const double extent = std::max(x1 - x0, y1 - y0);
-    const double cell = std::max(8.0, extent / 512.0);
-    const int nx = std::max(1, static_cast<int>(std::floor((x1 - x0) / cell)) + 1);
-    const int ny = std::max(1, static_cast<int>(std::floor((y1 - y0) / cell)) + 1);
-    const std::size_t cells = static_cast<std::size_t>(nx) * ny;
 
-    // `ExactSegments::forCells`, com a grade acima.
-    auto forCells = [&](std::size_t s, auto&& f) {
-        const double ax = segs[s * 4], ay = segs[s * 4 + 1];
-        const double bx = segs[s * 4 + 2], by = segs[s * 4 + 3];
-        const double inv = 1.0 / cell;
-        constexpr double eps = 1e-7;
-        const double ylo = std::min(ay, by), yhi = std::max(ay, by);
-        int j0 = static_cast<int>(std::floor((ylo - y0) * inv - eps));
-        int j1 = static_cast<int>(std::floor((yhi - y0) * inv + eps));
-        j0 = std::max(j0, 0);
-        j1 = std::min(j1, ny - 1);
-        for (int j = j0; j <= j1; ++j) {
-            double xlo, xhi;
-            if (ay == by) {
-                xlo = std::min(ax, bx);
-                xhi = std::max(ax, bx);
-            } else {
-                const double b0 = std::max(ylo, y0 + j * cell);
-                const double b1 = std::min(yhi, y0 + (j + 1) * cell);
-                double t0 = (b0 - ay) / (by - ay);
-                double t1 = (b1 - ay) / (by - ay);
-                t0 = std::clamp(t0, 0.0, 1.0);
-                t1 = std::clamp(t1, 0.0, 1.0);
-                const double xa = ax + t0 * (bx - ax);
-                const double xb = ax + t1 * (bx - ax);
-                xlo = std::min(xa, xb);
-                xhi = std::max(xa, xb);
-            }
-            int i0 = static_cast<int>(std::floor((xlo - x0) * inv - eps));
-            int i1 = static_cast<int>(std::floor((xhi - x0) * inv + eps));
-            i0 = std::max(i0, 0);
-            i1 = std::min(i1, nx - 1);
-            for (int i = i0; i <= i1; ++i) f(static_cast<std::size_t>(j) * nx + i);
-        }
+    // Uma grade de segmentos (partidas relativas a `items`, e os itens) e a
+    // distancia de cada centro de celula ao centro ocupado mais proximo.
+    struct Level {
+        double cell = 0.0;
+        int nx = 0, ny = 0;
+        std::vector<std::uint32_t> starts;   // cells + 1
+        std::vector<std::uint32_t> items;
+        std::vector<float> dist;
     };
-    std::vector<std::uint32_t> grid(cells + 1, 0);
-    for (std::size_t s = 0; s < nseg; ++s) forCells(s, [&](std::size_t c) { ++grid[c + 1]; });
-    for (std::size_t c = 0; c < cells; ++c) grid[c + 1] += grid[c];
-    const std::size_t itemsBase = grid.size();
-    grid.resize(itemsBase + grid[cells]);
-    {
-        std::vector<std::uint32_t> fill(grid.begin(), grid.begin() + static_cast<std::ptrdiff_t>(cells));
-        for (std::size_t s = 0; s < nseg; ++s) {
-            forCells(s, [&](std::size_t c) {
-                grid[itemsBase + fill[c]++] = static_cast<std::uint32_t>(s);
-            });
-        }
-    }
+    auto build = [&](double cell) {
+        Level L;
+        L.cell = cell;
+        L.nx = std::max(1, static_cast<int>(std::floor((x1 - x0) / cell)) + 1);
+        L.ny = std::max(1, static_cast<int>(std::floor((y1 - y0) / cell)) + 1);
+        const int nx = L.nx, ny = L.ny;
+        const std::size_t cells = static_cast<std::size_t>(nx) * ny;
 
-    // A distancia de cada centro de celula ao centro ocupado mais proximo.
-    std::vector<double> sq(cells);
-    for (std::size_t c = 0; c < cells; ++c) sq[c] = grid[c + 1] > grid[c] ? 0.0 : 1e20;
-    edtSquaredColumns(sq.data(), nx, ny, nullptr);
-    {
-        std::vector<double> f(static_cast<std::size_t>(nx)), d(static_cast<std::size_t>(nx));
-        std::vector<int> v(static_cast<std::size_t>(nx) + 1);
-        std::vector<double> z(static_cast<std::size_t>(nx) + 2);
-        for (int j = 0; j < ny; ++j) {
-            double* row = &sq[static_cast<std::size_t>(j) * nx];
-            std::copy(row, row + nx, f.begin());
-            edtSquared1d(f, d, v, z, nx);
-            std::copy(d.begin(), d.end(), row);
+        // `ExactSegments::forCells`, com a grade acima.
+        auto forCells = [&](std::size_t s, auto&& f) {
+            const double ax = segs[s * 4], ay = segs[s * 4 + 1];
+            const double bx = segs[s * 4 + 2], by = segs[s * 4 + 3];
+            const double inv = 1.0 / cell;
+            constexpr double eps = 1e-7;
+            const double ylo = std::min(ay, by), yhi = std::max(ay, by);
+            int j0 = static_cast<int>(std::floor((ylo - y0) * inv - eps));
+            int j1 = static_cast<int>(std::floor((yhi - y0) * inv + eps));
+            j0 = std::max(j0, 0);
+            j1 = std::min(j1, ny - 1);
+            for (int j = j0; j <= j1; ++j) {
+                double xlo, xhi;
+                if (ay == by) {
+                    xlo = std::min(ax, bx);
+                    xhi = std::max(ax, bx);
+                } else {
+                    const double b0 = std::max(ylo, y0 + j * cell);
+                    const double b1 = std::min(yhi, y0 + (j + 1) * cell);
+                    double t0 = (b0 - ay) / (by - ay);
+                    double t1 = (b1 - ay) / (by - ay);
+                    t0 = std::clamp(t0, 0.0, 1.0);
+                    t1 = std::clamp(t1, 0.0, 1.0);
+                    const double xa = ax + t0 * (bx - ax);
+                    const double xb = ax + t1 * (bx - ax);
+                    xlo = std::min(xa, xb);
+                    xhi = std::max(xa, xb);
+                }
+                int i0 = static_cast<int>(std::floor((xlo - x0) * inv - eps));
+                int i1 = static_cast<int>(std::floor((xhi - x0) * inv + eps));
+                i0 = std::max(i0, 0);
+                i1 = std::min(i1, nx - 1);
+                for (int i = i0; i <= i1; ++i) f(static_cast<std::size_t>(j) * nx + i);
+            }
+        };
+        L.starts.assign(cells + 1, 0);
+        for (const std::uint32_t s : gridSegs) forCells(s, [&](std::size_t c) { ++L.starts[c + 1]; });
+        for (std::size_t c = 0; c < cells; ++c) L.starts[c + 1] += L.starts[c];
+        L.items.resize(L.starts[cells]);
+        {
+            std::vector<std::uint32_t> fill(L.starts.begin(),
+                                            L.starts.begin() + static_cast<std::ptrdiff_t>(cells));
+            for (const std::uint32_t s : gridSegs) {
+                forCells(s, [&](std::size_t c) { L.items[fill[c]++] = static_cast<std::uint32_t>(s); });
+            }
         }
-    }
-    std::vector<float> cellDist(cells);
-    for (std::size_t c = 0; c < cells; ++c) {
-        cellDist[c] = static_cast<float>(std::sqrt(sq[c]) * cell);
-    }
+
+        std::vector<double> sq(cells);
+        for (std::size_t c = 0; c < cells; ++c) sq[c] = L.starts[c + 1] > L.starts[c] ? 0.0 : 1e20;
+        edtSquaredColumns(sq.data(), nx, ny, nullptr);
+        {
+            std::vector<double> f(static_cast<std::size_t>(nx)), d(static_cast<std::size_t>(nx));
+            std::vector<int> v(static_cast<std::size_t>(nx) + 1);
+            std::vector<double> z(static_cast<std::size_t>(nx) + 2);
+            for (int j = 0; j < ny; ++j) {
+                double* row = &sq[static_cast<std::size_t>(j) * nx];
+                std::copy(row, row + nx, f.begin());
+                edtSquared1d(f, d, v, z, nx);
+                std::copy(d.begin(), d.end(), row);
+            }
+        }
+        L.dist.resize(cells);
+        for (std::size_t c = 0; c < cells; ++c) L.dist[c] = static_cast<float>(std::sqrt(sq[c]) * cell);
+        return L;
+    };
+    // A fina, e a grossa (ver icon_field.comp): oito celulas finas por lado, ou
+    // no maximo ~64 celulas no lado maior.
+    const Level fine = build(std::max(8.0, extent / 512.0));
+    const Level coarse = build(std::max(8.0 * fine.cell, extent / 64.0));
+    const double cell = fine.cell;
+    const int nx = fine.nx, ny = fine.ny;
+
+    // Numa lista so: [partidas finas][itens finos][partidas grossas][itens grossos].
+    std::vector<std::uint32_t> grid;
+    grid.reserve(fine.starts.size() + fine.items.size() + coarse.starts.size() + coarse.items.size());
+    grid.insert(grid.end(), fine.starts.begin(), fine.starts.end());
+    const std::size_t itemsBase = grid.size();
+    grid.insert(grid.end(), fine.items.begin(), fine.items.end());
+    const std::size_t start2 = grid.size();
+    grid.insert(grid.end(), coarse.starts.begin(), coarse.starts.end());
+    const std::size_t items2 = grid.size();
+    grid.insert(grid.end(), coarse.items.begin(), coarse.items.end());
+    std::vector<float> cellDist(fine.dist);
+    const std::size_t dist2 = cellDist.size();
+    cellDist.insert(cellDist.end(), coarse.dist.begin(), coarse.dist.end());
 
     const std::size_t texels = static_cast<std::size_t>(width) * height;
     std::vector<std::uint32_t> packed((texels + 3) / 4, 0);
@@ -247,6 +320,24 @@ Result<ResidentField> fieldFromContours(Resident& r, const std::vector<FieldCont
     p.cell = static_cast<float>(cell);
     p.aa = options.aaWidth;
     p.rule = static_cast<std::uint32_t>(options.rule);
+    p.far = farBand;
+    p.nx2 = static_cast<std::uint32_t>(coarse.nx);
+    p.ny2 = static_cast<std::uint32_t>(coarse.ny);
+    p.cell2 = static_cast<float>(coarse.cell);
+    p.start2 = static_cast<std::uint32_t>(start2);
+    p.items2 = static_cast<std::uint32_t>(items2);
+    p.dist2 = static_cast<std::uint32_t>(dist2);
+    p.cx = clamp ? clamp->x : 0;
+    p.cy = clamp ? clamp->y : 0;
+    p.cw = clamp ? clamp->w : width;
+    p.ch = clamp ? clamp->h : height;
+    if (nearRect) {
+        p.nx0 = nearRect->x0;
+        p.ny0 = nearRect->y0;
+        p.nx1 = nearRect->x1;
+        p.ny1 = nearRect->y1;
+        p.nearFar = nearRect->band;
+    }
     if (auto ok = r.dispatch(r.field, {whole(*field), whole(*segBuf), whole(*gridBuf),
                                        whole(*distBuf), *insideBuf},
                              &p, (width + 7) / 8, (height + 7) / 8);
@@ -318,10 +409,10 @@ Result<void> blurLadderOn(Resident& r, const Slab& img, std::uint32_t width, std
     return {};
 }
 
-Result<ResidentShadow> shadow(Resident& r, const Slab& art, std::uint32_t width,
+Result<ShadowBlur> shadowBlur(Resident& r, const Slab& art, std::uint32_t width,
                               std::uint32_t height, ShadowStyle style,
-                              const ShadowGeometry& geometry, double overdrawAlpha) {
-    ResidentShadow out;
+                              const ShadowGeometry& geometry) {
+    ShadowBlur out;
     const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * 16;
     const std::uint32_t gx = groups16(width), gy = groups16(height);
 
@@ -342,7 +433,7 @@ Result<ResidentShadow> shadow(Resident& r, const Slab& art, std::uint32_t width,
     // `gaussian` -> `blurPremultipliedRgbaInPlace`, que nao faz NADA (nem a
     // pre-multiplicacao) quando o kernel sai vazio.
     const double sigma = geometry.blurRadius * kShadowBlurSigmaPerRadius;
-    const bool blurred = sigma > 0.0 && width > 0 && height > 0 && blurKernelHalfWidth(sigma) > 0;
+    out.blurred = sigma > 0.0 && width > 0 && height > 0 && blurKernelHalfWidth(sigma) > 0;
 
     auto img = r.acquire(bytes);
     if (!img) return std::unexpected(img.error());
@@ -354,25 +445,45 @@ Result<ResidentShadow> shadow(Resident& r, const Slab& art, std::uint32_t width,
     p.mode = 0;
     p.R = R;
     p.colour = !shadowUsesVibrantTable(style) ? 0u : (kShadow.vibrantBrightness != 1.0 ? 1u : 2u);
-    p.premultiply = blurred ? 1u : 0u;
+    p.premultiply = out.blurred ? 1u : 0u;
+    p.ow = width;
+    p.oh = height;
     if (auto ok = r.dispatch(r.shadow, {whole(*img), whole(art), whole(r.dummy()), whole(column)},
                              &p, gx, gy);
         !ok) {
         return std::unexpected(ok.error());
     }
-    if (blurred) {
+    if (out.blurred) {
         if (auto ok = blurLadderOn(r, *img, width, height, sigma * sigma); !ok) {
             return std::unexpected(ok.error());
         }
     }
+    out.image = *img;
+    return out;
+}
+
+Result<ResidentShadow> shadowPlace(Resident& r, const ShadowBlur& blur, const Slab& art,
+                                   std::uint32_t width, std::uint32_t height,
+                                   const ShadowGeometry& geometry, double overdrawAlpha,
+                                   const ShadowOutput& to) {
+    ResidentShadow out;
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(to.width) * to.height * 16;
+    const std::uint32_t gx = groups16(to.width), gy = groups16(to.height);
+    ShadowPush p{};
+    p.w = width;
+    p.h = height;
+    p.ow = to.width;
+    p.oh = to.height;
+    p.ox = to.x;
+    p.oy = to.y;
 
     auto made = r.acquire(bytes);
     if (!made) return std::unexpected(made.error());
     p.mode = 1;
     p.dx = geometry.offsetX;
     p.dy = geometry.offsetY;
-    p.blurred = blurred ? 1u : 0u;
-    if (auto ok = r.dispatch(r.shadow, {whole(*made), whole(*img), whole(r.dummy()),
+    p.blurred = blur.blurred ? 1u : 0u;
+    if (auto ok = r.dispatch(r.shadow, {whole(*made), whole(blur.image), whole(r.dummy()),
                                         whole(r.dummy())},
                              &p, gx, gy);
         !ok) {
@@ -394,6 +505,15 @@ Result<ResidentShadow> shadow(Resident& r, const Slab& art, std::uint32_t width,
         out.overdraw = *od;
     }
     return out;
+}
+
+Result<ResidentShadow> shadow(Resident& r, const Slab& art, std::uint32_t width,
+                              std::uint32_t height, ShadowStyle style,
+                              const ShadowGeometry& geometry, double overdrawAlpha) {
+    auto blur = shadowBlur(r, art, width, height, style, geometry);
+    if (!blur) return std::unexpected(blur.error());
+    return shadowPlace(r, *blur, art, width, height, geometry, overdrawAlpha,
+                       ShadowOutput{width, height, 0, 0});
 }
 
 
@@ -422,7 +542,7 @@ Result<void> glassMask(Resident& r, const Slab& art, const Slab& field, std::uin
 }
 
 Result<void> refract(Resident& r, const Slab& target, const Slab& field, const PixelGrid& grid,
-                     const GlassRefraction& g) {
+                     const GlassRefraction& g, const SourceView* fieldView) {
     const VkDeviceSize bytes = static_cast<VkDeviceSize>(grid.texels()) * 16;
     auto map = r.acquire(bytes);
     if (!map) return std::unexpected(map.error());
@@ -435,6 +555,9 @@ Result<void> refract(Resident& r, const Slab& target, const Slab& field, const P
     d.rot[1] = g.angleSin;
     d.w = grid.width;
     d.h = grid.height;
+    d.fw = fieldView ? fieldView->width : grid.width;
+    d.fx = fieldView ? fieldView->x : 0;
+    d.fy = fieldView ? fieldView->y : 0;
     if (auto ok = r.dispatch(r.displace, {whole(*map), whole(field)}, &d, groups16(grid.width),
                              groups16(grid.height));
         !ok) {
@@ -498,13 +621,14 @@ bool resolveHighlights(const HighlightSlot* slots, std::size_t count,
 Result<void> highlights(Resident& r, const Slab& target, const Slab& field, std::uint32_t width,
                         std::uint32_t height, const std::vector<double>& records, bool chiclet,
                         bool useVCM, bool clampPlusLighter, const Slab& counters,
-                        std::uint32_t slot) {
+                        std::uint32_t slot, const SourceView* fieldView) {
     const std::uint32_t n = static_cast<std::uint32_t>(records.size() / kHighlightStride);
     if (n == 0) return {};
     auto staged = resident(r, records.data(), records.size() * sizeof(double));
     if (!staged) return std::unexpected(staged.error());
     HighlightPush p{width, height, n, chiclet ? 1u : 0u, useVCM ? 1u : 0u,
-                    clampPlusLighter ? 1u : 0u, slot};
+                    clampPlusLighter ? 1u : 0u, slot, fieldView ? fieldView->width : width,
+                    fieldView ? fieldView->x : 0, fieldView ? fieldView->y : 0};
     return r.dispatch(r.highlight, {whole(target), whole(field), whole(*staged), whole(counters)},
                       &p, groups16(width), groups16(height));
 }

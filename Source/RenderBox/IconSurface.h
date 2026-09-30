@@ -95,6 +95,16 @@ struct SurfaceMask {
     OpacityMaskArguments args;
 };
 
+// ATE ONDE UM CAMPO PRECISA SER EXATO, em pixels do contorno: alem disso quem o
+// le satura, e qualquer valor alem da banda (com o sinal certo) da o mesmo pixel.
+// 0 e exato em todo lugar. `accumulator` vale onde o acumulador le o campo (o
+// especular, a refracao: a grade estreita de `begin`); `art` no resto do buffer,
+// onde so a mascara de translucidez o le.
+struct FieldBands {
+    float accumulator = 0.0f;
+    float art = 0.0f;
+};
+
 // Onde uma contagem da GPU chega (ver o topo deste arquivo).
 using CountSink = std::function<void(std::size_t)>;
 using MaskSink = std::function<void(std::size_t missed, std::size_t painted)>;
@@ -114,7 +124,18 @@ public:
     virtual ~IconSurface() = default;
 
     // O acumulador, pre-multiplicado e zerado, na grade do buffer.
-    virtual Result<void> begin(const PixelGrid& grid) = 0;
+    //
+    // `narrow` (contida em `grid`) e onde o ACUMULADOR precisa estar certo: o
+    // recorte pedido mais o alcance encadeado das refracoes (ViewportPlan.h). O
+    // resto do buffer so existe para a sombra -- a arte, o campo que a mascara
+    // le e a propria sombra precisam dele; o acumulador nao. A CPU ignora (o
+    // acumulador dela e o buffer inteiro, o gabarito). A GPU guarda o acumulador
+    // na estreita: no zoom profundo a margem da sombra e ~9x a area do recorte.
+    virtual Result<void> begin(const PixelGrid& grid, const PixelGrid& narrow) = 0;
+
+    // A grade em que as bordas do buffer de um ladrilho caem (`planViewport`,
+    // `lattice`). 0: o plano de sempre -- a CPU.
+    virtual std::uint32_t bufferLattice() const { return 0; }
 
     // O fundo ESCRITO (nao composto) no acumulador ainda vazio, e o recorte a
     // pastilha. `paintBackground` e `clipToChiclet` de IconRenderer.cpp e
@@ -152,11 +173,14 @@ public:
     // `fieldFromAlphaCached` sobre o alfa da arte colocada. Na GPU o primeiro e
     // `icon_field.comp` e o segundo segue na CPU (a arte de um raster de vidro ja
     // tem a copia de CPU, [UP3]).
+    // `bands`: ate onde quem le este campo precisa dele exato (IconRenderer.cpp
+    // diz quem e quanto); a GPU nao busca o pe alem disso. A CPU ignora.
     virtual Result<SurfaceField> contourField(RenderCache* cache,
                                               const std::vector<FieldContour>& contours,
                                               std::uint32_t width, std::uint32_t height,
                                               const FieldOptions& options,
-                                              std::uint32_t superSample) = 0;
+                                              std::uint32_t superSample,
+                                              const FieldBands& bands) = 0;
     virtual Result<SurfaceField> alphaField(RenderCache* cache, SurfaceArt& art,
                                             std::uint32_t width, std::uint32_t height,
                                             const FieldOptions& options) = 0;

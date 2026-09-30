@@ -39,9 +39,12 @@ namespace iccli {
 // `gpu` troca `rb::renderIcon` por `rb::renderIconGpu` com AS MESMAS opcoes
 // (`icrender --gpu`); `cache` e o `RenderCache` de quem mede frio e quente
 // (`icrender --repeat`). Os dois no padrao sao o render que decide os bytes.
+// `viewport` e o ladrilho do `icrender --tile`, para MEDIR o zoom profundo; no
+// padrao (o canvas inteiro) nada muda.
 rb::Result<rb::RenderedIcon> renderBundleIcon(rb::Device& device, const icf::IconBundle& bundle,
                                               std::uint32_t size, int subdivisions,
                                               icf::Context context, bool gpu = false,
-                                              rb::RenderCache* cache = nullptr);
+                                              rb::RenderCache* cache = nullptr,
+                                              rb::IconViewport viewport = {});
 
 }  // namespace iccli

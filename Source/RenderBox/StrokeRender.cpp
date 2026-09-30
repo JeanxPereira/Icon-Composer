@@ -139,4 +139,57 @@ std::vector<float> rasteriseStroke(const icf::svg::Shape& shape,
     return cov;
 }
 
+StrokeInstances strokeInstances(const icf::svg::Shape& shape, const StrokePlacement& placement,
+                                std::uint32_t width, std::uint32_t height, int subdivisions,
+                                const StrokeParams& base, std::int32_t originX,
+                                std::int32_t originY) {
+    // As mesmas linhas de `rasteriseStroke` ate a caixa; o laco de pixels e da GPU.
+    StrokeInstances out;
+    if (shape.stroke.kind == icf::svg::PaintKind::None) return out;
+    if (shape.strokeWidth <= 0.0) return out;
+    StrokeParams params = base;
+    params.recipScale = 1.0;
+    params.width = shape.strokeWidth * placement.scale;
+    if (params.width <= 0.0) return out;
+    const auto subpaths = flattenForStroke(shape.path, subdivisions);
+    if (subpaths.empty()) return out;
+    out.drawn = width > 0 && height > 0;
+    const double half = params.width * 0.5 + 1.0;
+    for (const FlatSubpath& sp : subpaths) {
+        std::vector<StrokePoint> mapped;
+        mapped.reserve(sp.points.size());
+        for (const StrokePoint& p : sp.points) {
+            mapped.push_back({placement.m0[0] * p.x + placement.m1[0] * p.y + placement.m2[0],
+                              placement.m0[1] * p.x + placement.m1[1] * p.y + placement.m2[1]});
+        }
+        const auto stream = strokePointStream(mapped, sp.closed, params);
+        const std::size_t instances = strokeLineInstanceCount(stream.size());
+        for (std::size_t iid = 0; iid < instances; ++iid) {
+            if (!strokeInstanceIsDrawn(stream, iid)) continue;
+            const StrokeLinePoint& a = stream[iid + 1];
+            const StrokeLinePoint& b = stream[iid + 2];
+            const double x0 = std::min(a.x, b.x) - half, x1 = std::max(a.x, b.x) + half;
+            const double y0 = std::min(a.y, b.y) - half, y1 = std::max(a.y, b.y) + half;
+            const long bx0 = originX, by0 = originY;
+            const long bx1 = originX + static_cast<long>(width) - 1;
+            const long by1 = originY + static_cast<long>(height) - 1;
+            const long px0 = std::max<long>(bx0, static_cast<long>(std::floor(x0)));
+            const long py0 = std::max<long>(by0, static_cast<long>(std::floor(y0)));
+            const long px1 = std::min<long>(bx1, static_cast<long>(std::ceil(x1)));
+            const long py1 = std::min<long>(by1, static_cast<long>(std::ceil(y1)));
+            if (px0 > px1 || py0 > py1) continue;
+            const bool startCapped = stream[iid].join == kJoinGhostEnd;
+            const bool endCapped = iid + 3 < stream.size() && stream[iid + 3].join == kJoinGhostEnd;
+            const double rec[kStrokeRecordStride] = {
+                a.x, a.y, b.x, b.y, a.radius, b.radius, a.alpha, b.alpha,
+                startCapped ? 1.0 : 0.0, endCapped ? 1.0 : 0.0,
+                static_cast<double>(px0), static_cast<double>(py0),
+                static_cast<double>(px1), static_cast<double>(py1),
+                params.recipScale, 0.0};
+            out.records.insert(out.records.end(), rec, rec + kStrokeRecordStride);
+        }
+    }
+    return out;
+}
+
 }  // namespace rb
