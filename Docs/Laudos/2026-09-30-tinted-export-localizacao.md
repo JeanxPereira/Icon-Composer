@@ -168,3 +168,17 @@ o quadrado do canvas nela.
   fosco, ele vem do host.
 - O que um PNG exportado em Clear contém: a máscara crua ou a composição. A v1
   exporta a composição sobre o fundo da tela.
+
+### 5.1. A v2: os três passes, com a máscara feita pelo próprio render
+
+`IconRenderOptions::clearMask` faz o render compor a arte de cada camada de
+conteúdo pela matriz do conteúdo (`IconSurface::blendArt(..., clearContent)`;
+na GPU, `icon_blend.comp` com `premultipliedSource == 2`), e o resto — fundo
+do documento, sombra, especular, realces do chiclet — entra cru, como no alvo.
+Sobre a máscara pronta, `rb::applyClear` aplica a matriz total e os passes L,
+D (`plusD`) e H. A saída é a cor reta tal que compô-la sobre o mesmo fundo dá
+a composição (`rgb = (saída − fundo·(1 − A)) / A`), então a casca só sobrepõe.
+
+Medido: GPU contra CPU com diferença máxima de 1 nível (Chromium e Delta);
+Clear a 256 px em 4 ms na GPU. Continuam `[OBS]` os itens da §5: se H lê o
+fundo original, o fosco do host e o conteúdo do PNG exportado.

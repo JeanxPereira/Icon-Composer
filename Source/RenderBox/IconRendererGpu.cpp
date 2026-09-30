@@ -1121,8 +1121,9 @@ public:
         return field.cpu;
     }
 
-    Result<void> blendArt(const SurfaceArt& art, float alpha, BlendMode mode) override {
-        return blendRange(whole(artSlab(art)), alpha, mode, wideView());
+    Result<void> blendArt(const SurfaceArt& art, float alpha, BlendMode mode,
+                          bool clearContent) override {
+        return blendRange(whole(artSlab(art)), alpha, mode, wideView(), clearContent ? 2u : 0u);
     }
 
     // A sombra da arte residente (G3): `icon_ring`, `icon_shadow`, `icon_blur`,
@@ -1334,8 +1335,10 @@ private:
     }
     const Slab& target() const { return group_ ? group_ : acc_; }
 
-    Result<void> blendRange(Range src, float alpha, BlendMode mode, const gpu::SourceView& sv) {
-        BlendPush p{narrow_.width, narrow_.height, static_cast<std::uint32_t>(mode), 0u, alpha,
+    // `source`: 0 a arte reta, 2 a arte reta pela matriz do conteudo do Clear.
+    Result<void> blendRange(Range src, float alpha, BlendMode mode, const gpu::SourceView& sv,
+                            std::uint32_t source = 0u) {
+        BlendPush p{narrow_.width, narrow_.height, static_cast<std::uint32_t>(mode), source, alpha,
                     sv.width, sv.x, sv.y};
         return r_.dispatch(r_.blend, {whole(target()), src}, &p, groups16(narrow_.width),
                            groups16(narrow_.height));
@@ -1441,8 +1444,8 @@ public:
                           CountSink s) override {
         return time("specular", [&] { return in_.specular(f, a, s); });
     }
-    Result<void> blendArt(const SurfaceArt& a, float al, BlendMode m) override {
-        return time("blendArt", [&] { return in_.blendArt(a, al, m); });
+    Result<void> blendArt(const SurfaceArt& a, float al, BlendMode m, bool cc) override {
+        return time("blendArt", [&] { return in_.blendArt(a, al, m, cc); });
     }
     Result<SurfaceShadow> makeShadow(RenderCache* c, SurfaceArt& a, ShadowStyle s,
                                      const ShadowGeometry& g, double o) override {

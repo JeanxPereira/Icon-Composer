@@ -6,6 +6,8 @@
 //        pre-multiplicam e chamam `rbBlend`.
 //   premultipliedSource == 1 -- `blendPremulOver`: o alvo de um grupo isolado,
 //        ja pre-multiplicado, entrando no acumulador.
+//   premultipliedSource == 2 -- como 0, com a fonte antes pela matriz do
+//        CONTEUDO do Clear (IconRendering 0x4AF20): `(0.85 R, 1, 0, A)`.
 layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(std430, binding = 0) buffer Dst { vec4 dst[]; };
@@ -31,10 +33,11 @@ void main() {
     uint i = g.y * p.w + g.x;
     vec4 s = src[uint(int(g.y) + p.sy) * p.sw + uint(int(g.x) + p.sx)];
     vec4 d = dst[i];
-    if (p.premultipliedSource != 0u) {
+    if (p.premultipliedSource == 1u) {
         dst[i] = rbBlend(p.mode, s, d);
         return;
     }
+    if (p.premultipliedSource == 2u) s.rgb = vec3(0.85 * s.r, 1.0, 0.0);
     float a = s.a * p.alpha;
     if (p.mode == 0u) {
         if (a <= 0.0) return;

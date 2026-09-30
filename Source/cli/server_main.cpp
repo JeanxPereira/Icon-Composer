@@ -45,9 +45,10 @@
 //   get           -> "json <n>\n" + o icon.json
 //   backdrop <w> <h> <n>\n<n bytes RGBA8>
 //       o fundo da janela como a tela o mostra, para o Clear -> "ok\n"
-//   render ... clear <x> <y> <lado>, depois de effects: o Clear (passe de
-//       clarear, `rb::applyClearLightening`), com o quadrado do canvas em
-//       pixels do backdrop; a cor sai do fundo transformado e o alfa e a mascara
+//   render ... clear <x> <y> <lado>, depois de effects: o Clear (a mascara
+//       por `clearMask` e os passes clarear/escurecer/realcar de
+//       `rb::applyClear`), com o quadrado do canvas em pixels do backdrop; a
+//       cor sai tal que compor sobre o mesmo fundo da a composicao
 //   rects <appearance|-> <idiom|->
 //       o retangulo de cada camada em pontos do canvas (0..1024), para o
 //       destaque da selecao e o clique no canvas
@@ -610,6 +611,7 @@ int main(int argc, char** argv) {
             // O Clear tambem nao e `.color`: a sombra vira `neutral` (0x49F40).
             // Uma recoloracao identidade liga so esse portao.
             if (clear && !tint) io.tint = rb::IconRenderOptions::TintRecolour{};
+            io.clearMask = clear.has_value();
             if (appearance != "-") {
                 auto a = icf::appearanceFromString(appearance);
                 if (!a) {
@@ -664,7 +666,7 @@ int main(int argc, char** argv) {
                     fail("clear sem backdrop");
                     continue;
                 }
-                rb::applyClearLightening(*icon, backdrop, (*clear)[0], (*clear)[1], (*clear)[2], size);
+                rb::applyClear(*icon, backdrop, (*clear)[0], (*clear)[1], (*clear)[2], size);
             }
             const std::vector<std::uint8_t> bytes =
                 toRgba8Dithered(icon->rgba, icon->width, icon->originX, icon->originY);

@@ -198,8 +198,11 @@ public:
     virtual Result<void> specular(const SurfaceField& field, const SpecularArguments& args,
                                   CountSink sink) = 0;
 
-    // `blendOver` no alvo corrente, da arte de uma camada.
-    virtual Result<void> blendArt(const SurfaceArt& art, float alpha, BlendMode mode) = 0;
+    // `blendOver` no alvo corrente, da arte de uma camada. `clearContent`: a
+    // arte passa antes pela matriz do CONTEUDO do Clear (IconRendering 0x4AF20):
+    // `(0.85 R, 1, 0, A)` sobre a cor reta.
+    virtual Result<void> blendArt(const SurfaceArt& art, float alpha, BlendMode mode,
+                                  bool clearContent) = 0;
 
     // A sombra de `art` (`shadowImageCached`) e, com `overdrawAlpha > 0`, o
     // overdraw dela (`shadowOverdrawImage`), feitos de uma vez porque os dois

@@ -27,6 +27,10 @@
 #include "Source/IconComposerFoundation/Values.h"
 
 namespace rb {
+
+// `[BIN]` `ClearMode.contentLighteningStrength` (laudo de 20/09 §2): o R da
+// matriz do conteudo do Clear (0x4AF20). Compartilhado com o shader de blend.
+constexpr float kClearContentLightening = 0.85f;
 namespace {
 
 std::string readAll(const std::filesystem::path& p) {
@@ -907,8 +911,19 @@ public:
         sink(missed, painted);
         return {};
     }
-    Result<void> blendArt(const SurfaceArt& art, float alpha, BlendMode mode) override {
-        blendOver(target(), art.rgba, alpha, mode);
+    Result<void> blendArt(const SurfaceArt& art, float alpha, BlendMode mode,
+                          bool clearContent) override {
+        if (!clearContent) {
+            blendOver(target(), art.rgba, alpha, mode);
+            return {};
+        }
+        std::vector<float> m = art.rgba;
+        for (std::size_t i = 0; i < m.size(); i += 4) {
+            m[i + 0] = kClearContentLightening * m[i + 0];
+            m[i + 1] = 1.0f;
+            m[i + 2] = 0.0f;
+        }
+        blendOver(target(), m, alpha, mode);
         return {};
     }
     Result<SurfaceShadow> makeShadow(RenderCache* cache, SurfaceArt& art, ShadowStyle style,
@@ -2046,7 +2061,8 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                 // own clip + backdrop colour matrix inside a pass gated by
                 // `hasSpecular` at `0x00049200`, and the shadow is a different
                 // `drawShape:` in a different function.
-                if (auto ok = surface.blendArt(*drew, static_cast<float>(opacity), layerBlend);
+                if (auto ok = surface.blendArt(*drew, static_cast<float>(opacity), layerBlend,
+                                               options.clearMask);
                     !ok) {
                     return std::unexpected(ok.error());
                 }
@@ -2117,7 +2133,8 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                     ++out.glassTranslucent;
                 }
                 if (auto ok = castShadow(placed); !ok) return std::unexpected(ok.error());
-                if (auto ok = surface.blendArt(placed, static_cast<float>(opacity), layerBlend);
+                if (auto ok = surface.blendArt(placed, static_cast<float>(opacity), layerBlend,
+                                               options.clearMask);
                     !ok) {
                     return std::unexpected(ok.error());
                 }
@@ -2228,16 +2245,19 @@ void applyTintedDark(RenderedIcon& icon, const IconRenderOptions::TintRecolour& 
     }
 }
 
-void applyClearLightening(RenderedIcon& icon, const ClearBackdrop& backdrop, double squareX,
-                          double squareY, double squareSide, std::uint32_t canvasSize) {
-    // `[BIN]` Os valores do `ClearMode` (laudo de 20/09 §2): totalLightening
-    // 1.0, contentLightening 0.85; `lighteningVCM` [0.9, 2.5, 2.0, .some(1.2)].
-    constexpr double kTotalLightening = 1.0;
-    constexpr double kContentLightening = 0.85;
-    GlyphVCM vcm;
-    vcm.lumaFloor = 0.9;
-    vcm.lumaCeiling = 2.5;
-    vcm.saturation = 2.0;
+void applyClear(RenderedIcon& icon, const ClearBackdrop& backdrop, double squareX,
+                double squareY, double squareSide, std::uint32_t canvasSize) {
+    // `[BIN]` O ClearMode (laudo de 20/09 §2): total L/D/H 1.0 / 0.3 / 1.0;
+    // lighteningVCM [0.9, 2.5, 2.0], highlightsVCM [0.2, 1.35, 1.4].
+    constexpr double kTotalLightening = 1.0, kTotalDarkening = 0.3, kTotalHighlights = 1.0;
+    GlyphVCM lighten;
+    lighten.lumaFloor = 0.9;
+    lighten.lumaCeiling = 2.5;
+    lighten.saturation = 2.0;
+    GlyphVCM highlight;
+    highlight.lumaFloor = 0.2;
+    highlight.lumaCeiling = 1.35;
+    highlight.saturation = 1.4;
     if (backdrop.width == 0 || backdrop.height == 0 || canvasSize == 0) return;
     const double k = squareSide / static_cast<double>(canvasSize);
     auto texel = [&](int x, int y, int c) {
@@ -2248,27 +2268,39 @@ void applyClearLightening(RenderedIcon& icon, const ClearBackdrop& backdrop, dou
     float* p = icon.rgba.data();
     for (std::uint32_t y = 0; y < icon.height; ++y) {
         for (std::uint32_t x = 0; x < icon.width; ++x, p += 4) {
-            // A mascara: o vermelho do conteudo (reto) vezes a cobertura.
-            const double a = std::clamp(kTotalLightening * kContentLightening * p[0], 0.0, 1.0) * p[3];
-            if (a <= 0.0) {
+            const double A = std::clamp(static_cast<double>(p[3]), 0.0, 1.0);
+            if (A <= 0.0) {
                 p[0] = p[1] = p[2] = p[3] = 0.0f;
                 continue;
             }
+            // A matriz total, na cor reta, presa em 0..1 (`addStyle:9`).
+            const double mr = std::clamp(kTotalLightening * p[0], 0.0, 1.0);
+            const double mg = std::clamp(kTotalDarkening * (1.0 - p[1]), 0.0, 1.0);
+            const double mb = std::clamp(kTotalHighlights * p[2], 0.0, 1.0);
             // O fundo sob este pixel, bilinear.
             const double bx = squareX + (icon.originX + x + 0.5) * k - 0.5;
             const double by = squareY + (icon.originY + y + 0.5) * k - 0.5;
             const int x0 = static_cast<int>(std::floor(bx)), y0 = static_cast<int>(std::floor(by));
             const double fx = bx - x0, fy = by - y0;
-            double rgb[3];
+            double b[3];
             for (int c = 0; c < 3; ++c) {
-                rgb[c] = (texel(x0, y0, c) * (1 - fx) + texel(x0 + 1, y0, c) * fx) * (1 - fy) +
-                         (texel(x0, y0 + 1, c) * (1 - fx) + texel(x0 + 1, y0 + 1, c) * fx) * fy;
+                b[c] = (texel(x0, y0, c) * (1 - fx) + texel(x0 + 1, y0, c) * fx) * (1 - fy) +
+                       (texel(x0, y0 + 1, c) * (1 - fx) + texel(x0 + 1, y0 + 1, c) * fx) * fy;
             }
-            applyGlyphVCM(vcm, rgb);
-            // `inputClamp = 1.2` corta em 1.2^(1/2.2) ~ 1.09 e o piso e -0.75;
-            // numa saida de 8 bits isso e o [0, 1] de sempre.
-            for (int c = 0; c < 3; ++c) p[c] = static_cast<float>(std::clamp(rgb[c], 0.0, 1.0));
-            p[3] = static_cast<float>(a);
+            double o[3] = {b[0], b[1], b[2]};
+            auto vibrant = [&](const GlyphVCM& vcm, double a) {
+                if (a <= 0.0) return;
+                double v[3] = {o[0], o[1], o[2]};
+                applyGlyphVCM(vcm, v);
+                for (int c = 0; c < 3; ++c) o[c] += (std::clamp(v[c], 0.0, 1.0) - o[c]) * a;
+            };
+            vibrant(lighten, mr * A);                                          // L
+            for (int c = 0; c < 3; ++c) o[c] = std::max(0.0, o[c] - mg * A);   // D, plusD
+            vibrant(highlight, mb * A);                                        // H
+            for (int c = 0; c < 3; ++c) {
+                p[c] = static_cast<float>(std::clamp((o[c] - b[c] * (1.0 - A)) / A, 0.0, 1.0));
+            }
+            p[3] = static_cast<float>(A);
         }
     }
 }
