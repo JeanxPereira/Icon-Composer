@@ -30,6 +30,7 @@ add_executable(ic_tests EXCLUDE_FROM_ALL
     test_png.cpp
     test_icon_render.cpp
     test_viewport_render.cpp
+    test_gpu_fidelity.cpp
     test_render_cache.cpp
     test_rb_gradient.cpp
     test_auto_gradient.cpp

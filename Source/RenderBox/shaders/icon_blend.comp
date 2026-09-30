@@ -1,0 +1,41 @@
+#version 450
+// Uma imagem composta sobre o alvo pre-multiplicado, com os modos transcritos.
+//
+//   premultipliedSource == 0 -- `blendOver` de IconRenderer.cpp: a fonte e reta
+//        e leva `alpha`; `normal` e o `over` float da CPU, os outros modos
+//        pre-multiplicam e chamam `rbBlend`.
+//   premultipliedSource == 1 -- `blendPremulOver`: o alvo de um grupo isolado,
+//        ja pre-multiplicado, entrando no acumulador.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) buffer Dst { vec4 dst[]; };
+layout(std430, binding = 1) readonly buffer Src { vec4 src[]; };
+
+layout(push_constant) uniform Push {
+    uint w, h;
+    uint mode;
+    uint premultipliedSource;
+    float alpha;
+} p;
+
+#include "BlendFormula.glsl"
+
+void main() {
+    uvec2 g = gl_GlobalInvocationID.xy;
+    if (g.x >= p.w || g.y >= p.h) return;
+    uint i = g.y * p.w + g.x;
+    vec4 s = src[i];
+    vec4 d = dst[i];
+    if (p.premultipliedSource != 0u) {
+        dst[i] = rbBlend(p.mode, s, d);
+        return;
+    }
+    float a = s.a * p.alpha;
+    if (p.mode == 0u) {
+        if (a <= 0.0) return;
+        float inv = 1.0 - a;
+        dst[i] = vec4(s.rgb * a + d.rgb * inv, a + d.a * inv);
+        return;
+    }
+    dst[i] = rbBlend(p.mode, vec4(s.rgb * a, a), d);
+}

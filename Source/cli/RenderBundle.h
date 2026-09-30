@@ -36,8 +36,12 @@ namespace iccli {
 // é o do `--subdivisions` (padrão 16); tudo o mais em `IconRenderOptions` fica
 // no padrão -- em particular NÃO há `viewport`: um PNG exportado de um ladrilho
 // seria um recorte.
+// `gpu` troca `rb::renderIcon` por `rb::renderIconGpu` com AS MESMAS opcoes
+// (`icrender --gpu`); `cache` e o `RenderCache` de quem mede frio e quente
+// (`icrender --repeat`). Os dois no padrao sao o render que decide os bytes.
 rb::Result<rb::RenderedIcon> renderBundleIcon(rb::Device& device, const icf::IconBundle& bundle,
                                               std::uint32_t size, int subdivisions,
-                                              icf::Context context);
+                                              icf::Context context, bool gpu = false,
+                                              rb::RenderCache* cache = nullptr);
 
 }  // namespace iccli

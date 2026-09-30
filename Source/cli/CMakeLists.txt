@@ -20,7 +20,7 @@ target_link_libraries(ictool PRIVATE IconComposer::CliLib)
 # `Tests/test_e2e_export.cpp` linka esta e compara a UI contra ela, que e o que
 # faz a promessa de `Export.h` ("byte a byte contra a sequencia do `icrender`")
 # ser verdade em vez de uma transcricao (revisao 19/09, I6).
-add_library(ic_render_lib STATIC RenderBundle.cpp)
+add_library(ic_render_lib STATIC RenderBundle.cpp Fidelity.cpp)
 target_link_libraries(ic_render_lib PUBLIC IconComposer::RenderBox IconComposer::Foundation)
 add_library(IconComposer::RenderCliLib ALIAS ic_render_lib)
 
@@ -32,3 +32,9 @@ target_link_libraries(icrender PRIVATE IconComposer::RenderCliLib)
 # de server_main.cpp.
 add_executable(icserver server_main.cpp)
 target_link_libraries(icserver PRIVATE IconComposer::RenderCliLib)
+
+# icfidelity mede o caminho residente contra o de CPU no corpus inteiro, em
+# niveis de 8 bits (plano da frente GPU, restricao 2). Ferramenta de Release: o
+# caso da suite (`Tests/test_gpu_fidelity.cpp`) roda um recorte do corpus.
+add_executable(icfidelity fidelity_main.cpp)
+target_link_libraries(icfidelity PRIVATE IconComposer::RenderCliLib)

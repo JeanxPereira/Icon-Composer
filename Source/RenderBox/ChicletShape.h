@@ -179,6 +179,12 @@ int chicletSubdivisions(double radius);
 // pastilha de sempre, float a float.
 std::vector<float> chicletCoverage(const PixelGrid& g, IconPlatform platform = IconPlatform::Main);
 
+// O poligono que `chicletCoverage` varre: o contorno achatado com a mesma
+// subdivisao. Exposto para o caminho residente, que faz a mesma varredura na
+// GPU (`shaders/icon_chiclet.comp`).
+std::vector<icf::svg::Point> chicletPolygon(std::uint32_t size,
+                                            IconPlatform platform = IconPlatform::Main);
+
 // A mesma cobertura sobre o canvas inteiro. Fica porque um chamador que so tem
 // a resolucao nao precisa montar uma grade para dizer "tudo".
 std::vector<float> chicletCoverage(std::uint32_t size,

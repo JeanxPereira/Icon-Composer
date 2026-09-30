@@ -88,6 +88,10 @@ std::uint32_t projectionHeightOf(const RenderOptions& o) {
 
 }  // namespace
 
+void svgPathBounds(const icf::svg::Path& path, double& x0, double& y0, double& x1, double& y1) {
+    pathBounds(path, x0, y0, x1, y1);
+}
+
 // O alvo e um PEDACO da projecao? Com o padrao -- origem zero e projecao
 // tomada do proprio alvo -- e sempre falso, e todo sitio abaixo se reduz ao
 // que fazia antes.

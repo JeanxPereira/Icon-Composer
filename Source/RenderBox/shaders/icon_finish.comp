@@ -1,0 +1,21 @@
+#version 450
+// O acumulador pre-multiplicado, recortado e des-multiplicado: o fim de
+// `renderIcon` e o fim de `renderSvgPlaced`. `rgb = a > 0 ? c / a : 0`.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) readonly buffer Src { vec4 src[]; };
+layout(std430, binding = 1) writeonly buffer Dst { vec4 dst[]; };
+
+layout(push_constant) uniform Push {
+    uint vw, vh;
+    uint srcW;
+    int cx, cy;
+} p;
+
+void main() {
+    uvec2 g = gl_GlobalInvocationID.xy;
+    if (g.x >= p.vw || g.y >= p.vh) return;
+    vec4 s = src[uint(int(g.y) + p.cy) * p.srcW + uint(int(g.x) + p.cx)];
+    float a = s.a;
+    dst[g.y * p.vw + g.x] = vec4(a > 0.0 ? s.rgb / a : vec3(0.0), a);
+}

@@ -78,12 +78,17 @@ public:
 
     // A arte de uma camada. `drawSvg` e `svgRenderCached` (o texto e a chave de
     // cache); `placeRaster` e a colocacao bilinear de IconRenderer.cpp.
+    // `feedsField` diz que o vidro vai construir o campo a partir do ALFA desta
+    // arte: a GPU entao coloca na CPU (a conta exata, em double) e guarda a
+    // copia em `rgba`, porque o limiar `alpha >= 0.5` do campo nao tolera o ulp
+    // de diferenca da colocacao em float -- medido, IconRendererGpu.cpp.
     virtual Result<SurfaceArt> drawSvg(RenderCache* cache, const std::string& text,
                                        const icf::svg::SvgDocument& svg,
                                        const PathGlobals& placement,
                                        const RenderOptions& options) = 0;
     virtual Result<SurfaceArt> placeRaster(const icf::DecodedPng& png,
-                                           const LayerPlacement& placement) = 0;
+                                           const LayerPlacement& placement,
+                                           bool feedsField) = 0;
 
     // A arte na CPU, para quem ainda so existe la: o campo de um raster e a
     // sombra. Na GPU: readback.
@@ -104,6 +109,10 @@ public:
     virtual Result<std::vector<float>> finish(std::int32_t cropX, std::int32_t cropY,
                                               std::uint32_t width, std::uint32_t height) = 0;
 };
+
+// `placeRaster` de IconRenderer.cpp, a colocacao de CPU, para a superficie da GPU.
+std::vector<float> placeRasterOnCpu(const icf::DecodedPng& png, const LayerPlacement& placement,
+                                    const PixelGrid& grid);
 
 // As decisoes de `renderIcon`, desenhadas em `surface`.
 Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& bundle,

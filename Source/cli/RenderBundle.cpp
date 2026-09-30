@@ -4,12 +4,14 @@ namespace iccli {
 
 rb::Result<rb::RenderedIcon> renderBundleIcon(rb::Device& device, const icf::IconBundle& bundle,
                                               std::uint32_t size, int subdivisions,
-                                              icf::Context context) {
+                                              icf::Context context, bool gpu,
+                                              rb::RenderCache* cache) {
     rb::IconRenderOptions io;
     io.size = size;
     io.subdivisions = subdivisions;
     io.context = context;
-    return rb::renderIcon(device, bundle, io);
+    io.cache = cache;
+    return gpu ? rb::renderIconGpu(device, bundle, io) : rb::renderIcon(device, bundle, io);
 }
 
 }  // namespace iccli

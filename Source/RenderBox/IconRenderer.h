@@ -389,4 +389,20 @@ extern const char* const kGlassVectorFieldNote;
 Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                                 IconRenderOptions options = IconRenderOptions{});
 
+// O MESMO RENDER, COM OS PIXELS NA GPU (frente GPU, G1 -- `Docs/Plans/2026-09-29-render-gpu.md`).
+//
+// As decisoes sao as de `renderIcon`, literalmente -- as duas chamam
+// `renderIconOn` (IconSurface.h) --, entao `skipped`, `shapeGaps`, `notes`, os
+// contadores e a semantica de viewport/ladrilho sao os mesmos. O que muda e onde
+// os pixels moram: acumulador, grupo e arte em buffers da GPU, composicao e
+// mescla em compute, um readback no fim. As etapas de vidro ainda sao de CPU e
+// entram por ida e volta declarada (IconRendererGpu.cpp lista cada uma).
+//
+// NAO e byte a byte com `renderIcon`: a GPU calcula em float onde a CPU calcula
+// em double. O teto medido pelo plano e media <= 0,5 nivel e pior pixel <= 4
+// niveis de 8 bits por documento; `Tests/test_gpu_fidelity.cpp` cobra. A
+// exportacao e o `icrender` sem `--gpu` seguem em `renderIcon`, o gabarito.
+Result<RenderedIcon> renderIconGpu(Device& device, const icf::IconBundle& bundle,
+                                   IconRenderOptions options = IconRenderOptions{});
+
 }  // namespace rb

@@ -1,0 +1,81 @@
+#version 450
+// A cobertura da pastilha e o recorte do fundo a ela: `chicletCoverage` e
+// `clipToChiclet` de ChicletShape.cpp. Duas passadas:
+//
+//   0 -- uma invocacao por SUB-LINHA (quatro por linha): os cruzamentos da
+//        linha de varredura com o poligono achatado, ordenados.
+//   1 -- uma por pixel: a soma exata da sobreposicao horizontal dos vaos com o
+//        pixel, um quarto por sub-linha, grampeada; o acumulador e
+//        multiplicado por ela onde ela nao e 1.
+//
+// A CPU faz a mesma conta em double; aqui e float. `kMaxCrossings` e folga: a
+// pastilha e convexa e toda sub-linha cruza zero ou duas arestas.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+const uint kMaxCrossings = 8u;
+const uint kSpanStride = kMaxCrossings + 1u;
+
+layout(std430, binding = 0) buffer Acc { vec4 acc[]; };
+layout(std430, binding = 1) readonly buffer Poly { vec2 poly[]; };
+layout(std430, binding = 2) buffer Spans { float spans[]; };
+
+layout(push_constant) uniform Push {
+    uint w, h;
+    int ox, oy;
+    uint size;
+    uint npoly;
+    uint pass;
+} p;
+
+void crossings(uint row, uint s) {
+    float sy = float(int(row) + p.oy) + (float(s) + 0.5) * 0.25;
+    float xs[kMaxCrossings];
+    uint count = 0u;
+    for (uint i = 0u; i < p.npoly; ++i) {
+        vec2 a = poly[i];
+        vec2 b = poly[(i + 1u) % p.npoly];
+        if ((a.y <= sy) == (b.y <= sy)) continue;
+        float x = a.x + (sy - a.y) * (b.x - a.x) / (b.y - a.y);
+        if (count == kMaxCrossings) continue;
+        uint j = count;   // insercao ordenada
+        while (j > 0u && xs[j - 1u] > x) {
+            xs[j] = xs[j - 1u];
+            --j;
+        }
+        xs[j] = x;
+        ++count;
+    }
+    uint base = (row * 4u + s) * kSpanStride;
+    spans[base] = float(count);
+    for (uint k = 0u; k < count; ++k) spans[base + 1u + k] = xs[k];
+}
+
+void main() {
+    uvec2 g = gl_GlobalInvocationID.xy;
+    if (p.pass == 0u) {
+        if (g.x >= 4u || g.y >= p.h) return;
+        crossings(g.y, g.x);
+        return;
+    }
+    if (g.x >= p.w || g.y >= p.h) return;
+    float x0 = float(p.ox);
+    float x1 = x0 + float(p.w);
+    float px = float(int(g.x) + p.ox);
+    float cov = 0.0;
+    for (uint s = 0u; s < 4u; ++s) {
+        uint base = (g.y * 4u + s) * kSpanStride;
+        uint count = uint(spans[base]);
+        if (count < 2u) continue;
+        for (uint k = 0u; k + 1u < count; k += 2u) {
+            float lo = max(spans[base + 1u + k], max(0.0, x0));
+            float hi = min(spans[base + 2u + k], min(float(p.size), x1));
+            if (hi <= lo) continue;
+            float overlap = min(hi, px + 1.0) - max(lo, px);
+            if (overlap > 0.0) cov += overlap * 0.25;
+        }
+    }
+    cov = clamp(cov, 0.0, 1.0);
+    if (cov >= 1.0) return;
+    uint i = g.y * p.w + g.x;
+    acc[i] *= cov;
+}

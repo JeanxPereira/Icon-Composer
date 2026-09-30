@@ -853,8 +853,8 @@ public:
         art.skipped = std::move(drew->skipped);
         return art;
     }
-    Result<SurfaceArt> placeRaster(const icf::DecodedPng& png,
-                                   const LayerPlacement& placement) override {
+    Result<SurfaceArt> placeRaster(const icf::DecodedPng& png, const LayerPlacement& placement,
+                                   bool) override {
         SurfaceArt art;
         art.rgba = rb::placeRaster(png, placement, grid_);
         return art;
@@ -911,6 +911,11 @@ private:
 };
 
 }  // namespace
+
+std::vector<float> placeRasterOnCpu(const icf::DecodedPng& png, const LayerPlacement& placement,
+                                    const PixelGrid& grid) {
+    return placeRaster(png, placement, grid);
+}
 
 Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                                 IconRenderOptions options) {
@@ -1530,7 +1535,12 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                 }
                 rasterW = png.width;
                 rasterH = png.height;
-                auto placed = surface.placeRaster(png, lp);
+                // O mesmo portao do bloco de vidro abaixo: o campo vai sair do
+                // alfa desta arte.
+                const bool feedsField =
+                    isGlass && (!glassRefractionIsIdentity(refraction) || groupWantsMask ||
+                                wantsSpecular);
+                auto placed = surface.placeRaster(png, lp, feedsField);
                 if (!placed) return std::unexpected(placed.error());
                 rasterPlaced = std::move(*placed);
             }

@@ -1,0 +1,44 @@
+#version 450
+// A mascara de translucidez sobre a arte reta: `opacityMaskMissedPixels` (a
+// contagem, ANTES) e `applyOpacityMask` (o alfa vezes a mascara, depois), numa
+// invocacao por pixel. A contagem soma por grupo em memoria compartilhada e
+// entra no buffer com um atomico por grupo.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) buffer Art { vec4 art[]; };
+layout(std430, binding = 1) readonly buffer MaskA { float maskA[]; };
+layout(std430, binding = 2) readonly buffer MaskCov { float maskCov[]; };
+layout(std430, binding = 3) buffer Counters { uint counters[]; };   // pintados, perdidos
+
+layout(push_constant) uniform Push {
+    uint w, h;
+    uint nA;
+    uint nCov;
+    float alphaFloor;
+} p;
+
+shared uint groupPainted;
+shared uint groupMissed;
+
+void main() {
+    if (gl_LocalInvocationIndex == 0u) {
+        groupPainted = 0u;
+        groupMissed = 0u;
+    }
+    barrier();
+    uvec2 g = gl_GlobalInvocationID.xy;
+    if (g.x < p.w && g.y < p.h) {
+        uint i = g.y * p.w + g.x;
+        float a = art[i].a;
+        if (i < p.nCov && a > p.alphaFloor) {
+            atomicAdd(groupPainted, 1u);
+            if (maskCov[i] == 0.0) atomicAdd(groupMissed, 1u);
+        }
+        if (i < p.nA) art[i].a = a * maskA[i];
+    }
+    barrier();
+    if (gl_LocalInvocationIndex == 0u) {
+        if (groupPainted > 0u) atomicAdd(counters[0], groupPainted);
+        if (groupMissed > 0u) atomicAdd(counters[1], groupMissed);
+    }
+}

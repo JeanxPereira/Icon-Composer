@@ -49,6 +49,8 @@ bool isSlow(const char* file) {
     static const char* kSlow[] = {
         "test_automatic_fill", "test_glass_layer", "test_icon_render", "test_png",
         "test_values_tojson", "test_document_edit", "test_bundle_save",
+        // Os dois caminhos de render sobre um recorte do corpus (frente GPU, G1).
+        "test_gpu_fidelity",
         // The time budget is here for a DIFFERENT reason from the other six, and
         // the reason matters. The others are slow because they walk the corpus;
         // this one is slow ON PURPOSE -- it renders the corpus's heaviest

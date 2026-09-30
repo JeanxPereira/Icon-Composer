@@ -145,6 +145,11 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
                                       const PathGlobals& globals,
                                       RenderOptions options = RenderOptions{});
 
+// A caixa de um caminho no espaco do proprio SVG, pontos de controle inclusos
+// -- a que `objectBoundingBox` mede. Exposta para o caminho residente
+// (`renderIconGpu`), que resolve os gradientes com a mesma caixa.
+void svgPathBounds(const icf::svg::Path& path, double& x0, double& y0, double& x1, double& y1);
+
 // ---- gradients -----------------------------------------------------------
 //
 // A gradient the renderer can evaluate: the ramp, plus the map that carries a

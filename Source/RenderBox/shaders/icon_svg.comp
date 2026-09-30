@@ -1,0 +1,86 @@
+#version 450
+// Uma forma do SVG composta sobre o acumulador da camada, sem readback: o laco
+// por pixel de `renderSvgPlaced` (SvgRenderer.cpp). A cobertura chega como o
+// `half2` do alvo de `CoveragePass`, copiado para um buffer.
+//
+//   mode 0 -- preenchimento: a regra (`rbAccumulatorShape`), a tinta (cor,
+//             override de camada em rampa, ou gradiente do proprio SVG), o
+//             `compositeFlat`, a opacidade e o clip, e o `over`.
+//   mode 1 -- traco: a cobertura do traco, rasterizada na CPU e enviada (uma
+//             ida so, declarada), vezes a cor, a opacidade e o clip.
+//   mode 2 -- clip: a uniao (`max`) da cobertura de um filho do `<clipPath>`.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+struct RampStop { vec4 location; vec4 rgba; };
+
+layout(std430, binding = 0) buffer Acc { vec4 acc[]; };
+layout(std430, binding = 1) readonly buffer Coverage { uint coverage[]; };
+layout(std430, binding = 2) readonly buffer Stops { RampStop rampStops[]; };
+layout(std430, binding = 3) buffer Clip { float clipMask[]; };
+layout(std430, binding = 4) readonly buffer Aux { float aux[]; };
+
+layout(push_constant) uniform Push {
+    vec4 colour;
+    float gm0, gm1, gm2, gm3, gm4, gm5;
+    float invSx, invSy, m2x, m2y;
+    float opacity;
+    uint w, h;
+    int ox, oy;
+    uint mode;
+    uint state;
+    uint paint;     // 0 cor, 1 rampa cubica, 2 rampa linear, 3 gradiente do SVG
+    uint nstops;
+    uint gstate;
+    uint hasClip;
+} p;
+
+#include "PathResolve.glsl"
+#include "PathComposite.glsl"
+#include "Gradient.glsl"
+#include "Ramp.glsl"
+
+void main() {
+    uvec2 g = gl_GlobalInvocationID.xy;
+    if (g.x >= p.w || g.y >= p.h) return;
+    uint i = g.y * p.w + g.x;
+
+    if (p.mode == 2u) {
+        float a = rbAccumulatorShape(p.state, unpackHalf2x16(coverage[i]).y, vec4(0.0));
+        clipMask[i] = max(clipMask[i], a);
+        return;
+    }
+    float clipF = p.hasClip != 0u ? clipMask[i] : 1.0;
+    vec4 d = acc[i];
+
+    if (p.mode == 1u) {
+        float a = aux[i] * p.colour.a * p.opacity * clipF;
+        if (a <= 0.0) return;
+        float inv = 1.0 - a;
+        acc[i] = vec4(p.colour.rgb * a + d.rgb * inv, a + d.a * inv);
+        return;
+    }
+
+    float alpha = rbAccumulatorShape(p.state, unpackHalf2x16(coverage[i]).y, vec4(0.0));
+    if (alpha == 0.0) return;
+    float px = float(int(g.x) + p.ox) + 0.5;
+    float py = float(int(g.y) + p.oy) + 0.5;
+    vec4 colour = p.colour;
+    if (p.paint == 1u || p.paint == 2u) {
+        float t = p.gm0 * px + p.gm1 * py + p.gm2;
+        colour = p.paint == 1u ? rbRampSmoothAtPositions(t, p.nstops)
+                               : rbRampAtPositions(t, p.nstops);
+    } else if (p.paint == 3u) {
+        float ux = (px - p.m2x) * p.invSx;
+        float uy = (py - p.m2y) * p.invSy;
+        float gx = p.gm0 * ux + p.gm1 * uy + p.gm2;
+        float gy = p.gm3 * ux + p.gm4 * uy + p.gm5;
+        int covered = 0;
+        float raw = rbGradientValue(p.gstate, vec2(gx, gy), 1.0, 0.0, covered);
+        if (covered == 0) return;
+        colour = rbRampAtPositions(rbFoldValue(p.gstate, raw), p.nstops);
+    }
+    CompositeOut c = rbCompositeFlat(0u, 0u, colour, alpha, 0.0);
+    float srcA = c.coverage.x * p.opacity * clipF;
+    float inv = 1.0 - srcA;
+    acc[i] = vec4(colour.rgb * srcA + d.rgb * inv, srcA + d.a * inv);
+}

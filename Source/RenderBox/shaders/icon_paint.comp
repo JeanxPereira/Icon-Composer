@@ -1,0 +1,36 @@
+#version 450
+// O fundo do icone, ESCRITO no acumulador pre-multiplicado: `paintBackground`
+// de IconRenderer.cpp. Cor chapada ou rampa (cubica ou linear) avaliada no
+// centro ABSOLUTO do pixel, `(x + origem) + 0.5`.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+struct RampStop { vec4 location; vec4 rgba; };
+
+layout(std430, binding = 0) buffer Acc { vec4 acc[]; };
+layout(std430, binding = 1) readonly buffer Stops { RampStop rampStops[]; };
+
+layout(push_constant) uniform Push {
+    vec4 colour;
+    float m0, m1, m2;
+    uint kind;      // 0 cor, 1 rampa
+    uint w, h;
+    int ox, oy;
+    uint smoothRamp;
+    uint nstops;
+} p;
+
+#include "Ramp.glsl"
+
+void main() {
+    uvec2 g = gl_GlobalInvocationID.xy;
+    if (g.x >= p.w || g.y >= p.h) return;
+    vec4 c = p.colour;
+    if (p.kind == 1u) {
+        float px = float(int(g.x) + p.ox) + 0.5;
+        float py = float(int(g.y) + p.oy) + 0.5;
+        float t = p.m0 * px + p.m1 * py + p.m2;
+        c = p.smoothRamp != 0u ? rbRampSmoothAtPositions(t, p.nstops)
+                               : rbRampAtPositions(t, p.nstops);
+    }
+    acc[g.y * p.w + g.x] = vec4(c.rgb * c.a, c.a);
+}

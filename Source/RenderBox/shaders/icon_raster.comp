@@ -1,0 +1,52 @@
+#version 450
+// A arte raster posta no canvas com amostragem bilinear: `placeRaster` de
+// IconRenderer.cpp, pesos em forma pre-multiplicada.
+//
+// AS COORDENADAS DE AMOSTRA VEM PRONTAS DA CPU, UMA POR COLUNA E UMA POR LINHA.
+// A conta de `placeRaster` e em double e e separavel (cx so depende da coluna,
+// cy so da linha), entao a CPU manda `floor`, a fracao e o complemento de cada
+// eixo, e aqui so sobra o produto dos pesos -- o erro de posicao em float de um
+// raster muito reduzido (escala 0,17 no ARMSX2) nao chega ao pixel.
+//
+// ISTO NAO BASTA PARA O VIDRO, e foi medido: o produto de dois pesos
+// arredondados ainda erra um ulp contra o peso arredondado de um produto em
+// double, e quando o campo sai do ALFA desta arte um texel que cruza o limiar
+// `alpha >= 0.5` muda o campo em volta dele (quatro documentos do corpus a 14-35
+// niveis). Esse caso nao passa por aqui: a arte e colocada na CPU e sobe
+// (`GpuSurface::placeRaster`, [UP3]). Este kernel serve o raster sem vidro.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) writeonly buffer Out { vec4 outRgba[]; };
+layout(std430, binding = 1) readonly buffer Png { vec4 png[]; };
+// Colunas `0..w-1`, depois linhas `0..h-1`: (floor, t, 1 - t, valido).
+layout(std430, binding = 2) readonly buffer Axes { vec4 axes[]; };
+
+layout(push_constant) uniform Push {
+    uint w, h;
+    uint iw, ih;
+} p;
+
+void main() {
+    uvec2 g = gl_GlobalInvocationID.xy;
+    if (g.x >= p.w || g.y >= p.h) return;
+    uint o = g.y * p.w + g.x;
+    vec4 col = axes[g.x];
+    vec4 row = axes[p.w + g.y];
+    if (col.w == 0.0 || row.w == 0.0) {
+        outRgba[o] = vec4(0.0);
+        return;
+    }
+    vec4 acc = vec4(0.0);
+    for (int dy = 0; dy < 2; ++dy) {
+        for (int dx = 0; dx < 2; ++dx) {
+            int sx = int(col.x) + dx;
+            int sy = int(row.x) + dy;
+            if (sx < 0 || sy < 0 || sx >= int(p.iw) || sy >= int(p.ih)) continue;
+            float wgt = (dx != 0 ? col.y : col.z) * (dy != 0 ? row.y : row.z);
+            vec4 s = png[uint(sy) * p.iw + uint(sx)];
+            acc.rgb += wgt * s.rgb * s.a;
+            acc.a += wgt * s.a;
+        }
+    }
+    outRgba[o] = vec4(acc.a > 0.0 ? acc.rgb / acc.a : vec3(0.0), acc.a);
+}

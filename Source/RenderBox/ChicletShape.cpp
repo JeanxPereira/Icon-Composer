@@ -273,6 +273,11 @@ std::vector<float> chicletCoverage(const PixelGrid& g, IconPlatform platform) {
     return cov;
 }
 
+std::vector<icf::svg::Point> chicletPolygon(std::uint32_t size, IconPlatform platform) {
+    const ChicletGeometry geom = ChicletGeometry::of(size, platform);
+    return flatten(chicletOutline(geom), chicletSubdivisions(geom.radius));
+}
+
 std::vector<float> chicletCoverage(std::uint32_t size, IconPlatform platform) {
     return chicletCoverage(PixelGrid::full(size), platform);
 }

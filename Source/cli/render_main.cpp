@@ -13,6 +13,7 @@
 #include "Source/CoreSVG/Document.h"
 #include "Source/IconComposerFoundation/Png.h"
 #include "Source/RenderBox/IconRenderer.h"
+#include "Source/RenderBox/RenderCache.h"
 #include "Source/RenderBox/SvgRenderer.h"
 #include "Source/cli/RenderBundle.h"
 
@@ -30,6 +31,9 @@ const char* kUsage =
     "\n"
     "  --size N            the square target, in pixels (default 512)\n"
     "  --subdivisions N    line segments per cubic (default 16)\n"
+    "  --gpu               a bundle through rb::renderIconGpu (the resident chain)\n"
+    "  --repeat N          render a bundle N times sharing one RenderCache, timing each\n"
+    "  --warmup            one untimed render first (pipelines built, no cache)\n"
     "\n"
     "Flat fills only. Whatever cannot be drawn is named on stderr.\n";
 
@@ -98,7 +102,19 @@ int main(int argc, char** argv) {
     std::string output;
     rb::RenderOptions options;
     icf::Context ctx;
+    bool gpu = false;
+    bool warmup = false;
+    int repeat = 1;
     for (std::size_t i = 1; i < args.size(); ++i) {
+        // As chaves sem valor.
+        if (args[i] == "--gpu") {
+            gpu = true;
+            continue;
+        }
+        if (args[i] == "--warmup") {
+            warmup = true;
+            continue;
+        }
         if (i + 1 >= args.size()) return fail("missing a value for " + args[i]);
         const std::string& key = args[i];
         const std::string& value = args[++i];
@@ -112,6 +128,9 @@ int main(int argc, char** argv) {
             const int n = std::atoi(value.c_str());
             if (n < 1 || n > 256) return fail("--subdivisions must be between 1 and 256");
             options.subdivisions = n;
+        } else if (key == "--repeat") {
+            repeat = std::atoi(value.c_str());
+            if (repeat < 1 || repeat > 100) return fail("--repeat must be between 1 and 100");
         } else if (key == "--appearance") {
             auto a = icf::appearanceFromString(value);
             if (!a) return fail("unexpected value for --appearance: " + value);
@@ -137,11 +156,34 @@ int main(int argc, char** argv) {
         // bytes, e `Tests/test_e2e_export.cpp` compara a UI contra ELA. Ver
         // RenderBundle.h -- o caso comparava contra uma transcricao destas
         // linhas, e uma transcricao nao e um portao.
-        const Clock clock;
-        auto icon = iccli::renderBundleIcon(*device, *bundle, options.width,
-                                            options.subdivisions, ctx);
-        const double elapsed = clock.seconds();
-        if (!icon) return fail(icon.error());
+        //
+        // `--gpu`, `--repeat` e `--warmup` existem para MEDIR (plano da frente
+        // GPU, restricao 4): o mesmo documento pelos dois caminhos, frio e
+        // quente. Com `--repeat N` as N chamadas dividem um `RenderCache`, entao
+        // a primeira e a fria e as outras sao as quentes; o PNG e o da ultima.
+        // `--warmup` faz uma chamada antes, sem cache e fora do relogio, para
+        // que a montagem dos pipelines da GPU (uma vez por processo) nao entre
+        // no numero frio.
+        if (warmup) {
+            auto w = iccli::renderBundleIcon(*device, *bundle, options.width,
+                                             options.subdivisions, ctx, gpu);
+            if (!w) return fail(w.error());
+        }
+        rb::RenderCache cache;
+        rb::Result<rb::RenderedIcon> icon = std::unexpected(std::string("no render"));
+        double elapsed = 0.0;
+        for (int r = 0; r < repeat; ++r) {
+            const Clock clock;
+            icon = iccli::renderBundleIcon(*device, *bundle, options.width,
+                                           options.subdivisions, ctx, gpu,
+                                           repeat > 1 ? &cache : nullptr);
+            elapsed = clock.seconds();
+            if (!icon) return fail(icon.error());
+            if (repeat > 1) {
+                std::fprintf(stdout, "render %d: %s s\n", r + 1,
+                             secondsText(elapsed).c_str());
+            }
+        }
         const std::string wrote =
             icf::writePng(output, icon->rgba, icon->width, icon->height);
         if (!wrote.empty()) return fail(wrote);
