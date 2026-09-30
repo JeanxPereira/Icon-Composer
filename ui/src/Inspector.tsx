@@ -606,21 +606,92 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (on: boolean) => void
   );
 }
 
-// A amostra de cor, com o seletor do sistema por baixo.
+// As cores prontas do `IconColorPicker` ("Standard"). Preenchidas pelo RE do
+// `ColorPickerGrid`; ate la, vazio e a secao nao aparece.
+const STANDARD_COLORS: string[] = [];
+
+// "Recent" (`RecentColorsManager`): as ultimas cores escolhidas, por pessoa, no
+// armazenamento do navegador -- conveniencia, nao documento.
+const RECENT_KEY = "icon-composer.recent-colors";
+const RECENT_MAX = 8;
+function readRecent(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]");
+    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function pushRecent(hex: string) {
+  try {
+    const next = [hex, ...readRecent().filter((x) => x !== hex)].slice(0, RECENT_MAX);
+    localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+  } catch {
+    // sem armazenamento: as recentes so nao persistem
+  }
+}
+
+// A amostra do alvo: clicar abre o seletor do sistema ("Opens system color
+// picker"); a seta ao lado abre as cores prontas e as recentes ("Opens color
+// preset menu"). A cor entra nas recentes quando o seletor do sistema fecha.
 function ColorWell({ color, onChange }: { color: [number, number, number, number]; onChange: (c: [number, number, number]) => void }) {
   const [hex, setHex] = useState(rgbToHex(color[0], color[1], color[2]));
+  const [menu, setMenu] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
   useEffect(() => setHex(rgbToHex(color[0], color[1], color[2])), [color[0], color[1], color[2]]);
+  useEffect(() => {
+    const el = input.current;
+    if (!el) return;
+    const onCommit = () => pushRecent(el.value);
+    el.addEventListener("change", onCommit);
+    return () => el.removeEventListener("change", onCommit);
+  }, []);
+  const pick = (h: string) => {
+    setHex(h);
+    onChange(hexToRgb(h));
+    pushRecent(h);
+    setMenu(false);
+  };
+  const recent = menu ? readRecent() : [];
   return (
-    <label className="well" style={{ background: hex }} title="Opens system color picker">
-      <input
-        type="color"
-        value={hex}
-        onChange={(e) => {
-          setHex(e.target.value);
-          onChange(hexToRgb(e.target.value));
-        }}
-      />
-    </label>
+    <span className="well-wrap">
+      <label className="well" style={{ background: hex }} title="Opens system color picker">
+        <input
+          ref={input}
+          type="color"
+          value={hex}
+          onChange={(e) => {
+            setHex(e.target.value);
+            onChange(hexToRgb(e.target.value));
+          }}
+        />
+      </label>
+      <button className="well-menu-btn" title="Opens color preset menu" onClick={() => setMenu((v) => !v)}>
+        <Sym name="chevron.down" size={8} />
+      </button>
+      {menu && (
+        <div className="color-menu" onMouseLeave={() => setMenu(false)}>
+          {STANDARD_COLORS.length > 0 && (
+            <>
+              <span className="color-menu-title">Standard</span>
+              <div className="color-grid">
+                {STANDARD_COLORS.map((c) => (
+                  <button key={c} className="color-cell" style={{ background: c }} title={c} onClick={() => pick(c)} />
+                ))}
+              </div>
+            </>
+          )}
+          <span className="color-menu-title">Recent</span>
+          <div className="color-grid">
+            {recent.length ? (
+              recent.map((c) => <button key={c} className="color-cell" style={{ background: c }} title={c} onClick={() => pick(c)} />)
+            ) : (
+              <span className="muted">—</span>
+            )}
+          </div>
+        </div>
+      )}
+    </span>
   );
 }
 
