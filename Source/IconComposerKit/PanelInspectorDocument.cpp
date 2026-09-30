@@ -147,7 +147,7 @@ void platforms(Section& x) {
 
         static const char* kShared = "Shared";
         static const char* kSpecific = "Specific platforms";
-        if (ImGui::BeginCombo(ui::leftLabel("Squares"), p.squaresShared ? kShared : kSpecific)) {
+        if (ui::combo("Squares", p.squaresShared ? kShared : kSpecific)) {
             if (ImGui::Selectable(kShared, p.squaresShared)) next.squaresShared = true;
             if (ImGui::Selectable(kSpecific, !p.squaresShared)) {
                 next.squaresShared = false;

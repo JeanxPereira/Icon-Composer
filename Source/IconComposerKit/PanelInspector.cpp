@@ -100,7 +100,7 @@ void blendMode(Section& x) {
         if (v.value && v.value->kind() == icf::json::Value::Kind::String) {
             if (auto m = icf::blendModeFromString(v.value->rawString())) current = *m;
         }
-        if (ImGui::BeginCombo(ui::leftLabel("Mode"), blendModeLabel(current))) {
+        if (ui::combo("Mode", blendModeLabel(current))) {
             for (auto m : kModes) {
                 if (ImGui::Selectable(blendModeLabel(m), m == current)) {
                     x.write("blend-mode", icf::json::Value::string(std::string(icf::blendModeToString(m))), false);
@@ -370,7 +370,7 @@ void fill(Section& x) {
         if (v.value) {
             if (auto read = icf::fillFrom(*v.value)) f = *read;
         }
-        if (ImGui::BeginCombo(ui::leftLabel("Kind"), fillKindLabel(f.kind))) {
+        if (ui::combo("Kind", fillKindLabel(f.kind))) {
             for (auto k : kKinds) {
                 if (ImGui::Selectable(fillKindLabel(k), k == f.kind)) {
                     // A kind change carries over what the new kind can hold and
@@ -556,7 +556,7 @@ void shadow(Section& x) {
         if (v.value) {
             if (auto read = icf::shadowFrom(*v.value)) sh = *read;
         }
-        if (ImGui::BeginCombo(ui::leftLabel("Kind"), shadowKindLabel(sh.kind))) {
+        if (ui::combo("Kind", shadowKindLabel(sh.kind))) {
             for (auto k : kKinds) {
                 if (ImGui::Selectable(shadowKindLabel(k), k == sh.kind)) {
                     icf::Shadow next = sh;
@@ -608,7 +608,7 @@ void specular(Section& x) {
         if (v.value && v.value->kind() == icf::json::Value::Kind::String) {
             if (auto read = icf::specularHighlightFromString(v.value->rawString())) current = *read;
         }
-        if (ImGui::BeginCombo(ui::leftLabel("Highlight"), specularLabel(current))) {
+        if (ui::combo("Highlight", specularLabel(current))) {
             for (auto c : kCases) {
                 if (ImGui::Selectable(specularLabel(c), c == current)) {
                     x.write("specular", icf::json::Value::string(std::string(icf::specularHighlightToString(c))),
@@ -659,7 +659,7 @@ void scopeSelector(Session& s) {
                                     icf::Idiom::WatchOS};
     ImGui::SeparatorText("Editing scope");
     ImGui::SetNextItemWidth(140.0f);
-    if (ImGui::BeginCombo(ui::leftLabel("Appearance##scope-a"), appearanceLabel(s.scope.appearance))) {
+    if (ui::combo("Appearance##scope-a", appearanceLabel(s.scope.appearance))) {
         for (auto a : kA) {
             if (ImGui::Selectable(appearanceLabel(a), a == s.scope.appearance)) s.scope.appearance = a;
         }
@@ -669,7 +669,7 @@ void scopeSelector(Session& s) {
         "The appearance every section below reads and WRITES under. Base is the plain key; any "
         "other value appends to the property's specialization list.");
     ImGui::SetNextItemWidth(140.0f);
-    if (ImGui::BeginCombo(ui::leftLabel("Idiom##scope-i"), idiomLabel(s.scope.idiom))) {
+    if (ui::combo("Idiom##scope-i", idiomLabel(s.scope.idiom))) {
         for (auto i : kI) {
             if (ImGui::Selectable(idiomLabel(i), i == s.scope.idiom)) s.scope.idiom = i;
         }

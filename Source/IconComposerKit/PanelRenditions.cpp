@@ -445,6 +445,73 @@ ImVec2 centreOfLastItem() {
 
 }  // namespace
 
+namespace {
+
+// O POPOVER DO MONO: os quatro modos, e a cor e a intensidade do tint, que so
+// valem no Tinted Dark (`TintPopover` do Canvas.tsx; `DEFAULT_TINT` e os
+// limites do alfa, 0,25 a 1, sao [BIN]).
+void monoOptions(Session& s, float k) {
+    ui::pushMenuStyle();
+    ImGui::SetNextWindowSize(ImVec2(260.0f * k, 0.0f));
+    if (!ImGui::BeginPopup("mono-options")) {
+        ui::popMenuStyle();
+        return;
+    }
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f * k, 4.0f * k));
+    const rb::Rendition modes[4] = {rb::Rendition::LightClear, rb::Rendition::DarkClear, rb::Rendition::LightTint,
+                                    rb::Rendition::DarkTint};
+    const float w = (ImGui::GetContentRegionAvail().x - 4.0f * k) * 0.5f;
+    for (int i = 0; i < 4; ++i) {
+        if (i % 2) ImGui::SameLine();
+        const bool on = s.view.mono == modes[i];
+        ImGui::PushStyleColor(ImGuiCol_Button, on ? theme::kAccent : theme::kControl);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, on ? theme::kAccent : theme::kBoxStrong);
+        if (ImGui::Button(renditionDisplayName(modes[i]), ImVec2(w, 0.0f))) {
+            s.view.mono = modes[i];
+            s.view.context.appearance = icf::Appearance::Tinted;
+        }
+        ImGui::PopStyleColor(2);
+    }
+    ImGui::PopStyleVar();
+    const bool tinted = s.view.mono == rb::Rendition::DarkTint;
+    ImGui::Spacing();
+    ImGui::BeginDisabled(!tinted);
+    // A cor: o espectro do alvo numa barra, e o botao na posicao.
+    ImGui::TextUnformatted("Tint color");
+    {
+        const ImVec2 a = ImGui::GetCursorScreenPos();
+        const float bw = ImGui::GetContentRegionAvail().x, bh = 14.0f * k;
+        ImGui::InvisibleButton("##tint-spectrum", ImVec2(bw, bh));
+        if (ImGui::IsItemActive()) {
+            s.view.tintPosition =
+                std::clamp(static_cast<double>((ImGui::GetIO().MousePos.x - a.x) / bw), 0.0, 1.0);
+        }
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ViewContext probe = s.view;
+        const int steps = 48;
+        for (int i = 0; i < steps; ++i) {
+            probe.tintPosition = (i + 0.5) / steps;
+            const auto t = tintOf(probe);
+            const ImU32 c = ImGui::ColorConvertFloat4ToU32(
+                ImVec4(static_cast<float>(t.r), static_cast<float>(t.g), static_cast<float>(t.b), tinted ? 1.0f : 0.35f));
+            dl->AddRectFilled(ImVec2(a.x + bw * i / steps, a.y), ImVec2(a.x + bw * (i + 1) / steps + 1.0f, a.y + bh), c,
+                              i == 0 ? bh * 0.5f : 0.0f, i == 0 ? ImDrawFlags_RoundCornersLeft : 0);
+        }
+        const float kx = a.x + bw * static_cast<float>(s.view.tintPosition);
+        dl->AddCircleFilled(ImVec2(kx, a.y + bh * 0.5f), bh * 0.5f + 1.0f * k, IM_COL32(255, 255, 255, 255), 20);
+    }
+    ImGui::TextUnformatted("Tint intensity");
+    ImGui::SetNextItemWidth(-1.0f);
+    double lo = 0.25, hi = 1.0;
+    ImGui::SliderScalar("##tint-alpha", ImGuiDataType_Double, &s.view.tintAlpha, &lo, &hi, "%.2f");
+    ImGui::EndDisabled();
+    if (!tinted) ImGui::TextDisabled("Color and intensity apply to Tinted Dark.");
+    ImGui::EndPopup();
+    ui::popMenuStyle();
+}
+
+}  // namespace
+
 RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs, ImGuiWindowFlags extraFlags) {
     RenditionStats st;
     const icf::Idiom idiom = s.view.context.idiom;
@@ -619,9 +686,22 @@ RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs, ImGuiWind
             const ImVec2 c1(cx + ts.x * 0.5f + 9.0f * k, y - 6.0f * k);
             dl->AddRectFilled(c0, c1, theme::u32(ImVec4(0.12f, 0.12f, 0.13f, 0.72f)), 9.0f * k);
             dl->AddText(ImVec2(cx - ts.x * 0.5f, c0.y + 2.0f * k), theme::u32(theme::kText2), text.c_str());
+            // AS OPCOES DO MONO (`.rcaption-btn` + `TintPopover` do Tauri): so
+            // com uma das quatro na tela.
+            if (renditionIsMono(current)) {
+                const char* opt = "Optionsâ¦";
+                const ImVec2 os = ImGui::CalcTextSize(opt);
+                ImGui::SetCursorScreenPos(ImVec2(c1.x + 6.0f * k, c0.y));
+                if (ImGui::InvisibleButton("##mono-options", ImVec2(os.x, c1.y - c0.y))) ImGui::OpenPopup("mono-options");
+                const bool hov = ImGui::IsItemHovered();
+                dl->AddText(ImVec2(c1.x + 6.0f * k, c0.y + 2.0f * k),
+                            theme::u32(hov ? theme::kText : theme::kAccent), opt);
+                ImGui::SetItemTooltip("Opens tint options");
+            }
             ImGui::PopFont();
         }
     }
+    monoOptions(s, k);
     ImGui::SetCursorScreenPos(ImVec2(wp.x, y + tile));
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
 

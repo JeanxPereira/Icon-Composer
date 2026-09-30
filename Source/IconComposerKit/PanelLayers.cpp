@@ -328,7 +328,24 @@ RowResult drawRow(Session& s, icf::NodePath path, LayersStats& st, Pending& pend
     if (isLayer) {
         const ImVec2 ta(x, cy - 17.0f * k), tb(x + 34.0f * k, cy + 17.0f * k);
         ui::checkerboard(dl, ta, tb, 4.0f * k, 6.0f * k);
-        ui::symbol("photo", ImVec2((ta.x + tb.x) * 0.5f, cy), 16.0f * k, IM_COL32(0, 0, 0, 90));
+        // A arte da camada, contida no quadrado (`max-width/height: 100%`).
+        bool drewArt = false;
+        if (ArtSource* src = artSource()) {
+            std::string file;
+            if (troubleOf(s, path, file) == Trouble::None && !file.empty()) {
+                const ArtThumb t = src->art(s.bundle().assetPath(file));
+                if (t.texture != ImTextureID_Invalid && t.width > 0.0f && t.height > 0.0f) {
+                    const float side = 34.0f * k - 4.0f * k;
+                    const float f = std::min(side / t.width, side / t.height);
+                    const float w = t.width * f, h = t.height * f;
+                    const ImVec2 c((ta.x + tb.x) * 0.5f, cy);
+                    dl->AddImage(t.texture, ImVec2(c.x - w * 0.5f, c.y - h * 0.5f), ImVec2(c.x + w * 0.5f, c.y + h * 0.5f),
+                                 ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, visible ? 255 : 115));
+                    drewArt = true;
+                }
+            }
+        }
+        if (!drewArt) ui::symbol("photo", ImVec2((ta.x + tb.x) * 0.5f, cy), 16.0f * k, IM_COL32(0, 0, 0, 90));
         x += 34.0f * k + 8.0f * k;
     } else {
         ui::symbol("folder", ImVec2(x + 11.0f * k, cy), 16.0f * k, faded(subCol));

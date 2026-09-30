@@ -7,6 +7,7 @@
 // widget precisa (um menu aberto) fica no ImGui, pelo id.
 #include "imgui.h"
 
+#include <filesystem>
 #include <string_view>
 
 namespace ick {
@@ -26,6 +27,20 @@ struct SymbolSource {
 };
 void setSymbolSource(SymbolSource* source);
 SymbolSource* symbolSource();
+
+// A ARTE DE UMA CAMADA, para a miniatura da sidebar (`Thumb` do Sidebar.tsx):
+// o SVG ou o PNG de `Assets/`, rasterizado pelo app. Invalido enquanto nao
+// chegou (ou nos testes, que nao tem fonte) -- a linha mostra o xadrez so.
+struct ArtThumb {
+    ImTextureID texture = ImTextureID_Invalid;
+    float width = 0.0f, height = 0.0f;   // a proporcao da arte
+};
+struct ArtSource {
+    virtual ~ArtSource() = default;
+    virtual ArtThumb art(const std::filesystem::path& file) = 0;
+};
+void setArtSource(ArtSource* source);
+ArtSource* artSource();
 
 namespace ui {
 
@@ -69,6 +84,12 @@ bool toggle(const char* label, bool* on);
 // escondido para o controle usar. Um rotulo que ja comeca com `##` passa sem
 // mudar nada.
 const char* leftLabel(const char* label, float share = 0.58f);
+
+// O SELETOR DO SISTEMA (`Select` do Inspector.tsx): o rotulo a esquerda, o
+// campo a direita com o valor e o `chevron.up.chevron.down` no fim, sem o
+// quadrado com triangulo do ImGui. Mesma semantica de `ImGui::BeginCombo`:
+// verdadeiro com o popup aberto, e entao `ImGui::EndCombo()`.
+bool combo(const char* label, const char* preview);
 
 // O xadrez de 8 pt das miniaturas (`.thumb`).
 void checkerboard(ImDrawList* dl, ImVec2 a, ImVec2 b, float cell, float rounding);

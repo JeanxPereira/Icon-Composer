@@ -100,7 +100,7 @@ void imageAsset(Section& x) {
             !name.empty() && std::find(files.begin(), files.end(), name) != files.end();
 
         ImGui::SetNextItemWidth(220.0f);
-        if (ImGui::BeginCombo(ui::leftLabel("File"), name.empty() ? "(none)" : name.c_str())) {
+        if (ui::combo("File", name.empty() ? "(none)" : name.c_str())) {
             if (files.empty()) ImGui::TextDisabled("Assets/ is empty");
             for (const std::string& f : files) {
                 if (ImGui::Selectable(f.c_str(), f == name)) {

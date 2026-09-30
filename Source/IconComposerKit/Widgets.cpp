@@ -11,7 +11,11 @@
 namespace ick {
 namespace {
 SymbolSource* g_symbols = nullptr;
+ArtSource* g_art = nullptr;
 }
+
+void setArtSource(ArtSource* source) { g_art = source; }
+ArtSource* artSource() { return g_art; }
 
 void setSymbolSource(SymbolSource* source) { g_symbols = source; }
 SymbolSource* symbolSource() { return g_symbols; }
@@ -221,6 +225,23 @@ const char* leftLabel(const char* label, float share) {
         ImGui::SameLine();
     }
     return out;
+}
+
+bool combo(const char* label, const char* preview) {
+    const float k = dpi();
+    const char* id = leftLabel(label);
+    const bool open = ImGui::BeginCombo(id, preview, ImGuiComboFlags_NoArrowButton);
+    // O chevron duplo no fim do campo, onde o ImGui poria a seta.
+    const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+    const ImVec2 c(b.x - 11.0f * k, (a.y + b.y) * 0.5f);
+    if (!symbol("chevron.up.chevron.down", c, 11.0f * k, theme::u32(theme::kText2))) {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddTriangleFilled(ImVec2(c.x - 3 * k, c.y - 1 * k), ImVec2(c.x + 3 * k, c.y - 1 * k),
+                              ImVec2(c.x, c.y - 5 * k), theme::u32(theme::kText2));
+        dl->AddTriangleFilled(ImVec2(c.x - 3 * k, c.y + 1 * k), ImVec2(c.x + 3 * k, c.y + 1 * k),
+                              ImVec2(c.x, c.y + 5 * k), theme::u32(theme::kText2));
+    }
+    return open;
 }
 
 void checkerboard(ImDrawList* dl, ImVec2 a, ImVec2 b, float cell, float rounding) {

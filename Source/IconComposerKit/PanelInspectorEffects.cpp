@@ -112,7 +112,7 @@ void blurMaterial(Section& x) {
         // so it is what a switch from `null` to a number starts from.
         double strength = numberOr(v.value, 0.5);
         const char* preview = absent ? "not set" : (isNull ? "null" : "Explicit strength");
-        if (ImGui::BeginCombo(ui::leftLabel("Value"), preview)) {
+        if (ui::combo("Value", preview)) {
             if (ImGui::Selectable("null", isNull)) {
                 x.write("blur-material", icf::json::Value::null(), false);
             }
@@ -213,7 +213,7 @@ void lighting(Section& x) {
         if (v.value && v.value->kind() == icf::json::Value::Kind::String) {
             if (auto read = icf::lightingFromString(v.value->rawString())) current = *read;
         }
-        if (ImGui::BeginCombo(ui::leftLabel("Mode"), lightingLabel(current))) {
+        if (ui::combo("Mode", lightingLabel(current))) {
             for (auto c : kCases) {
                 if (ImGui::Selectable(lightingLabel(c), c == current)) {
                     x.write("lighting", icf::json::Value::string(std::string(icf::lightingToString(c))),

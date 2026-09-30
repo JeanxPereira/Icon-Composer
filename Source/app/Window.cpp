@@ -803,6 +803,9 @@ int run(const fs::path& initial) {
     symbols.schedule(jobs, *device, lightsSink->pool(), appleAssetsDir(),
                      static_cast<std::uint32_t>(std::lround(40.0f * std::max(1.0f, ImGui::GetStyle().FontScaleDpi))));
     ick::setSymbolSource(&symbols);
+    // A arte das camadas na sidebar, pela mesma fila.
+    AppArt art(jobs, *device, lightsSink->pool());
+    ick::setArtSource(&art);
     State state;
     state.shell = shell.get();
     // O dispositivo da exportacao e o mesmo do agendador -- ver `State::device`.
@@ -865,6 +868,7 @@ int run(const fs::path& initial) {
     // The coordinator returns its texture to the pool before the pool goes.
     state.close();
     ick::setSymbolSource(nullptr);
+    ick::setArtSource(nullptr);
     return 0;
 }
 

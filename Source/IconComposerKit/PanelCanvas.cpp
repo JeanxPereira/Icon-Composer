@@ -492,7 +492,10 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
             const std::string title = s.bundle().path().stem().string();
             ImGui::PushFont(nullptr, 15.0f);
             const ImVec2 ts = ImGui::CalcTextSize(title.c_str());
-            const ImVec2 at(ImGui::GetCursorScreenPos().x, barTop + (barH - ts.y) * 0.5f);
+            // Centrado na linha dos MENUS, e nao na barra: o titulo de um menu
+            // cai onde o ImGui o poe, e o nome ao lado tem de estar na mesma altura.
+            const float menuMid = (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f;
+            const ImVec2 at(ImGui::GetCursorScreenPos().x, menuMid - ts.y * 0.5f);
             ImGui::GetWindowDrawList()->AddText(at, theme::u32(theme::kText), title.c_str());
             titleEnd = at.x + ts.x;
             ImGui::PopFont();

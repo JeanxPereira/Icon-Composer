@@ -11,6 +11,7 @@
 #include "Source/app/JobQueue.h"
 #include "Source/app/TexturePool.h"
 
+#include <chrono>
 #include <filesystem>
 #include <string>
 #include <unordered_map>
@@ -28,6 +29,27 @@ public:
 
 private:
     std::unordered_map<std::string, ImTextureID> map_;
+};
+
+// A `ArtSource` do Kit: a arte de cada camada, pedida pela sidebar. Tambem na
+// fila de trabalho, um arquivo por job, e conferida pela data do arquivo: uma
+// arte reimportada ou editada fora do editor volta nova.
+class AppArt : public ick::ArtSource {
+public:
+    AppArt(JobQueue& jobs, rb::Device& device, TexturePool& pool) : jobs_(jobs), device_(device), pool_(pool) {}
+    ick::ArtThumb art(const std::filesystem::path& file) override;
+
+private:
+    struct Entry {
+        ick::ArtThumb thumb;
+        std::filesystem::file_time_type stamp{};
+        std::chrono::steady_clock::time_point checked{};
+        bool pending = false;
+    };
+    JobQueue& jobs_;
+    rb::Device& device_;
+    TexturePool& pool_;
+    std::unordered_map<std::string, Entry> map_;
 };
 
 }  // namespace icapp
