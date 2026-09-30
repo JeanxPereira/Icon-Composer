@@ -1923,8 +1923,11 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
             // readings), and the SAME field multiplies the element's own draw at
             // `0x495F0` -- which is the `opacity` this loop has always handed to
             // `blendOver` below. One field, two draws, one multiplication each.
-            const ShadowInputs shadowIn{glassNumbers.shadowStyle, glassNumbers.shadowOpacity,
-                                        opacity, options.sizeClass};
+            // Num modo tingido a sombra e `neutral` (`[BIN]` 0x49F40); `none`
+            // continua `none`, porque a saida de `none` vem antes do portao.
+            const ShadowInputs shadowIn{
+                shadowEffectiveStyle(glassNumbers.shadowStyle, options.tint.has_value()),
+                glassNumbers.shadowOpacity, opacity, options.sizeClass};
             const bool castsShadow = isGlass && shadowDraws(shadowIn);
             // THE OVERDRAW PASS IS A SECOND COMPOSITE OF THE SAME IMAGE, so the
             // image is kept between the two draws instead of being rebuilt: the
@@ -2209,6 +2212,20 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                     list->end());
     }
     return out;
+}
+
+void applyTintedDark(RenderedIcon& icon, const IconRenderOptions::TintRecolour& tint) {
+    const float s = static_cast<float>(std::max(0.0, tint.saturation));
+    const float tr = static_cast<float>(tint.r), tg = static_cast<float>(tint.g),
+                tb = static_cast<float>(tint.b);
+    float* p = icon.rgba.data();
+    const std::size_t n = icon.rgba.size() / 4;
+    for (std::size_t i = 0; i < n; ++i, p += 4) {
+        const float l = 0.2126f * p[0] + 0.7152f * p[1] + 0.0722f * p[2];
+        p[0] = (l + s * (p[0] - l)) * tr;
+        p[1] = (l + s * (p[1] - l)) * tg;
+        p[2] = (l + s * (p[2] - l)) * tb;
+    }
 }
 
 }  // namespace rb

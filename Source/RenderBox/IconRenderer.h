@@ -140,6 +140,19 @@ struct IconRenderOptions {
 
     IconViewport viewport;
 
+    // A RECOLORACAO DAS RENDICOES TINGIDAS. Vazio e `renderingMode == .color`, o
+    // documento como foi autorado. Presente e `.tinted(color, saturation)`:
+    // `[BIN]` `RenderingMode.tinted(with:)` (IconRendering 0x5A6F4) guarda a cor
+    // com alfa 1 e o alfa dela como `saturation`. O que ISTO muda no render e a
+    // sombra: `[BIN]` 0x49F40 forca `neutral` em todo modo que nao e `.color`
+    // (`shadowEffectiveStyle`). A recoloracao dos pixels e `applyTintedDark`,
+    // aplicada por quem pede o render sobre a imagem pronta.
+    struct TintRecolour {
+        double r = 1.0, g = 1.0, b = 1.0;
+        double saturation = 1.0;
+    };
+    std::optional<TintRecolour> tint;
+
     // What one render leaves for the next (`RenderCache.h`). Null is the
     // render with no memory, step for step the one before the cache existed;
     // the pixels are the same either way, and the gate in
@@ -238,6 +251,27 @@ struct RenderedIcon {
     // the document's answer rather than a missing renderer.
     std::size_t glassShadowOverdrawn = 0;
 };
+
+// TINTED DARK, sobre a imagem pronta (straight RGBA). `[BIN]` O alvo desenha o
+// icone inteiro dentro de uma camada filtrada (IconRendering 0x43190-0x4334C e
+// 0x48254-0x48414, so com aparencia escura e modo tingido):
+//
+//   1. `addSaturationFilterWithAmount:(saturation)` -- RenderBox `set_saturate`
+//      (0x11C000), a matriz Rec.709 (0.2126 / 0.7152 / 0.0722, lidas como
+//      0x3E59B3D0 e 0x3F371759), com a quantidade presa em >= 0;
+//   2. a matriz de cor do duotom (0x7E5A0-0x7E5E0): `out = lo + in * (hi - lo)`
+//      por canal, alfa intocado, com `lo = mix(preto, mix(preto, tint, f), a)` e
+//      `hi = mix(branco, tint, tint.a)`. Com `f = darkTintDuotoneShadowBlendFactor
+//      = 0` e `tint.a = 1` (os padroes) isso e `lo = preto`, `hi = tint`.
+//
+// Os realces do chiclet entram na mesma camada (`darkTintHighlightsBlendWithContent
+// = true`), entao aplicar na imagem final e o mesmo que aplicar na camada. Com
+// `lo = preto` a operacao e linear e sem deslocamento: vale igual em cor
+// pre-multiplicada ou nao. `[OBS]` se o RenderBox aplica em espaco linear ou
+// codificado nao foi lido; aqui e no espaco da imagem. A composicao do alvo
+// sobre o fundo (`kCAFilterScreenBlendMode`) nao entra: sobre transparente ela
+// e a propria imagem.
+void applyTintedDark(RenderedIcon& icon, const IconRenderOptions::TintRecolour& tint);
 
 // The placement of one layer's art on the canvas, in the target's own terms.
 // Exposed so the transform can be checked without a GPU.

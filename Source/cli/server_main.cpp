@@ -21,6 +21,8 @@
 //       effects: 1 (padrao) ou 0 -- o "Liquid Glass Effects Disabled" do
 //       `EffectsRenderModePicker`: o quadro sai com `glass` desligado em toda
 //       camada, sem tocar no documento.
+//       tint <r> <g> <b> <saturation>, depois de effects: a rendicao Tinted
+//       Dark (`rb::applyTintedDark`), com a aparencia `tinted` do documento.
 //       -> "frame <w> <h> <originX> <originY> <ms> <n>\n" + n bytes RGBA8
 //          (straight, com dithering: ver `toRgba8Dithered`)
 //        | "err <motivo>\n"
@@ -557,6 +559,13 @@ int main(int argc, char** argv) {
             if (!(in >> subdivisions)) subdivisions = 16;
             int effects = 1;
             if (!(in >> effects)) effects = 1;
+            // Tinted Dark: `tint r g b saturation` depois de `effects`.
+            std::optional<rb::IconRenderOptions::TintRecolour> tint;
+            {
+                std::string word;
+                rb::IconRenderOptions::TintRecolour t;
+                if (in >> word && word == "tint" && in >> t.r >> t.g >> t.b >> t.saturation) tint = t;
+            }
             if (subdivisions < 1 || subdivisions > 256) {
                 fail("subdivisions fora de 1..256");
                 continue;
@@ -570,6 +579,7 @@ int main(int argc, char** argv) {
             io.cache = &cache;
             io.viewport = rb::IconViewport{x, y, w, h};
             io.subdivisions = subdivisions;
+            io.tint = tint;
             if (appearance != "-") {
                 auto a = icf::appearanceFromString(appearance);
                 if (!a) {
@@ -618,6 +628,7 @@ int main(int argc, char** argv) {
                 fail("ladrilho acima do teto de area do render");
                 continue;
             }
+            if (tint) rb::applyTintedDark(*icon, *tint);
             const std::vector<std::uint8_t> bytes =
                 toRgba8Dithered(icon->rgba, icon->width, icon->originX, icon->originY);
             char head[160];
