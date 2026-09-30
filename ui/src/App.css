@@ -302,13 +302,22 @@ button:disabled {
 
 /* ---- centro: barra de ferramentas + canvas ---------------------------- */
 
+/* `backdrop-filter` faz de cada painel um contexto de empilhamento: sem
+   z-index, o que abre da barra (menus, popovers) ficava ATRAS do palco, que vem
+   depois, e o que passasse da coluna ficava atras do inspetor. A coluna do
+   centro sobe acima das laterais (o palco corta o proprio conteudo), e a barra
+   acima do palco. */
 .center {
+  position: relative;
+  z-index: 2;
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
 .toolbar {
+  position: relative;
+  z-index: 20;
   height: 52px;
   display: flex;
   align-items: center;
