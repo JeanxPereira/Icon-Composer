@@ -81,7 +81,7 @@ export function Inspector(p: Props) {
         ) : p.pane === "document" ? (
           <DocumentPane doc={p.doc} onSet={(prop, v) => p.onEdit({ kind: "icon" }, { appearance: "", idiom: "" }, prop, v)} />
         ) : p.selection.kind === "icon" ? (
-          <BackgroundPane get={get} set={set} picker={renditionPicker} />
+          <BackgroundPane get={get} set={set} picker={renditionPicker} varied={(prop) => hasOwnVariation(node, prop, r.appearance)} />
         ) : (
           <MemberPane
             node={node}
@@ -137,14 +137,29 @@ function fillValue(kind: string, seed: [number, number, number, number]): unknow
   }
 }
 
-function FillRows({ get, set, kinds }: { get: Getter; set: Setter; kinds: readonly string[] }) {
+function FillRows({
+  get,
+  set,
+  kinds,
+  varied,
+}: {
+  get: Getter;
+  set: Setter;
+  kinds: readonly string[];
+  varied?: (prop: string) => boolean;
+}) {
   const raw = get("fill", true);
   const fill = fillView(raw);
   const seed = seedColor(raw);
   const kind = fill.kind === "Gradient" ? "Gradient" : fill.kind;
   return (
     <>
-      <Line icon={<Sym name="fill" custom size={16} />} label="Fill">
+      <Line
+        icon={<Sym name="fill" custom size={16} />}
+        label="Fill"
+        varied={varied?.("fill")}
+        onRemoveVariation={() => set("fill", null, true)}
+      >
         <Select value={kind} options={kinds} onChange={(k) => set("fill", fillValue(k, seed), true)} />
       </Line>
       {fill.kind === "Solid" && (
@@ -162,12 +177,48 @@ function FillRows({ get, set, kinds }: { get: Getter; set: Setter; kinds: readon
           />
         </div>
       )}
-      {fill.kind === "Gradient" && (
-        <div className="subline">
-          <ColorWell color={seed} onChange={(c) => set("fill", { "automatic-gradient": srgbSpec(c[0], c[1], c[2], seed[3]) }, true)} />
-        </div>
-      )}
+      {fill.kind === "Gradient" && <GradientRow raw={raw as Record<string, Json>} set={set} />}
     </>
+  );
+}
+
+// O degrade do alvo: a cor de cima e a de baixo. `automatic-gradient` guarda
+// so a de cima e a de baixo e automatica ("Use Automatic Color");
+// `linear-gradient` guarda as duas. "Flip Gradient Colors" troca as duas. A
+// `orientation` que o documento trouxer e mantida. Uma cor que nao foi mexida
+// fica na grafia original (display-p3 continua display-p3).
+function GradientRow({ raw, set }: { raw: Record<string, Json>; set: Setter }) {
+  const lin = raw["linear-gradient"];
+  const top = (Array.isArray(lin) ? lin[0] : raw["automatic-gradient"]) as string;
+  const bottom = Array.isArray(lin) ? (lin[1] as string) : null;
+  const orientation = raw.orientation !== undefined ? { orientation: raw.orientation } : {};
+  const spec = (c: [number, number, number], alpha: number) => srgbSpec(c[0], c[1], c[2], alpha);
+  const write = (t: string, b: string | null) =>
+    set("fill", b === null ? { "automatic-gradient": t, ...orientation } : { "linear-gradient": [t, b], ...orientation }, true);
+  const tc = parseColor(top);
+  const bc = bottom ? parseColor(bottom) : null;
+  return (
+    <div className="subline gradient-row">
+      <ColorWell color={tc} onChange={(c) => write(spec(c, tc[3]), bottom)} />
+      {bc ? (
+        <ColorWell color={bc} onChange={(c) => write(top, spec(c, bc[3]))} />
+      ) : (
+        <label className="well auto" title="Automatic color: click to choose one">
+          A
+          <input type="color" value={rgbToHex(tc[0], tc[1], tc[2])} onChange={(e) => write(top, spec(hexToRgb(e.target.value), 1))} />
+        </label>
+      )}
+      {bottom && (
+        <>
+          <button className="mini-btn" title="Flip Gradient Colors" onClick={() => write(bottom, top)}>
+            ⇅
+          </button>
+          <button className="mini-btn" title="Use Automatic Color" onClick={() => write(top, null)}>
+            Auto
+          </button>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -206,7 +257,12 @@ function MemberPane({
   return (
     <>
       <Section title="Color" scope={picker}>
-        <Line icon={<Sym name="Opacity" custom image size={16} />} label="Opacity" varied={varied("opacity")}>
+        <Line
+          icon={<Sym name="Opacity" custom image size={16} />}
+          label="Opacity"
+          varied={varied("opacity")}
+          onRemoveVariation={() => set("opacity", null, true)}
+        >
           <NumberBox
             value={Math.round((typeof opacity === "number" ? opacity : 1) * 100)}
             unit="%"
@@ -215,14 +271,19 @@ function MemberPane({
             onChange={(v, c) => set("opacity", v / 100, true, c)}
           />
         </Line>
-        <Line icon={<Sym name="Blendmode" custom image size={18} />} label="Blend Mode" varied={varied("blend-mode")}>
+        <Line
+          icon={<Sym name="Blendmode" custom image size={18} />}
+          label="Blend Mode"
+          varied={varied("blend-mode")}
+          onRemoveVariation={() => set("blend-mode", null, true)}
+        >
           <Select
             value={BLEND_LABELS[blend] ?? blend}
             options={blendKeys.map((k) => BLEND_LABELS[k])}
             onChange={(label) => set("blend-mode", blendKeys.find((k) => BLEND_LABELS[k] === label), true)}
           />
         </Line>
-        {isLayer && <FillRows get={get} set={set} kinds={LAYER_FILLS} />}
+        {isLayer && <FillRows get={get} set={set} kinds={LAYER_FILLS} varied={varied} />}
       </Section>
 
       {isLayer ? (
@@ -320,10 +381,20 @@ function GroupGlass({ get, set }: { get: Getter; set: Setter }) {
   );
 }
 
-function BackgroundPane({ get, set, picker }: { get: Getter; set: Setter; picker: React.ReactNode }) {
+function BackgroundPane({
+  get,
+  set,
+  picker,
+  varied,
+}: {
+  get: Getter;
+  set: Setter;
+  picker: React.ReactNode;
+  varied: (prop: string) => boolean;
+}) {
   return (
     <Section title="Background" scope={picker}>
-      <FillRows get={get} set={set} kinds={BACKGROUND_FILLS} />
+      <FillRows get={get} set={set} kinds={BACKGROUND_FILLS} varied={varied} />
     </Section>
   );
 }
@@ -383,13 +454,29 @@ function Section({ title, scope, children }: { title: string; scope: React.React
   );
 }
 
-function Line({ icon, label, varied, children }: { icon: React.ReactNode; label: string; varied?: boolean; children: React.ReactNode }) {
+// `varied`: a propriedade tem uma variacao PROPRIA na aparencia mostrada. A
+// bolinha e o "Remove Variation" do alvo: volta a herdar do Default.
+function Line({
+  icon,
+  label,
+  varied,
+  onRemoveVariation,
+  children,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  varied?: boolean;
+  onRemoveVariation?: () => void;
+  children: React.ReactNode;
+}) {
   return (
     <div className="iline">
       <span className="iline-icon">{icon}</span>
       <span className="iline-label">
         {label}
-        {varied && <span className="varied" title="Variation" />}
+        {varied && (
+          <button className="varied" title="Remove Variation" onClick={onRemoveVariation} disabled={!onRemoveVariation} />
+        )}
       </span>
       <span className="iline-value">{children}</span>
     </div>

@@ -60,6 +60,35 @@ fn open_document(path: String) -> Result<OpenedDocument, String> {
     Ok(OpenedDocument { name, json, assets })
 }
 
+// File > New: um `.icon` vazio no disco (a pasta, Assets/ e o icon.json), que
+// o front abre em seguida. `[INF]` o fundo de um documento novo do alvo nao foi
+// lido; este e um degrade automatico azul e as duas familias de plataforma.
+#[tauri::command]
+fn new_document(path: String) -> Result<String, String> {
+    let mut dir = PathBuf::from(&path);
+    if dir.extension().map(|e| e.to_ascii_lowercase()) != Some("icon".into()) {
+        let name = format!("{}.icon", dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        dir.set_file_name(name);
+    }
+    if dir.exists() {
+        return Err(format!("{} ja existe", dir.display()));
+    }
+    std::fs::create_dir_all(dir.join("Assets")).map_err(|e| format!("{}: {e}", dir.display()))?;
+    std::fs::write(
+        dir.join("icon.json"),
+        r#"{"fill":{"automatic-gradient":"srgb:0.00000,0.53333,1.00000,1.00000"},"groups":[],"supported-platforms":{"circles":["watchOS"],"squares":"shared"}}"#,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(dir.to_string_lossy().into_owned())
+}
+
+// Uma pasta para o Export de varias imagens ("Create ... folder with N
+// images"): criada se nao existir.
+#[tauri::command]
+fn make_dir(path: String) -> Result<(), String> {
+    std::fs::create_dir_all(&path).map_err(|e| format!("{path}: {e}"))
+}
+
 // A arte de uma camada, como data URL, para a miniatura da lista.
 #[tauri::command]
 fn read_asset(path: String, name: String) -> Result<String, String> {
@@ -278,6 +307,8 @@ pub fn run() {
             read_asset,
             read_image,
             write_file,
+            new_document,
+            make_dir,
             render_bundle,
             core_open,
             core_set_doc,

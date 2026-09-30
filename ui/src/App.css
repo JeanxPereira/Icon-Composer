@@ -1088,3 +1088,68 @@ button:disabled {
   height: 1px;
   margin-top: -0.5px;
 }
+
+/* ---- arquivos arrastados sobre a janela ---- */
+.drop-hint {
+  position: fixed;
+  inset: 8px;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--accent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  pointer-events: none;
+}
+
+.drop-hint span {
+  padding: 8px 16px;
+  border-radius: 10px;
+  background: rgba(252, 251, 250, 0.95);
+  box-shadow: var(--control-shadow);
+  font-weight: 600;
+}
+
+/* ---- o degrade de duas cores e o Remove Variation ---- */
+.gradient-row {
+  gap: 6px;
+}
+
+.well.auto {
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: repeating-linear-gradient(45deg, var(--box-strong) 0 4px, transparent 4px 8px);
+}
+
+.mini-btn {
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--control);
+  box-shadow: var(--control-shadow);
+  color: var(--text);
+  font-size: 11px;
+}
+
+button.varied {
+  cursor: pointer;
+  padding: 0;
+  border: none;
+}
+
+button.varied:hover:not(:disabled) {
+  outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.gradient-row .well {
+  width: 46px;
+}
+
+button.varied {
+  width: 7px;
+  height: 7px;
+  margin-left: 5px;
+  vertical-align: middle;
+}

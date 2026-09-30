@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Sidebar, SidebarActions } from "./Sidebar";
 import { Background, BACKGROUNDS, Canvas, EffectsMode } from "./Canvas";
 import { Edit, Inspector, Pane } from "./Inspector";
@@ -96,6 +97,21 @@ export default function App() {
     }
   }, []);
 
+  // File > New: um `.icon` vazio gravado onde a pessoa escolher, ja aberto.
+  const newDoc = async () => {
+    const target = await save({
+      title: "New Icon",
+      defaultPath: "Untitled.icon",
+      filters: [{ name: "Icon", extensions: ["icon"] }],
+    });
+    if (!target) return;
+    try {
+      load(await invoke<string>("new_document", { path: target }));
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   const pick = async () => {
     // Um `.icon` e uma PASTA no Windows, entao o seletor e de diretorio.
     const chosen = await open({ directory: true, title: "Abrir .icon" });
@@ -164,35 +180,70 @@ export default function App() {
     onEdit(sel, writeScope(node, "position", appearance, platform, false), "position", value, !first);
   };
 
+  // Imagens para dentro do documento (New Image..., ou soltas na janela): cada
+  // uma vira uma camada NA FRENTE do grupo selecionado (o indice 0 e a frente),
+  // na ordem da lista -- a primeira fica em cima. Sem grupo, cria um.
+  const importFiles = (files: string[]) => {
+    const imgs = files.filter((f) => /\.(svg|png)$/i.test(f));
+    if (!doc || !imgs.length) return;
+    const hasGroup = groups(doc).length > 0;
+    const g = hasGroup ? groupOf(selection) : 0;
+    edits.current = edits.current
+      .then(async () => {
+        if (!hasGroup) await coreNode("add-group", -1, -1, "Group");
+        let json = "";
+        for (const f of [...imgs].reverse()) {
+          const name = await coreImport(f);
+          setAssets((a) => (a.includes(name) ? a : [...a, name].sort()));
+          const d = JSON.parse(await coreNode("add-layer", g, -1, name)) as Node;
+          const n = layers(groups(d)[g]).length;
+          json = n > 1 ? await coreNode("move", g, n - 1, "-9999") : JSON.stringify(d);
+        }
+        return json;
+      })
+      .then((json) => {
+        adopt(json);
+        setDirty(true);
+        setSelection({ kind: "layer", g, l: 0 });
+      })
+      .catch((e) => setError(String(e)));
+  };
+
+  // Arquivos soltos na janela: um `.icon` abre; imagens entram no documento.
+  const dropRef = useRef<(paths: string[]) => void>(() => {});
+  dropRef.current = (paths) => {
+    const icon = paths.find((f) => /\.icon[\\/]?$/i.test(f));
+    if (icon) load(icon.replace(/[\\/]$/, ""));
+    else importFiles(paths);
+  };
+  const [dropping, setDropping] = useState(false);
+  useEffect(() => {
+    const un = getCurrentWebview().onDragDropEvent((e) => {
+      if (e.payload.type === "over" || e.payload.type === "enter") setDropping(true);
+      else if (e.payload.type === "leave") setDropping(false);
+      else if (e.payload.type === "drop") {
+        setDropping(false);
+        dropRef.current(e.payload.paths);
+      }
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
   const at = (sel: Selection): [number, number] => [sel.kind === "icon" ? -1 : sel.g, sel.kind === "layer" ? sel.l : -1];
   const groupOf = (sel: Selection) => (sel.kind === "icon" ? 0 : sel.g);
 
   const sidebarActions: SidebarActions = {
     addGroup: () => structural("add-group", -1, -1, "Group", (d) => ({ kind: "group", g: groups(d).length - 1 })),
     addImage: async () => {
-      const file = await open({
+      const files = await open({
         title: "New Image",
-        multiple: false,
+        multiple: true,
         filters: [{ name: "Image", extensions: ["svg", "png"] }],
       });
-      if (typeof file !== "string" || !doc) return;
-      const hasGroup = groups(doc).length > 0;
-      const g = hasGroup ? groupOf(selection) : 0;
-      edits.current = edits.current
-        .then(async () => {
-          const name = await coreImport(file);
-          setAssets((a) => (a.includes(name) ? a : [...a, name].sort()));
-          if (!hasGroup) await coreNode("add-group", -1, -1, "Group");
-          return coreNode("add-layer", g, -1, name);
-        })
-        .then((json) => {
-          const d = JSON.parse(json) as Node;
-          setDoc(d);
-          setRev((r) => r + 1);
-          setDirty(true);
-          setSelection({ kind: "layer", g, l: layers(groups(d)[g]).length - 1 });
-        })
-        .catch((e) => setError(String(e)));
+      if (Array.isArray(files)) importFiles(files);
+      else if (typeof files === "string") importFiles([files]);
     },
     remove: () => {
       if (selection.kind === "icon") return;
@@ -330,6 +381,7 @@ export default function App() {
     {
       title: "File",
       items: [
+        { label: "New", shortcut: "Ctrl+N", action: newDoc },
         { label: "Open…", shortcut: "Ctrl+O", action: pick },
         { label: "Save", shortcut: "Ctrl+S", action: saveDoc, disabled: !hasDoc },
         "-",
@@ -394,6 +446,7 @@ export default function App() {
     };
     const c = e.code;
     if (c === "KeyO") run(pick);
+    else if (c === "KeyN") run(newDoc);
     else if (!hasDoc) return;
     else if (c === "KeyZ") run(() => history(e.shiftKey ? "redo" : "undo"));
     else if (c === "KeyY") run(() => history("redo"));
@@ -584,6 +637,11 @@ export default function App() {
         onRendition={setRendition}
         onReplaceImage={replaceImage}
       />
+      {dropping && (
+        <div className="drop-hint">
+          <span>{doc ? "Solte para adicionar as imagens (SVG, PNG)" : "Solte um .icon para abrir"}</span>
+        </div>
+      )}
       {exporting && (
         <ExportSheet
           platforms={doc ? supportedPlatforms(doc) : ["iOS"]}
