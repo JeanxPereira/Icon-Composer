@@ -172,11 +172,16 @@ impl Core {
         tile: [i64; 4],
         subdivisions: u32,
         effects: bool,
+        tint: Option<[f64; 4]>,
     ) -> Result<Vec<u8>, String> {
         let a = if appearance.is_empty() { "-" } else { appearance };
         let i = if idiom.is_empty() { "-" } else { idiom };
+        // Tinted Dark: `tint r g b saturation` no fim da linha.
+        let t = tint
+            .map(|t| format!(" tint {} {} {} {}", t[0], t[1], t[2], t[3]))
+            .unwrap_or_default();
         self.send(&format!(
-            "render {size} {a} {i} {} {} {} {} {subdivisions} {}",
+            "render {size} {a} {i} {} {} {} {} {subdivisions} {}{t}",
             tile[0], tile[1], tile[2], tile[3], if effects { 1 } else { 0 }
         ))?;
         let head = read_line(&mut self.stdout)?;

@@ -8,7 +8,7 @@ import { Background, BACKGROUNDS, Canvas, EffectsMode } from "./Canvas";
 import { Edit, Inspector, Pane } from "./Inspector";
 import { Menu, Menubar } from "./Menubar";
 import { ExportSheet } from "./ExportSheet";
-import { groups, layers, Node, nodeAt, Platform, Rendition, RENDITIONS, resolve, Selection, supportedPlatforms, writeScope } from "./doc";
+import { DEFAULT_TINT, groups, layers, Node, nodeAt, Platform, Rendition, RENDITIONS, resolve, Selection, supportedPlatforms, Tint, tintColor, writeScope } from "./doc";
 import {
   coreHistory,
   coreImport,
@@ -62,6 +62,12 @@ export default function App() {
   const [exporting, setExporting] = useState(false);
   const [grid, setGrid] = useState(false);
   const [snap, setSnap] = useState(true);
+  // O tint da rendicao Mono (popover "Options..." da barra de rendicoes).
+  // Ligado, o Mono e o Tinted Dark do alvo; desligado, a fatia `tinted` do
+  // documento desenhada em cor, como antes.
+  const [tint, setTint] = useState<Tint>(DEFAULT_TINT);
+  const tintFor = (r: Rendition) => (r === "mono" && tint.on ? tintColor(tint) : undefined);
+  const tintKey = JSON.stringify(tint);
   // O tema da casca: o do sistema, ou o escolhido em View > Appearance. So a
   // casca; o canvas mostra o icone na rendicao escolhida, como no alvo.
   const [theme, setTheme] = useState<"system" | "light" | "dark">(() => {
@@ -345,6 +351,7 @@ export default function App() {
       idiom: pl,
       subdivisions: subdivisionsFor(px / 512),
       effects: effects !== "disabled",
+      tint: tintFor(r),
     });
     return frameToPng(f);
   };
@@ -524,7 +531,7 @@ export default function App() {
     const forPath = path;
     const size = tiled ? BASE_PX : fullPx;
     setBusy(true);
-    requestFrame("canvas", { size, appearance: appearanceOf(rendition), idiom: platform, subdivisions: subdivisionsFor(size / (512 * dpr)), effects: effects !== "disabled" })
+    requestFrame("canvas", { size, appearance: appearanceOf(rendition), idiom: platform, subdivisions: subdivisionsFor(size / (512 * dpr)), effects: effects !== "disabled", tint: tintFor(rendition) })
       .then((f) => {
         if (seq < shownSeq.current || pathRef.current !== forPath) return;
         shownSeq.current = seq;
@@ -533,7 +540,7 @@ export default function App() {
       })
       .catch((e) => e !== "substituido" && seq >= shownSeq.current && setError(String(e)))
       .finally(() => seq === frameSeq.current && setBusy(false));
-  }, [path, platform, rendition, fullPx, tiled, rev, effects]);
+  }, [path, platform, rendition, fullPx, tiled, rev, effects, tintKey]);
 
   // O ladrilho: so a parte visivel, na resolucao da tela, pedida de novo a
   // cada rolagem ou zoom.
@@ -556,6 +563,7 @@ export default function App() {
         tile: [x, y, w, h],
         subdivisions: subdivisionsFor(zoom),
         effects: effects !== "disabled",
+        tint: tintFor(rendition),
       })
         .then((f) => alive && setTile({ ...f, rev }))
         .catch((e) => alive && e !== "substituido" && setError(String(e)));
@@ -564,7 +572,7 @@ export default function App() {
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [path, platform, rendition, fullPx, tiled, view, zoom, rev, effects]);
+  }, [path, platform, rendition, fullPx, tiled, view, zoom, rev, effects, tintKey]);
 
   // Os retangulos das camadas, para o destaque e o clique no canvas: a cada
   // documento novo do nucleo e a cada troca do contexto que o canvas mostra.
@@ -586,14 +594,14 @@ export default function App() {
   useEffect(() => {
     if (!path || !doc) return;
     let alive = true;
-    const jobs: [string, string, string][] = [
-      ...RENDITIONS.map((r) => [`r:${r.id}`, platform, r.appearance] as [string, string, string]),
-      ...supportedPlatforms(doc).map((pl) => [`p:${pl}`, pl, appearanceOf(rendition)] as [string, string, string]),
+    const jobs: [string, string, string, Rendition][] = [
+      ...RENDITIONS.map((r) => [`r:${r.id}`, platform, r.appearance, r.id] as [string, string, string, Rendition]),
+      ...supportedPlatforms(doc).map((pl) => [`p:${pl}`, pl, appearanceOf(rendition), rendition] as [string, string, string, Rendition]),
     ];
     // Espera a edicao assentar: um arraste nao refaz cinco miniaturas por passo.
     const timer = window.setTimeout(() => {
-      for (const [key, idiom, appearance] of jobs) {
-        requestFrame(`thumb:${key}`, { size: THUMB, idiom, appearance, effects: effects !== "disabled" })
+      for (const [key, idiom, appearance, r] of jobs) {
+        requestFrame(`thumb:${key}`, { size: THUMB, idiom, appearance, effects: effects !== "disabled", tint: tintFor(r) })
           .then((f) => alive && setThumbs((t) => ({ ...t, [key]: frameToDataUrl(f) })))
           .catch(() => {});
       }
@@ -602,7 +610,7 @@ export default function App() {
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [path, doc, platform, rendition, effects]);
+  }, [path, doc, platform, rendition, effects, tintKey]);
 
   // O fundo do viewport cobre a JANELA INTEIRA; a barra lateral e o inspetor
   // sao vidro fosco sobre ele, como no alvo.
@@ -637,6 +645,8 @@ export default function App() {
         thumbs={thumbs}
         rendition={rendition}
         onRendition={setRendition}
+        tint={tint}
+        onTint={setTint}
         platforms={doc ? supportedPlatforms(doc) : []}
         platform={platform}
         onPlatform={setPlatform}
@@ -680,6 +690,7 @@ export default function App() {
           platforms={doc ? supportedPlatforms(doc) : ["iOS"]}
           initial={{ platform, rendition }}
           render={renderPng}
+          renditionName={(r) => (r === "default" ? "Default" : r === "dark" ? "Dark" : tint.on ? "TintedDark" : "Mono")}
           onDone={(err) => {
             setExporting(false);
             if (err) setError(err);

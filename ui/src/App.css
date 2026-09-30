@@ -1323,3 +1323,40 @@ button.varied {
   position: absolute;
   left: 8px;
 }
+
+/* ---- o popover de tinta (barra de rendicoes) ---- */
+.rcaption-btn {
+  margin-left: 6px;
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.popover.tint-pop {
+  top: auto;
+  bottom: 70px;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 220px;
+}
+
+.tint-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.tint-row.col {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.tint-spectrum {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 8px;
+  border-radius: 4px;
+}

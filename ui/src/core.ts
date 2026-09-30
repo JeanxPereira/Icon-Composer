@@ -14,6 +14,8 @@ export type RenderParams = {
   tile?: [number, number, number, number];
   subdivisions?: number;
   effects?: boolean;
+  // Tinted Dark: [r, g, b, saturation] (`tintColor` em doc.ts).
+  tint?: [number, number, number, number];
 };
 
 async function renderNow(p: RenderParams): Promise<Frame> {
@@ -24,6 +26,7 @@ async function renderNow(p: RenderParams): Promise<Frame> {
     tile: p.tile ?? [0, 0, 0, 0],
     subdivisions: p.subdivisions ?? 16,
     effects: p.effects ?? true,
+    tint: p.tint ?? null,
   });
   const v = new DataView(buf);
   const width = v.getUint32(0, true);

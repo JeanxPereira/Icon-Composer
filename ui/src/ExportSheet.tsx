@@ -9,9 +9,11 @@ import { Platform, Rendition, RENDITIONS } from "./doc";
 // `previewSize` (cada um `AxisChoice {one, all}`), `overrideScale`,
 // `mitigateGlassExports` ("Glass Chiclet") e `maskToChiclet`. Com mais de uma
 // imagem o alvo cria uma pasta ("Create ... folder with N images", "<nome>
-// Exports"). O nome de cada arquivo junta as partes com "-" e escreve o tamanho
-// como `%g@%ldx` `[BIN]`; a ORDEM das partes (nome, plataforma, aparencia,
-// tamanho) e `[INF]`.
+// Exports"). O nome do arquivo `[BIN]` (Kit 0x3B100): nome, plataforma (tabela
+// 0x1853F8), rendicao (tabela 0x185438: Default, Dark, TintedLight, TintedDark,
+// ClearLight, ClearDark), localizacao (so quando nao e Base) e `%g@%ldx`,
+// juntados com "-" -- `AppIcon-iOS-TintedDark-1024@2x.png`. `ExportSize.hero`
+// `[BIN]` (Foundation 0x23B80) e 1024 pt no iOS/macOS e 1088 pt no watchOS.
 //
 // Ficam de fora macOS pre-Tahoe, "Glass Chiclet" excluido e Localization: o
 // nucleo nao tem esses renders.
@@ -19,6 +21,8 @@ import { Platform, Rendition, RENDITIONS } from "./doc";
 type Axis<T> = T | "all";
 
 export type ExportRender = (platform: Platform, rendition: Rendition, px: number) => Promise<Blob>;
+
+const HERO: Record<Platform, number> = { iOS: 1024, watchOS: 1088 };
 
 const SIZES = [1024, 512, 256, 128, 64, 32, 16];
 const SCALES = [1, 2, 3];
@@ -31,26 +35,30 @@ export function ExportSheet({
   platforms,
   initial,
   render,
+  renditionName,
   onDone,
 }: {
   iconName: string;
   platforms: Platform[];
   initial: { platform: Platform; rendition: Rendition };
   render: ExportRender;
+  // O nome da rendicao no arquivo (o Mono com tint e o TintedDark do alvo).
+  renditionName: (r: Rendition) => string;
   onDone: (error?: string) => void;
 }) {
   const [platform, setPlatform] = useState<Axis<Platform>>(initial.platform);
   const [rendition, setRendition] = useState<Axis<Rendition>>(initial.rendition);
-  const [size, setSize] = useState<Axis<number>>(1024);
+  const [size, setSize] = useState<Axis<number> | "hero">(1024);
   const [scale, setScale] = useState(1);
   const [progress, setProgress] = useState<string | null>(null);
 
   const ps = platform === "all" ? platforms : [platform];
   const rs = rendition === "all" ? RENDITIONS.map((r) => r.id) : [rendition];
-  const ss = size === "all" ? SIZES : [size];
-  const jobs = ps.flatMap((p) => rs.flatMap((r) => ss.map((s) => ({ p, r, s }))));
+  const jobs = ps.flatMap((p) =>
+    rs.flatMap((r) => (size === "all" ? SIZES : [size === "hero" ? HERO[p] : size]).map((s) => ({ p, r, s }))),
+  );
   const fileName = (j: { p: Platform; r: Rendition; s: number }) =>
-    `${iconName}-${PLATFORM_NAME[j.p]}-${RENDITIONS.find((x) => x.id === j.r)!.label}-${j.s}@${scale}x.png`;
+    `${iconName}-${PLATFORM_NAME[j.p]}-${renditionName(j.r)}-${j.s}@${scale}x.png`;
 
   const run = async () => {
     try {
@@ -113,9 +121,13 @@ export function ExportSheet({
         <Row label="Size">
           <select
             value={String(size)}
-            onChange={(e) => setSize(e.target.value === "all" ? "all" : Number(e.target.value))}
+            onChange={(e) => {
+              const v = e.target.value;
+              setSize(v === "all" || v === "hero" ? v : Number(v));
+            }}
             disabled={busy}
           >
+            <option value="hero">Hero</option>
             {SIZES.map((s) => (
               <option key={s} value={s}>
                 {s} pt

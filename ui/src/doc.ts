@@ -194,3 +194,24 @@ export function supportedPlatforms(doc: Node): Platform[] {
   if (sp && sp.circles !== undefined) out.push("watchOS");
   return out;
 }
+
+// A cor do tint: `tintLogicalSpectrum.color(at: tintSpectrumPosition)
+// .opacity(tintAlpha)` `[BIN]` (Kit 0x128B88-0x128C20). O espectro e um
+// `Gradient` de sete cores sRGB `[BIN]` (Foundation 0x3EDC8); a interpolacao
+// do SwiftUI entre elas e `[INF]` linear em sRGB, com as paradas igualmente
+// espacadas. `RenderingMode.tinted(with:)` guarda a cor com alfa 1 e o alfa
+// como `saturation` `[BIN]` (IconRendering 0x5A6F4).
+export type Tint = { on: boolean; position: number; alpha: number };
+// `tintSpectrumPosition = 0.75`, `tintAlpha = 0.625` `[BIN]`; o alfa anda em
+// 0.25...1 (`tintStrength = (tintAlpha - 0.25) / 0.75`).
+export const DEFAULT_TINT: Tint = { on: true, position: 0.75, alpha: 0.625 };
+export const TINT_SPECTRUM = ["#ff0e00", "#ff9b00", "#ffd400", "#00d721", "#0007ff", "#a100f2", "#ff0e00"];
+
+export function tintColor(t: Tint): [number, number, number, number] {
+  const stops = TINT_SPECTRUM.map(hexToRgb);
+  const x = Math.min(1, Math.max(0, t.position)) * (stops.length - 1);
+  const i = Math.min(stops.length - 2, Math.floor(x));
+  const f = x - i;
+  const c = stops[i].map((v, k) => v + (stops[i + 1][k] - v) * f);
+  return [c[0], c[1], c[2], t.alpha];
+}

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Sym } from "./Sym";
-import { Platform, Rendition, RENDITIONS, Selection } from "./doc";
+import { Platform, Rendition, RENDITIONS, Selection, Tint, TINT_SPECTRUM } from "./doc";
 import { Frame, LayerRect } from "./core";
 import { Stage } from "./Stage";
 
@@ -40,6 +40,8 @@ type Props = {
   thumbs: Record<string, string>;
   rendition: Rendition;
   onRendition: (r: Rendition) => void;
+  tint: Tint;
+  onTint: (t: Tint) => void;
   platforms: Platform[];
   platform: Platform;
   onPlatform: (p: Platform) => void;
@@ -75,6 +77,7 @@ export function Canvas(p: Props) {
   const px = Math.round(512 * p.zoom);
   const previewLabel = (PREVIEW_SIZES as readonly number[]).includes(px) && px !== 512 ? `${px} pt` : "Full size";
   const [hoverRendition, setHoverRendition] = useState<Rendition | null>(null);
+  const [tintPop, setTintPop] = useState(false);
   const caption = RENDITIONS.find((r) => r.id === (hoverRendition ?? p.rendition))!.label;
   return (
     <section className="center">
@@ -289,7 +292,17 @@ export function Canvas(p: Props) {
               </div>
             </div>
             <div className="rgroup">
-              <span className="rcaption">{caption}</span>
+              <span className="rcaption">
+                {caption}
+                {p.rendition === "mono" && (
+                  <button className="rcaption-btn" title="Opens tint options" onClick={() => setTintPop((v) => !v)}>
+                    Options…
+                  </button>
+                )}
+              </span>
+              {tintPop && p.rendition === "mono" && (
+                <TintPopover tint={p.tint} onTint={p.onTint} onClose={() => setTintPop(false)} />
+              )}
               <div className="rthumbs">
                 {RENDITIONS.map((r) => (
                   <button
@@ -312,5 +325,52 @@ export function Canvas(p: Props) {
         </div>
       </div>
     </section>
+  );
+}
+
+// O popover de tinta do alvo (`RenditionBar._showTintedOptionsPopover`):
+// "Enable or disable tinted appearance", "Tint color" (a posicao no espectro) e
+// "Tint intensity" (o alfa, 0.25...1). Com o tint ligado o Mono e o Tinted Dark.
+// `[OBS]` Tinted Light e Clear: a cor final deles e composta fora do
+// IconRendering (QuartzCore), e nao ha render deles aqui.
+function TintPopover({ tint, onTint, onClose }: { tint: Tint; onTint: (t: Tint) => void; onClose: () => void }) {
+  return (
+    <div className="popover tint-pop" onMouseLeave={onClose}>
+      <label className="tint-row">
+        <span>Tinted</span>
+        <input
+          type="checkbox"
+          title="Enable or disable tinted appearance"
+          checked={tint.on}
+          onChange={(e) => onTint({ ...tint, on: e.target.checked })}
+        />
+      </label>
+      <label className="tint-row col">
+        <span>Tint color</span>
+        <input
+          type="range"
+          className="tint-spectrum"
+          style={{ background: `linear-gradient(to right, ${TINT_SPECTRUM.join(", ")})` }}
+          min={0}
+          max={1}
+          step={0.005}
+          value={tint.position}
+          disabled={!tint.on}
+          onChange={(e) => onTint({ ...tint, position: Number(e.target.value) })}
+        />
+      </label>
+      <label className="tint-row col">
+        <span>Tint intensity</span>
+        <input
+          type="range"
+          min={0.25}
+          max={1}
+          step={0.005}
+          value={tint.alpha}
+          disabled={!tint.on}
+          onChange={(e) => onTint({ ...tint, alpha: Number(e.target.value) })}
+        />
+      </label>
+    </div>
   );
 }
