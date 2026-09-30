@@ -34,10 +34,57 @@ type Props = {
   selection: Selection;
   onSelect: (s: Selection) => void;
   onMove: (s: Selection, dx: number, dy: number, first: boolean) => void;
+  snap: boolean;
 };
 
 // Ate onde um arraste ainda e um clique, em px CSS.
 const CLICK_SLOP = 3;
+// A distancia, em px de TELA, em que uma guia atrai (constante no zoom).
+const SNAP_PX = 6;
+
+type Guides = { x: number[]; y: number[] };
+
+// "Snap to Guides" (`EditableIconCompositionCanvas._snapToGuides`,
+// `LayoutGuide`): a caixa que anda -- as bordas e o centro dela -- e atraida
+// pelas bordas e pelo centro do canvas e de cada camada visivel que nao anda.
+// Devolve o quanto somar ao deslocamento em cada eixo e as guias que prenderam.
+// `[INF]` quais guias o alvo oferece nao foi lido do binario; estas sao as de
+// um editor de layout comum.
+function snapBox(
+  box: { x0: number; y0: number; x1: number; y1: number },
+  others: LayerRect[],
+  thr: number,
+  lockX: boolean,
+  lockY: boolean,
+): { ax: number; ay: number; guides: Guides } {
+  const axis = (a0: number, a1: number, targets: number[]) => {
+    const own = [a0, (a0 + a1) / 2, a1];
+    let best = { d: Infinity, t: 0 };
+    for (const t of targets)
+      for (const o of own) {
+        const d = t - o;
+        if (Math.abs(d) < Math.abs(best.d) && Math.abs(d) <= thr) best = { d, t };
+      }
+    if (!Number.isFinite(best.d)) return { adjust: 0, lines: [] as number[] };
+    // Todas as guias que coincidem depois do ajuste, nao so a que ganhou.
+    const moved = own.map((o) => o + best.d);
+    return { adjust: best.d, lines: [...new Set(targets.filter((t) => moved.some((m) => Math.abs(m - t) < 0.01)))] };
+  };
+  const tx = [0, CANVAS_POINTS / 2, CANVAS_POINTS, ...others.flatMap((r) => [r.x0, (r.x0 + r.x1) / 2, r.x1])];
+  const ty = [0, CANVAS_POINTS / 2, CANVAS_POINTS, ...others.flatMap((r) => [r.y0, (r.y0 + r.y1) / 2, r.y1])];
+  const x = lockX ? { adjust: 0, lines: [] } : axis(box.x0, box.x1, tx);
+  const y = lockY ? { adjust: 0, lines: [] } : axis(box.y0, box.y1, ty);
+  return { ax: x.adjust, ay: y.adjust, guides: { x: x.lines, y: y.lines } };
+}
+
+function unionOf(rs: LayerRect[]) {
+  return {
+    x0: Math.min(...rs.map((r) => r.x0)),
+    y0: Math.min(...rs.map((r) => r.y0)),
+    x1: Math.max(...rs.map((r) => r.x1)),
+    y1: Math.max(...rs.map((r) => r.y1)),
+  };
+}
 
 export function Stage(p: Props) {
   const el = useRef<HTMLDivElement>(null);
@@ -64,6 +111,7 @@ export function Stage(p: Props) {
   // retangulos novos chegarem.
   const [live, setLive] = useState<{ rects: LayerRect[]; settling: boolean } | null>(null);
   const pendingMove = useRef<{ dx: number; dy: number } | null>(null);
+  const [guides, setGuides] = useState<Guides | null>(null);
   const moveRaf = useRef(0);
   useEffect(() => {
     if (live?.settling) setLive(null);
@@ -220,13 +268,35 @@ export function Stage(p: Props) {
       const k = CANVAS_POINTS / (SIDE * shownRef.current.zoom);
       let dx = (e.clientX - d.x0) * k;
       let dy = (e.clientY - d.y0) * k;
+      let lockX = false;
+      let lockY = false;
       if (e.shiftKey) {
-        if (Math.abs(dx) > Math.abs(dy)) dy = 0;
-        else dx = 0;
+        if (Math.abs(dx) > Math.abs(dy)) {
+          dy = 0;
+          lockY = true;
+        } else {
+          dx = 0;
+          lockX = true;
+        }
       }
       const sel = d.move;
       const moves = (r: LayerRect) =>
         sel.kind !== "icon" && r.g === sel.g && (sel.kind === "group" || r.l === sel.l);
+      // As guias: Ctrl segura solta o ima, como nos editores de layout.
+      const moving = d.base.filter((r) => moves(r) && !r.hidden);
+      if (p.snap && !e.ctrlKey && moving.length) {
+        const u = unionOf(moving);
+        const s = snapBox(
+          { x0: u.x0 + dx, y0: u.y0 + dy, x1: u.x1 + dx, y1: u.y1 + dy },
+          d.base.filter((r) => !moves(r) && !r.hidden),
+          SNAP_PX * k,
+          lockX,
+          lockY,
+        );
+        dx += s.ax;
+        dy += s.ay;
+        setGuides(s.guides.x.length || s.guides.y.length ? s.guides : null);
+      } else setGuides(null);
       setLive({
         rects: d.base.map((r) => (moves(r) ? { ...r, x0: r.x0 + dx, x1: r.x1 + dx, y0: r.y0 + dy, y1: r.y1 + dy } : r)),
         settling: false,
@@ -249,6 +319,7 @@ export function Stage(p: Props) {
       flushMove();
       setLive((l) => (l ? { ...l, settling: true } : null));
     }
+    setGuides(null);
     drag.current = null;
     // Um clique no vazio volta ao icone; numa camada, o toque ja escolheu.
     if (d && !d.moved && !d.move && e.button === 0) p.onSelect({ kind: "icon" });
@@ -266,6 +337,7 @@ export function Stage(p: Props) {
       onPointerCancel={() => {
         drag.current = null;
         setLive(null);
+        setGuides(null);
       }}
       onPointerLeave={() => setHover(null)}
     >
@@ -280,7 +352,8 @@ export function Stage(p: Props) {
               alt=""
             />
           )}
-          <SelectionOverlay rects={rects} selection={p.selection} hover={hover} side={side} />
+          <SelectionOverlay rects={rects} selection={p.selection} hover={drag.current?.moved ? null : hover} side={side} />
+          {guides && <GuideLines guides={guides} side={side} />}
         </div>
       )}
     </div>
@@ -330,6 +403,21 @@ function SelectionOverlay({
     hover && selection.kind === "layer" && selection.g === hover.g && selection.l === hover.l;
   if (hover && !hoverIsSelected) out.push(box(hover, "hovered", "hover"));
   return <div className="sel-overlay">{out}</div>;
+}
+
+// As guias que prenderam, de ponta a ponta do canvas.
+function GuideLines({ guides, side }: { guides: Guides; side: number }) {
+  const k = side / CANVAS_POINTS;
+  return (
+    <div className="sel-overlay">
+      {guides.x.map((x) => (
+        <div key={`x${x}`} className="guide v" style={{ left: x * k }} />
+      ))}
+      {guides.y.map((y) => (
+        <div key={`y${y}`} className="guide h" style={{ top: y * k }} />
+      ))}
+    </div>
+  );
 }
 
 // O quadro do nucleo, pintado como veio: RGBA8, sem PNG no caminho. Ele se

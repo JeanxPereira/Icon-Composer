@@ -34,6 +34,7 @@ type Props = {
   selection: Selection;
   onSelect: (s: Selection) => void;
   onMove: (s: Selection, dx: number, dy: number, first: boolean) => void;
+  snap: boolean;
   busy: boolean;
   error: string;
   thumbs: Record<string, string>;
@@ -260,6 +261,7 @@ export function Canvas(p: Props) {
           selection={p.selection}
           onSelect={p.onSelect}
           onMove={p.onMove}
+          snap={p.snap}
         />
         {p.error ? (
           <pre className="error stage-note">{p.error}</pre>

@@ -60,6 +60,7 @@ export default function App() {
   const [userBackgrounds, setUserBackgrounds] = useState<string[]>([]);
   const [exporting, setExporting] = useState(false);
   const [grid, setGrid] = useState(false);
+  const [snap, setSnap] = useState(true);
   const [gridStyle, setGridStyle] = useState<"light" | "dark">("dark");
   const [zoom, setZoom] = useState(1);
 
@@ -360,6 +361,7 @@ export default function App() {
         { label: "Zoom Out", shortcut: "Ctrl+-", action: () => zoomBy(1 / 1.25) },
         { label: "Actual Size", shortcut: "Ctrl+0", action: () => setZoom(1) },
         "-",
+        { label: "Snap to Guides", shortcut: "Ctrl+;", action: () => setSnap((v) => !v), checked: snap },
         { label: grid ? "Hide Grid" : "Show Grid", shortcut: "Ctrl+'", action: () => setGrid((g) => !g) },
       ],
     },
@@ -405,6 +407,7 @@ export default function App() {
     else if (c === "Minus" || c === "NumpadSubtract") run(() => zoomBy(1 / 1.25));
     else if (c === "Digit0" || c === "Numpad0") run(() => setZoom(1));
     else if (c === "Quote" || c === "Backquote") run(() => setGrid((g) => !g));
+    else if (c === "Semicolon" || c === "Slash") run(() => setSnap((v) => !v));
     else if (c === "ArrowUp" && !e.altKey && member) run(selectParent);
     else if (c === "BracketRight" && member) run(() => arrange(e.shiftKey ? -9999 : -1));
     else if (c === "BracketLeft" && member) run(() => arrange(e.shiftKey ? 9999 : 1));
@@ -541,6 +544,7 @@ export default function App() {
         onView={setView}
         rects={rects}
         onMove={onMove}
+        snap={snap}
         selection={selection}
         onSelect={setSelection}
         busy={busy}

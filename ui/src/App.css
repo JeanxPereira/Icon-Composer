@@ -1068,3 +1068,23 @@ button:disabled {
 .stage-view.moving {
   cursor: move;
 }
+
+/* ---- as guias do arraste (Stage.tsx, GuideLines) ---- */
+.guide {
+  position: absolute;
+  background: #ff375f;
+}
+
+.guide.v {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  margin-left: -0.5px;
+}
+
+.guide.h {
+  left: 0;
+  right: 0;
+  height: 1px;
+  margin-top: -0.5px;
+}
