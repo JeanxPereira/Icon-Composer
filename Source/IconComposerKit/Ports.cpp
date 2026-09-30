@@ -13,6 +13,7 @@ RenderResult failedResult(const RenderRequest& r, std::string why) {
     out.context = r.context;
     out.size = r.size;
     out.tile = r.tile;
+    out.mono = r.mono;
     out.error = std::move(why);
     return out;
 }

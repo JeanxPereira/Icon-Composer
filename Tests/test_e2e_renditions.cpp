@@ -177,32 +177,43 @@ TEST_CASE(e2e_renditions_three_groups_in_the_measured_order) {
 // existe neste motor -- as duas leem a mesma fatia `tinted` (§2.6). Oferecer a
 // segunda seria oferecer a imagem da primeira.
 // ─────────────────────────────────────────────────────────────────────────────
-TEST_CASE(e2e_renditions_clear_pair_is_greyed_with_the_reason) {
+TEST_CASE(e2e_renditions_all_six_are_drawable_and_the_mono_four_differ_in_the_render) {
+    // DESDE 30/09 AS SEIS SAO DESENHAVEIS. Este caso afirmava o contrario --
+    // o Clear cinza porque o `ClearMode` nao tinha sido lido, e o Tinted Dark
+    // cinza por ler a mesma fatia do Tinted Light --, e as duas coisas
+    // deixaram de ser verdade com a frente do Tauri: o Clear inteiro e o vidro
+    // simulado estao na RenderBox (`rb::prepareMono`/`finishMono`), e as quatro
+    // do Mono se separam no render pelo `MonoLook`.
     const fs::path dir = makeBundle("clear");
     auto s = ick::Session::open(dir);
     REQUIRE(s.has_value());
     ick::HeadlessImGui gui(1440.0f, 900.0f);
 
     const ick::RenditionStats st = barFrame(gui, *s);
-    REQUIRE(item(st, "Clear Light") != nullptr);
-    REQUIRE(item(st, "Clear Dark") != nullptr);
-    CHECK(!item(st, "Clear Light")->enabled);
-    CHECK(!item(st, "Clear Dark")->enabled);
-    // Elas continuam NO LUGAR MEDIDO. Sumir com elas seria desenhar outra
-    // forma; a casa não desenha errado, ela diz.
     CHECK_EQ(st.drawn.size(), std::size_t{6});
-    CHECK_EQ(enabledLabels(st), std::string("Default | Dark | Tinted Light"));
-    CHECK_EQ(st.disabled, std::size_t{3});
+    CHECK_EQ(enabledLabels(st),
+             std::string("Default | Dark | Clear Light | Clear Dark | Tinted Light | Tinted Dark"));
+    CHECK_EQ(st.disabled, std::size_t{0});
+    for (rb::Rendition r : ick::kAllRenditions)
+        CHECK_EQ(ick::renditionUnsupportedReason(r), std::string());
 
-    // O motivo, que é o que o tooltip mostra, nomeia a medição que falta.
-    const std::string clearWhy = ick::renditionUnsupportedReason(rb::Rendition::LightClear);
-    CHECK(clearWhy.find("ClearMode") != std::string::npos);
-    CHECK(clearWhy.find("rendering mode") != std::string::npos);
-    const std::string tintWhy = ick::renditionUnsupportedReason(rb::Rendition::DarkTint);
-    CHECK(tintWhy.find("Tinted Light") != std::string::npos);
-    CHECK(tintWhy.find("ICRIconStyle.appearance") != std::string::npos);
-    // E o que É desenhável não carrega motivo nenhum.
-    CHECK_EQ(ick::renditionUnsupportedReason(rb::Rendition::LightColor), std::string());
+    // As quatro do Mono leem a MESMA fatia e tem looks DIFERENTES: e isso que
+    // impede duas miniaturas (ou dois renders do canvas) de responderem uma
+    // pela outra.
+    const icf::Idiom idiom = s->view.context.idiom;
+    const ick::RenderLook cl = ick::lookOf(*s, rb::Rendition::LightClear, idiom, false, 128);
+    const ick::RenderLook cd = ick::lookOf(*s, rb::Rendition::DarkClear, idiom, false, 128);
+    const ick::RenderLook tl = ick::lookOf(*s, rb::Rendition::LightTint, idiom, false, 128);
+    const ick::RenderLook td = ick::lookOf(*s, rb::Rendition::DarkTint, idiom, false, 128);
+    CHECK(cl.context == cd.context);
+    CHECK(cl.context == td.context);
+    CHECK(cl.mono.has_value() && cd.mono.has_value() && tl.mono.has_value() && td.mono.has_value());
+    CHECK(!(cl == cd));
+    CHECK(!(cl == tl));
+    CHECK(!(tl == td));
+    // Default e Dark nao tem Mono.
+    CHECK(!ick::lookOf(*s, rb::Rendition::LightColor, idiom, false, 128).mono.has_value());
+    CHECK(!ick::lookOf(*s, rb::Rendition::DarkColor, idiom, false, 128).mono.has_value());
     CHECK_EQ(gui.errors(), std::uint64_t{0});
 }
 
@@ -266,13 +277,13 @@ TEST_CASE(e2e_renditions_a_real_click_moves_the_canvas_context) {
     CHECK(s->view.context.appearance == icf::Appearance::Tinted);
     CHECK_EQ(selectedLabel(afterTint), std::string("Tinted Light"));
 
-    // CLICAR NUM ITEM CINZA NÃO FAZ NADA. Um `BeginDisabled` que deixasse o
-    // botão disparar poria o canvas na fatia `tinted` dizendo "Clear", que é
-    // exatamente a mentira que o cinza existe para não contar.
+    // CLICAR NO CLEAR DARK O ESCOLHE (30/09): a fatia continua `tinted`, e a
+    // rendicao Mono que o canvas mostra passa a ser ela.
     REQUIRE(item(afterTint, "Clear Dark") != nullptr);
     const ick::RenditionStats afterClear = clickAt(gui, *s, item(afterTint, "Clear Dark")->at);
     CHECK(s->view.context.appearance == icf::Appearance::Tinted);
-    CHECK_EQ(selectedLabel(afterClear), std::string("Tinted Light"));
+    CHECK(s->view.mono == rb::Rendition::DarkClear);
+    CHECK_EQ(selectedLabel(afterClear), std::string("Clear Dark"));
 
     // E de volta ao começo, para o controle não ser de mão única.
     REQUIRE(item(afterClear, "Default") != nullptr);
@@ -318,16 +329,14 @@ TEST_CASE(e2e_renditions_the_bar_and_the_appearance_combo_agree) {
 
     // SENTIDO 1: o combo move, a barra acompanha. As quatro entradas do combo
     // de aparência, e a rendition que `[BIN]` `Appearance.defaultRendition`
-    // (`0x20D98`, tabela `00 00 01 04`) manda marcar -- com a única
-    // substituição deste editor dita em voz alta: `tinted` mede `Clear Light`,
-    // que não é desenhável aqui, e cai para a primeira suportada da mesma
-    // fatia, `Tinted Light`.
+    // (`0x20D98`, tabela `00 00 01 04`) manda marcar. Desde 30/09 sem
+    // substituicao: `tinted` mede `Clear Light`, e o Clear Light e desenhavel.
     struct Expect { icf::Appearance appearance; const char* rendition; };
     const Expect kTable[] = {
         {icf::Appearance::Base, "Default"},
         {icf::Appearance::Light, "Default"},
         {icf::Appearance::Dark, "Dark"},
-        {icf::Appearance::Tinted, "Tinted Light"},
+        {icf::Appearance::Tinted, "Clear Light"},
     };
     for (const Expect& e : kTable) {
         s->view.context.appearance = e.appearance;   // o que o `Selectable` do combo faz
@@ -378,11 +387,14 @@ struct FakeScheduler : ick::RenderScheduler {
         std::uint64_t version = 0;
         icf::Context context;
         std::uint32_t size = 0;
+        // O Mono tambem e chave (30/09): o eco o devolve, senao a resposta de
+        // uma das quatro nunca casa com o pedido dela.
+        std::optional<rb::MonoLook> mono;
     };
     std::vector<Ask> asks;
     std::vector<ick::RenderResult> queued;
     void request(ick::RenderRequest r) override {
-        asks.push_back(Ask{r.version, r.context, r.size});
+        asks.push_back(Ask{r.version, r.context, r.size, r.mono});
     }
     std::optional<ick::RenderResult> poll() override {
         if (queued.empty()) return std::nullopt;
@@ -398,6 +410,7 @@ struct FakeScheduler : ick::RenderScheduler {
         ick::RenderResult r;
         r.version = a.version;
         r.context = a.context;
+        r.mono = a.mono;
         r.size = a.size;
         r.gridSize = a.size;
         r.width = side;
@@ -432,13 +445,14 @@ TEST_CASE(e2e_renditions_thumbnails_are_rendered_one_at_a_time) {
     {
         ick::RenditionThumbnails thumbs(sched, sink, 128);
 
-        // Três renditions desenháveis -> três contextos, e o primeiro pedido é
-        // o da SELECIONADA: quem acabou de escolher vê a dela primeiro.
+        // Seis renditions desenháveis -> seis looks (as quatro do Mono dividem
+        // a fatia e nao o look), e o primeiro pedido é o da SELECIONADA: quem
+        // acabou de escolher vê a dela primeiro.
         const ick::RenditionStats first = barFrame(gui, *s, &thumbs);
         CHECK_EQ(sched.asks.size(), std::size_t{1});
         CHECK(sched.asks[0].context.appearance == icf::Appearance::Light);   // Default, o padrão de `base`
         CHECK_EQ(sched.asks[0].size, std::uint32_t{128});
-        CHECK_EQ(thumbs.stale(), std::size_t{3});
+        CHECK_EQ(thumbs.stale(), std::size_t{6});
         CHECK(!first.note.empty());
         CHECK(first.note.find("rendering") != std::string::npos);
         // E O ITEM DIZ QUE É ELE. `RenditionInfo::pending` era escrito e não
@@ -463,34 +477,37 @@ TEST_CASE(e2e_renditions_thumbnails_are_rendered_one_at_a_time) {
         sched.answer();
         barFrame(gui, *s, &thumbs);
         CHECK_EQ(sched.asks.size(), std::size_t{2});
-        CHECK_EQ(thumbs.stale(), std::size_t{2});
+        CHECK_EQ(thumbs.stale(), std::size_t{5});
         CHECK_EQ(sink.live, 1);
 
-        sched.answer();
-        barFrame(gui, *s, &thumbs);
-        CHECK_EQ(sched.asks.size(), std::size_t{3});
+        // As outras quatro, uma por resposta.
+        for (std::size_t n = 3; n <= 6; ++n) {
+            sched.answer();
+            barFrame(gui, *s, &thumbs);
+            CHECK_EQ(sched.asks.size(), n);
+        }
         sched.answer();
         const ick::RenditionStats done = barFrame(gui, *s, &thumbs);
         CHECK_EQ(thumbs.stale(), std::size_t{0});
         // Nada em voo: `pending` desce, senão ele seria um campo que só sabe
         // dizer "sim".
         for (const ick::RenditionInfo& i : done.drawn) CHECK(!i.pending);
-        CHECK_EQ(sink.live, 3);
-        // Nada mais é pedido: as três respondem a versão atual do documento.
+        CHECK_EQ(sink.live, 6);
+        // Nada mais é pedido: as seis respondem a versão atual do documento.
         barFrame(gui, *s, &thumbs);
         barFrame(gui, *s, &thumbs);
-        CHECK_EQ(sched.asks.size(), std::size_t{3});
-        // E as três estão na tela, com o relógio da última na nota.
+        CHECK_EQ(sched.asks.size(), std::size_t{6});
+        // E as seis estão na tela, com o relógio da última na nota.
         std::size_t textured = 0;
         for (const ick::RenditionInfo& i : done.drawn) textured += i.textured ? 1u : 0u;
-        CHECK_EQ(textured, std::size_t{3});
+        CHECK_EQ(textured, std::size_t{6});
         CHECK(done.note.find("px") != std::string::npos);
 
-        // UMA EDIÇÃO ENVELHECE AS TRÊS, e elas voltam a sair uma por vez.
+        // UMA EDIÇÃO ENVELHECE AS SEIS, e elas voltam a sair uma por vez.
         s->rename(icf::NodePath{std::size_t{0}, std::nullopt}, "Beta");
         barFrame(gui, *s, &thumbs);
-        CHECK_EQ(thumbs.stale(), std::size_t{3});
-        CHECK_EQ(sched.asks.size(), std::size_t{4});
+        CHECK_EQ(thumbs.stale(), std::size_t{6});
+        CHECK_EQ(sched.asks.size(), std::size_t{7});
     }
     // O destrutor devolve toda textura que criou: uma barra que vazasse uma
     // por documento aberto esgotaria o pool numa tarde.

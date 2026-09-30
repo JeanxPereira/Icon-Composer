@@ -760,9 +760,16 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
     const bool sameTarget = want == v.lastWanted;
     v.lastWanted = want;
     v.settledSeconds = sameTarget ? v.settledSeconds + io.DeltaTime : 0.0f;
-    if (v.settledSeconds >= kTileSettleSeconds) {
+    if (v.settledSeconds >= kTileSettleSeconds || v.stageW == 0.0f) {
         v.tileSize = want.w ? canvasTileSize(v.size, v.zoomTarget) : 0;
         v.tile = want;
+        // O palco e o quadrado do icone NO ALVO, em pontos a partir do canto
+        // do palco: o que o vidro e o Clear do Mono leem (Renditions.h).
+        v.stageW = availW;
+        v.stageH = availH;
+        v.squareX = v.panTargetX;
+        v.squareY = v.panTargetY;
+        v.squareSide = sidePx * v.zoomTarget;
     }
 
     // ── THE RECORTE ─────────────────────────────────────────────────────────

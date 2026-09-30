@@ -28,6 +28,7 @@
 #include "Source/IconComposerFoundation/Edit.h"
 #include "Source/IconComposerFoundation/IconBundle.h"
 #include "Source/IconComposerKit/Tile.h"
+#include "Source/RenderBox/FillResolve.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -88,6 +89,19 @@ struct ViewContext {
     // com o canvas inteiro, o pedido de sempre.
     std::uint32_t tileSize = 0;
     TileRect tile;
+
+    // O MONO (30/09). Com a fatia `tinted` na tela, QUAL das quatro rendicoes
+    // o canvas mostra -- elas leem a mesma fatia e so o render as separa --, e o
+    // tint do Tinted Dark (`DEFAULT_TINT` do doc.ts: espectro 0,75, alfa 0,625,
+    // os dois [BIN]).
+    rb::Rendition mono = rb::Rendition::LightClear;
+    double tintPosition = 0.75, tintAlpha = 0.625;
+    // O palco e o quadrado do icone nele, em pontos, escritos pelo canvas no
+    // MESMO assentamento do ladrilho: o vidro e o Clear leem o fundo sob o
+    // icone, e um quadrado que mudasse a cada quadro do arraste seria um render
+    // por quadro.
+    float stageW = 0.0f, stageH = 0.0f;
+    float squareX = 0.0f, squareY = 0.0f, squareSide = 0.0f;
     // O ladrilho que ESTE quadro pediria, guardado para o quadro seguinte
     // comparar. O assentamento nao pode olhar so o zoom e o pan: `tile` sai de
     // `CanvasStats::painted`, que muda quando a janela e redimensionada ou o

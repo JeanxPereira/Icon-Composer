@@ -6,6 +6,7 @@
 #include "imgui.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <utility>
 
@@ -101,34 +102,86 @@ std::optional<rb::Rendition> shadowedBy(rb::Rendition r) {
 
 }  // namespace
 
-bool renditionSupported(rb::Rendition r) {
-    if (renditionIsClear(r)) return false;
-    return !shadowedBy(r).has_value();
+bool renditionSupported(rb::Rendition) {
+    // AS SEIS SAO DESENHAVEIS (30/09). Ate aqui o Clear era cinza -- "o
+    // ClearMode nao foi lido" -- e o Tinted Dark tambem, por ler a mesma fatia
+    // do Tinted Light. A frente do Tauri leu o Clear inteiro e o vidro simulado
+    // (laudo de 30/09 §5, `rb::prepareMono`/`finishMono`), e as quatro do Mono
+    // se separam no RENDER: a fatia e a mesma, o `MonoLook` nao.
+    return true;
 }
 
-std::string renditionUnsupportedReason(rb::Rendition r) {
-    if (renditionIsClear(r)) {
-        return std::string(renditionDisplayName(r)) +
-               " is not an appearance of the document: `Clear` is the THIRD rendering mode "
-               "(`RenderingMode.Contents = {color, tinted, clear}`, measured 19/09 in "
-               "IconRendering.arm64), and this renderer has two.\n"
-               "The 15 fields of `ICRRenderingParameters.ClearMode` have not been read, so drawing "
-               "it here would mean showing the Tinted image under another label. The laudo says so "
-               "in as many words: naming it is authorised, implementing it is not.\n"
-               "Docs/Laudos/2026-09-19-renditions-e-mirroring.md §2.5, §2.8 and §6.";
+std::string renditionUnsupportedReason(rb::Rendition) { return {}; }
+
+bool renditionIsMono(rb::Rendition r) { return rb::sourceAppearance(r) == icf::Appearance::Tinted; }
+
+rb::IconRenderOptions::TintRecolour tintOf(const ViewContext& v) {
+    // `TINT_SPECTRUM` do doc.ts, interpolado linear, e o alfa como saturacao --
+    // o que o Tauri manda ao `icserver` (`tint r g b saturation`).
+    static constexpr float stops[7][3] = {
+        {1.0f, 14 / 255.0f, 0.0f},        {1.0f, 155 / 255.0f, 0.0f},     {1.0f, 212 / 255.0f, 0.0f},
+        {0.0f, 215 / 255.0f, 33 / 255.0f}, {0.0f, 7 / 255.0f, 1.0f},      {161 / 255.0f, 0.0f, 242 / 255.0f},
+        {1.0f, 14 / 255.0f, 0.0f},
+    };
+    const double x = std::clamp(v.tintPosition, 0.0, 1.0) * 6.0;
+    const int i = std::min(5, static_cast<int>(x));
+    const double f = x - i;
+    rb::IconRenderOptions::TintRecolour t;
+    t.r = stops[i][0] + (stops[i + 1][0] - stops[i][0]) * f;
+    t.g = stops[i][1] + (stops[i + 1][1] - stops[i][1]) * f;
+    t.b = stops[i][2] + (stops[i + 1][2] - stops[i][2]) * f;
+    t.saturation = v.tintAlpha;
+    return t;
+}
+
+rb::Rendition canvasRendition(const Session& s) {
+    const icf::Idiom idiom = s.view.context.idiom;
+    if (s.view.context.appearance == icf::Appearance::Tinted && renditionIsMono(s.view.mono) &&
+        renditionValidFor(s.view.mono, idiom))
+        return s.view.mono;
+    return renditionForAppearance(s.view.context.appearance, idiom);
+}
+
+namespace {
+// Meia resolucao, como a copia que o Tauri manda (`BACKDROP_SCALE`).
+constexpr double kBackdropScale = 0.5;
+}  // namespace
+
+RenderLook lookOf(const Session& s, rb::Rendition r, icf::Idiom idiom, bool canvas, std::uint32_t thumbSize) {
+    RenderLook look;
+    look.context = renditionContext(r, idiom);
+    if (!renditionIsMono(r)) return look;
+    rb::MonoLook m;
+    switch (r) {
+        case rb::Rendition::LightClear: m.kind = rb::MonoLook::Kind::ClearLight; break;
+        case rb::Rendition::DarkClear:  m.kind = rb::MonoLook::Kind::ClearDark; break;
+        case rb::Rendition::LightTint:  m.kind = rb::MonoLook::Kind::TintedLight; break;
+        default:                        m.kind = rb::MonoLook::Kind::TintedDark; break;
     }
-    if (auto by = shadowedBy(r)) {
-        return std::string(renditionDisplayName(r)) + " would be the same pixels as " +
-               renditionDisplayName(*by) +
-               ".\nThe target separates the two with `ICRIconStyle.appearance` ({light, dark}), "
-               "which is an axis of the RENDER and not of the document (laudo §2.5). This engine "
-               "has no such axis: the only appearance that reaches it is the document's, and both "
-               "of these read the same `" +
-               std::string(icf::appearanceToString(rb::sourceAppearance(r))) +
-               "` slice (laudo §2.6).\n"
-               "Offering it would be offering the neighbour's image.";
+    if (m.kind == rb::MonoLook::Kind::TintedDark) m.tint = tintOf(s.view);
+    if (canvas) {
+        m.squareX = std::round(s.view.squareX * kBackdropScale);
+        m.squareY = std::round(s.view.squareY * kBackdropScale);
+        m.squareSide = std::round(s.view.squareSide * kBackdropScale);
+    } else {
+        m.squareSide = thumbSize * kBackdropScale;
     }
-    return {};
+    look.mono = m;
+    return look;
+}
+
+MonoBackdrop backdropOf(const Session& s, const RenderLook& look, bool canvas, std::uint32_t thumbSize) {
+    MonoBackdrop b;
+    if (!look.mono) return b;
+    b.pixelsPerPoint = kBackdropScale;
+    const float w = canvas ? s.view.stageW : static_cast<float>(thumbSize);
+    const float h = canvas ? s.view.stageH : static_cast<float>(thumbSize);
+    b.width = static_cast<std::uint32_t>(std::max(1.0, std::round(w * kBackdropScale)));
+    b.height = static_cast<std::uint32_t>(std::max(1.0, std::round(h * kBackdropScale)));
+    b.r = theme::kCanvas.x;
+    b.g = theme::kCanvas.y;
+    b.b = theme::kCanvas.z;
+    return b;
 }
 
 icf::Appearance canvasSliceOf(icf::Appearance a) {
@@ -265,21 +318,21 @@ RenditionThumbnails::~RenditionThumbnails() {
     }
 }
 
-const RenditionThumb* RenditionThumbnails::find(icf::Context ctx) const {
+const RenditionThumb* RenditionThumbnails::find(const RenderLook& look) const {
     for (const RenditionThumb& t : thumbs_) {
-        if (t.context == ctx) return &t;
+        if (t.look == look) return &t;
     }
     return nullptr;
 }
 
-void RenditionThumbnails::tick(Session& s, const std::vector<icf::Context>& want) {
+void RenditionThumbnails::tick(Session& s, const std::vector<RenderLook>& want) {
     const auto now = std::chrono::steady_clock::now();
-    auto wanted = [&](icf::Context c) {
+    auto wanted = [&](const RenderLook& c) {
         return std::find(want.begin(), want.end(), c) != want.end();
     };
-    auto mut = [&](icf::Context c) -> RenditionThumb* {
+    auto mut = [&](const RenderLook& c) -> RenditionThumb* {
         for (RenditionThumb& t : thumbs_) {
-            if (t.context == c) return &t;
+            if (t.look == c) return &t;
         }
         return nullptr;
     };
@@ -287,17 +340,18 @@ void RenditionThumbnails::tick(Session& s, const std::vector<icf::Context>& want
     // O que saiu da lista devolve a textura. Trocar de idioma não pode vazar
     // uma textura por troca.
     for (auto it = thumbs_.begin(); it != thumbs_.end();) {
-        if (wanted(it->context)) {
+        if (wanted(it->look)) {
             ++it;
             continue;
         }
         if (it->texture != ImTextureID_Invalid) sink_.remove(it->texture);
         it = thumbs_.erase(it);
     }
-    for (const icf::Context& c : want) {
+    for (const RenderLook& c : want) {
         if (!mut(c)) {
             RenditionThumb t;
-            t.context = c;
+            t.look = c;
+            t.context = c.context;
             thumbs_.push_back(std::move(t));
         }
     }
@@ -305,12 +359,12 @@ void RenditionThumbnails::tick(Session& s, const std::vector<icf::Context>& want
     while (auto res = scheduler_.poll()) {
         // A chave INTEIRA, como o coordenador do canvas: versão, contexto e
         // tamanho. Um resultado que responde outra pergunta não é a resposta.
-        if (!inFlight_ || res->version != flightVersion_ || !(res->context == flightContext_) ||
-            res->size != size_) {
+        if (!inFlight_ || res->version != flightVersion_ || !(res->context == flightLook_.context) ||
+            !(res->mono == flightLook_.mono) || res->size != size_) {
             continue;
         }
         inFlight_ = false;
-        RenditionThumb* t = mut(res->context);
+        RenditionThumb* t = mut(flightLook_);
         if (!t) continue;   // o contexto saiu da barra enquanto o render corria
         t->pending = false;
         t->pendingSeconds = 0.0;
@@ -335,13 +389,13 @@ void RenditionThumbnails::tick(Session& s, const std::vector<icf::Context>& want
     }
 
     if (inFlight_) {
-        if (RenditionThumb* t = mut(flightContext_)) {
+        if (RenditionThumb* t = mut(flightLook_)) {
             t->pendingSeconds = std::chrono::duration<double>(now - flightAt_).count();
         }
     }
 
     stale_ = 0;
-    for (const icf::Context& c : want) {
+    for (const RenderLook& c : want) {
         const RenditionThumb* t = find(c);
         if (!t || t->version != s.version()) ++stale_;
     }
@@ -350,14 +404,15 @@ void RenditionThumbnails::tick(Session& s, const std::vector<icf::Context>& want
     // primeiro. Quatro pedidos de uma vez seriam dois segundos de janela
     // parada, que é a regressão que este laço existe para não cometer.
     if (inFlight_) return;
-    for (const icf::Context& c : want) {
+    for (const RenderLook& c : want) {
         RenditionThumb* t = mut(c);
         if (!t || t->version == s.version()) continue;
-        RenderRequest r{s.version(), s.bundle().clone(), c, size_, TileRect{}, size_};
+        RenderRequest r{s.version(), s.bundle().clone(), c.context, size_, TileRect{}, size_, c.mono,
+                        backdropOf(s, c, false, size_)};
         scheduler_.request(std::move(r));
         inFlight_ = true;
         flightVersion_ = s.version();
-        flightContext_ = c;
+        flightLook_ = c;
         flightAt_ = now;
         t->pending = true;
         t->pendingSeconds = 0.0;
@@ -394,7 +449,7 @@ RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs, ImGuiWind
     RenditionStats st;
     const icf::Idiom idiom = s.view.context.idiom;
     const std::vector<RenditionGroup> groups = renditionGroups(idiom);
-    const rb::Rendition current = renditionForAppearance(s.view.context.appearance, idiom);
+    const rb::Rendition current = canvasRendition(s);
     // A FATIA QUE O CANVAS ESTÁ MOSTRANDO, que é a pergunta que a miniatura
     // marcada tem de responder.
     const icf::Context canvasContext{canvasSliceOf(s.view.context.appearance), idiom};
@@ -411,18 +466,23 @@ RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs, ImGuiWind
     // um canvas escuro é mostrar a imagem da vizinha -- exatamente a mentira
     // que os itens cinzas existem para não contar. O nome continua sendo o
     // medido; a nota diz que a fatia é outra.
+    // O look de cada miniatura: a marcada mostra a fatia do canvas (que pode
+    // nao ter rendicao propria neste idioma); o Mono e o da rendicao.
+    const std::uint32_t thumbSize = thumbs ? thumbs->size() : 128;
     auto contextOf = [&](rb::Rendition r, bool selected) {
-        return selected ? canvasContext : renditionContext(r, idiom);
+        RenderLook look = lookOf(s, r, idiom, false, thumbSize);
+        if (selected) look.context = canvasContext;
+        return look;
     };
 
     // OS CONTEXTOS QUE ESTA BARRA VAI MOSTRAR, o selecionado primeiro: é a
     // ordem em que as miniaturas são pedidas, e é por isso que a que a pessoa
     // acabou de escolher é a primeira a aparecer.
-    std::vector<icf::Context> want;
-    auto pushContext = [&](icf::Context c) {
+    std::vector<RenderLook> want;
+    auto pushContext = [&](const RenderLook& c) {
         if (std::find(want.begin(), want.end(), c) == want.end()) want.push_back(c);
     };
-    if (renditionValidFor(current, idiom) && renditionSupported(current)) pushContext(canvasContext);
+    if (renditionValidFor(current, idiom) && renditionSupported(current)) pushContext(contextOf(current, true));
     for (const RenditionGroup& g : groups) {
         for (std::size_t i = 0; i < g.count; ++i) {
             if (!renditionSupported(g.items[i])) continue;
@@ -468,7 +528,7 @@ RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs, ImGuiWind
             const rb::Rendition r = g.items[i];
             const bool enabled = renditionSupported(r);
             const bool selected = (r == current);
-            const icf::Context ctx = contextOf(r, selected);
+            const RenderLook ctx = contextOf(r, selected);
             const RenditionThumb* thumb = (thumbs && enabled) ? thumbs->find(ctx) : nullptr;
 
             RenditionInfo info;
@@ -539,7 +599,10 @@ RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs, ImGuiWind
             ImGui::PopID();
 
             if (!enabled) ++st.disabled;
-            if (clicked && enabled) s.view.context.appearance = rb::sourceAppearance(r);
+            if (clicked && enabled) {
+                s.view.context.appearance = rb::sourceAppearance(r);
+                if (renditionIsMono(r)) s.view.mono = r;
+            }
             st.drawn.push_back(std::move(info));
             x += tile;
         }
@@ -566,12 +629,12 @@ RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs, ImGuiWind
         st.note = "No render device: this bar shows the shape, not the pixels.";
     } else {
         const RenditionThumb* busy = nullptr;
-        for (const icf::Context& c : want) {
+        for (const RenderLook& c : want) {
             const RenditionThumb* t = thumbs->find(c);
             if (t && t->pending) busy = t;
         }
         if (busy) {
-            st.note = "rendering " + std::string(appearanceLabel(busy->context.appearance)) +
+            st.note = "rendering " + std::string(appearanceLabel(busy->look.context.appearance)) +
                       " at " + std::to_string(thumbs->size()) + " px — " +
                       secondsText(busy->pendingSeconds);
             if (thumbs->stale() > 1) {
@@ -580,7 +643,7 @@ RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs, ImGuiWind
         } else if (thumbs->stale() > 0) {
             st.note = std::to_string(thumbs->stale()) + " thumbnail(s) queued behind the canvas";
         } else {
-            const RenditionThumb* t = thumbs->find(canvasContext);
+            const RenditionThumb* t = thumbs->find(contextOf(current, true));
             st.note = std::to_string(want.size()) + " rendition(s) at " +
                       std::to_string(thumbs->size()) + " px";
             if (t && t->lastRenderSeconds >= 0.0) {

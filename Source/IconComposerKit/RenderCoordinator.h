@@ -32,6 +32,8 @@ private:
         // O ladrilho pedido, na grade de `size`. Vazio (`w == 0`) = a base,
         // o icone inteiro.
         TileRect tile;
+        // O Mono (Renditions.h, `lookOf`): duas rendicoes da mesma fatia.
+        std::optional<rb::MonoLook> mono;
         bool operator==(const Key&) const = default;
     };
     // O que `tick` quer ver na tela neste quadro, e o que ja esta.

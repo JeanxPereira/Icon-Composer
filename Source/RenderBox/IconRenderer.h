@@ -150,6 +150,7 @@ struct IconRenderOptions {
     struct TintRecolour {
         double r = 1.0, g = 1.0, b = 1.0;
         double saturation = 1.0;
+        bool operator==(const TintRecolour&) const = default;
     };
     std::optional<TintRecolour> tint;
 

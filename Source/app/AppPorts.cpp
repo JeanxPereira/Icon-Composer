@@ -2,6 +2,7 @@
 
 #include "Source/RenderBox/GpuResident.h"
 #include "Source/RenderBox/IconRenderer.h"
+#include "Source/RenderBox/Mono.h"
 
 #include <algorithm>
 #include <cmath>
@@ -50,6 +51,7 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
     // even when the job below falls back to the base resolution.
     out.size = r.size;
     out.tile = r.tile;
+    out.mono = r.mono;
 
     rb::IconRenderOptions io;
     io.size = r.size;
@@ -61,6 +63,8 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
     // subdivisoes sobem com o tamanho, como `subdivisionsFor` do App.tsx: 16
     // bastam a 512 px, e com zoom uma curva viraria poligono visivel.
     io.subdivisions = std::clamp(static_cast<int>(std::lround(16.0 * r.size / 512.0)), 16, 256);
+    // O MONO (Renditions.h, `lookOf`): a mascara ou o tint antes do render.
+    if (r.mono) rb::prepareMono(io, *r.mono);
     auto icon = rb::renderIconGpu(device, r.bundle, io);
 
     // Um ladrilho pode ser impossivel de desenhar de duas formas (spec
@@ -103,6 +107,27 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
             }
             out.notes.insert(out.notes.end(), areaCapNotes.begin(), areaCapNotes.end());
         }
+    }
+
+    // E depois dele o vidro simulado e o Clear, sobre o fundo chapado do palco
+    // (`MonoBackdrop`: o canvas do editor e uma cor so).
+    if (icon.has_value() && r.mono) {
+        rb::ClearBackdrop back;
+        back.width = r.backdrop.width;
+        back.height = r.backdrop.height;
+        back.pixelsPerPoint = r.backdrop.pixelsPerPoint;
+        const auto to8 = [](float v) {
+            return static_cast<std::uint8_t>(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f));
+        };
+        back.rgba.resize(static_cast<std::size_t>(back.width) * back.height * 4);
+        for (std::size_t i = 0; i < back.rgba.size(); i += 4) {
+            back.rgba[i + 0] = to8(r.backdrop.r);
+            back.rgba[i + 1] = to8(r.backdrop.g);
+            back.rgba[i + 2] = to8(r.backdrop.b);
+            back.rgba[i + 3] = 255;
+        }
+        const std::string why = rb::finishMono(*icon, *r.mono, back, io.context.idiom, io.size);
+        if (!why.empty()) out.notes.push_back("mono: " + why);
     }
 
     if (!icon.has_value()) {

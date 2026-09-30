@@ -122,6 +122,18 @@ icf::Context renditionContext(rb::Rendition r, icf::Idiom idiom);
 // cabeçalho: não-Clear, e nenhuma anterior na ordem medida com o mesmo
 // contexto.
 bool renditionSupported(rb::Rendition r);
+
+// O MONO DE UMA RENDICAO. Nada para Default e Dark; para as quatro, o tipo e o
+// tint da `ViewContext`. `canvas`: o quadrado e o do icone no palco (o canvas);
+// senao o fundo e do tamanho da miniatura e o quadrado e ela inteira.
+bool renditionIsMono(rb::Rendition r);
+RenderLook lookOf(const Session& s, rb::Rendition r, icf::Idiom idiom, bool canvas, std::uint32_t thumbSize = 0);
+// O fundo chapado que acompanha um look Mono (vazio sem Mono).
+MonoBackdrop backdropOf(const Session& s, const RenderLook& look, bool canvas, std::uint32_t thumbSize = 0);
+// A cor do espectro do tint (doc.ts, `TINT_SPECTRUM`/`tintColor`) e o alfa.
+rb::IconRenderOptions::TintRecolour tintOf(const ViewContext& v);
+// A rendicao que o canvas mostra: a Mono escolhida, com a fatia `tinted`.
+rb::Rendition canvasRendition(const Session& s);
 // Por que não, numa frase, para o tooltip. Vazia quando é suportada.
 std::string renditionUnsupportedReason(rb::Rendition r);
 
@@ -300,6 +312,7 @@ private:
 // é oferecida, na prática a barra pede três. Chavear por contexto é o que faz
 // "as tingidas são o mesmo render aqui" ser estrutura em vez de coincidência.
 struct RenditionThumb {
+    RenderLook look;
     icf::Context context;
     ImTextureID texture = ImTextureID_Invalid;
     std::uint32_t width = 0, height = 0;
@@ -333,8 +346,8 @@ public:
     // `want` são os contextos que a barra vai desenhar, em ordem de
     // prioridade (o selecionado primeiro). Um contexto que sai da lista devolve
     // a textura dele: trocar de idioma não pode vazar uma textura por troca.
-    void tick(Session& s, const std::vector<icf::Context>& want);
-    const RenditionThumb* find(icf::Context ctx) const;
+    void tick(Session& s, const std::vector<RenderLook>& want);
+    const RenditionThumb* find(const RenderLook& look) const;
     std::uint32_t size() const { return size_; }
     // Quantas das pedidas ainda não respondem a versão atual do documento.
     std::size_t stale() const { return stale_; }
@@ -348,7 +361,7 @@ private:
     // um resultado só é O resultado quando responde a chave INTEIRA.
     bool inFlight_ = false;
     std::uint64_t flightVersion_ = 0;
-    icf::Context flightContext_;
+    RenderLook flightLook_;
     std::chrono::steady_clock::time_point flightAt_{};
     std::size_t stale_ = 0;
 };

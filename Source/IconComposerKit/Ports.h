@@ -8,6 +8,7 @@
 #include "Source/IconComposerFoundation/IconBundle.h"
 #include "Source/IconComposerFoundation/IconDocument.h"
 #include "Source/IconComposerKit/Tile.h"
+#include "Source/RenderBox/Mono.h"
 #include "imgui.h"
 
 #include <cstdint>
@@ -16,6 +17,25 @@
 #include <vector>
 
 namespace ick {
+
+// O FUNDO ATRAS DO ICONE, para o Mono (o vidro simulado e o Clear leem o que
+// esta atras): uma cor chapada do tamanho do palco, em `pixelsPerPoint` --
+// o canvas do editor e solido (Theme.h, `kCanvas`), e o app o monta assim.
+struct MonoBackdrop {
+    std::uint32_t width = 0, height = 0;
+    double pixelsPerPoint = 0.5;
+    float r = 0.0f, g = 0.0f, b = 0.0f;
+    bool operator==(const MonoBackdrop&) const = default;
+};
+
+// O QUE UM RENDER DESENHA: a fatia do documento e, nas quatro rendicoes Mono
+// (Clear Light/Dark, Tinted Light/Dark), o que o render faz com ela. Duas
+// rendicoes do Mono leem a MESMA fatia (`tinted`) e so o `mono` as separa.
+struct RenderLook {
+    icf::Context context;
+    std::optional<rb::MonoLook> mono;
+    bool operator==(const RenderLook&) const = default;
+};
 
 struct RenderRequest {
     std::uint64_t version = 0;   // Session::version() this was made from
@@ -27,10 +47,15 @@ struct RenderRequest {
     // Se o buffer do ladrilho passar do teto, o job renderiza o canvas inteiro
     // nesta resolucao. Zero: nao ha para onde cair.
     std::uint32_t fallbackSize = 0;
+    // O Mono, quando a rendicao e uma das quatro (Renditions.h, `lookOf`).
+    std::optional<rb::MonoLook> mono;
+    MonoBackdrop backdrop;
 };
 
 struct RenderResult {
     std::uint64_t version = 0;
+    // O eco do Mono pedido: parte da chave, como o contexto.
+    std::optional<rb::MonoLook> mono;
     // What this result ANSWERS, echoed back from the request that produced it.
     // The implementor of RenderScheduler must copy it across: the coordinator
     // decides "is this still the frame I am waiting for?" by comparing version,

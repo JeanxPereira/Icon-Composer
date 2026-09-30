@@ -73,6 +73,7 @@
 #include "Source/RenderBox/GpuResident.h"
 #include "Source/RenderBox/Parallel.h"
 #include "Source/RenderBox/RenderCache.h"
+#include "Source/RenderBox/Mono.h"
 #include "Source/RenderBox/SimulatedGlass.h"
 #include "Source/RenderBox/ChicletShape.h"
 
@@ -624,11 +625,29 @@ int main(int argc, char** argv) {
             io.cache = &cache;
             io.viewport = rb::IconViewport{x, y, w, h};
             io.subdivisions = subdivisions;
-            io.tint = tint;
-            // O Clear tambem nao e `.color`: a sombra vira `neutral` (0x49F40).
-            // Uma recoloracao identidade liga so esse portao.
-            if (clear && !tint) io.tint = rb::IconRenderOptions::TintRecolour{};
-            io.clearMask = clear.has_value();
+            // O MONO pela RenderBox (Mono.h), o mesmo caminho do editor: o tint e
+            // o Tinted Dark (com o quadrado, sobre o vidro), o clear e o Clear
+            // Light ou Dark -- o Tinted Light chega aqui como Clear Light.
+            std::optional<rb::MonoLook> mono;
+            if (tint) {
+                rb::MonoLook m;
+                m.kind = rb::MonoLook::Kind::TintedDark;
+                m.tint = *tint;
+                if (glassSquare) {
+                    m.squareX = (*glassSquare)[0];
+                    m.squareY = (*glassSquare)[1];
+                    m.squareSide = (*glassSquare)[2];
+                }
+                mono = m;
+            } else if (clear) {
+                rb::MonoLook m;
+                m.kind = glassDark ? rb::MonoLook::Kind::ClearDark : rb::MonoLook::Kind::ClearLight;
+                m.squareX = (*clear)[0];
+                m.squareY = (*clear)[1];
+                m.squareSide = (*clear)[2];
+                mono = m;
+            }
+            if (mono) rb::prepareMono(io, *mono);
             if (appearance != "-") {
                 auto a = icf::appearanceFromString(appearance);
                 if (!a) {
@@ -677,25 +696,12 @@ int main(int argc, char** argv) {
                 fail("ladrilho acima do teto de area do render");
                 continue;
             }
-            if (tint) rb::applyTintedDark(*icon, *tint);
-            if (glassSquare && backdrop.width == 0) {
-                fail("clear sem backdrop");
-                continue;
-            }
-            // O vidro simulado sob o icone, nas rendicoes Mono (SimulatedGlass.h).
-            // Clear Light/Dark e Tinted Dark: a aparencia escura escolhe o VCM.
-            std::optional<rb::SimulatedGlass> glass;
-            if (glassSquare) {
-                const auto& g = *glassSquare;
-                glass = rb::simulatedGlass(backdrop, g[0], g[1], g[2],
-                                           rb::iconPlatformOf(io.context.idiom), glassDark);
-            }
-            if (clear) {
-                rb::applyClear(*icon, backdrop, (*clear)[0], (*clear)[1], (*clear)[2], size,
-                               glass ? &*glass : nullptr);
-            } else if (tint && glass) {
-                rb::applyOverGlass(*icon, backdrop, (*glassSquare)[0], (*glassSquare)[1],
-                                   (*glassSquare)[2], size, *glass);
+            if (mono) {
+                const std::string why = rb::finishMono(*icon, *mono, backdrop, io.context.idiom, size);
+                if (!why.empty()) {
+                    fail(why);
+                    continue;
+                }
             }
             const std::vector<std::uint8_t> bytes =
                 toRgba8Dithered(icon->rgba, icon->width, icon->originX, icon->originY);
