@@ -16,11 +16,73 @@
   --control: rgba(255, 255, 255, 0.78);
   --control-shadow: 0 0.5px 1.5px rgba(0, 0, 0, 0.18), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
   --radius-window: 12px;
+  --popover: rgba(252, 251, 250, 0.97);
+  --popover-shadow: 0 8px 28px rgba(0, 0, 0, 0.22), 0 0 0 0.5px rgba(0, 0, 0, 0.1);
+  --cap-on: rgba(0, 0, 0, 0.08);
+  --chip: rgba(255, 255, 255, 0.65);
+  --chip-strong: rgba(255, 255, 255, 0.85);
+  --danger: #b3261e;
+  --track: rgba(0, 0, 0, 0.1);
+  --field: #ffffff;
+  --sym-img-filter: none;
+  color-scheme: light;
   font-family: "SF Pro Text", -apple-system, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   font-size: 13px;
   color: var(--text);
   -webkit-font-smoothing: antialiased;
   user-select: none;
+}
+
+/* O tema escuro: segue o sistema quando a pessoa nao escolheu (View >
+   Appearance), ou o que ela escolheu, por `data-theme` na raiz. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --text: #f5f5f7;
+    --text-2: #a1a1a6;
+    --text-3: #6e6e73;
+    --accent: #0a84ff;
+    --accent-text: #ffffff;
+    --sep: rgba(255, 255, 255, 0.09);
+    --panel: rgba(30, 30, 32, 0.58);
+    --box: rgba(255, 255, 255, 0.05);
+    --box-strong: rgba(255, 255, 255, 0.09);
+    --control: rgba(255, 255, 255, 0.12);
+    --control-shadow: 0 0.5px 1.5px rgba(0, 0, 0, 0.4), 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+    --popover: rgba(40, 40, 43, 0.97);
+    --popover-shadow: 0 8px 28px rgba(0, 0, 0, 0.5), 0 0 0 0.5px rgba(255, 255, 255, 0.12);
+    --cap-on: rgba(255, 255, 255, 0.14);
+    --chip: rgba(30, 30, 32, 0.7);
+    --chip-strong: rgba(30, 30, 32, 0.88);
+    --danger: #ff6961;
+    --track: rgba(255, 255, 255, 0.16);
+    --field: #1c1c1e;
+    --sym-img-filter: invert(1);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --text: #f5f5f7;
+  --text-2: #a1a1a6;
+  --text-3: #6e6e73;
+  --accent: #0a84ff;
+  --accent-text: #ffffff;
+  --sep: rgba(255, 255, 255, 0.09);
+  --panel: rgba(30, 30, 32, 0.58);
+  --box: rgba(255, 255, 255, 0.05);
+  --box-strong: rgba(255, 255, 255, 0.09);
+  --control: rgba(255, 255, 255, 0.12);
+  --control-shadow: 0 0.5px 1.5px rgba(0, 0, 0, 0.4), 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+  --popover: rgba(40, 40, 43, 0.97);
+  --popover-shadow: 0 8px 28px rgba(0, 0, 0, 0.5), 0 0 0 0.5px rgba(255, 255, 255, 0.12);
+  --cap-on: rgba(255, 255, 255, 0.14);
+  --chip: rgba(30, 30, 32, 0.7);
+  --chip-strong: rgba(30, 30, 32, 0.88);
+  --danger: #ff6961;
+  --track: rgba(255, 255, 255, 0.16);
+  --field: #1c1c1e;
+  --sym-img-filter: invert(1);
+  color-scheme: dark;
 }
 
 html,
@@ -300,7 +362,7 @@ button:disabled {
 }
 
 .cap-btn.on {
-  background: rgba(0, 0, 0, 0.08);
+  background: var(--cap-on);
 }
 
 .text-cap {
@@ -362,8 +424,8 @@ button:disabled {
   gap: 8px;
   padding: 10px;
   border-radius: 12px;
-  background: rgba(252, 251, 250, 0.96);
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.22), 0 0 0 0.5px rgba(0, 0, 0, 0.1);
+  background: var(--popover);
+  box-shadow: var(--popover-shadow);
 }
 
 .bg-tile {
@@ -424,8 +486,8 @@ button:disabled {
 .error {
   max-width: 70ch;
   white-space: pre-wrap;
-  color: #b3261e;
-  background: rgba(255, 255, 255, 0.85);
+  color: var(--danger);
+  background: var(--chip-strong);
   padding: 12px 14px;
   border-radius: 10px;
 }
@@ -452,7 +514,7 @@ button:disabled {
 .rcaption {
   font-size: 11px;
   color: var(--text-2);
-  background: rgba(255, 255, 255, 0.72);
+  background: var(--chip);
   padding: 2px 9px;
   border-radius: 9px;
 }
@@ -476,7 +538,7 @@ button:disabled {
 }
 
 .rthumb.on {
-  background: rgba(255, 255, 255, 0.55);
+  background: var(--chip);
   box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.1);
 }
 
@@ -487,7 +549,7 @@ button:disabled {
   font-size: 11px;
   color: var(--text-2);
   font-variant-numeric: tabular-nums;
-  background: rgba(255, 255, 255, 0.6);
+  background: var(--chip);
   padding: 1px 7px;
   border-radius: 7px;
 }
@@ -662,7 +724,7 @@ button:disabled {
   width: 38px;
   height: 22px;
   border-radius: 11px;
-  background: rgba(0, 0, 0, 0.1);
+  background: var(--track);
   transition: background 0.15s;
 }
 
@@ -707,6 +769,7 @@ button:disabled {
 
 .sym-img {
   flex: none;
+  filter: var(--sym-img-filter);
   object-fit: contain;
   opacity: 0.7;
 }
@@ -746,7 +809,7 @@ button:disabled {
 }
 
 .numbox.editing {
-  background: #fff;
+  background: var(--field);
   box-shadow: 0 0 0 2px var(--accent);
 }
 
@@ -819,7 +882,7 @@ button:disabled {
   border: 0;
   border-radius: 4px;
   outline: 2px solid var(--accent);
-  background: #fff;
+  background: var(--field);
   color: var(--text);
 }
 
@@ -837,8 +900,8 @@ button:disabled {
   min-width: 150px;
   padding: 5px;
   border-radius: 9px;
-  background: rgba(252, 251, 250, 0.97);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22), 0 0 0 0.5px rgba(0, 0, 0, 0.1);
+  background: var(--popover);
+  box-shadow: var(--popover-shadow);
 }
 
 .menu button {
@@ -991,7 +1054,7 @@ button:disabled {
   width: 340px;
   padding: 18px 20px 16px;
   border-radius: 14px;
-  background: rgba(252, 251, 250, 0.97);
+  background: var(--popover);
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.3), 0 0 0 0.5px rgba(0, 0, 0, 0.12);
 }
 
@@ -1105,7 +1168,7 @@ button:disabled {
 .drop-hint span {
   padding: 8px 16px;
   border-radius: 10px;
-  background: rgba(252, 251, 250, 0.95);
+  background: var(--popover);
   box-shadow: var(--control-shadow);
   font-weight: 600;
 }
@@ -1213,8 +1276,8 @@ button.varied {
   width: 196px;
   padding: 10px;
   border-radius: 10px;
-  background: rgba(252, 251, 250, 0.97);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22), 0 0 0 0.5px rgba(0, 0, 0, 0.1);
+  background: var(--popover);
+  box-shadow: var(--popover-shadow);
 }
 
 .color-menu-title {
@@ -1238,4 +1301,16 @@ button.varied {
 
 .color-cell:hover {
   outline: 2px solid var(--accent);
+}
+
+/* O ✓ numa coluna propria, como no menu do sistema: nao empurra o texto. */
+.menu button {
+  position: relative;
+  padding-left: 22px;
+}
+
+.menu button.checked::before {
+  content: "✓";
+  position: absolute;
+  left: 8px;
 }

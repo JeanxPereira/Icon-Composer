@@ -62,6 +62,26 @@ export default function App() {
   const [exporting, setExporting] = useState(false);
   const [grid, setGrid] = useState(false);
   const [snap, setSnap] = useState(true);
+  // O tema da casca: o do sistema, ou o escolhido em View > Appearance. So a
+  // casca; o canvas mostra o icone na rendicao escolhida, como no alvo.
+  const [theme, setTheme] = useState<"system" | "light" | "dark">(() => {
+    try {
+      const t = localStorage.getItem("icon-composer.theme");
+      return t === "light" || t === "dark" ? t : "system";
+    } catch {
+      return "system";
+    }
+  });
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === "system") delete root.dataset.theme;
+    else root.dataset.theme = theme;
+    try {
+      localStorage.setItem("icon-composer.theme", theme);
+    } catch {
+      // sem armazenamento: vale ate fechar
+    }
+  }, [theme]);
   const [gridStyle, setGridStyle] = useState<"light" | "dark">("dark");
   const [zoom, setZoom] = useState(1);
 
@@ -422,6 +442,10 @@ export default function App() {
         { label: "Actual Size", shortcut: "Ctrl+0", action: () => setZoom(1) },
         "-",
         { label: "Snap to Guides", shortcut: "Ctrl+;", action: () => setSnap((v) => !v), checked: snap },
+        "-",
+        { label: "Appearance: System", action: () => setTheme("system"), checked: theme === "system" },
+        { label: "Appearance: Light", action: () => setTheme("light"), checked: theme === "light" },
+        { label: "Appearance: Dark", action: () => setTheme("dark"), checked: theme === "dark" },
         { label: grid ? "Hide Grid" : "Show Grid", shortcut: "Ctrl+'", action: () => setGrid((g) => !g) },
       ],
     },
