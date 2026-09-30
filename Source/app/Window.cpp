@@ -12,6 +12,7 @@
 #include "Source/app/JobQueue.h"
 #include "Source/app/NativeWindow.h"
 #include "Source/app/Shell.h"
+#include "Source/app/TrafficLights.h"
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -671,64 +672,7 @@ void defaultLayout(ImGuiID dockspaceId, ImVec2 work) {
 namespace {
 
 // ---- a barra de titulo ------------------------------------------------------
-//
-// As tres luzes do macOS a esquerda e o nome do documento no meio, como no
-// Tauri (ui/src/TrafficLights.tsx). Geometria do alvo: botao de 14 pt, 9 pt
-// entre eles, a primeira a 16 pt da borda. O glifo so aparece com o mouse
-// sobre o GRUPO, as tres juntas; o ponto de "nao salvo" fica sempre.
-void drawTrafficLights(Shell& shell, bool dirty, float barH) {
-    const float k = ImGui::GetStyle().FontScaleDpi;
-    const float d = 14.0f * k, gap = 9.0f * k, left = 16.0f * k;
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 origin = ImGui::GetWindowPos();
-    const float cy = origin.y + barH * 0.5f;
-    const ImVec2 groupMin(origin.x + left, cy - d * 0.5f);
-    const ImVec2 groupMax(origin.x + left + 3 * d + 2 * gap, cy + d * 0.5f);
-    const bool groupHover = ImGui::IsMouseHoveringRect(groupMin, groupMax, false);
-    const bool focused = shell.focused();
-
-    struct Light {
-        const char* id;
-        ImU32 body, glyph;
-    };
-    const Light lights[3] = {
-        {"##close", IM_COL32(0xff, 0x5f, 0x57, 255), IM_COL32(0x4d, 0x00, 0x00, 200)},
-        {"##minimize", IM_COL32(0xfe, 0xbc, 0x2e, 255), IM_COL32(0x99, 0x57, 0x00, 200)},
-        {"##zoom", IM_COL32(0x28, 0xc8, 0x40, 255), IM_COL32(0x00, 0x65, 0x00, 200)},
-    };
-    for (int i = 0; i < 3; ++i) {
-        const ImVec2 c(groupMin.x + d * 0.5f + i * (d + gap), cy);
-        ImGui::SetCursorScreenPos(ImVec2(c.x - d * 0.5f, c.y - d * 0.5f));
-        const bool clicked = ImGui::InvisibleButton(lights[i].id, ImVec2(d, d));
-        const bool held = ImGui::IsItemActive();
-        // Fora de foco, cinza -- menos com o mouse em cima, como no sistema.
-        const ImU32 body = focused || groupHover ? lights[i].body : IM_COL32(0x4a, 0x4a, 0x4e, 255);
-        dl->AddCircleFilled(c, d * 0.5f, body, 24);
-        if (held) dl->AddCircleFilled(c, d * 0.5f, IM_COL32(0, 0, 0, 50), 24);
-        const ImU32 g = lights[i].glyph;
-        const float r = d * 0.22f;
-        if (i == 0 && dirty && !groupHover) {
-            dl->AddCircleFilled(c, d * 0.16f, g, 12);
-        } else if (groupHover) {
-            if (i == 0) {
-                dl->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), g, 1.3f * k);
-                dl->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y - r), g, 1.3f * k);
-            } else if (i == 1) {
-                dl->AddLine(ImVec2(c.x - r * 1.2f, c.y), ImVec2(c.x + r * 1.2f, c.y), g, 1.5f * k);
-            } else {
-                dl->AddTriangleFilled(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r * 0.5f, c.y - r),
-                                      ImVec2(c.x - r, c.y + r * 0.5f), g);
-                dl->AddTriangleFilled(ImVec2(c.x + r, c.y + r), ImVec2(c.x - r * 0.5f, c.y + r),
-                                      ImVec2(c.x + r, c.y - r * 0.5f), g);
-            }
-        }
-        if (clicked) {
-            if (i == 0) shell.close();
-            else if (i == 1) shell.minimize();
-            else shell.toggleMaximize();
-        }
-    }
-}
+TrafficLights g_lights;
 
 // A janela hospedeira: a barra de titulo em cima e o dockspace embaixo. O
 // nome dela e o que `NativeWindow` reconhece como "barra", para arrastar.
@@ -750,7 +694,12 @@ void drawHost(State& st, Shell& shell) {
     ImGui::PopStyleVar(3);
 
     const bool dirty = st.session && st.session->isDirty();
-    drawTrafficLights(shell, dirty, barH);
+    {
+        const float k = ImGui::GetStyle().FontScaleDpi;
+        const ImVec2 o = ImGui::GetWindowPos();
+        const float d = 14.0f * k;
+        g_lights.draw(shell, ImVec2(o.x + ick::theme::kLightsInset * k, o.y + (barH - d) * 0.5f), k, dirty);
+    }
 
     // O titulo, centrado na JANELA e nao no que sobra depois das luzes.
     const std::string text = st.titleBarText();
@@ -769,6 +718,18 @@ void drawHost(State& st, Shell& shell) {
         defaultLayout(dockspace, ImVec2(vp->WorkSize.x, vp->WorkSize.y - barH));
     ImGui::DockSpace(dockspace, ImVec2(0, 0), ImGuiDockNodeFlags_None);
     ImGui::End();
+
+    // O RIM DE DENTRO do macOS 27: o realce claro de 0,5 pt, densidade 0,1
+    // (Theme.h, `kRimInner`), por cima de tudo, seguindo o canto que o DWM
+    // recorta. Maximizada a janela nao tem canto nem borda.
+    if (!shell.maximized()) {
+        const float k = ImGui::GetStyle().FontScaleDpi;
+        const float w = std::max(1.0f, 0.5f * k * 2.0f) * 0.5f;   // 0,5 pt, nunca menos de meio pixel
+        ImDrawList* fg = ImGui::GetForegroundDrawList();
+        const ImVec2 a(vp->Pos.x + w * 0.5f, vp->Pos.y + w * 0.5f);
+        const ImVec2 b(vp->Pos.x + vp->Size.x - w * 0.5f, vp->Pos.y + vp->Size.y - w * 0.5f);
+        fg->AddRect(a, b, ick::theme::u32(ick::theme::kRimInner), ick::theme::kDwmRadius, 0, w * 2.0f);
+    }
 }
 
 }  // namespace
@@ -799,6 +760,12 @@ int run(const fs::path& initial) {
     // A ordem de destruicao e a inversa desta: o estado (e com ele o
     // coordenador, que devolve a textura) antes do pool, o pool antes da fila
     // de trabalho, e tudo antes do Shell, que e dono do dispositivo da tela.
+    // As luzes carregam ANTES da fila de trabalho existir: rasterizar os
+    // glifos usa o `rb::Device`, e o aquecimento abaixo tambem -- na thread de
+    // trabalho, ao mesmo tempo, seriam duas threads num `VkQueue`.
+    auto lightsSink = std::make_unique<PoolTextureSink>(shell->gpu());
+    g_lights.load(lightsSink->pool(), *device, ImGui::GetStyle().FontScaleDpi);
+
     JobQueue jobs;
     // A primeira coisa na fila, antes de qualquer render: o canvas pede o dele
     // no primeiro quadro e ele espera este, em vez de pagar o aquecimento
@@ -808,7 +775,7 @@ int run(const fs::path& initial) {
     state.shell = shell.get();
     // O dispositivo da exportacao e o mesmo do agendador -- ver `State::device`.
     state.device = &*device;
-    state.sink = std::make_unique<PoolTextureSink>(shell->gpu());
+    state.sink = std::move(lightsSink);
     state.scheduler = std::make_unique<JobScheduler>(jobs, *device);
     // O multiplexador vive tanto quanto o agendador, e não por documento: ele
     // não guarda nada do documento, só de quem é o render em voo.

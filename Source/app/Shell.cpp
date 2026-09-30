@@ -288,6 +288,7 @@ void Shell::run(const std::function<void()>& frame) {
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+        NativeWindow::clearControlRects();
         frame();
         ImGui::Render();
         const ImDrawData* dd = ImGui::GetDrawData();

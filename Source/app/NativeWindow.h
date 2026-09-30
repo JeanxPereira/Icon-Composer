@@ -16,6 +16,14 @@ namespace icapp::NativeWindow {
 void install(GLFWwindow* window);
 // Em pixels de tela, contados do topo da area cliente.
 void setTitleBarHeight(float px);
+// Os retangulos da barra que sao CONTROLES (as luzes, os menus), em pixels da
+// area cliente, refeitos a cada quadro. Ali o sistema responde HTCLIENT mesmo
+// sem item do ImGui sob o cursor: sem isso o primeiro movimento sobre uma luz
+// ja chegava como HTCAPTION, o Windows o mandava como mensagem de moldura, a
+// GLFW nao o repassava ao ImGui -- e o botao nunca ficava hovered, porque
+// nunca via o cursor. Medido 30/09: os glifos das luzes nao apareciam.
+void clearControlRects();
+void addControlRect(float x0, float y0, float x1, float y1);
 // O nome da janela ImGui que desenha a barra: so ela e "barra" para o sistema.
 inline constexpr const char* kHostWindow = "##IconComposerHost";
 

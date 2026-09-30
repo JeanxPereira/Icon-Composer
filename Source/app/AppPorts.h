@@ -31,6 +31,8 @@ public:
     // `kFramesInFlight` past the remove() -- a frame still on the GPU may hold
     // a draw command against the id (TexturePool.h).
     void advanceFrame() { pool_.advanceFrame(); }
+    // O pool, para o que o app carrega por conta propria (as luzes da janela).
+    TexturePool& pool() { return pool_; }
 
 private:
     TexturePool pool_;

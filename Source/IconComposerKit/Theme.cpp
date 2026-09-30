@@ -7,7 +7,8 @@ void apply(float dpiScale) {
     s = ImGuiStyle();
 
     s.WindowPadding = ImVec2(12, 10);
-    s.FramePadding = ImVec2(8, 4);
+    // 13 pt de texto + 2 x 5,5 = 24 pt: a altura do controle regular [BIN].
+    s.FramePadding = ImVec2(8, 5.5f);
     s.ItemSpacing = ImVec2(8, 6);
     s.ItemInnerSpacing = ImVec2(6, 4);
     s.IndentSpacing = 16;
@@ -58,9 +59,10 @@ void apply(float dpiScale) {
     c[ImGuiCol_Button] = kControl;
     c[ImGuiCol_ButtonHovered] = rgba(255, 255, 255, 0.16f);
     c[ImGuiCol_ButtonActive] = rgba(255, 255, 255, 0.22f);
-    c[ImGuiCol_Header] = kCapOn;
+    // A linha selecionada e a cor de selecao do sistema [BIN].
+    c[ImGuiCol_Header] = kSelection;
     c[ImGuiCol_HeaderHovered] = kBoxStrong;
-    c[ImGuiCol_HeaderActive] = kCapOn;
+    c[ImGuiCol_HeaderActive] = kSelection;
     c[ImGuiCol_Separator] = kSep;
     c[ImGuiCol_SeparatorHovered] = kAccent;
     c[ImGuiCol_SeparatorActive] = kAccent;
@@ -75,7 +77,7 @@ void apply(float dpiScale) {
     c[ImGuiCol_TabDimmed] = none;
     c[ImGuiCol_TabDimmedSelected] = kBox;
     c[ImGuiCol_TabDimmedSelectedOverline] = none;
-    c[ImGuiCol_DockingPreview] = rgba(0x0a, 0x84, 0xff, 0.35f);
+    c[ImGuiCol_DockingPreview] = rgba(0, 145, 255, 0.35f);
     c[ImGuiCol_DockingEmptyBg] = kCanvas;
     c[ImGuiCol_PlotLines] = kText2;
     c[ImGuiCol_PlotLinesHovered] = kAccent;
@@ -87,7 +89,7 @@ void apply(float dpiScale) {
     c[ImGuiCol_TableRowBg] = none;
     c[ImGuiCol_TableRowBgAlt] = kBox;
     c[ImGuiCol_TextLink] = kAccent;
-    c[ImGuiCol_TextSelectedBg] = rgba(0x0a, 0x84, 0xff, 0.40f);
+    c[ImGuiCol_TextSelectedBg] = rgba(0, 89, 209, 0.70f);
     c[ImGuiCol_TreeLines] = kSep;
     c[ImGuiCol_DragDropTarget] = kAccent;
     c[ImGuiCol_NavCursor] = kAccent;

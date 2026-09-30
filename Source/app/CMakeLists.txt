@@ -15,6 +15,7 @@ add_executable(iconcomposer
     NativeWindow.cpp
     Shell.cpp
     TexturePool.cpp
+    TrafficLights.cpp
     Window.cpp
 )
 target_link_libraries(iconcomposer PRIVATE IconComposer::Kit imgui_backends)

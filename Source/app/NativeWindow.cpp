@@ -17,6 +17,7 @@
 #include "imgui_internal.h"
 
 #include <cstring>
+#include <vector>
 
 // Os SDKs do MinGW nao trazem todos.
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
@@ -25,6 +26,9 @@
 #ifndef DWMWA_WINDOW_CORNER_PREFERENCE
 #define DWMWA_WINDOW_CORNER_PREFERENCE 33
 #endif
+#ifndef DWMWA_BORDER_COLOR
+#define DWMWA_BORDER_COLOR 34
+#endif
 
 namespace icapp::NativeWindow {
 namespace {
@@ -32,6 +36,10 @@ namespace {
 WNDPROC g_previous = nullptr;
 GLFWwindow* g_window = nullptr;
 float g_titleBar = 0.0f;
+struct Rect {
+    float x0, y0, x1, y1;
+};
+std::vector<Rect> g_controls;
 
 LRESULT callPrevious(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return CallWindowProcW(g_previous, hwnd, msg, wp, lp);
@@ -79,6 +87,12 @@ LRESULT hitTest(HWND hwnd, LPARAM lp) {
     // A barra: a faixa do topo, onde a janela de baixo e a hospedeira e nao
     // ha item nem popup. O estado do ImGui e o do quadro anterior, que e o
     // que esta na tela.
+    // Um controle da barra e sempre cliente, com ou sem hover no ImGui.
+    POINT local = c;
+    ScreenToClient(hwnd, &local);
+    for (const Rect& k : g_controls)
+        if (local.x >= k.x0 && local.x < k.x1 && local.y >= k.y0 && local.y < k.y1) return HTCLIENT;
+
     if (c.y < r.top + static_cast<LONG>(g_titleBar) && ImGui::GetCurrentContext()) {
         const ImGuiContext& g = *GImGui;
         const bool overHost = g.HoveredWindow &&
@@ -147,11 +161,18 @@ void install(GLFWwindow* window) {
     DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof dark);
     const DWORD round = 2;   // DWMWCP_ROUND
     DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &round, sizeof round);
+    // O RIM DE FORA do macOS 27: escuro, densidade 0,6 (Theme.h, `kRimOuter`).
+    // O DWM so pinta uma borda opaca de 1 px; preto sobre o preenchimento de
+    // 30/30/30 e o que mais se parece com o preto a 60% do compositor da Apple.
+    const COLORREF rim = RGB(0, 0, 0);
+    DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &rim, sizeof rim);
     SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                  SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER);
 }
 
 void setTitleBarHeight(float px) { g_titleBar = px; }
+void clearControlRects() { g_controls.clear(); }
+void addControlRect(float x0, float y0, float x1, float y1) { g_controls.push_back({x0, y0, x1, y1}); }
 
 }  // namespace icapp::NativeWindow
 
@@ -160,6 +181,8 @@ void setTitleBarHeight(float px) { g_titleBar = px; }
 namespace icapp::NativeWindow {
 void install(GLFWwindow*) {}
 void setTitleBarHeight(float) {}
+void clearControlRects() {}
+void addControlRect(float, float, float, float) {}
 }  // namespace icapp::NativeWindow
 
 #endif
