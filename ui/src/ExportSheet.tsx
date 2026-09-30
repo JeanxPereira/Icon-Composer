@@ -1,69 +1,160 @@
 import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import { blobToBase64 } from "./core";
 import { Platform, Rendition, RENDITIONS } from "./doc";
 
-// A folha "Export Icon as Image" do alvo (`ExportSheet`, `ExportOptions`,
-// inventario §9): plataforma, aparencia e tamanho. O PNG sai do mesmo nucleo
-// que desenha o canvas.
+// A folha "Export Icon as Image" do alvo (inventario §9). `ExportOptions`
+// `[BIN]`: `platform` (one / all / preTahoe), `rendition`, `localization` e
+// `previewSize` (cada um `AxisChoice {one, all}`), `overrideScale`,
+// `mitigateGlassExports` ("Glass Chiclet") e `maskToChiclet`. Com mais de uma
+// imagem o alvo cria uma pasta ("Create ... folder with N images", "<nome>
+// Exports"). O nome de cada arquivo junta as partes com "-" e escreve o tamanho
+// como `%g@%ldx` `[BIN]`; a ORDEM das partes (nome, plataforma, aparencia,
+// tamanho) e `[INF]`.
+//
+// Ficam de fora macOS pre-Tahoe, "Glass Chiclet" excluido e Localization: o
+// nucleo nao tem esses renders.
 
-export type ExportChoice = { platform: Platform; rendition: Rendition; size: number };
+type Axis<T> = T | "all";
+
+export type ExportRender = (platform: Platform, rendition: Rendition, px: number) => Promise<Blob>;
 
 const SIZES = [1024, 512, 256, 128, 64, 32, 16];
+const SCALES = [1, 2, 3];
+
+const PLATFORM_NAME: Record<Platform, string> = { iOS: "iOS", watchOS: "watchOS" };
+const PLATFORM_LABEL: Record<Platform, string> = { iOS: "iOS, macOS", watchOS: "watchOS" };
 
 export function ExportSheet({
+  iconName,
   platforms,
   initial,
-  onExport,
-  onCancel,
+  render,
+  onDone,
 }: {
+  iconName: string;
   platforms: Platform[];
-  initial: ExportChoice;
-  onExport: (c: ExportChoice) => void;
-  onCancel: () => void;
+  initial: { platform: Platform; rendition: Rendition };
+  render: ExportRender;
+  onDone: (error?: string) => void;
 }) {
-  const [c, setC] = useState<ExportChoice>(initial);
+  const [platform, setPlatform] = useState<Axis<Platform>>(initial.platform);
+  const [rendition, setRendition] = useState<Axis<Rendition>>(initial.rendition);
+  const [size, setSize] = useState<Axis<number>>(1024);
+  const [scale, setScale] = useState(1);
+  const [progress, setProgress] = useState<string | null>(null);
+
+  const ps = platform === "all" ? platforms : [platform];
+  const rs = rendition === "all" ? RENDITIONS.map((r) => r.id) : [rendition];
+  const ss = size === "all" ? SIZES : [size];
+  const jobs = ps.flatMap((p) => rs.flatMap((r) => ss.map((s) => ({ p, r, s }))));
+  const fileName = (j: { p: Platform; r: Rendition; s: number }) =>
+    `${iconName}-${PLATFORM_NAME[j.p]}-${RENDITIONS.find((x) => x.id === j.r)!.label}-${j.s}@${scale}x.png`;
+
+  const run = async () => {
+    try {
+      let targets: string[];
+      if (jobs.length === 1) {
+        const t = await save({
+          title: "Export Icon as Image",
+          defaultPath: fileName(jobs[0]),
+          filters: [{ name: "PNG", extensions: ["png"] }],
+        });
+        if (!t) return;
+        targets = [t];
+      } else {
+        const where = await open({ directory: true, title: `Create “${iconName} Exports” folder in…` });
+        if (typeof where !== "string") return;
+        const dir = `${where.replace(/[\\/]$/, "")}\\${iconName} Exports`;
+        await invoke("make_dir", { path: dir });
+        targets = jobs.map((j) => `${dir}\\${fileName(j)}`);
+      }
+      for (let i = 0; i < jobs.length; i++) {
+        setProgress(`${i + 1} / ${jobs.length}`);
+        const j = jobs[i];
+        const png = await render(j.p, j.r, j.s * scale);
+        await invoke("write_file", { path: targets[i], base64: await blobToBase64(png) });
+      }
+      onDone();
+    } catch (e) {
+      onDone(String(e));
+    } finally {
+      setProgress(null);
+    }
+  };
+
+  const busy = progress !== null;
   return (
-    <div className="sheet-backdrop" onPointerDown={(e) => e.target === e.currentTarget && onCancel()}>
-      <div className="sheet" onKeyDown={(e) => e.key === "Escape" && onCancel()}>
+    <div className="sheet-backdrop" onPointerDown={(e) => e.target === e.currentTarget && !busy && onDone()}>
+      <div className="sheet" onKeyDown={(e) => e.key === "Escape" && !busy && onDone()}>
         <h2>Export Icon as Image</h2>
-        <label className="sheet-row">
-          <span>Platform</span>
-          <select value={c.platform} onChange={(e) => setC({ ...c, platform: e.target.value as Platform })}>
+        <p className="sheet-note">Export static versions of your icon for use on websites, advertising, or for review.</p>
+        <Row label="Platform">
+          <select value={platform} onChange={(e) => setPlatform(e.target.value as Axis<Platform>)} disabled={busy}>
             {platforms.map((p) => (
               <option key={p} value={p}>
-                {p === "iOS" ? "iOS, macOS" : p}
+                {PLATFORM_LABEL[p]}
               </option>
             ))}
+            {platforms.length > 1 && <option value="all">All</option>}
           </select>
-        </label>
-        <label className="sheet-row">
-          <span>Appearance</span>
-          <select value={c.rendition} onChange={(e) => setC({ ...c, rendition: e.target.value as Rendition })}>
+        </Row>
+        <Row label="Appearance">
+          <select value={rendition} onChange={(e) => setRendition(e.target.value as Axis<Rendition>)} disabled={busy}>
             {RENDITIONS.map((r) => (
               <option key={r.id} value={r.id}>
                 {r.label}
               </option>
             ))}
+            <option value="all">All</option>
           </select>
-        </label>
-        <label className="sheet-row">
-          <span>Size</span>
-          <select value={c.size} onChange={(e) => setC({ ...c, size: Number(e.target.value) })}>
+        </Row>
+        <Row label="Size">
+          <select
+            value={String(size)}
+            onChange={(e) => setSize(e.target.value === "all" ? "all" : Number(e.target.value))}
+            disabled={busy}
+          >
             {SIZES.map((s) => (
               <option key={s} value={s}>
-                {s} × {s} px
+                {s} pt
+              </option>
+            ))}
+            <option value="all">All</option>
+          </select>
+          <select value={scale} onChange={(e) => setScale(Number(e.target.value))} disabled={busy} className="narrow">
+            {SCALES.map((s) => (
+              <option key={s} value={s}>
+                @{s}x
               </option>
             ))}
           </select>
-        </label>
+        </Row>
+        <p className="sheet-note">
+          {jobs.length === 1
+            ? fileName(jobs[0])
+            : `Create “${iconName} Exports” folder with ${jobs.length} images`}
+        </p>
         <div className="sheet-buttons">
-          <button className="sheet-btn" onClick={onCancel}>
+          {busy && <span className="sheet-progress">Exporting {progress}</span>}
+          <button className="sheet-btn" onClick={() => onDone()} disabled={busy}>
             Cancel
           </button>
-          <button className="sheet-btn primary" autoFocus onClick={() => onExport(c)}>
+          <button className="sheet-btn primary" autoFocus onClick={run} disabled={busy}>
             Export…
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="sheet-row">
+      <span>{label}</span>
+      <span className="sheet-controls">{children}</span>
     </div>
   );
 }

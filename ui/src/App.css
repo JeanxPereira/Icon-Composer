@@ -1153,3 +1153,30 @@ button.varied {
   margin-left: 5px;
   vertical-align: middle;
 }
+
+/* ---- a folha de exportacao, completa ---- */
+.sheet {
+  width: 400px;
+}
+
+.sheet-note {
+  margin: 0 0 12px;
+  color: var(--text-2);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.sheet-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.sheet-row select.narrow {
+  min-width: 0;
+}
+
+.sheet-progress {
+  margin-right: auto;
+  align-self: center;
+  color: var(--text-2);
+}

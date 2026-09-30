@@ -6,10 +6,9 @@ import { Sidebar, SidebarActions } from "./Sidebar";
 import { Background, BACKGROUNDS, Canvas, EffectsMode } from "./Canvas";
 import { Edit, Inspector, Pane } from "./Inspector";
 import { Menu, Menubar } from "./Menubar";
-import { ExportChoice, ExportSheet } from "./ExportSheet";
+import { ExportSheet } from "./ExportSheet";
 import { groups, layers, Node, nodeAt, Platform, Rendition, RENDITIONS, resolve, Selection, supportedPlatforms, writeScope } from "./doc";
 import {
-  blobToBase64,
   coreHistory,
   coreImport,
   coreNode,
@@ -291,38 +290,21 @@ export default function App() {
       .catch((err) => setError(String(err)));
   };
 
-  // Um PNG do documento como esta no nucleo (editado ou nao).
-  const renderPng = async (c: ExportChoice) => {
+  // Um PNG do documento como esta no nucleo (editado ou nao), `px` de lado.
+  const renderPng = async (pl: Platform, r: Rendition, px: number) => {
     await edits.current;
     const f = await requestFrame("export", {
-      size: c.size,
-      appearance: appearanceOf(c.rendition),
-      idiom: c.platform,
-      subdivisions: subdivisionsFor(c.size / 512),
+      size: px,
+      appearance: appearanceOf(r),
+      idiom: pl,
+      subdivisions: subdivisionsFor(px / 512),
       effects: effects !== "disabled",
     });
     return frameToPng(f);
   };
-  const exportIcon = async (c: ExportChoice) => {
-    setExporting(false);
-    const base = docName.replace(/\.icon$/i, "") || "Icon";
-    const suffix = c.rendition === "default" ? "" : `-${c.rendition}`;
-    const target = await save({
-      title: "Export Icon as Image",
-      defaultPath: `${base}${suffix}-${c.size}.png`,
-      filters: [{ name: "PNG", extensions: ["png"] }],
-    });
-    if (!target) return;
-    try {
-      const png = await renderPng(c);
-      await invoke("write_file", { path: target, base64: await blobToBase64(png) });
-    } catch (e) {
-      setError(String(e));
-    }
-  };
   const copyImage = async () => {
     try {
-      const png = await renderPng({ platform, rendition, size: 1024 });
+      const png = await renderPng(platform, rendition, 1024);
       await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
     } catch (e) {
       setError(String(e));
@@ -644,10 +626,14 @@ export default function App() {
       )}
       {exporting && (
         <ExportSheet
+          iconName={docName.replace(/\.icon$/i, "") || "Untitled"}
           platforms={doc ? supportedPlatforms(doc) : ["iOS"]}
-          initial={{ platform, rendition, size: 1024 }}
-          onExport={exportIcon}
-          onCancel={() => setExporting(false)}
+          initial={{ platform, rendition }}
+          render={renderPng}
+          onDone={(err) => {
+            setExporting(false);
+            if (err) setError(err);
+          }}
         />
       )}
     </div>
