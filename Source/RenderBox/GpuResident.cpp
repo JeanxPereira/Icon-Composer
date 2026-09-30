@@ -64,7 +64,13 @@ constexpr VkDeviceSize kArenaChunk = 16u << 20;
 constexpr VkDeviceSize kHeapBlock = VkDeviceSize{512} << 20;
 
 // O teto do heap entre renders. Acima dele `trim` devolve os blocos vazios.
-constexpr VkDeviceSize kPoolCeiling = 768u << 20;
+// E tambem o que o heap RESERVA quando o aparelho monta o estado residente: a
+// memoria nova custa `[ART]` ~0,1 ms por MB neste aparelho (RX 6750 XT), e o
+// primeiro render com um cache vazio precisa de mais que um render sem cache
+// (o que o cache guarda nao volta) -- no Apollo a 1024 px, um bloco a mais no
+// meio do render: 139 ms com cache contra 85 sem. Reservado junto com os
+// pipelines, esse custo sai do render.
+constexpr VkDeviceSize kPoolCeiling = VkDeviceSize{1024} << 20;
 
 constexpr std::uint32_t kSetsPerPool = 512;
 constexpr std::uint32_t kMaxBindings = 5;
@@ -244,6 +250,7 @@ Result<Resident*> Resident::of(Device& device) {
     auto dummy = r->acquire(16);
     if (!dummy) return std::unexpected(dummy.error());
     r->dummy_ = *dummy;
+    if (auto ok = r->reserve(kPoolCeiling); !ok) return std::unexpected(ok.error());
 
     slot = r;
     return r.get();
@@ -394,6 +401,25 @@ void Resident::trim() {
         block.size = 0;
         block.free.clear();   // um bloco morto fica na lista (os indices dos pedacos)
     }
+}
+
+Result<void> Resident::reserve(VkDeviceSize bytes) {
+    while (heapBytes() < bytes) {
+        HeapBlock block;
+        block.size = kHeapBlock;
+        VkMemoryAllocateInfo mai{};
+        mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        mai.allocationSize = block.size;
+        mai.memoryTypeIndex = heapType_;
+        if (VkResult r = device_->api().vkAllocateMemory(device_->handle(), &mai, nullptr,
+                                                         &block.memory);
+            r != VK_SUCCESS) {
+            return std::unexpected(std::string("vkAllocateMemory (heap): ") + describe(r));
+        }
+        block.free.emplace(0, block.size);
+        heap_.push_back(std::move(block));
+    }
+    return {};
 }
 
 VkDeviceSize Resident::heapBytes() const {

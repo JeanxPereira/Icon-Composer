@@ -177,6 +177,8 @@ private:
         VkDeviceSize offset = 0;
         VkDeviceSize size = 0;
     };
+    // Blocos vazios ate o heap ter `bytes` (o tipo de memoria ja conhecido).
+    Result<void> reserve(VkDeviceSize bytes);
     Result<Buffer::Placement> carve(const VkMemoryRequirements& req, Piece& piece);
     void giveBack(const Piece& piece);
     std::vector<HeapBlock> heap_;
