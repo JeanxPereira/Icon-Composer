@@ -20,6 +20,7 @@ add_library(IconComposerKit STATIC
     SelfTest.cpp
     Session.cpp
     Theme.cpp
+    Widgets.cpp
     ViewModel.cpp
 )
 target_link_libraries(IconComposerKit

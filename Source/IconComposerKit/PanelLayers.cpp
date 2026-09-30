@@ -51,6 +51,8 @@
 //   add+remove, two commands and a new node id. Dropping outside the dragged
 //   row's own parent is therefore refused rather than half-done.
 #include "Source/IconComposerKit/Panels.h"
+#include "Source/IconComposerKit/Theme.h"
+#include "Source/IconComposerKit/Widgets.h"
 #include "Source/IconComposerKit/ViewModel.h"
 #include "imgui.h"
 
@@ -209,18 +211,26 @@ RowResult drawRow(Session& s, icf::NodePath path, LayersStats& st, Pending& pend
     const std::string title = nodeTitle(s, path);
     const bool selected = s.selection && *s.selection == path;
     const ImGuiStyle& style = ImGui::GetStyle();
-    const float rowH = ImGui::GetFrameHeight();
-    const float arrowW = rowH;                                 // the disclosure column
-    const float indent = isLayer ? style.IndentSpacing : 0.0f;
+    // A LINHA DO TAURI (`.row`, Sidebar.tsx): 30 pt o grupo, 42 a camada (que
+    // traz a miniatura de 34), recuo de 10 + 28 por nivel, raio 7.
+    const float k = ui::dpi();
+    const float rowH = (isLayer ? 42.0f : 30.0f) * k;
+    const float indent = (10.0f + (isLayer ? 28.0f : 0.0f)) * k;
 
     const ImVec2 rowPos = ImGui::GetCursorScreenPos();
     const bool renaming = g_renaming && *g_renaming == path;
 
-    // 1. The hit area: the whole row, always, renaming or not.
+    // 1. The hit area: the whole row, always, renaming or not. O fundo do
+    // `Selectable` fica transparente: a pilula arredondada e desenhada a mao.
+    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0, 0, 0, 0));
     r.clicked = ImGui::Selectable("##row", selected,
                                   ImGuiSelectableFlags_AllowOverlap |
                                       ImGuiSelectableFlags_AllowDoubleClick,
                                   ImVec2(0.0f, rowH));
+    ImGui::PopStyleColor(3);
+    const bool rowHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenOverlappedByItem);
     const ImVec2 mn = ImGui::GetItemRectMin();
     const ImVec2 mx = ImGui::GetItemRectMax();
     r.doubleClicked = r.clicked && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
@@ -279,89 +289,115 @@ RowResult drawRow(Session& s, icf::NodePath path, LayersStats& st, Pending& pend
     }
 
     // 4. Everything visible, drawn back over the row.
-    float x = rowPos.x + indent;
-    if (!isLayer) {
-        ImGui::SetCursorScreenPos(ImVec2(x, rowPos.y));
-        if (ImGui::ArrowButton("##disclose", isOpen(*path.group) ? ImGuiDir_Down : ImGuiDir_Right))
-            setOpen(*path.group, !isOpen(*path.group));
-    }
-    x += arrowW;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    // A pilula de selecao (`.row.selected`): a cor de destaque, texto branco.
+    if (selected) dl->AddRectFilled(mn, mx, theme::u32(theme::kAccent), 7.0f * k);
+    const ImVec4 textCol = selected ? theme::kAccentText : theme::kText;
+    const ImVec4 subCol = selected ? theme::kAccentText : theme::kText2;
+    const float cy = (mn.y + mx.y) * 0.5f;
 
-    // The toggles sit at the right edge and are real items, because they are the
-    // only things on the row besides the arrow that take a click of their own.
-    const float toggleW = rowH + style.ItemSpacing.x;
-    float right = mx.x - style.FramePadding.x;
     const icf::json::Value* hidden = icf::resolve(*node, "hidden", icf::Context{});
-    // `hidden` is stored inverted from what the eye sees. The checkbox is
-    // "visible", so the sign is flipped here and nowhere else.
+    // `hidden` is stored inverted from what the eye sees, so the sign is
+    // flipped here and nowhere else.
     bool visible = !(hidden && hidden->kind() == icf::json::Value::Kind::Bool && hidden->boolean());
-    right -= rowH;
-    ImGui::SetCursorScreenPos(ImVec2(right, rowPos.y));
+    // Escondido, o rotulo e o icone ficam a 45% (`.row.is-hidden`).
+    const float fade = visible ? 1.0f : 0.45f;
+    auto faded = [&](ImVec4 c) { c.w *= fade; return theme::u32(c); };
+
+    // A seta de abrir (`.disclosure`, 12 pt, chevron de 9), so no grupo.
+    float x = mn.x + indent;
+    if (!isLayer) {
+        ImGui::SetCursorScreenPos(ImVec2(x - 4.0f * k, cy - 10.0f * k));
+        if (ImGui::InvisibleButton("##disclose", ImVec2(20.0f * k, 20.0f * k)))
+            setOpen(*path.group, !isOpen(*path.group));
+        const ImVec2 c(x + 6.0f * k, cy);
+        const bool open = isOpen(*path.group);
+        if (!ui::symbol(open ? "chevron.down" : "chevron.right", c, 9.0f * k, theme::u32(subCol))) {
+            if (open)
+                dl->AddTriangleFilled(ImVec2(c.x - 4 * k, c.y - 2 * k), ImVec2(c.x + 4 * k, c.y - 2 * k),
+                                      ImVec2(c.x, c.y + 3 * k), theme::u32(subCol));
+            else
+                dl->AddTriangleFilled(ImVec2(c.x - 2 * k, c.y - 4 * k), ImVec2(c.x - 2 * k, c.y + 4 * k),
+                                      ImVec2(c.x + 3 * k, c.y), theme::u32(subCol));
+        }
+    }
+    x += 12.0f * k + 8.0f * k;
+
+    // O icone da linha: a pasta no grupo; na camada a miniatura sobre o
+    // xadrez (`.thumb`, 34 pt, raio 6).
+    if (isLayer) {
+        const ImVec2 ta(x, cy - 17.0f * k), tb(x + 34.0f * k, cy + 17.0f * k);
+        ui::checkerboard(dl, ta, tb, 4.0f * k, 6.0f * k);
+        ui::symbol("photo", ImVec2((ta.x + tb.x) * 0.5f, cy), 16.0f * k, IM_COL32(0, 0, 0, 90));
+        x += 34.0f * k + 8.0f * k;
+    } else {
+        ui::symbol("folder", ImVec2(x + 11.0f * k, cy), 16.0f * k, faded(subCol));
+        x += 22.0f * k + 8.0f * k;
+    }
+
+    // Os interruptores na borda direita, reais itens: o olho (`.row-hidden`)
+    // e, na camada, o vidro. Aparecem com o mouse na linha, e ficam quando
+    // dizem algo fora do normal -- escondido, ou sem vidro.
+    const float btn = 22.0f * k;
+    float right = mx.x - 8.0f * k;
+    right -= btn;
+    ImGui::SetCursorScreenPos(ImVec2(right, cy - btn * 0.5f));
     const ImVec2 visibleAt = ImGui::GetCursorScreenPos();
-    if (ImGui::Checkbox("##visible", &visible)) {
-        // Visible again REMOVES this scope's entry instead of writing `false`:
-        // The checkbox writes the boolean it asserts, it does not remove the key.
-        // `[ART]` Both spellings live in the corpus -- 250 nodes carry
-        // `"hidden" : false` and one carries `true`, while the rest carry no key
-        // at all -- so absence is NOT "how the corpus says not hidden", and
-        // removing would delete a key Apple's own encoder wrote. Writing the
-        // value keeps this toggle symmetric with the glass one right below.
+    const bool eyeClicked = ImGui::InvisibleButton("##visible", ImVec2(btn, btn));
+    ImGui::SetItemTooltip("Toggles layer visibility");
+    if (eyeClicked) {
+        visible = !visible;
         s.setProperty(path, "hidden", icf::Context{}, icf::json::Value::boolean(!visible));
     }
-    ImGui::SetItemTooltip("Toggle visibility");
+    if (rowHovered || ImGui::IsItemHovered() || !visible) {
+        ui::symbol(visible ? "eye" : "eye.slash", ImVec2(right + btn * 0.5f, cy), 15.0f * k, theme::u32(subCol));
+    }
 
     bool glassOn = false;
     ImVec2 glassAt{0.0f, 0.0f};
     if (isLayer) {
         const icf::json::Value* glass = icf::resolve(*node, "glass", icf::Context{});
-        bool on = glass && glass->kind() == icf::json::Value::Kind::Bool && glass->boolean();
-        glassOn = on;
-        right -= toggleW;
-        ImGui::SetCursorScreenPos(ImVec2(right, rowPos.y));
+        glassOn = glass && glass->kind() == icf::json::Value::Kind::Bool && glass->boolean();
+        right -= btn + 2.0f * k;
+        ImGui::SetCursorScreenPos(ImVec2(right, cy - btn * 0.5f));
         glassAt = ImGui::GetCursorScreenPos();
-        if (ImGui::Checkbox("##glass", &on)) {
-            s.setProperty(path, "glass", icf::Context{}, icf::json::Value::boolean(on));
+        if (ImGui::InvisibleButton("##glass", ImVec2(btn, btn))) {
+            glassOn = !glassOn;
+            s.setProperty(path, "glass", icf::Context{}, icf::json::Value::boolean(glassOn));
         }
-        // DEPOIS do Checkbox, nao antes. `on` e passado por referencia e o
-        // ImGui o vira no lugar quando o clique acontece, entao ler antes dava
-        // o valor VELHO no mesmo frame em que `visible` -- lido depois, logo
-        // abaixo -- ja dava o novo. Os dois interruptores da mesma linha
-        // relatavam em tempos diferentes.
-        glassOn = on;
         ImGui::SetItemTooltip("Enable or disable glass effects on this layer");
+        if (rowHovered || ImGui::IsItemHovered()) {
+            ImVec4 c = subCol;
+            if (!glassOn) c.w *= 0.4f;
+            ui::symbol("specular", ImVec2(right + btn * 0.5f, cy), 15.0f * k, theme::u32(c), true);
+        }
     }
 
-    // O inventario da linha, gravado depois dos dois interruptores e antes do
-    // nome, que e o ultimo pedaco que pode mudar (Panels.h, `RowInfo`).
     const float half = rowH * 0.5f;
     st.drawn.push_back(RowInfo{title, isLayer, visible, glassOn, selected,
                                ImVec2(rowPos.x + half, rowPos.y + half),
-                               ImVec2(visibleAt.x + half, visibleAt.y + half),
-                               glassAt.x > 0.0f ? ImVec2(glassAt.x + half, glassAt.y + half)
+                               ImVec2(visibleAt.x + btn * 0.5f, visibleAt.y + btn * 0.5f),
+                               glassAt.x > 0.0f ? ImVec2(glassAt.x + btn * 0.5f, glassAt.y + btn * 0.5f)
                                                 : ImVec2(0.0f, 0.0f)});
 
-    // The name, or the field that is replacing it. Everything left of the
-    // toggles belongs to it.
-    const float nameWidth = std::max(right - style.ItemSpacing.x - x, 1.0f);
+    const float nameWidth = std::max(right - 6.0f * k - x, 1.0f);
     if (renaming) {
-        ImGui::SetCursorScreenPos(ImVec2(x, rowPos.y));
+        ImGui::SetCursorScreenPos(ImVec2(x, cy - ImGui::GetFrameHeight() * 0.5f));
         if (g_renameFocus) {
-            // Only on the frame the rename opened. Asking every frame re-activates
-            // the field, and the field drops what was typed into it when it is.
             ImGui::SetKeyboardFocusHere();
             g_renameFocus = false;
         }
         ImGui::SetNextItemWidth(nameWidth);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, theme::kField);
         const bool committed = ImGui::InputText("##rename", g_renameBuffer, sizeof g_renameBuffer,
                                                 ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::PopStyleColor();
         if (committed) {
             s.rename(path, g_renameBuffer);
             g_renaming.reset();
             g_renameClosed = true;
         } else if (ImGui::IsItemDeactivated()) {
-            // Escape throws the edit away; anything else -- Enter, or the focus
-            // moving to another row -- keeps it. It used to discard on both, so
-            // clicking away from a field mid-rename silently lost the typing.
+            // Clicking away commits; Escape is the one way out that does not.
             if (!ImGui::IsKeyPressed(ImGuiKey_Escape, false)) s.rename(path, g_renameBuffer);
             g_renaming.reset();
             g_renameClosed = true;
@@ -370,19 +406,14 @@ RowResult drawRow(Session& s, icf::NodePath path, LayersStats& st, Pending& pend
         std::string file;
         const Trouble t = troubleOf(s, path, file);
         if (t != Trouble::None) ++st.problems;
-        // `[BIN]` LayerList's body draws a ForEach over IconComposerFoundation's
-        // Diagnostic as Image + Text + Color; `[ONYX]` DocumentBrowser paints a
-        // failed entry in its failure colour and explains it on hover. Both say
-        // the same thing: the list is where a broken node is found, not the
-        // inspector you have to click into first.
-        const ImVec4 tint = t == Trouble::MissingArt  ? kAlarm
-                            : t == Trouble::NoArt     ? style.Colors[ImGuiCol_TextDisabled]
-                                                      : style.Colors[ImGuiCol_Text];
-        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec4 tint = t == Trouble::MissingArt ? kAlarm
+                            : t == Trouble::NoArt    ? (selected ? theme::kAccentText : theme::kText3)
+                                                     : textCol;
         dl->PushClipRect(ImVec2(x, mn.y), ImVec2(x + nameWidth, mx.y), true);
         std::string shown = title;
         if (t == Trouble::MissingArt) shown = "! " + shown;
-        dl->AddText(ImVec2(x, rowPos.y + style.FramePadding.y), ImGui::GetColorU32(tint), shown.c_str());
+        const float th = ImGui::GetTextLineHeight();
+        dl->AddText(ImVec2(x, cy - th * 0.5f), faded(tint), shown.c_str());
         dl->PopClipRect();
         if (t != Trouble::None && ImGui::IsMouseHoveringRect(mn, mx) &&
             ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup)) {
@@ -397,8 +428,10 @@ RowResult drawRow(Session& s, icf::NodePath path, LayersStats& st, Pending& pend
         }
     }
 
-    // Back to the left edge, one row down, for whoever draws next.
-    ImGui::SetCursorScreenPos(ImVec2(rowPos.x, mx.y + style.ItemSpacing.y));
+    (void)style;
+    ImGui::SetCursorScreenPos(ImVec2(rowPos.x, mx.y + 2.0f * k));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    ImGui::SetCursorScreenPos(ImVec2(rowPos.x, mx.y + 2.0f * k));
     ImGui::PopID();
     ImGui::PopID();
     return r;
@@ -469,6 +502,10 @@ LayersStats drawLayers(Session& s) {
         ImGui::End();
         return st;
     }
+    // O TOPO DA COLUNA, 52 pt na altura da barra de titulo (`.sidebar-top`,
+    // `.inspector-top` do Tauri). Vazio aqui: na sidebar o app desenha as luzes
+    // nele; e a faixa por onde a janela se arrasta.
+    ImGui::Dummy(ImVec2(1.0f, theme::kTitleBarH * ui::dpi() - ImGui::GetStyle().WindowPadding.y));
     Pending pending;
     g_renameClosed = false;
 
@@ -563,29 +600,38 @@ LayersStats drawLayers(Session& s) {
         }
     }
 
-    ImGui::Separator();
-    if (ImGui::Button("+")) ImGui::OpenPopup("add-menu");
-    ImGui::SetItemTooltip("Opens menu to add new group or image layer");
-    if (ImGui::BeginPopup("add-menu")) {
-        if (ImGui::MenuItem("Add Group")) pending = Pending{Act::AddGroup, icf::NodePath{}};
-        // A layer needs a group to live in; with none, the item says so by being grey.
-        if (ImGui::MenuItem("Add Image Layer", nullptr, false, count > 0)) {
-            const std::size_t g = s.selection && s.selection->group ? *s.selection->group : count - 1;
-            pending = Pending{Act::AddLayer, icf::NodePath{g, std::nullopt}};
+    // O RODAPE DA COLUNA (`.sidebar-bottom`): + e - como simbolos soltos, 14 pt
+    // entre eles, 16 da borda e 12 do fundo. O + abre o menu de adicionar.
+    {
+        const float k = ui::dpi();
+        const ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
+        const ImVec2 keep = ImGui::GetCursorScreenPos();
+        const float y = wp.y + ws.y - 12.0f * k - 18.0f * k;
+        ImGui::SetCursorScreenPos(ImVec2(wp.x + 16.0f * k, y));
+        if (ui::plainButton("##add", "plus", ImVec2(18.0f * k, 18.0f * k), 13.0f, "+", true,
+                            "Opens menu to add new group or image layer"))
+            ImGui::OpenPopup("add-menu");
+        ui::pushMenuStyle();
+        ImGui::SetNextWindowPos(ImVec2(wp.x + 10.0f * k, y - 6.0f * k), ImGuiCond_Always, ImVec2(0.0f, 1.0f));
+        if (ImGui::BeginPopup("add-menu")) {
+            if (ImGui::MenuItem("New Image...", nullptr, false, count > 0)) {
+                const std::size_t g = s.selection && s.selection->group ? *s.selection->group : count - 1;
+                pending = Pending{Act::AddLayer, icf::NodePath{g, std::nullopt}};
+            }
+            if (ImGui::MenuItem("New Group")) pending = Pending{Act::AddGroup, icf::NodePath{}};
+            ImGui::EndPopup();
         }
-        ImGui::EndPopup();
+        ui::popMenuStyle();
+        const bool canDelete = s.selection && s.selection->group;
+        ImGui::SetCursorScreenPos(ImVec2(wp.x + (16.0f + 18.0f + 14.0f) * k, y));
+        if (ui::plainButton("##remove", "minus", ImVec2(18.0f * k, 18.0f * k), 13.0f, "-", canDelete,
+                            "Removes selected layers from the icon") &&
+            canDelete)
+            pending = Pending{Act::Delete, *s.selection};
+        ImGui::SetCursorScreenPos(keep);
+        ImGui::Dummy(ImVec2(0.0f, 0.0f));
     }
-    ImGui::SameLine();
-    // `[ONYX]` Widgets::IconButtonOpts carries `disabled` and the panels grey a
-    // button that cannot act rather than letting it click into nothing -- which
-    // is what this one did with no selection.
-    const bool canDelete = s.selection && s.selection->group;
-    ImGui::BeginDisabled(!canDelete);
-    if (ImGui::Button("-") && canDelete) pending = Pending{Act::Delete, *s.selection};
-    ImGui::EndDisabled();
-    ImGui::SetItemTooltip("Deletes the selected group or layer");
 
-    // A tree with nothing in it should say so rather than look broken.
     if (count == 0) ImGui::TextDisabled("No groups yet -- use + to add one.");
 
     ImGui::End();

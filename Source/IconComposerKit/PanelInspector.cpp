@@ -25,6 +25,8 @@
 // reason in their tooltip rather than hidden (spec 13/09 §7): a control that is
 // missing teaches nothing, and one that is greyed says what is coming.
 #include "Source/IconComposerKit/InspectorSection.h"
+#include "Source/IconComposerKit/Theme.h"
+#include "Source/IconComposerKit/Widgets.h"
 
 #include "Source/IconComposerFoundation/Values.h"
 #include "Source/IconComposerKit/ViewModel.h"
@@ -65,7 +67,7 @@ void visible(Section& x) {
     PropertyView v;
     if (x.begin("Visible", "hidden", v)) {
         bool on = !booleanOr(v.value, false);
-        if (ImGui::Checkbox("Visible", &on)) x.write("hidden", icf::json::Value::boolean(!on), false);
+        if (ui::toggle("Visible", &on)) x.write("hidden", icf::json::Value::boolean(!on), false);
     }
     x.end();
 }
@@ -98,7 +100,7 @@ void blendMode(Section& x) {
         if (v.value && v.value->kind() == icf::json::Value::Kind::String) {
             if (auto m = icf::blendModeFromString(v.value->rawString())) current = *m;
         }
-        if (ImGui::BeginCombo("Mode", blendModeLabel(current))) {
+        if (ImGui::BeginCombo(ui::leftLabel("Mode"), blendModeLabel(current))) {
             for (auto m : kModes) {
                 if (ImGui::Selectable(blendModeLabel(m), m == current)) {
                     x.write("blend-mode", icf::json::Value::string(std::string(icf::blendModeToString(m))), false);
@@ -368,7 +370,7 @@ void fill(Section& x) {
         if (v.value) {
             if (auto read = icf::fillFrom(*v.value)) f = *read;
         }
-        if (ImGui::BeginCombo("Kind", fillKindLabel(f.kind))) {
+        if (ImGui::BeginCombo(ui::leftLabel("Kind"), fillKindLabel(f.kind))) {
             for (auto k : kKinds) {
                 if (ImGui::Selectable(fillKindLabel(k), k == f.kind)) {
                     // A kind change carries over what the new kind can hold and
@@ -554,7 +556,7 @@ void shadow(Section& x) {
         if (v.value) {
             if (auto read = icf::shadowFrom(*v.value)) sh = *read;
         }
-        if (ImGui::BeginCombo("Kind", shadowKindLabel(sh.kind))) {
+        if (ImGui::BeginCombo(ui::leftLabel("Kind"), shadowKindLabel(sh.kind))) {
             for (auto k : kKinds) {
                 if (ImGui::Selectable(shadowKindLabel(k), k == sh.kind)) {
                     icf::Shadow next = sh;
@@ -583,7 +585,7 @@ void translucency(Section& x) {
         if (v.value) {
             if (auto read = icf::translucencyFrom(*v.value)) t = *read;
         }
-        if (ImGui::Checkbox("Enabled", &t.enabled)) x.write("translucency", icf::translucencyToJson(t), false);
+        if (ui::toggle("Enabled", &t.enabled)) x.write("translucency", icf::translucencyToJson(t), false);
         double val = t.value;
         NumberEdit e = sliderNumber("Value", &val, 0.0, 1.0, "%.3f",
                                     "Translucency amount. The `Enabled` box above and this number "
@@ -606,7 +608,7 @@ void specular(Section& x) {
         if (v.value && v.value->kind() == icf::json::Value::Kind::String) {
             if (auto read = icf::specularHighlightFromString(v.value->rawString())) current = *read;
         }
-        if (ImGui::BeginCombo("Highlight", specularLabel(current))) {
+        if (ImGui::BeginCombo(ui::leftLabel("Highlight"), specularLabel(current))) {
             for (auto c : kCases) {
                 if (ImGui::Selectable(specularLabel(c), c == current)) {
                     x.write("specular", icf::json::Value::string(std::string(icf::specularHighlightToString(c))),
@@ -623,7 +625,7 @@ void glass(Section& x) {
     PropertyView v;
     if (x.begin("Liquid Glass", "glass", v)) {
         bool on = booleanOr(v.value, false);
-        if (ImGui::Checkbox("Glass", &on)) x.write("glass", icf::json::Value::boolean(on), false);
+        if (ui::toggle("Glass", &on)) x.write("glass", icf::json::Value::boolean(on), false);
     }
     x.end();
 }
@@ -657,7 +659,7 @@ void scopeSelector(Session& s) {
                                     icf::Idiom::WatchOS};
     ImGui::SeparatorText("Editing scope");
     ImGui::SetNextItemWidth(140.0f);
-    if (ImGui::BeginCombo("Appearance##scope-a", appearanceLabel(s.scope.appearance))) {
+    if (ImGui::BeginCombo(ui::leftLabel("Appearance##scope-a"), appearanceLabel(s.scope.appearance))) {
         for (auto a : kA) {
             if (ImGui::Selectable(appearanceLabel(a), a == s.scope.appearance)) s.scope.appearance = a;
         }
@@ -667,7 +669,7 @@ void scopeSelector(Session& s) {
         "The appearance every section below reads and WRITES under. Base is the plain key; any "
         "other value appends to the property's specialization list.");
     ImGui::SetNextItemWidth(140.0f);
-    if (ImGui::BeginCombo("Idiom##scope-i", idiomLabel(s.scope.idiom))) {
+    if (ImGui::BeginCombo(ui::leftLabel("Idiom##scope-i"), idiomLabel(s.scope.idiom))) {
         for (auto i : kI) {
             if (ImGui::Selectable(idiomLabel(i), i == s.scope.idiom)) s.scope.idiom = i;
         }
@@ -741,6 +743,10 @@ InspectorStats drawInspector(Session& s, MenuActions& actions) {
         ImGui::End();
         return st;
     }
+    // O TOPO DA COLUNA, 52 pt na altura da barra de titulo (`.sidebar-top`,
+    // `.inspector-top` do Tauri). Vazio aqui: na sidebar o app desenha as luzes
+    // nele; e a faixa por onde a janela se arrasta.
+    ImGui::Dummy(ImVec2(1.0f, theme::kTitleBarH * ui::dpi() - ImGui::GetStyle().WindowPadding.y));
     documentRow(s);
     // The selection names a node by index, so a structural edit can leave it
     // pointing past the end; the panel checks the node rather than the index.

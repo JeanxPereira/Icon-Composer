@@ -173,6 +173,9 @@ struct ExportPlan {
 
 struct MenuActions {
     bool newDocument = false, open = false, save = false, saveAs = false, close = false, quit = false;
+    // View > Diagnostics: o painel nao faz parte do layout (30/09); o app o
+    // mostra e esconde.
+    bool toggleDiagnostics = false;
 
     // ---- exportar a imagem (T2) -------------------------------------------
     // O pedido carrega o plano CONSIGO, pela mesma razão que `importInto`
@@ -221,6 +224,9 @@ struct MenuStats {
 // Draws inside the current window's menu bar: the caller opened the window with
 // ImGuiWindowFlags_MenuBar (the canvas does, like sfsymview's "Symbols").
 MenuStats drawMenuBar(Session& s, MenuActions& actions);
+// O mesmo conteudo, sem abrir a barra: quem chama ja esta dentro de uma
+// (`BeginMenuBar`) e poe outras coisas nela -- a toolbar do canvas.
+MenuStats drawMenus(Session& s, MenuActions& actions);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE CANVAS'S GEOMETRY, AS FUNCTIONS THAT DRAW NOTHING
@@ -367,11 +373,21 @@ TileRect canvasTileFor(CanvasRect painted, CanvasVec imageTopLeft, std::uint32_t
 // stalled frame and a 500 Hz one so the settle is ~150ms on any machine.
 float canvasEase(float deltaSeconds);
 
+// Um chip de estado no canto do palco: o texto, a cor, o que o tooltip diz e
+// onde ele ficou.
+struct CanvasChip {
+    std::string text;
+    ImVec4 colour;
+    std::string tooltip;
+    ImVec2 min, max;
+};
+
 struct CanvasStats {
     bool textured = false;
     std::size_t contextControls = 0;   // appearance, idiom, size, zoom
     std::size_t zoomControls = 0;      // -, +, 1:1, Fit
     MenuStats menu;
+    std::vector<CanvasChip> chips;
 
     // THE FRAME'S GEOMETRY, IN SCREEN COORDINATES, so a test can assert on what
     // the canvas actually did instead of re-deriving it. `clip` is the rectangle

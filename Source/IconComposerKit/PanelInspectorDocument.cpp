@@ -42,6 +42,7 @@
 // `Session::setProperty` under the Base context, so undo stays a snapshot of the
 // node and `version()` still moves and the canvas still re-renders (Session.h).
 // Nothing here writes through `root()`.
+#include "Source/IconComposerKit/Widgets.h"
 #include "Source/IconComposerKit/InspectorSection.h"
 
 #include <optional>
@@ -146,7 +147,7 @@ void platforms(Section& x) {
 
         static const char* kShared = "Shared";
         static const char* kSpecific = "Specific platforms";
-        if (ImGui::BeginCombo("Squares", p.squaresShared ? kShared : kSpecific)) {
+        if (ImGui::BeginCombo(ui::leftLabel("Squares"), p.squaresShared ? kShared : kSpecific)) {
             if (ImGui::Selectable(kShared, p.squaresShared)) next.squaresShared = true;
             if (ImGui::Selectable(kSpecific, !p.squaresShared)) {
                 next.squaresShared = false;
@@ -164,17 +165,17 @@ void platforms(Section& x) {
             const bool onlyIOS = p.squaresIOS && !p.squaresMacOS;
             const bool onlyMacOS = p.squaresMacOS && !p.squaresIOS;
             ImGui::BeginDisabled(onlyIOS);
-            ImGui::Checkbox("iOS", &next.squaresIOS);
+            ui::toggle("iOS", &next.squaresIOS);
             ImGui::EndDisabled();
             if (onlyIOS) ImGui::SetItemTooltip("The list cannot be empty; switch to Shared instead.");
             ImGui::BeginDisabled(onlyMacOS);
-            ImGui::Checkbox("macOS", &next.squaresMacOS);
+            ui::toggle("macOS", &next.squaresMacOS);
             ImGui::EndDisabled();
             if (onlyMacOS) ImGui::SetItemTooltip("The list cannot be empty; switch to Shared instead.");
             ImGui::Unindent();
         }
 
-        ImGui::Checkbox("Circles (watchOS)", &next.circles);
+        ui::toggle("Circles (watchOS)", &next.circles);
         ImGui::SetItemTooltip(
             "The round family. Present in 97 of 145 documents, and in all 97 its value is exactly "
             "[\"watchOS\"] -- so the key is a yes or a no.");
@@ -202,7 +203,7 @@ void svgColorSpace(Section& x) {
             // A value outside the sealed vocabulary: shown, and left alone. A
             // checkbox that silently rewrote it would destroy what it cannot read.
             ImGui::TextDisabled("unreadable value -- left untouched");
-        } else if (ImGui::Checkbox("Assume Display P3 for untagged SVG colors", &on)) {
+        } else if (ui::toggle("Assume Display P3 for untagged SVG colors", &on)) {
             writeRoot(x, "color-space-for-untagged-svg-colors",
                       on ? std::optional<icf::json::Value>(icf::json::Value::string("display-p3"))
                          : std::nullopt);
@@ -228,8 +229,8 @@ void features(Section& x) {
                 else if (e.rawString() == "specular-location") specularLocation = true;
             }
         }
-        bool changed = ImGui::Checkbox("Refractivity", &refractivity);
-        changed |= ImGui::Checkbox("Specular Location", &specularLocation);
+        bool changed = ui::toggle("Refractivity", &refractivity);
+        changed |= ui::toggle("Specular Location", &specularLocation);
         if (changed) {
             if (!refractivity && !specularLocation) {
                 writeRoot(x, "features", std::nullopt);
@@ -271,7 +272,7 @@ void implicitMirroring(Section& x) {
     if (header(x, "Implicit Asset Mirroring")) {
         const icf::json::Value* v = rootValue(x, "implicit-asset-mirroring");
         bool on = booleanOr(v, false);
-        if (ImGui::Checkbox("Mirror assets for right-to-left languages", &on)) {
+        if (ui::toggle("Mirror assets for right-to-left languages", &on)) {
             writeRoot(x, "implicit-asset-mirroring",
                       on ? std::optional<icf::json::Value>(icf::json::Value::boolean(true))
                          : std::nullopt);

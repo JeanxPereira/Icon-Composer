@@ -67,6 +67,7 @@
 // spelling that goes on disk. The combo lists the LABEL and writes the STRING,
 // as `PanelInspector.cpp` does for the other five vocabularies. Swapping them
 // corrupts the `icon.json` with no error at all.
+#include "Source/IconComposerKit/Widgets.h"
 #include "Source/IconComposerKit/InspectorSection.h"
 
 #include "Source/IconComposerFoundation/Values.h"
@@ -111,7 +112,7 @@ void blurMaterial(Section& x) {
         // so it is what a switch from `null` to a number starts from.
         double strength = numberOr(v.value, 0.5);
         const char* preview = absent ? "not set" : (isNull ? "null" : "Explicit strength");
-        if (ImGui::BeginCombo("Value", preview)) {
+        if (ImGui::BeginCombo(ui::leftLabel("Value"), preview)) {
             if (ImGui::Selectable("null", isNull)) {
                 x.write("blur-material", icf::json::Value::null(), false);
             }
@@ -159,7 +160,7 @@ void refractivity(Section& x) {
         if (v.value) {
             if (auto read = icf::refractivityFrom(*v.value)) r = *read;
         }
-        if (ImGui::Checkbox("Enabled", &r.enabled)) {
+        if (ui::toggle("Enabled", &r.enabled)) {
             x.write("refractivity", icf::refractivityToJson(r), false);
         }
         double strength = r.strength;
@@ -212,7 +213,7 @@ void lighting(Section& x) {
         if (v.value && v.value->kind() == icf::json::Value::Kind::String) {
             if (auto read = icf::lightingFromString(v.value->rawString())) current = *read;
         }
-        if (ImGui::BeginCombo("Mode", lightingLabel(current))) {
+        if (ImGui::BeginCombo(ui::leftLabel("Mode"), lightingLabel(current))) {
             for (auto c : kCases) {
                 if (ImGui::Selectable(lightingLabel(c), c == current)) {
                     x.write("lighting", icf::json::Value::string(std::string(icf::lightingToString(c))),

@@ -392,6 +392,6 @@ struct RenditionStats {
 // `thumbs` pode ser nulo: sem janela não há `TextureSink`, e a barra ainda
 // tem de desenhar (é o que a suíte exercita). Sem ele os itens saem sem
 // miniatura, e a nota diz isso.
-RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs);
+RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs, ImGuiWindowFlags extraFlags = 0);
 
 }  // namespace ick

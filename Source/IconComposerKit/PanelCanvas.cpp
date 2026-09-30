@@ -77,12 +77,15 @@
 // instead of simply not being in the image.
 #include "Source/IconComposerKit/Panels.h"
 #include "Source/IconComposerKit/ViewModel.h"
+#include "Source/IconComposerKit/Theme.h"
+#include "Source/IconComposerKit/Widgets.h"
 // `rb::kCanvasPoints` -- the selection overlay must use the same ruler the
 // renderer places art with, or it would frame the layer somewhere the layer is
 // not (doc 03 §22).
 #include "Source/RenderBox/IconRenderer.h"
 
 #include "imgui.h"
+#include "imgui_internal.h"
 
 #include <algorithm>
 #include <cmath>
@@ -313,30 +316,44 @@ std::string secondsText(double s) {
 // 13/09 §7). Each writes `Session::view` directly: what a person is looking
 // THROUGH is not part of the document, so none of these is a command and none
 // of them belongs on the undo stack.
+//
+// DESDE 30/09 SAO CAPSULAS DE TEXTO (`.text-cap` do Tauri): o rotulo e uma
+// setinha, e o clique abre o menu no estilo do sistema logo abaixo. As larguras
+// sao as dos rotulos mais longos de cada uma.
+namespace {
+
+// Abre o popup `id` embaixo do item que acabou de ser desenhado.
+bool popupBelow(const char* id, bool clicked) {
+    if (clicked) ImGui::OpenPopup(id);
+    ImGui::SetNextWindowPos(ImVec2(ImGui::GetItemRectMin().x, ImGui::GetItemRectMax().y + 6.0f * ui::dpi()));
+    return ImGui::BeginPopup(id);
+}
+
+}  // namespace
+
 std::size_t contextBar(Session& s) {
     std::size_t n = 0;
+    ui::pushMenuStyle();
 
-    ImGui::SetNextItemWidth(90);
-    if (ImGui::BeginCombo("##appearance", appearanceLabel(s.view.context.appearance))) {
+    ui::beginCapsule("appearance", 84.0f);
+    const bool apClick = ui::capText("##appearance", appearanceLabel(s.view.context.appearance), 84.0f,
+                                     "Appearance the canvas renders");
+    if (popupBelow("appearance-menu", apClick)) {
         for (auto a : {icf::Appearance::Base, icf::Appearance::Light, icf::Appearance::Dark,
                        icf::Appearance::Tinted}) {
-            if (ImGui::Selectable(appearanceLabel(a), a == s.view.context.appearance)) {
+            if (ImGui::MenuItem(appearanceLabel(a), nullptr, a == s.view.context.appearance))
                 s.view.context.appearance = a;
-            }
         }
-        ImGui::EndCombo();
+        ImGui::EndPopup();
     }
+    ui::endCapsule();
     ++n;
 
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(90);
-    // Three unlabelled 90px combos in a row is three ways to pick the wrong one,
-    // and this is the one that changes the PROPORTIONS -- a `position`
-    // specialization moves the art's scale and offset. The tooltip goes on the
-    // combo button, which is the last item straight after `BeginCombo`, not
-    // after `EndCombo` (which closes the popup).
-    const bool idiomOpen = ImGui::BeginCombo("##idiom", idiomLabel(s.view.context.idiom));
+    ui::beginCapsule("idiom", 84.0f);
+    const bool idClick = ui::capText("##idiom", idiomLabel(s.view.context.idiom), 84.0f);
     {
+        // THE PROPORTIONS: a `position` specialization moves the art's scale
+        // and offset, so the tooltip says which platform the document declares.
         const icf::Idiom declared = declaredIdiom(s.root());
         std::string tip = "Idiom -- which platform's composition the canvas draws. "
                           "`position`, `hidden` and `image-name` can each be specialized per idiom, "
@@ -350,70 +367,69 @@ std::size_t contextBar(Session& s) {
         }
         ImGui::SetItemTooltip("%s", tip.c_str());
     }
-    if (idiomOpen) {
+    if (popupBelow("idiom-menu", idClick)) {
         for (auto i : {icf::Idiom::Base, icf::Idiom::Square, icf::Idiom::IOS, icf::Idiom::MacOS,
                        icf::Idiom::WatchOS}) {
-            if (ImGui::Selectable(idiomLabel(i), i == s.view.context.idiom)) s.view.context.idiom = i;
+            if (ImGui::MenuItem(idiomLabel(i), nullptr, i == s.view.context.idiom)) s.view.context.idiom = i;
         }
-        ImGui::EndCombo();
+        ImGui::EndPopup();
     }
+    ui::endCapsule();
     ++n;
 
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(80);
     char sizeLabel[16];
     std::snprintf(sizeLabel, sizeof sizeLabel, "%u px", s.view.size);
-    if (ImGui::BeginCombo("##size", sizeLabel)) {
-        if (ImGui::Selectable("512 px", s.view.size == 512)) s.view.size = 512;
-        if (ImGui::Selectable("1024 px", s.view.size == 1024)) s.view.size = 1024;
-        ImGui::EndCombo();
+    ui::beginCapsule("size", 72.0f);
+    const bool szClick = ui::capText("##size", sizeLabel, 72.0f, "Render size of the preview");
+    if (popupBelow("size-menu", szClick)) {
+        if (ImGui::MenuItem("512 px", nullptr, s.view.size == 512)) s.view.size = 512;
+        if (ImGui::MenuItem("1024 px", nullptr, s.view.size == 1024)) s.view.size = 1024;
+        ImGui::EndPopup();
     }
+    ui::endCapsule();
     ++n;
 
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(80);
-    // TWO CONTROLS THAT DISAGREE ARE WORSE THAN ONE. The combo reads and writes
-    // the SAME number the wheel does, so a wheel zoom to 137% shows "137%" here
-    // rather than leaving a stale "100%" next to an icon that is plainly not at
-    // 100%. It shows the TARGET, not the eased value: mid-ease the number would
-    // otherwise flicker through every intermediate percentage.
+    // TWO CONTROLS THAT DISAGREE ARE WORSE THAN ONE. The label reads the SAME
+    // number the wheel writes, and it shows the TARGET, not the eased value:
+    // mid-ease the number would otherwise flicker through every percentage.
     char zoomLabel[16];
-    std::snprintf(zoomLabel, sizeof zoomLabel, "%d%%",
-                  static_cast<int>(s.view.zoomTarget * 100.0f + 0.5f));
-    if (ImGui::BeginCombo("##zoom", zoomLabel)) {
+    std::snprintf(zoomLabel, sizeof zoomLabel, "%d%%", static_cast<int>(s.view.zoomTarget * 100.0f + 0.5f));
+    ui::beginCapsule("zoom", 70.0f);
+    const bool zClick = ui::capText("##zoom", zoomLabel, 70.0f, "Change zoom level");
+    if (popupBelow("zoom-menu", zClick)) {
         for (float z : {0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 4.0f}) {
             char l[16];
             std::snprintf(l, sizeof l, "%d%%", static_cast<int>(z * 100.0f + 0.5f));
             // The request, not the target: the canvas is the only place that
-            // knows where the viewport centre is, and a zoom that is not
-            // anchored anywhere throws the icon off screen (Session.h).
-            if (ImGui::Selectable(l, s.view.zoomTarget == z)) s.view.zoomRequest = z;
+            // knows where the viewport centre is (Session.h).
+            if (ImGui::MenuItem(l, nullptr, s.view.zoomTarget == z)) s.view.zoomRequest = z;
         }
-        ImGui::EndCombo();
+        ImGui::EndPopup();
     }
+    ui::endCapsule();
     ++n;
 
+    ui::popMenuStyle();
     return n;
 }
 
-// Zoom out / zoom in / 1:1 / Fit -- the four buttons Onyx's viewer carries
-// (ImageViewer.cpp:130-136). They write the same two request fields the combo
-// writes, so there is exactly one path into the view transform.
+// Zoom out / zoom in / 1:1 / Fit, numa capsula so. They write the same two
+// request fields the zoom menu writes, so there is exactly one path into the
+// view transform.
 std::size_t zoomBar(Session& s) {
-    ImGui::SameLine();
-    if (ImGui::SmallButton("-")) s.view.zoomRequest = s.view.zoomTarget / 1.5f;
-    ImGui::SetItemTooltip("Zoom out. The mouse wheel over the canvas does the same, "
-                          "anchored on the pointer.");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("+")) s.view.zoomRequest = s.view.zoomTarget * 1.5f;
-    ImGui::SetItemTooltip("Zoom in.");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("1:1")) s.view.zoomRequest = 1.0f;
-    ImGui::SetItemTooltip("One texel of the preview to one pixel on screen.");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Fit")) s.view.fitRequest = true;
-    ImGui::SetItemTooltip("Fit the whole icon in the canvas and centre it. "
-                          "This is where the canvas opens.");
+    ui::beginCapsule("zoom-buttons", 4 * 26.0f + 6.0f);
+    if (ui::capButton("##zoom-out", "minus.magnifyingglass", false, 16.0f, false,
+                      "Zoom out. The mouse wheel over the canvas does the same, anchored on the pointer.", 26.0f))
+        s.view.zoomRequest = s.view.zoomTarget / 1.5f;
+    if (ui::capButton("##zoom-in", "plus.magnifyingglass", false, 16.0f, false, "Zoom in.", 26.0f))
+        s.view.zoomRequest = s.view.zoomTarget * 1.5f;
+    if (ui::capButton("##one-to-one", "", s.view.zoomTarget == 1.0f, 16.0f, false,
+                      "One texel of the preview to one pixel on screen.", 26.0f, "1:1"))
+        s.view.zoomRequest = 1.0f;
+    if (ui::capButton("##fit", "arrow.up.left.and.arrow.down.right", false, 15.0f, false,
+                      "Fit the whole icon in the canvas and centre it. This is where the canvas opens.", 26.0f))
+        s.view.fitRequest = true;
+    ui::endCapsule();
     return 4;
 }
 
@@ -440,84 +456,107 @@ std::string elide(std::string_view text, std::size_t budget) {
 CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
                        std::string_view trouble) {
     CanvasStats st;
-    // The canvas is the window that carries the menu bar: Onyx owns the frame,
-    // and one of our windows has to hold the bar we draw ourselves (spec §7).
-    if (!ImGui::Begin(kCanvasWindow, nullptr, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoScrollbar)) {
+    // O TOPO DA COLUNA DO CENTRO E A TOOLBAR (`.toolbar` do Tauri): 52 pt com
+    // os menus, o nome do documento e as capsulas. E a barra de menus DESTA
+    // janela, na altura da barra de titulo: `FramePadding.y` no `Begin` e o que
+    // decide a altura dela (13 pt de texto + 2 x 19,5 = 52).
+    const float dk = ui::dpi();
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f * dk, (theme::kTitleBarH - theme::kFontSize) * 0.5f * dk));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleColor(ImGuiCol_MenuBarBg, theme::kPanel);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::kCanvas);
+    const bool shown = ImGui::Begin(kCanvasWindow, nullptr, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoScrollbar);
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(2);
+    if (!shown) {
         ImGui::End();
         return st;
     }
-    st.menu = drawMenuBar(s, actions);
-    st.contextControls = contextBar(s);
-    st.zoomControls = zoomBar(s);
-    if (view.pending) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("rendering…");
+    if (ImGui::BeginMenuBar()) {
+        // Medido pela BARRA DE MENUS e nao pela janela: flutuando (nos testes,
+        // ou desencaixada) a janela tem a barra de titulo dela em cima, e o
+        // topo da janela nao e o topo da barra.
+        const ImRect barRect = ImGui::GetCurrentWindow()->MenuBarRect();
+        const ImVec2 bar0 = ImGui::GetCursorScreenPos();
+        const float barTop = barRect.Min.y;
+        const float barH = barRect.GetHeight();
+        const float barRight = barRect.Max.x;
+        // Os menus, a 12 pt da borda da coluna e centrados na altura: o titulo
+        // de um menu tem a altura da linha de texto.
+        ImGui::SetCursorScreenPos(ImVec2(bar0.x + 4.0f * dk, barTop + (barH - ImGui::GetTextLineHeight()) * 0.5f));
+        st.menu = drawMenus(s, actions);
+        // O nome do documento (`.doc-title`): 15 pt, semi-negrito no alvo.
+        ImGui::SameLine(0.0f, 10.0f * dk);
+        float titleEnd = 0.0f;
+        {
+            const std::string title = s.bundle().path().stem().string();
+            ImGui::PushFont(nullptr, 15.0f);
+            const ImVec2 ts = ImGui::CalcTextSize(title.c_str());
+            const ImVec2 at(ImGui::GetCursorScreenPos().x, barTop + (barH - ts.y) * 0.5f);
+            ImGui::GetWindowDrawList()->AddText(at, theme::u32(theme::kText), title.c_str());
+            titleEnd = at.x + ts.x;
+            ImGui::PopFont();
+        }
+        // As capsulas, encostadas a direita (`.toolbar-spacer`): 12 pt da borda.
+        const float capsules = (84 + 84 + 72 + 70 + 4 * 26 + 6) * dk + 8.0f * dk * 4;
+        ImGui::SetCursorScreenPos(ImVec2(std::max(barRight - 12.0f * dk - capsules, titleEnd + 16.0f * dk),
+                                         barTop + (barH - 34.0f * dk) * 0.5f));
+        st.contextControls = contextBar(s);
+        st.zoomControls = zoomBar(s);
+        ImGui::EndMenuBar();
     }
-    // O QUE ESTA NA TELA NAO E O QUE FOI PEDIDO. `refined` era escrito pelo
-    // coordenador e lido por ninguem: quando o ladrilho nao cabe, o canvas
-    // mostra a resolucao base esticada, que a esta altura do zoom e um borrao
-    // -- e o unico sinal disso era uma nota tecnica dentro do painel de
-    // Diagnostics, que ninguem abre para entender por que a imagem piorou.
-    // Aqui, ao lado do zoom, e onde a pessoa ja esta olhando quando piora.
+    // A linha que separa a toolbar do palco (`border-bottom: 1px solid var(--sep)`).
+    const float stageTop = ImGui::GetCurrentWindow()->MenuBarRect().Max.y;
+    {
+        const ImVec2 wp = ImGui::GetWindowPos();
+        const float y = stageTop - 0.5f;
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(wp.x, y), ImVec2(wp.x + ImGui::GetWindowSize().x, y),
+                                            theme::u32(theme::kSep));
+    }
+
+    // O ESTADO DO PALCO (`.stage-status`): um chip no canto de cima, e nao mais
+    // texto solto na barra. Rendering, esticado e o recibo da exportacao; a
+    // falha de escrita logo abaixo, vermelha.
+    std::string status;
+    if (view.pending) status = "rendering…";
+    // O QUE ESTA NA TELA NAO E O QUE FOI PEDIDO (o ladrilho recusado pelo teto):
+    // dito aqui, ao lado de onde a pessoa ja olha quando a imagem piora.
     if (!view.refined) {
         st.stretchedNotice = true;
-        ImGui::SameLine();
-        ImGui::TextDisabled("stretched");
-        ImGui::SetItemTooltip("The tile this zoom asks for does not fit, so this is the base "
-                              "resolution stretched. Diagnostics says which ceiling refused it.");
+        status += status.empty() ? "stretched" : " · stretched";
     }
-
-    // A EXPORTACAO CONTINUA DEPOIS DO `Close`, ENTAO ELA TEM DE APARECER FORA
-    // DO MODAL (revisao 19/09, I5).
-    //
-    // `Close` nao cancela -- o rotulo nao promete que cancela e a fila e do
-    // app --, mas ate aqui `sheet.status` so era desenhado DENTRO do modal
-    // (Export.cpp). Fechar no meio de um lote de seis a 1024 px dava dez
-    // segundos de janela travando a cada dois quadros com NADA na tela
-    // dizendo por que: "Exporting 3 of 6: <nome>" e "Wrote 5 of 6 to <pasta>"
-    // iam para um campo que ninguem desenhava. So as FALHAS apareciam, pela
-    // linha vermelha logo abaixo -- e um lote que so fala quando quebra e a
-    // regressao de 15/09 outra vez.
-    //
-    // Aqui, e nao um segundo modal: e a barra onde "rendering..." e
-    // "stretched" ja moram, e um lote que continua nao e uma decisao a tomar.
-    // Com o modal ABERTO ele desenha a mesma frase, entao esta e a que sobra
-    // quando ele fecha -- e nao vermelha, porque progresso nao e alarme. A
-    // ultima frase de um lote e um recibo e fica: `MenuBar.cpp` a apaga quando
-    // a proxima exportacao abre o modal.
+    // A EXPORTACAO CONTINUA DEPOIS DO `Close` (revisao 19/09, I5): a frase do
+    // lote aparece fora do modal, e a ultima fica como recibo.
     if (!s.exportSheet.open && !s.exportSheet.status.empty()) {
         st.exportStatus = elide(s.exportSheet.status, 96);
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", st.exportStatus.c_str());
-        ImGui::SetItemTooltip("%s", s.exportSheet.status.c_str());
+        status += status.empty() ? st.exportStatus : " · " + st.exportStatus;
     }
+    // A FALHA DE ESCRITA, ONDE A PESSOA ESTA OLHANDO (laudo 18/09 §4.2).
+    if (!trouble.empty()) st.trouble = elide(trouble, 96);
 
-    // A FALHA DE ESCRITA, ONDE A PESSOA ESTA OLHANDO.
-    //
-    // Medido 18/09 (laudo §4.2): `State::act()` mandava o motivo de `save`, de
-    // `saveAs` e da criacao de documento para `stderr`, e uma janela nao tem
-    // stderr. `State::trouble` existia e so era desenhado no canvas VAZIO --
-    // some no instante em que ha documento, que e o unico instante em que
-    // salvar pode falhar. O resultado media exatamente isto: Ctrl+S num disco
-    // cheio, nenhum pixel muda, o titulo continua com o asterisco e nada na
-    // tela diz por que.
-    //
-    // Por que AQUI e nao um modal: um modal interrompe, e a falha ja
-    // aconteceu -- nao ha decisao a tomar, ha um fato a saber. Esta barra e
-    // onde "rendering..." e "stretched" ja moram, esta a dois centimetros do
-    // Ctrl+S que acabou de ser apertado, e e vermelha, que e a unica cor que
-    // este editor usa para dizer que algo esta errado (a mesma `kAlarm` do
-    // painel de asset). O texto INTEIRO esta no Diagnostics, e o tooltip o
-    // repete aqui para quem nao quer abrir o painel.
-    //
-    // E fica em LINHA PROPRIA, nao em `SameLine`: a frase e longa e, ao lado
-    // dos combos, ou empurra o zoom para fora da janela ou e cortada
-    // justamente onde esta a informacao.
-    if (!trouble.empty()) {
-        st.trouble = elide(trouble, 96);
-        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f), "%s", st.trouble.c_str());
-        ImGui::SetItemTooltip("%.*s\n\nThe whole line is in the Diagnostics panel, under `write`.",
-                              static_cast<int>(trouble.size()), trouble.data());
+    // O palco comeca embaixo da toolbar, na cor do canvas.
+    ImGui::SetCursorScreenPos(ImVec2(ImGui::GetWindowPos().x, stageTop));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    ImGui::SetCursorScreenPos(ImVec2(ImGui::GetWindowPos().x, stageTop));
+    {
+        const ImVec2 wp = ImGui::GetWindowPos();
+        const float right = wp.x + ImGui::GetWindowSize().x;
+        float y = stageTop + 8.0f * dk;
+        ImDrawList* fg = ImGui::GetWindowDrawList();
+        auto chip = [&](const std::string& text, ImVec4 colour, const std::string& tip) {
+            const ImVec2 ts = ImGui::CalcTextSize(text.c_str());
+            const ImVec2 b(right - 12.0f * dk, y + ts.y + 2.0f * dk);
+            const ImVec2 a(b.x - ts.x - 14.0f * dk, y);
+            // Desenhado DEPOIS do palco (ver o fim desta funcao), entao so a
+            // geometria e guardada aqui.
+            (void)fg;
+            st.chips.push_back(CanvasChip{text, colour, tip, a, b});
+            y = b.y + 4.0f * dk;
+        };
+        if (!status.empty()) chip(status, theme::kText2, s.exportSheet.status);
+        if (!st.trouble.empty())
+            chip(st.trouble, theme::kDanger,
+                 std::string(trouble) + "\n\nThe whole line is in the Diagnostics panel, under `write`.");
     }
 
     ViewContext& v = s.view;
@@ -540,8 +579,17 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
     // `fitted` is false in a freshly opened Session and nowhere else, so this is
     // "when a document opens" without an event to plumb. No ease: there is
     // nothing on screen yet to ease away from.
+    // O FIT COM A FOLGA DO ALVO (30/09): `Canvas.padding` e 96 pt [BIN]
+    // (`WindowLayoutConstants`, laudo 19/09 §4.2) de cada lado, e o Fit nunca
+    // passa de 100% -- o `Math.min(1, ...)` do Stage.tsx. `canvasFitZoom`
+    // continua a funcao pura que encosta exato; a folga entra aqui.
+    const float fitPad = 96.0f * ui::dpi();
+    auto fitZoom = [&] {
+        return std::min(1.0f, canvasFitZoom(std::max(1.0f, availW - 2.0f * fitPad),
+                                            std::max(1.0f, availH - 2.0f * fitPad), sidePx));
+    };
     if (!v.fitted) {
-        v.zoomTarget = canvasFitZoom(availW, availH, sidePx);
+        v.zoomTarget = fitZoom();
         const CanvasVec c = canvasCentrePan(availW, availH, sidePx, v.zoomTarget);
         v.panTargetX = c.x;
         v.panTargetY = c.y;
@@ -555,7 +603,7 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
     // `sine-*` backdrops of the target are round 5, and a backdrop taken from
     // the theme could be fully transparent, which would put the icon's own
     // alpha over the window and make transparency unreadable.
-    dl->AddRectFilled(origin, corner, IM_COL32(40, 40, 44, 255));
+    dl->AddRectFilled(origin, corner, theme::u32(theme::kCanvas));
 
     // Left OR middle drag pans, which is what Onyx's viewer accepts
     // (ImageViewer.cpp:199-200). Left as well as middle because a middle button
@@ -598,7 +646,7 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
 
     if (v.fitRequest) {
         v.fitRequest = false;
-        v.zoomTarget = canvasFitZoom(availW, availH, sidePx);
+        v.zoomTarget = fitZoom();
         const CanvasVec c = canvasCentrePan(availW, availH, sidePx, v.zoomTarget);
         v.panTargetX = c.x;
         v.panTargetY = c.y;
@@ -777,11 +825,17 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
     // bar now says. Small and in the corner, because it is on screen during
     // every edit and must not compete with the icon. Inside the clip, like
     // everything else the canvas draws.
-    if (view.pending) {
-        dl->AddCircleFilled(ImVec2(corner.x - 12.0f, origin.y + 12.0f), 4.0f, IM_COL32(230, 180, 60, 255));
-    }
-
     dl->PopClipRect();
+
+    // Os chips de estado, por cima do palco (`.stage-status`, `--chip`).
+    for (const CanvasChip& c : st.chips) {
+        dl->AddRectFilled(c.min, c.max, theme::u32(ImVec4(0.12f, 0.12f, 0.13f, 0.88f)), 7.0f * dk);
+        const ImVec2 ts = ImGui::CalcTextSize(c.text.c_str());
+        dl->AddText(ImVec2(c.min.x + 7.0f * dk, (c.min.y + c.max.y - ts.y) * 0.5f), theme::u32(c.colour),
+                    c.text.c_str());
+        if (!c.tooltip.empty() && ImGui::IsMouseHoveringRect(c.min, c.max) && ImGui::IsWindowHovered())
+            ImGui::SetTooltip("%s", c.tooltip.c_str());
+    }
 
     ImGui::End();
     return st;

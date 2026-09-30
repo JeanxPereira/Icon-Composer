@@ -59,10 +59,12 @@ void apply(float dpiScale) {
     c[ImGuiCol_Button] = kControl;
     c[ImGuiCol_ButtonHovered] = rgba(255, 255, 255, 0.16f);
     c[ImGuiCol_ButtonActive] = rgba(255, 255, 255, 0.22f);
-    // A linha selecionada e a cor de selecao do sistema [BIN].
-    c[ImGuiCol_Header] = kSelection;
+    // `Header` pinta cabecalho, item de lista e item marcado de menu: o
+    // realce discreto. A pilula de selecao da sidebar e a cor de destaque, e
+    // e desenhada a mao (PanelLayers.cpp).
+    c[ImGuiCol_Header] = kBox;
     c[ImGuiCol_HeaderHovered] = kBoxStrong;
-    c[ImGuiCol_HeaderActive] = kSelection;
+    c[ImGuiCol_HeaderActive] = kCapOn;
     c[ImGuiCol_Separator] = kSep;
     c[ImGuiCol_SeparatorHovered] = kAccent;
     c[ImGuiCol_SeparatorActive] = kAccent;

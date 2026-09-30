@@ -6,12 +6,14 @@
 #include "Source/IconComposerKit/Renditions.h"
 #include "Source/IconComposerKit/Session.h"
 #include "Source/IconComposerKit/Theme.h"
+#include "Source/IconComposerKit/Widgets.h"
 #include "Source/IconComposerKit/WindowLayout.h"
 #include "Source/app/AppPorts.h"
 #include "Source/app/Dialogs.h"
 #include "Source/app/JobQueue.h"
 #include "Source/app/NativeWindow.h"
 #include "Source/app/Shell.h"
+#include "Source/app/Symbols.h"
 #include "Source/app/TrafficLights.h"
 
 #include "imgui.h"
@@ -90,6 +92,7 @@ struct State {
     std::unique_ptr<ick::RenditionThumbnails> thumbs;
     ick::MenuActions actions;
     bool quit = false;
+    bool showDiagnostics = false;
     // WHY A DROP IS QUEUED AND NOT ACTED ON. GLFW delivers it from inside
     // `glfwPollEvents`, i.e. mid-frame, and `adopt()` destroys the session the
     // panels after it are about to draw -- the same reason `act()` runs LAST,
@@ -413,6 +416,7 @@ struct State {
                 }
             }
         }
+        if (a.toggleDiagnostics) showDiagnostics = !showDiagnostics;
         if (a.close) close();
         if (a.quit) quit = true;
     }
@@ -506,6 +510,7 @@ void drawLayersPanel(State& st) {
         ick::drawLayers(*st.session);
     } else {
         ImGui::Begin(ick::kLayersWindow);
+        ImGui::Dummy(ImVec2(1.0f, ick::theme::kTitleBarH * ImGui::GetStyle().FontScaleDpi));
         ImGui::TextDisabled("No document");
         ImGui::End();
     }
@@ -530,12 +535,24 @@ void drawCanvasPanel(State& st) {
     }
     // With no document the Kit's menu bar has nothing to hang from, so the
     // empty canvas carries the items that can still be acted on.
+    const float k = ImGui::GetStyle().FontScaleDpi;
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                        ImVec2(8.0f * k, (ick::theme::kTitleBarH - ick::theme::kFontSize) * 0.5f * k));
+    ImGui::PushStyleColor(ImGuiCol_MenuBarBg, ick::theme::kPanel);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ick::theme::kCanvas);
     ImGui::Begin(ick::kCanvasWindow, nullptr, ImGuiWindowFlags_MenuBar);
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar();
     if (ImGui::BeginMenuBar()) {
-        if (ImGui::BeginMenu("File")) {
+        ick::ui::pushMenuStyle();
+        const bool fileOpen = ImGui::BeginMenu("File");
+        ick::ui::popMenuStyle();
+        if (fileOpen) {
+            ick::ui::pushMenuStyle();
             if (ImGui::MenuItem("New...", "Ctrl+N")) st.actions.newDocument = true;
             if (ImGui::MenuItem("Open...", "Ctrl+O")) st.actions.open = true;
             if (ImGui::MenuItem("Quit", "Ctrl+Q")) st.actions.quit = true;
+            ick::ui::popMenuStyle();
             ImGui::EndMenu();
         }
         ImGui::EndMenuBar();
@@ -646,24 +663,12 @@ void defaultLayout(ImGuiID dockspaceId, ImVec2 work) {
         centre, ImGuiDir_Left, ick::dockRatio(sidebar, total), nullptr, &centre);
     const ImGuiID right = ImGui::DockBuilderSplitNode(
         centre, ImGuiDir_Right, ick::dockRatio(inspector, afterLeft), nullptr, &centre);
-    // A BARRA DE RENDITIONS, ACIMA DO CANVAS (T4). É onde o alvo a põe, e é a
-    // única posição em que ela não disputa largura com a sidebar nem com o
-    // inspetor: os seis itens são uma FILA, e uma fila quer o eixo comprido.
-    //
-    // `[DEC]` A altura. `WindowLayoutConstants` (laudo 19/09 §4.2) tem nove
-    // constantes e nenhuma é da barra, então 190 pt é derivado do que ela
-    // desenha -- miniatura de 92, botão de título, a linha do relógio e as
-    // margens --, não medido. Em pixels e não em razão, pela mesma lição das
-    // larguras logo acima: uma razão não tem piso, e numa janela alta a barra
-    // engoliria o canvas.
-    const float top190 = std::clamp(190.0f / (work.y > 1.0f ? work.y : 1.0f), 0.08f, 0.4f);
-    const ImGuiID top = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Up, top190, nullptr, &centre);
-    const ImGuiID bottom = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down, 0.22f, nullptr, &centre);
+    // TRES COLUNAS, COMO O TAURI (30/09): sidebar | canvas | inspetor. As
+    // renditions deixaram de ser um no do dock -- elas flutuam no rodape do
+    // canvas (`.rendition-bar`), e o Diagnostics abre pelo menu View.
     ImGui::DockBuilderDockWindow(ick::kLayersWindow, left);
-    ImGui::DockBuilderDockWindow(ick::kRenditionsWindow, top);
     ImGui::DockBuilderDockWindow(ick::kCanvasWindow, centre);
     ImGui::DockBuilderDockWindow(ick::kInspectorWindow, right);
-    ImGui::DockBuilderDockWindow(ick::kDiagnosticsWindow, bottom);
     ImGui::DockBuilderFinish(dockspaceId);
 }
 
@@ -671,15 +676,26 @@ void defaultLayout(ImGuiID dockspaceId, ImVec2 work) {
 
 namespace {
 
-// ---- a barra de titulo ------------------------------------------------------
+// ---- a hospedeira e o topo das colunas ---------------------------------------
 TrafficLights g_lights;
 
-// A janela hospedeira: a barra de titulo em cima e o dockspace embaixo. O
-// nome dela e o que `NativeWindow` reconhece como "barra", para arrastar.
-void drawHost(State& st, Shell& shell) {
+// SEM ABAS. Cada coluna e uma janela so no seu no, e a aba dela seria uma
+// segunda barra de titulo embaixo da primeira. `AutoHideTabBar` a esconde
+// enquanto o no tem uma janela so, e ela volta (o triangulo no canto) quando
+// alguem empilha outra -- o docking continua la, so nao aparece a toa.
+void columnClass() {
+    static ImGuiWindowClass cls;
+    cls.DockNodeFlagsOverrideSet = ImGuiDockNodeFlags_AutoHideTabBar;
+    ImGui::SetNextWindowClass(&cls);
+}
+
+// A janela hospedeira e so o dockspace. A barra de titulo nao e dela: e o topo
+// de 52 pt de cada coluna, e o sistema arrasta a janela por qualquer ponto
+// dessa faixa que nao tenha um controle embaixo (NativeWindow.cpp).
+void drawHost(Shell& shell) {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    const float barH = ick::theme::kTitleBarH * ImGui::GetStyle().FontScaleDpi;
-    shell.setTitleBarHeight(barH);
+    const float k = ImGui::GetStyle().FontScaleDpi;
+    shell.setTitleBarHeight(ick::theme::kTitleBarH * k);
 
     ImGui::SetNextWindowPos(vp->WorkPos);
     ImGui::SetNextWindowSize(vp->WorkSize);
@@ -692,44 +708,61 @@ void drawHost(State& st, Shell& shell) {
                                    ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoSavedSettings;
     ImGui::Begin(NativeWindow::kHostWindow, nullptr, flags);
     ImGui::PopStyleVar(3);
-
-    const bool dirty = st.session && st.session->isDirty();
-    {
-        const float k = ImGui::GetStyle().FontScaleDpi;
-        const ImVec2 o = ImGui::GetWindowPos();
-        const float d = 14.0f * k;
-        g_lights.draw(shell, ImVec2(o.x + ick::theme::kLightsInset * k, o.y + (barH - d) * 0.5f), k, dirty);
-    }
-
-    // O titulo, centrado na JANELA e nao no que sobra depois das luzes.
-    const std::string text = st.titleBarText();
-    const ImVec2 ts = ImGui::CalcTextSize(text.c_str());
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 origin = ImGui::GetWindowPos();
-    dl->AddText(ImVec2(origin.x + (vp->WorkSize.x - ts.x) * 0.5f, origin.y + (barH - ts.y) * 0.5f),
-                ick::theme::u32(shell.focused() ? ick::theme::kText : ick::theme::kText3), text.c_str());
-    dl->AddLine(ImVec2(origin.x, origin.y + barH - 0.5f),
-                ImVec2(origin.x + vp->WorkSize.x, origin.y + barH - 0.5f), ick::theme::u32(ick::theme::kSep));
-
-    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + barH));
-    const ImGuiID dockspace = ImGui::GetID("IconComposerDock");
-    // Sem layout salvo (primeiro uso, ou `imgui.ini` apagado), o do alvo.
-    if (!ImGui::DockBuilderGetNode(dockspace))
-        defaultLayout(dockspace, ImVec2(vp->WorkSize.x, vp->WorkSize.y - barH));
+    // Um id novo para o layout de tres colunas: um `imgui.ini` de antes de 30/09
+    // guarda a arvore com as renditions em cima e o Diagnostics embaixo.
+    const ImGuiID dockspace = ImGui::GetID("IconComposerColumns");
+    if (!ImGui::DockBuilderGetNode(dockspace)) defaultLayout(dockspace, vp->WorkSize);
     ImGui::DockSpace(dockspace, ImVec2(0, 0), ImGuiDockNodeFlags_None);
     ImGui::End();
+}
 
-    // O RIM DE DENTRO do macOS 27: o realce claro de 0,5 pt, densidade 0,1
-    // (Theme.h, `kRimInner`), por cima de tudo, seguindo o canto que o DWM
-    // recorta. Maximizada a janela nao tem canto nem borda.
-    if (!shell.maximized()) {
-        const float k = ImGui::GetStyle().FontScaleDpi;
-        const float w = std::max(1.0f, 0.5f * k * 2.0f) * 0.5f;   // 0,5 pt, nunca menos de meio pixel
-        ImDrawList* fg = ImGui::GetForegroundDrawList();
-        const ImVec2 a(vp->Pos.x + w * 0.5f, vp->Pos.y + w * 0.5f);
-        const ImVec2 b(vp->Pos.x + vp->Size.x - w * 0.5f, vp->Pos.y + vp->Size.y - w * 0.5f);
-        fg->AddRect(a, b, ick::theme::u32(ick::theme::kRimInner), ick::theme::kDwmRadius, 0, w * 2.0f);
+// As luzes, no topo da coluna da sidebar (`.sidebar-top`): a janela dela e
+// reaberta para acrescentar, depois de o Kit ter desenhado a lista.
+void drawLights(State& st, Shell& shell) {
+    if (!ImGui::Begin(ick::kLayersWindow)) {
+        ImGui::End();
+        return;
     }
+    const float k = ImGui::GetStyle().FontScaleDpi;
+    const ImVec2 o = ImGui::GetWindowPos();
+    const float d = 14.0f * k;
+    const float barH = ick::theme::kTitleBarH * k;
+    const ImVec2 keep = ImGui::GetCursorScreenPos();
+    g_lights.draw(shell, ImVec2(o.x + ick::theme::kLightsInset * k, o.y + (barH - d) * 0.5f), k,
+                  st.session && st.session->isDirty());
+    ImGui::SetCursorScreenPos(keep);
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    ImGui::End();
+}
+
+// As renditions flutuando no rodape do canvas (`.rendition-bar`: 8 pt das
+// laterais, 10 do fundo). Uma janela sem decoracao nem fundo, posta todo
+// quadro no retangulo do canvas -- e por isso segue o splitter e a janela.
+void drawRenditionsOverlay(State& st) {
+    ImGuiWindow* canvas = ImGui::FindWindowByName(ick::kCanvasWindow);
+    if (!canvas || !st.session) return;
+    const float k = ImGui::GetStyle().FontScaleDpi;
+    const float h = 86.0f * k;
+    ImGui::SetNextWindowPos(ImVec2(canvas->Pos.x + 8.0f * k, canvas->Pos.y + canvas->Size.y - h - 10.0f * k));
+    ImGui::SetNextWindowSize(ImVec2(canvas->Size.x - 16.0f * k, h));
+    ImGui::SetNextWindowBgAlpha(0.0f);
+    ick::drawRenditions(*st.session, st.thumbs.get(),
+                        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoMove |
+                            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
+}
+
+// O rim de dentro do macOS 27 (Theme.h, `kRimInner`): o realce claro de 0,5 pt
+// por cima de tudo, seguindo o canto que o DWM recorta. Maximizada a janela
+// nao tem canto nem borda.
+void drawRim(Shell& shell) {
+    if (shell.maximized()) return;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float k = ImGui::GetStyle().FontScaleDpi;
+    const float w = std::max(1.0f, k);
+    ImDrawList* fg = ImGui::GetForegroundDrawList();
+    const ImVec2 a(vp->Pos.x + w * 0.5f, vp->Pos.y + w * 0.5f);
+    const ImVec2 b(vp->Pos.x + vp->Size.x - w * 0.5f, vp->Pos.y + vp->Size.y - w * 0.5f);
+    fg->AddRect(a, b, ick::theme::u32(ick::theme::kRimInner), ick::theme::kDwmRadius, 0, w);
 }
 
 }  // namespace
@@ -771,6 +804,12 @@ int run(const fs::path& initial) {
     // no primeiro quadro e ele espera este, em vez de pagar o aquecimento
     // dentro do proprio tempo.
     jobs.submit([&device] { warmUp(*device); }, {});
+    // Os SF Symbols dos widgets (Widgets.h), rasterizados na fila, depois do
+    // aquecimento e antes do primeiro render do canvas.
+    AppSymbols symbols;
+    symbols.schedule(jobs, *device, lightsSink->pool(), appleAssetsDir(),
+                     static_cast<std::uint32_t>(std::lround(40.0f * std::max(1.0f, ImGui::GetStyle().FontScaleDpi))));
+    ick::setSymbolSource(&symbols);
     State state;
     state.shell = shell.get();
     // O dispositivo da exportacao e o mesmo do agendador -- ver `State::device`.
@@ -797,17 +836,26 @@ int run(const fs::path& initial) {
         // Os `done` dos renders rodam aqui, na thread principal, antes de
         // qualquer painel perguntar pelo resultado.
         jobs.pump();
-        drawHost(state, *shell);
+        drawHost(*shell);
+        columnClass();
         drawLayersPanel(state);
+        drawLights(state, *shell);
+        columnClass();
         drawCanvasPanel(state);
         // DEPOIS do canvas, e isto é a prioridade em ato. O multiplexador
         // (Renditions.h) põe o canvas na frente quando as DUAS filas estão
         // cheias, mas não interrompe um render em voo -- com a raia livre,
         // quem pede primeiro sai primeiro. Nesta ordem o pedido de 512 px sai
         // antes do de 128 em todo quadro em que os dois nascem juntos.
-        drawRenditionsPanel(state);
+        drawRenditionsOverlay(state);
+        columnClass();
         drawInspectorPanel(state);
-        drawDiagnosticsPanel(state);
+        if (state.showDiagnostics) {
+            const float k = ImGui::GetStyle().FontScaleDpi;
+            ImGui::SetNextWindowSize(ImVec2(760.0f * k, 320.0f * k), ImGuiCond_FirstUseEver);
+            drawDiagnosticsPanel(state);
+        }
+        drawRim(*shell);
 
         // End of frame work: `act()` can replace or close the session, and a
         // swap mid-frame would leave the panels after it drawing against state
@@ -827,6 +875,7 @@ int run(const fs::path& initial) {
 
     // The coordinator returns its texture to the pool before the pool goes.
     state.close();
+    ick::setSymbolSource(nullptr);
     g_dropTarget = nullptr;
     return 0;
 }

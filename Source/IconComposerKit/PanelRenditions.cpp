@@ -1,3 +1,5 @@
+#include "Source/IconComposerKit/Theme.h"
+#include "Source/IconComposerKit/Widgets.h"
 #include "Source/IconComposerKit/Renditions.h"
 
 #include "Source/IconComposerKit/ViewModel.h"
@@ -388,7 +390,7 @@ ImVec2 centreOfLastItem() {
 
 }  // namespace
 
-RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs) {
+RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs, ImGuiWindowFlags extraFlags) {
     RenditionStats st;
     const icf::Idiom idiom = s.view.context.idiom;
     const std::vector<RenditionGroup> groups = renditionGroups(idiom);
@@ -432,32 +434,41 @@ RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs) {
     // mostrar.
     if (thumbs) thumbs->tick(s, want);
 
-    if (!ImGui::Begin(kRenditionsWindow, nullptr, ImGuiWindowFlags_HorizontalScrollbar)) {
+    if (!ImGui::Begin(kRenditionsWindow, nullptr, ImGuiWindowFlags_HorizontalScrollbar | extraFlags)) {
         ImGui::End();
         return st;
     }
 
+    // A FAIXA DO TAURI (`.rendition-bar`, `.rthumb`): miniaturas de 40 pt com
+    // a imagem de 36, raio 9, 8 pt entre elas e mais entre os grupos; a marcada
+    // sobre o chip. Tudo centrado na largura, e a legenda -- o nome da que esta
+    // sob o mouse, ou da marcada -- num chip logo acima.
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    bool firstGroup = true;
-    for (const RenditionGroup& g : groups) {
-        if (!firstGroup) ImGui::SameLine(0.0f, kBetweenGroupsGap);
-        firstGroup = false;
+    const float k = ui::dpi();
+    const float tile = 40.0f * k, inner = 36.0f * k, gap = 8.0f * k, groupGap = 22.0f * k;
+    float total = 0.0f;
+    for (std::size_t gi = 0; gi < groups.size(); ++gi) {
+        if (gi) total += groupGap;
+        total += groups[gi].count * tile + (groups[gi].count ? (groups[gi].count - 1) * gap : 0.0f);
+    }
+    const ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
+    const float y = wp.y + ws.y - tile;
+    float x = wp.x + std::max(0.0f, (ws.x - total) * 0.5f);
+    std::string caption;
+    std::string hoveredCaption;
+
+    for (std::size_t gi = 0; gi < groups.size(); ++gi) {
+        const RenditionGroup& g = groups[gi];
+        if (gi) x += groupGap;
         ++st.groups;
         st.groupSizes.push_back(g.count);
 
         for (std::size_t i = 0; i < g.count; ++i) {
-            if (i > 0) ImGui::SameLine(0.0f, kInGroupGap);
+            if (i > 0) x += gap;
             const rb::Rendition r = g.items[i];
             const bool enabled = renditionSupported(r);
             const bool selected = (r == current);
             const icf::Context ctx = contextOf(r, selected);
-            // SÓ A SUPORTADA GANHA A ARTE, e `&& enabled` é a linha inteira do
-            // motivo: a miniatura é chaveada por CONTEXTO, e `Clear Dark` cai
-            // no mesmo `tinted` de `Tinted Light`. Sem esta condição os três
-            // itens cinzas mostrariam a imagem da vizinha -- exatamente a
-            // mentira que o cinza existe para não contar. Medido: sem ela o
-            // caso `thumbnails_are_rendered_one_at_a_time` conta 6 miniaturas
-            // desenhadas onde só 3 foram renderizadas.
             const RenditionThumb* thumb = (thumbs && enabled) ? thumbs->find(ctx) : nullptr;
 
             RenditionInfo info;
@@ -469,53 +480,38 @@ RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs) {
             info.textured = thumb && thumb->texture != ImTextureID_Invalid;
 
             ImGui::PushID(static_cast<int>(r));
-            ImGui::BeginGroup();
+            ImGui::SetCursorScreenPos(ImVec2(x, y));
             ImGui::BeginDisabled(!enabled);
-
-            bool clicked = false;
-            const ImVec2 origin = ImGui::GetCursorScreenPos();
-            if (ImGui::Button("##thumb", ImVec2(kTile, kTile))) clicked = true;
-            info.imageAt = centreOfLastItem();
-            const bool hoveredImage = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
-            // A ARTE POR CIMA DO BOTÃO, e não um `ImageButton`: o botão já dá o
-            // retângulo, o hover e o clique, e desenhar a textura na drawlist
-            // deixa o item existir do mesmo jeito quando não há textura
-            // nenhuma -- que é o caso da suíte, e é o caso do primeiro quadro
-            // de todo documento.
-            if (info.textured) {
-                const ImVec2 a(origin.x + 4.0f, origin.y + 4.0f);
-                const ImVec2 b(origin.x + kTile - 4.0f, origin.y + kTile - 4.0f);
-                dl->AddImage(thumb->texture, a, b);
-            } else {
-                const char* what = !thumbs         ? "no device"
-                                   : (thumb && thumb->pending) ? "rendering…"
-                                   : (thumb && !thumb->error.empty()) ? "failed"
-                                   : !enabled      ? "not drawn"
-                                                   : "…";
-                const ImVec2 sz = ImGui::CalcTextSize(what);
-                dl->AddText(ImVec2(origin.x + (kTile - sz.x) * 0.5f,
-                                   origin.y + (kTile - sz.y) * 0.5f),
-                            ImGui::GetColorU32(ImGuiCol_TextDisabled), what);
-            }
-            if (selected) {
-                // O ENQUADRAMENTO DA ESCOLHIDA. Dois pixels e a cor de destaque
-                // do tema: é o mesmo sinal que a camada selecionada recebe no
-                // canvas, e é o que liga esta barra ao que está na tela grande.
-                dl->AddRect(ImVec2(origin.x - 2.0f, origin.y - 2.0f),
-                            ImVec2(origin.x + kTile + 2.0f, origin.y + kTile + 2.0f),
-                            ImGui::GetColorU32(ImGuiCol_ButtonActive), 3.0f, 0, 2.0f);
-            }
-
-            // O `RenditionTitleButton` do alvo: o NOME é um botão, e clicar
-            // nele leva o canvas para aquele contexto.
-            if (ImGui::Button(info.label.c_str(), ImVec2(kTile, 0.0f))) clicked = true;
-            info.at = centreOfLastItem();
-            const bool hoveredTitle = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
-
+            const bool clicked = ImGui::InvisibleButton("##thumb", ImVec2(tile, tile));
             ImGui::EndDisabled();
-            ImGui::EndGroup();
+            const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+            info.imageAt = centreOfLastItem();
+            info.at = info.imageAt;
+            const ImVec2 a0(x, y), a1(x + tile, y + tile);
+            if (selected) {
+                dl->AddRectFilled(a0, a1, theme::u32(ImVec4(0.12f, 0.12f, 0.13f, 0.72f)), 9.0f * k);
+                dl->AddRect(a0, a1, IM_COL32(255, 255, 255, 30), 9.0f * k, 0, 1.0f);
+            } else if (hovered && enabled) {
+                dl->AddRectFilled(a0, a1, theme::u32(ImVec4(0.12f, 0.12f, 0.13f, 0.40f)), 9.0f * k);
+            }
+            const float pad = (tile - inner) * 0.5f;
+            if (info.textured) {
+                dl->AddImage(thumb->texture, ImVec2(x + pad, y + pad), ImVec2(x + pad + inner, y + pad + inner),
+                             ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, enabled ? 255 : 90));
+            } else {
+                // Sem pixels: o contorno da pastilha, apagado -- "ainda nao",
+                // "nao da" ou "falhou" vao para o tooltip, nao para a faixa.
+                dl->AddRect(ImVec2(x + pad + 2 * k, y + pad + 2 * k), ImVec2(x + pad + inner - 2 * k, y + pad + inner - 2 * k),
+                            theme::u32(enabled ? theme::kText4 : theme::kText5), 8.0f * k, 0, 1.0f);
+                if (info.pending) {
+                    const ImVec2 c(x + tile * 0.5f, y + tile * 0.5f);
+                    dl->AddCircleFilled(c, 2.0f * k, theme::u32(theme::kText3));
+                }
+            }
+            if (selected) caption = info.label;
+            if (hovered) hoveredCaption = info.label;
 
-            if (hoveredImage || hoveredTitle) {
+            if (hovered) {
                 std::string tip;
                 if (!enabled) {
                     tip = renditionUnsupportedReason(r);
@@ -525,44 +521,47 @@ RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs) {
                           renditionFileNameComponent(r) + "` to `ictool --rendition`.\n"
                           "It reads the document's `" +
                           std::string(icf::appearanceToString(rb::sourceAppearance(r))) +
-                          "` slice, so clicking it puts the canvas -- and the Appearance "
-                          "combo -- there.";
+                          "` slice, so clicking it puts the canvas there.";
                     if (selected && !sliceHasARendition) {
-                        // O TOOLTIP DIZ O FATO; A PROCEDÊNCIA FICA AQUI. Quem
-                        // lê isto é quem está usando o editor, e `[BIN]` é
-                        // marcação nossa -- ela diz de onde o fato veio, não o
-                        // que ele é. O fato: `[BIN]` `Platform.validRenditions`
-                        // (`0x3A248`, laudo 19/09 §2.7) é a tabela que exclui
-                        // esta rendition desta plataforma.
                         tip += "\nThe canvas is on the `" +
                                std::string(icf::appearanceToString(canvasContext.appearance)) +
                                "` slice, which " + std::string(idiomLabel(idiom)) +
-                               " has no rendition for. The thumbnail above is that slice -- "
+                               " has no rendition for. The thumbnail is that slice -- "
                                "what is on the big screen -- and not this rendition's own.";
                     }
                     if (thumb && !thumb->error.empty()) tip += "\nLast render failed: " + thumb->error;
                     else if (thumb && thumb->lastRenderSeconds >= 0.0)
                         tip += "\nThumbnail rendered in " + secondsText(thumb->lastRenderSeconds) + ".";
+                    else if (!thumbs) tip += "\nNo render device.";
                 }
                 ImGui::SetTooltip("%s", tip.c_str());
             }
             ImGui::PopID();
 
             if (!enabled) ++st.disabled;
-            // UM CONTROLE SÓ ESCREVE O MESMO ESTADO QUE O OUTRO LÊ. O clique
-            // não guarda "qual rendition" em lugar nenhum: ele move a aparência
-            // do `ViewContext`, que é a MESMA coisa que os combos do canvas e o
-            // menu View>Appearance movem. Dois controles que discordam do mesmo
-            // estado seriam defeito, e a única maneira de não discordarem é não
-            // haver um segundo estado.
             if (clicked && enabled) s.view.context.appearance = rb::sourceAppearance(r);
             st.drawn.push_back(std::move(info));
+            x += tile;
         }
     }
 
-    // A LINHA QUE DIZ O QUE ESTÁ ACONTECENDO. Nunca vazia: um painel que
-    // renderiza quatro vezes meio segundo e não diz nada é exatamente a
-    // regressão de 15/09 que `RenderView::lastRenderSeconds` existe por causa.
+    // A legenda (`.rcaption`): 11 pt, secundario, sobre o chip, centrada.
+    {
+        const std::string text = hoveredCaption.empty() ? caption : hoveredCaption;
+        if (!text.empty()) {
+            ImGui::PushFont(nullptr, 11.0f);
+            const ImVec2 ts = ImGui::CalcTextSize(text.c_str());
+            const float cx = wp.x + ws.x * 0.5f;
+            const ImVec2 c0(cx - ts.x * 0.5f - 9.0f * k, y - 6.0f * k - ts.y - 4.0f * k);
+            const ImVec2 c1(cx + ts.x * 0.5f + 9.0f * k, y - 6.0f * k);
+            dl->AddRectFilled(c0, c1, theme::u32(ImVec4(0.12f, 0.12f, 0.13f, 0.72f)), 9.0f * k);
+            dl->AddText(ImVec2(cx - ts.x * 0.5f, c0.y + 2.0f * k), theme::u32(theme::kText2), text.c_str());
+            ImGui::PopFont();
+        }
+    }
+    ImGui::SetCursorScreenPos(ImVec2(wp.x, y + tile));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+
     if (!thumbs) {
         st.note = "No render device: this bar shows the shape, not the pixels.";
     } else {
@@ -599,11 +598,8 @@ RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs) {
                    std::string(icf::appearanceToString(canvasContext.appearance)) +
                    "` slice the canvas is on; the marked thumbnail is that slice";
     }
-    ImGui::TextDisabled("%s", st.note.c_str());
-    if (st.disabled > 0) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("· %zu greyed (hover for why)", st.disabled);
-    }
+    // A nota (quantas, em quanto tempo, o que falta) fica nas estatisticas e no
+    // Diagnostics; a faixa e so as miniaturas, como a do alvo.
 
     ImGui::End();
     return st;

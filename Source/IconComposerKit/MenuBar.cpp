@@ -39,6 +39,8 @@
 // is cheaper than being right about the argument.
 #include "Source/IconComposerKit/Panels.h"
 #include "Source/IconComposerKit/ViewModel.h"
+#include "Source/IconComposerKit/Theme.h"
+#include "Source/IconComposerKit/Widgets.h"
 
 #include "imgui.h"
 
@@ -83,7 +85,13 @@ struct Builder {
     // que e exatamente o estado em que a posicao e gravada.
     bool menu(const char* label) {
         ++st.menus;
+        // O TITULO acende discreto (`.menubar-title:hover`, `--box-strong`); o
+        // item DENTRO do menu acende na cor de destaque (`pushMenuStyle`, em
+        // volta da barra inteira). So o titulo troca, e so enquanto e desenhado.
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, theme::kBoxStrong);
+        ImGui::PushStyleColor(ImGuiCol_Header, theme::kBoxStrong);
         const bool open = ImGui::BeginMenu(label);
+        ImGui::PopStyleColor(2);
         if (!open) st.titles.push_back(MenuItemInfo{label, true, centreOfLastItem()});
         return open;
     }
@@ -108,8 +116,15 @@ bool booleanUnderBase(const icf::json::Value& node, std::string_view prop) {
 }  // namespace
 
 MenuStats drawMenuBar(Session& s, MenuActions& a) {
+    if (!ImGui::BeginMenuBar()) return MenuStats{};
+    MenuStats st = drawMenus(s, a);
+    ImGui::EndMenuBar();
+    return st;
+}
+
+MenuStats drawMenus(Session& s, MenuActions& a) {
     MenuStats st;
-    if (!ImGui::BeginMenuBar()) return st;
+    ui::pushMenuStyle();
     Builder b{st};
 
     if (b.menu("File")) {
@@ -167,6 +182,8 @@ MenuStats drawMenuBar(Session& s, MenuActions& a) {
     }
 
     if (b.menu("View")) {
+        if (b.item("Diagnostics", nullptr)) a.toggleDiagnostics = true;
+        ImGui::Separator();
         // These four write `Session::view` directly. They are NOT commands: the
         // context a person is looking through is not part of the document, it
         // does not move `version()`, and it is not on the undo stack.
@@ -256,7 +273,7 @@ MenuStats drawMenuBar(Session& s, MenuActions& a) {
         ImGui::EndMenu();
     }
 
-    ImGui::EndMenuBar();
+    ui::popMenuStyle();
 
     // ---- the chords the labels above promise --------------------------------
     // Outside the menu bar, so the routes are registered against the window and

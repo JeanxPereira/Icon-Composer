@@ -95,8 +95,11 @@ LRESULT hitTest(HWND hwnd, LPARAM lp) {
 
     if (c.y < r.top + static_cast<LONG>(g_titleBar) && ImGui::GetCurrentContext()) {
         const ImGuiContext& g = *GImGui;
-        const bool overHost = g.HoveredWindow &&
-                              std::strcmp(g.HoveredWindow->Name, kHostWindow) == 0;
+        // A faixa de cima de QUALQUER coluna dockada: a raiz da arvore de dock
+        // dela e a hospedeira. Uma janela flutuante (um popup, o Diagnostics)
+        // nao e barra.
+        const ImGuiWindow* root = g.HoveredWindow ? g.HoveredWindow->RootWindowDockTree : nullptr;
+        const bool overHost = root && std::strcmp(root->Name, kHostWindow) == 0;
         if (overHost && !ImGui::IsAnyItemHovered() &&
             !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId))
             return HTCAPTION;

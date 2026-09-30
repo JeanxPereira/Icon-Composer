@@ -13,6 +13,8 @@
 #include "Source/IconComposerKit/Panels.h"
 #include "Source/IconComposerKit/Session.h"
 #include "Source/IconComposerKit/ViewModel.h"
+#include "Source/IconComposerKit/Theme.h"
+#include "Source/IconComposerKit/Widgets.h"
 #include "Source/IconComposerFoundation/Edit.h"
 #include "Source/IconComposerFoundation/Values.h"
 #include "imgui.h"
@@ -82,7 +84,7 @@ inline void numberHint(const char* what) {
 inline NumberEdit dragNumbers(const char* label, double* v, int count, float speed, const double* lo,
                               const double* hi, const char* fmt, const char* what) {
     NumberEdit e;
-    e.changed = ImGui::DragScalarN(label, ImGuiDataType_Double, v, count, speed, lo, hi, fmt,
+    e.changed = ImGui::DragScalarN(ui::leftLabel(label), ImGuiDataType_Double, v, count, speed, lo, hi, fmt,
                                    ImGuiSliderFlags_AlwaysClamp);
     e.released = ImGui::IsItemDeactivatedAfterEdit();
     numberHint(what);
@@ -92,7 +94,7 @@ inline NumberEdit dragNumbers(const char* label, double* v, int count, float spe
 inline NumberEdit sliderNumber(const char* label, double* v, double lo, double hi, const char* fmt,
                                const char* what) {
     NumberEdit e;
-    e.changed = ImGui::SliderScalar(label, ImGuiDataType_Double, v, &lo, &hi, fmt,
+    e.changed = ImGui::SliderScalar(ui::leftLabel(label), ImGuiDataType_Double, v, &lo, &hi, fmt,
                                     ImGuiSliderFlags_AlwaysClamp);
     e.released = ImGui::IsItemDeactivatedAfterEdit();
     numberHint(what);
@@ -157,7 +159,26 @@ struct Section {
     bool begin(const char* label, std::string_view prop, PropertyView& view) {
         view = viewProperty(s, path, prop);
         ImGui::PushID(label);
+        // O CABECALHO DO TAURI (`.isection-head`): 11 pt, secundario, sem
+        // barra. O conteudo vai numa caixa arredondada (`.isection-box`),
+        // desenhada no fim (`end`) atras do que a secao desenhou.
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1, 1, 1, 0.04f));
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(1, 1, 1, 0.06f));
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::kText2);
+        ImGui::PushFont(nullptr, 11.0f);
         const bool open = ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen);
+        ImGui::PopFont();
+        ImGui::PopStyleColor(4);
+        open_ = open;
+        if (open) {
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            dl->ChannelsSplit(2);
+            dl->ChannelsSetCurrent(1);
+            boxTop_ = ImGui::GetCursorScreenPos().y;
+            ImGui::Indent(10.0f * ui::dpi());
+            ImGui::Dummy(ImVec2(0.0f, 2.0f * ui::dpi()));
+        }
         ++st.sections;
         if (!view.own) ++st.inherited;
         // O inventario, gravado aqui porque aqui e o unico caminho (Panels.h,
@@ -227,7 +248,24 @@ struct Section {
         return open;
     }
 
-    void end() { ImGui::PopID(); }
+    void end() {
+        if (open_) {
+            const float k = ui::dpi();
+            ImGui::Dummy(ImVec2(0.0f, 2.0f * k));
+            ImGui::Unindent(10.0f * k);
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            dl->ChannelsSetCurrent(0);
+            const float x0 = ImGui::GetWindowPos().x + ImGui::GetStyle().WindowPadding.x;
+            const float x1 = x0 + ImGui::GetContentRegionAvail().x;
+            dl->AddRectFilled(ImVec2(x0, boxTop_), ImVec2(x1, ImGui::GetCursorScreenPos().y), theme::u32(theme::kBox),
+                              10.0f * k);
+            dl->ChannelsMerge();
+            open_ = false;
+        }
+        ImGui::PopID();
+    }
+    bool open_ = false;
+    float boxTop_ = 0.0f;
 
     void disabled(const char* label, const char* why) {
         ImGui::BeginDisabled();

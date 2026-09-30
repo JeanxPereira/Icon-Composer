@@ -14,6 +14,7 @@ add_executable(iconcomposer
     JobQueue.cpp
     NativeWindow.cpp
     Shell.cpp
+    Symbols.cpp
     TexturePool.cpp
     TrafficLights.cpp
     Window.cpp
@@ -27,3 +28,12 @@ if(WIN32)
     target_link_libraries(iconcomposer PRIVATE dwmapi ole32 uuid)
 endif()
 target_include_directories(iconcomposer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
+# O RUNTIME DO MINGW DENTRO DO EXE. Sem isto o `iconcomposer.exe` carrega a
+# `libstdc++-6.dll` que estiver primeiro no PATH, e medido 30/09: lancado de
+# outro shell ele achou uma de outra toolchain e parou antes da janela, num
+# "ponto de entrada nao encontrado" (`__codecvt_utf8_utf16`). Estatico, o exe
+# abre com dois cliques de qualquer lugar.
+if(MINGW)
+    target_link_options(iconcomposer PRIVATE -static-libgcc -static-libstdc++ -static)
+endif()

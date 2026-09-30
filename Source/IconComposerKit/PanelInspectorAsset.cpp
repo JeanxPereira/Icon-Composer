@@ -59,6 +59,7 @@
 // which is exactly the failure this family is best placed to cause, since the
 // key sits beside the two that work. It stays named, greyed, and carrying that
 // reason in the tooltip -- a different statement from "not built yet".
+#include "Source/IconComposerKit/Widgets.h"
 #include "Source/IconComposerKit/InspectorSection.h"
 
 #include <algorithm>
@@ -99,7 +100,7 @@ void imageAsset(Section& x) {
             !name.empty() && std::find(files.begin(), files.end(), name) != files.end();
 
         ImGui::SetNextItemWidth(220.0f);
-        if (ImGui::BeginCombo("File", name.empty() ? "(none)" : name.c_str())) {
+        if (ImGui::BeginCombo(ui::leftLabel("File"), name.empty() ? "(none)" : name.c_str())) {
             if (files.empty()) ImGui::TextDisabled("Assets/ is empty");
             for (const std::string& f : files) {
                 if (ImGui::Selectable(f.c_str(), f == name)) {
