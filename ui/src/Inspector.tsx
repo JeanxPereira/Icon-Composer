@@ -606,14 +606,36 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (on: boolean) => void
   );
 }
 
-// As cores prontas do `IconColorPicker` ("Standard"). Preenchidas pelo RE do
-// `ColorPickerGrid`; ate la, vazio e a secao nao aparece.
-const STANDARD_COLORS: string[] = [];
+// As cores prontas do `IconColorPicker` ("Standard"): 15, nesta ordem `[BIN]`
+// (Kit, init unico 0x5D838, cabecalho do array em 0x1864B0 = 15): as dez cores
+// de sistema e cinco passos de `white.mix(with: black, by: t)`, t = 0...1. Os
+// VALORES nao estao no binario -- o alvo resolve `Color.systemX` no macOS em
+// aparencia clara, em tempo de execucao --, entao sao os da tabela publicada da
+// Apple para o macOS claro `[INF]`.
+const STANDARD_COLORS: string[] = [
+  "#ff3b30", // systemRed
+  "#ff9500", // systemOrange
+  "#ffcc00", // systemYellow
+  "#28cd41", // systemGreen
+  "#00c7be", // systemMint
+  "#007aff", // systemBlue
+  "#55bef0", // systemCyan
+  "#59adc4", // systemTeal
+  "#5856d6", // systemIndigo
+  "#af52de", // systemPurple
+  "#ffffff",
+  "#bfbfbf",
+  "#808080",
+  "#404040",
+  "#000000",
+];
 
 // "Recent" (`RecentColorsManager`): as ultimas cores escolhidas, por pessoa, no
 // armazenamento do navegador -- conveniencia, nao documento.
-const RECENT_KEY = "icon-composer.recent-colors";
-const RECENT_MAX = 8;
+const RECENT_KEY = "recentIconColors";
+// `RecentColorsManager.fixedSize = 10` `[BIN]` (Kit 0x5F1F0); o alvo guarda em
+// UserDefaults "recentIconColors".
+const RECENT_MAX = 10;
 function readRecent(): string[] {
   try {
     const v = JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]");
