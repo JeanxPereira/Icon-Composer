@@ -13,11 +13,13 @@ import {
   coreImport,
   coreNode,
   coreOpen,
+  coreRects,
   coreSave,
   coreSet,
   Frame,
   frameToDataUrl,
   frameToPng,
+  LayerRect,
   NodeOp,
   requestFrame,
 } from "./core";
@@ -65,6 +67,7 @@ export default function App() {
   const [tile, setTile] = useState<Frame | null>(null);
   const [view, setView] = useState<ViewRect | null>(null);
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
+  const [rects, setRects] = useState<LayerRect[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -436,6 +439,22 @@ export default function App() {
     };
   }, [path, platform, rendition, fullPx, tiled, view, zoom, rev, effects]);
 
+  // Os retangulos das camadas, para o destaque e o clique no canvas: a cada
+  // documento novo do nucleo e a cada troca do contexto que o canvas mostra.
+  useEffect(() => {
+    if (!path) {
+      setRects([]);
+      return;
+    }
+    let alive = true;
+    coreRects(appearanceOf(rendition), platform)
+      .then((r) => alive && setRects(r))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [path, rev, rendition, platform]);
+
   // As miniaturas da barra de rendicoes, do mesmo nucleo, depois do canvas.
   useEffect(() => {
     if (!path || !doc) return;
@@ -481,6 +500,9 @@ export default function App() {
         frame={frame}
         tile={tiled ? tile : null}
         onView={setView}
+        rects={rects}
+        selection={selection}
+        onSelect={setSelection}
         busy={busy}
         error={error}
         thumbs={thumbs}

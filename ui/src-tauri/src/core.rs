@@ -144,6 +144,14 @@ impl Core {
         self.read_json()
     }
 
+    // O retangulo de cada camada em pontos do canvas (0..1024), como JSON.
+    pub fn rects(&mut self, appearance: &str, idiom: &str) -> Result<String, String> {
+        let a = if appearance.is_empty() { "-" } else { appearance };
+        let i = if idiom.is_empty() { "-" } else { idiom };
+        self.send(&format!("rects {a} {i}"))?;
+        self.read_json()
+    }
+
     pub fn save(&mut self) -> Result<(), String> {
         self.send("save")?;
         self.expect_ok()

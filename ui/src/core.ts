@@ -98,6 +98,23 @@ export async function blobToBase64(b: Blob): Promise<string> {
   return btoa(s);
 }
 
+// O retangulo de uma camada em pontos do canvas (0..1024), sob o contexto do
+// canvas: a regua de `ick::canvasLayerRect`, calculada no nucleo.
+export type LayerRect = { g: number; l: number; x0: number; y0: number; x1: number; y1: number; hidden: boolean };
+export const CANVAS_POINTS = 1024;
+
+export async function coreRects(appearance: string, idiom: string): Promise<LayerRect[]> {
+  return JSON.parse(await invoke<string>("core_rects", { appearance, idiom })) as LayerRect[];
+}
+
+// A camada sob um ponto (em pontos do canvas): a MAIS ACIMA que o contem. O
+// array corre da frente para tras, entao a primeira que acerta e a de cima; uma
+// escondida nao e candidata (`ick::canvasLayerAt`).
+export function layerAt(rects: LayerRect[], x: number, y: number): LayerRect | null {
+  for (const r of rects) if (!r.hidden && x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1) return r;
+  return null;
+}
+
 // A escrita: o nucleo aplica `setProperty` sob o escopo e devolve o icon.json.
 export async function coreSet(
   group: number,

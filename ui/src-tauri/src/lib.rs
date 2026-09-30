@@ -249,6 +249,14 @@ async fn core_import(state: tauri::State<'_, CoreState>, file: String) -> Result
 }
 
 #[tauri::command]
+async fn core_rects(state: tauri::State<'_, CoreState>, appearance: String, idiom: String) -> Result<String, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || with_core(&s, |c| c.rects(&appearance, &idiom)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn core_save(state: tauri::State<'_, CoreState>) -> Result<(), String> {
     let s = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || with_core(&s, |c| c.save()))
@@ -275,7 +283,8 @@ pub fn run() {
             core_history,
             core_save,
             core_node,
-            core_import
+            core_import,
+            core_rects
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

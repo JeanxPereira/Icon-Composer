@@ -720,7 +720,8 @@ button:disabled {
   position: absolute;
   inset: 0;
   overflow: hidden;
-  cursor: grab;
+  /* Clicar escolhe a camada; arrastar move a vista. */
+  cursor: default;
   touch-action: none;
 }
 
@@ -1036,4 +1037,30 @@ button:disabled {
 .sheet-btn.primary {
   background: var(--accent);
   color: var(--accent-text);
+}
+
+/* ---- o destaque da selecao no canvas (Stage.tsx, SelectionOverlay) ---- */
+.sel-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.sel-box {
+  position: absolute;
+  box-sizing: border-box;
+  border-radius: 2px;
+}
+
+.sel-box.selected {
+  border: 1.5px solid var(--accent);
+  box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.6);
+}
+
+.sel-box.in-group {
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.sel-box.hovered {
+  border: 1px solid color-mix(in srgb, var(--accent) 70%, transparent);
 }

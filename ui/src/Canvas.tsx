@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Sym } from "./Sym";
-import { Platform, Rendition, RENDITIONS } from "./doc";
-import { Frame } from "./core";
+import { Platform, Rendition, RENDITIONS, Selection } from "./doc";
+import { Frame, LayerRect } from "./core";
 import { Stage } from "./Stage";
 
 // Centro da janela: a barra de ferramentas do alvo (inventario §2), o canvas
@@ -30,6 +30,9 @@ type Props = {
   frame: Frame | null;
   tile: Frame | null;
   onView: (v: { x: number; y: number; w: number; h: number }) => void;
+  rects: LayerRect[];
+  selection: Selection;
+  onSelect: (s: Selection) => void;
   busy: boolean;
   error: string;
   thumbs: Record<string, string>;
@@ -252,6 +255,9 @@ export function Canvas(p: Props) {
           zoom={p.zoom}
           onZoom={p.onZoom}
           onView={p.onView}
+          rects={p.rects}
+          selection={p.selection}
+          onSelect={p.onSelect}
         />
         {p.error ? (
           <pre className="error stage-note">{p.error}</pre>
