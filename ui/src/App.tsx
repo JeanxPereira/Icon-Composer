@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { ask, open, save } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Sidebar, SidebarActions } from "./Sidebar";
 import { Background, BACKGROUNDS, Canvas, EffectsMode } from "./Canvas";
@@ -96,8 +97,29 @@ export default function App() {
     }
   }, []);
 
+  // Alteracoes nao salvas: antes de trocar de documento ou fechar, pergunta.
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
+  const mayDiscard = async () =>
+    !dirtyRef.current ||
+    (await ask("As alterações neste ícone não foram salvas (Ctrl+S salva). Descartar?", {
+      title: "Icon Composer",
+      kind: "warning",
+      okLabel: "Descartar",
+      cancelLabel: "Cancelar",
+    }));
+  useEffect(() => {
+    const un = getCurrentWindow().onCloseRequested(async (e) => {
+      if (!(await mayDiscard())) e.preventDefault();
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
   // File > New: um `.icon` vazio gravado onde a pessoa escolher, ja aberto.
   const newDoc = async () => {
+    if (!(await mayDiscard())) return;
     const target = await save({
       title: "New Icon",
       defaultPath: "Untitled.icon",
@@ -112,6 +134,7 @@ export default function App() {
   };
 
   const pick = async () => {
+    if (!(await mayDiscard())) return;
     // Um `.icon` e uma PASTA no Windows, entao o seletor e de diretorio.
     const chosen = await open({ directory: true, title: "Abrir .icon" });
     if (typeof chosen === "string") load(chosen);
@@ -212,7 +235,10 @@ export default function App() {
   const dropRef = useRef<(paths: string[]) => void>(() => {});
   dropRef.current = (paths) => {
     const icon = paths.find((f) => /\.icon[\\/]?$/i.test(f));
-    if (icon) load(icon.replace(/[\\/]$/, ""));
+    if (icon)
+      mayDiscard().then((ok) => {
+        if (ok) load(icon.replace(/[\\/]$/, ""));
+      });
     else importFiles(paths);
   };
   const [dropping, setDropping] = useState(false);
