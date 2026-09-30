@@ -659,6 +659,11 @@ struct SpecularArguments {
     // `useVCM == false` branch scaled by `glyphHighlightNonVCMScale == 1.0`
     // (`0x0004955C`). No caller in this renderer takes it any more.
     bool useVCM = true;
+
+    // A MASCARA DO CLEAR (`IconRenderOptions::clearMask`): 0 nao; 1 o especular
+    // do glifo; 2 os realces do chiclet. `resolveHighlight` troca a cor e o
+    // modo de cada passo pelos do alvo -- ver la.
+    std::uint8_t clearPaint = 0;
 };
 
 // `[BIN]` The five fields of a `VCM` ("Video Color Matrix"): `glyphHighlightVCM`

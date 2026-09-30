@@ -7,7 +7,7 @@ import { Sidebar, SidebarActions } from "./Sidebar";
 import { Background, Canvas, EffectsMode, solidCss } from "./Canvas";
 import { Edit, Inspector, Pane } from "./Inspector";
 import { Menu, Menubar } from "./Menubar";
-import { snapshotBackdrop } from "./backdrop";
+import { BACKDROP_SCALE, snapshotBackdrop } from "./backdrop";
 import { ExportSheet } from "./ExportSheet";
 import { DEFAULT_TINT, MONO_MODES, groups, layers, Node, nodeAt, Platform, Rendition, RENDITIONS, resolve, Selection, supportedPlatforms, Tint, tintColor, writeScope } from "./doc";
 import {
@@ -70,16 +70,21 @@ export default function App() {
   // cadeia do Clear, que clareia o FUNDO sob a arte.
   const [tint, setTint] = useState<Tint>(DEFAULT_TINT);
   const tintFor = (r: Rendition) => (r === "mono" && tint.mode === "tinted-dark" ? tintColor(tint) : undefined);
-  const usesClear = rendition === "mono" && tint.mode !== "tinted-dark";
+  // Os quatro modos do Mono tem o vidro simulado por baixo (Kit 0x1290FC), e
+  // todos precisam da copia do fundo. `[OBS]` Tinted Light vai pela cadeia do
+  // Clear sem a matriz de tint do vidro (0x7308, nao transcrita).
+  const usesClear = rendition === "mono";
   // A copia do fundo, enviada ao nucleo quando o Clear esta na tela; o
   // contador diz que o nucleo ja a tem.
   const [backdropRev, setBackdropRev] = useState(0);
-  const clearFor = (r: Rendition): [number, number, number] | undefined => {
-    if (r !== "mono" || tint.mode === "tinted-dark" || backdropRev === 0) return undefined;
+  const clearFor = (r: Rendition): [number, number, number, number] | undefined => {
+    if (r !== "mono" || backdropRev === 0) return undefined;
     const w = document.querySelector(".window")?.getBoundingClientRect();
     const sq = document.querySelector(".stage .icon-wrap")?.getBoundingClientRect();
     if (!w || !sq) return undefined;
-    return [sq.left - w.left, sq.top - w.top, sq.width];
+    const dark = tint.mode === "clear-dark" || tint.mode === "tinted-dark" ? 1 : 0;
+    const k = BACKDROP_SCALE;
+    return [(sq.left - w.left) * k, (sq.top - w.top) * k, sq.width * k, dark];
   };
   const tintKey = JSON.stringify(tint) + `|${backdropRev}`;
   // O tema da casca: o do sistema, ou o escolhido em View > Appearance. So a
@@ -619,10 +624,10 @@ export default function App() {
     let alive = true;
     const timer = window.setTimeout(() => {
       snapshotBackdrop(background, el)
-        .then((b) => (alive ? coreBackdrop(b.w, b.h, b.rgba) : undefined))
+        .then((b) => (alive ? coreBackdrop(b.w, b.h, BACKDROP_SCALE, b.rgba) : undefined))
         .then(() => alive && setBackdropRev((n) => n + 1))
         .catch((e) => setError(String(e)));
-    }, 120);
+    }, 30);
     return () => {
       alive = false;
       window.clearTimeout(timer);

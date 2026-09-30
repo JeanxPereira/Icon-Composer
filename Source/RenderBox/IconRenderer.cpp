@@ -19,6 +19,7 @@
 #include "Source/RenderBox/GlassLayer.h"
 #include "Source/RenderBox/GlassShadow.h"
 #include "Source/RenderBox/GlassSpecular.h"
+#include "Source/RenderBox/SimulatedGlass.h"
 #include "Source/RenderBox/GradientOracle.h"
 #include "Source/RenderBox/IconSurface.h"
 #include "Source/RenderBox/SystemFill.h"
@@ -385,6 +386,7 @@ void hashInto(KeyHasher& h, const SpecularArguments& a) {
     h.value(a.sizeClass).value(a.pixelsPerPoint).value(a.lightLongitude);
     h.value(a.lightIntensity).value(a.lightLatitude).value(a.layerOpacity);
     h.value(a.placement).value(a.identityRecolour).value(a.clampPlusLighter).value(a.useVCM);
+    h.value(a.clearPaint);
     const SpatialHighlighting& s = a.spatial;
     h.value(s.alignmentRange).value(s.intensityPower).value(s.minIntensity);
     h.value(s.spreadPower).value(s.heightPower).value(s.maxExtraHeight).value(s.read);
@@ -1059,7 +1061,19 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
             const PlacementRect canvas{0.0, 0.0, static_cast<double>(options.size),
                                        static_cast<double>(options.size)};
             std::string why;
-            const FillOverride paint = fillPaint(bg.fill, canvas, why);
+            FillOverride paint = fillPaint(bg.fill, canvas, why);
+            // Na MASCARA DO CLEAR o fundo do documento vira um solido (0, 1, 0, 1)
+            // `[BIN]` (0x486D0-0x486E8 -> 0x48920-0x48964): fora da matriz do
+            // conteudo, e pela matriz total vira (0, 0, 0, 1) -- cobre sem
+            // clarear, escurecer nem realcar.
+            if (options.clearMask && why.empty()) {
+                paint = FillOverride{};
+                paint.kind = FillOverride::Kind::Solid;
+                paint.colour[0] = 0.0f;
+                paint.colour[1] = 1.0f;
+                paint.colour[2] = 0.0f;
+                paint.colour[3] = 1.0f;
+            }
             if (!why.empty()) {
                 out.backgroundGap = why;
             } else {
@@ -1108,6 +1122,7 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                     chicletArgs.sizeClass = options.sizeClass;
                     chicletArgs.pixelsPerPoint =
                         static_cast<double>(options.size) / kCanvasPoints;
+                    if (options.clearMask) chicletArgs.clearPaint = 2;
                     // A nota depende de quantos pixels mudaram: o lugar dela fica
                     // guardado ate a contagem chegar (na GPU, no `finish`).
                     const std::size_t noteAt = out.notes.size();
@@ -1244,6 +1259,10 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
         specularArgs.sizeClass = options.sizeClass;
         specularArgs.pixelsPerPoint = static_cast<double>(options.size) / kCanvasPoints;
         specularArgs.placement = glassNumbers.specularPlacement;
+        if (options.clearMask) {
+            specularArgs.clearPaint = 1;
+            specularArgs.useVCM = false;   // `[BIN]` 0x4967C-0x4969C: o VCM nao roda
+        }
 
         // ---- `blur-material`, WHICH NOW DRAWS -------------------------------
         //
@@ -2246,10 +2265,15 @@ void applyTintedDark(RenderedIcon& icon, const IconRenderOptions::TintRecolour& 
 }
 
 void applyClear(RenderedIcon& icon, const ClearBackdrop& backdrop, double squareX,
-                double squareY, double squareSide, std::uint32_t canvasSize) {
+                double squareY, double squareSide, std::uint32_t canvasSize,
+                const SimulatedGlass* glass) {
     // `[BIN]` O ClearMode (laudo de 20/09 §2): total L/D/H 1.0 / 0.3 / 1.0;
-    // lighteningVCM [0.9, 2.5, 2.0], highlightsVCM [0.2, 1.35, 1.4].
+    // lighteningVCM [0.9, 2.5, 2.0], highlightsVCM [0.2, 1.35, 1.4], os dois
+    // com headroom 1.2.
     constexpr double kTotalLightening = 1.0, kTotalDarkening = 0.3, kTotalHighlights = 1.0;
+    // `inputClamp = headroom`: cada canal do VCM preso em [-0.75, h^(1/2.2)]
+    // (AquaKit VibrantColor.h); a tela prende em [0, 1] no fim.
+    const double kVcmMax = std::pow(1.2, 1.0 / 2.2);
     GlyphVCM lighten;
     lighten.lumaFloor = 0.9;
     lighten.lumaCeiling = 2.5;
@@ -2259,50 +2283,71 @@ void applyClear(RenderedIcon& icon, const ClearBackdrop& backdrop, double square
     highlight.lumaCeiling = 1.35;
     highlight.saturation = 1.4;
     if (backdrop.width == 0 || backdrop.height == 0 || canvasSize == 0) return;
-    const double k = squareSide / static_cast<double>(canvasSize);
-    auto texel = [&](int x, int y, int c) {
-        x = std::clamp(x, 0, static_cast<int>(backdrop.width) - 1);
-        y = std::clamp(y, 0, static_cast<int>(backdrop.height) - 1);
-        return backdrop.rgba[(static_cast<std::size_t>(y) * backdrop.width + x) * 4 + c] / 255.0;
-    };
-    float* p = icon.rgba.data();
-    for (std::uint32_t y = 0; y < icon.height; ++y) {
+    parallelRanges(icon.height, static_cast<std::size_t>(icon.width) * icon.height * 80,
+                   [&](std::size_t y0, std::size_t y1) {
+    for (std::uint32_t y = static_cast<std::uint32_t>(y0); y < y1; ++y) {
+        float* p = icon.rgba.data() + static_cast<std::size_t>(y) * icon.width * 4;
         for (std::uint32_t x = 0; x < icon.width; ++x, p += 4) {
+            const double u = (icon.originX + x + 0.5) / canvasSize;
+            const double v = (icon.originY + y + 0.5) / canvasSize;
+            double o[3], raw[3], gc = 0.0;
+            backdropWithGlass(backdrop, glass, squareX, squareY, squareSide, u, v, o, gc, raw);
             const double A = std::clamp(static_cast<double>(p[3]), 0.0, 1.0);
-            if (A <= 0.0) {
+            if (A > 0.0) {
+                // A matriz total, na cor reta, presa em 0..1 (`addStyle:9`).
+                const double mr = std::clamp(kTotalLightening * p[0], 0.0, 1.0);
+                const double mg = std::clamp(kTotalDarkening * (1.0 - p[1]), 0.0, 1.0);
+                const double mb = std::clamp(kTotalHighlights * p[2], 0.0, 1.0);
+                auto vibrant = [&](const GlyphVCM& vcm, double a) {
+                    if (a <= 0.0) return;
+                    double c[3] = {o[0], o[1], o[2]};
+                    applyGlyphVCM(vcm, c);
+                    for (int k = 0; k < 3; ++k) o[k] += (std::clamp(c[k], -0.75, kVcmMax) - o[k]) * a;
+                };
+                vibrant(lighten, mr * A);                                          // L
+                for (int k = 0; k < 3; ++k) o[k] = std::max(0.0, o[k] - mg * A);   // D, plusD
+                vibrant(highlight, mb * A);                                        // H
+            }
+            // Cor reta sobre o fundo CRU: compor devolve `o`.
+            const double alpha = std::max(A, gc);
+            if (alpha <= 0.0) {
                 p[0] = p[1] = p[2] = p[3] = 0.0f;
                 continue;
             }
-            // A matriz total, na cor reta, presa em 0..1 (`addStyle:9`).
-            const double mr = std::clamp(kTotalLightening * p[0], 0.0, 1.0);
-            const double mg = std::clamp(kTotalDarkening * (1.0 - p[1]), 0.0, 1.0);
-            const double mb = std::clamp(kTotalHighlights * p[2], 0.0, 1.0);
-            // O fundo sob este pixel, bilinear.
-            const double bx = squareX + (icon.originX + x + 0.5) * k - 0.5;
-            const double by = squareY + (icon.originY + y + 0.5) * k - 0.5;
-            const int x0 = static_cast<int>(std::floor(bx)), y0 = static_cast<int>(std::floor(by));
-            const double fx = bx - x0, fy = by - y0;
-            double b[3];
-            for (int c = 0; c < 3; ++c) {
-                b[c] = (texel(x0, y0, c) * (1 - fx) + texel(x0 + 1, y0, c) * fx) * (1 - fy) +
-                       (texel(x0, y0 + 1, c) * (1 - fx) + texel(x0 + 1, y0 + 1, c) * fx) * fy;
+            for (int k = 0; k < 3; ++k) {
+                const double oc = std::clamp(o[k], 0.0, 1.0);
+                p[k] = static_cast<float>(std::clamp((oc - raw[k] * (1.0 - alpha)) / alpha, 0.0, 1.0));
             }
-            double o[3] = {b[0], b[1], b[2]};
-            auto vibrant = [&](const GlyphVCM& vcm, double a) {
-                if (a <= 0.0) return;
-                double v[3] = {o[0], o[1], o[2]};
-                applyGlyphVCM(vcm, v);
-                for (int c = 0; c < 3; ++c) o[c] += (std::clamp(v[c], 0.0, 1.0) - o[c]) * a;
-            };
-            vibrant(lighten, mr * A);                                          // L
-            for (int c = 0; c < 3; ++c) o[c] = std::max(0.0, o[c] - mg * A);   // D, plusD
-            vibrant(highlight, mb * A);                                        // H
-            for (int c = 0; c < 3; ++c) {
-                p[c] = static_cast<float>(std::clamp((o[c] - b[c] * (1.0 - A)) / A, 0.0, 1.0));
-            }
-            p[3] = static_cast<float>(A);
+            p[3] = static_cast<float>(alpha);
         }
     }
+    });
+}
+
+void applyOverGlass(RenderedIcon& icon, const ClearBackdrop& backdrop, double squareX,
+                    double squareY, double squareSide, std::uint32_t canvasSize,
+                    const SimulatedGlass& glass) {
+    if (backdrop.width == 0 || canvasSize == 0) return;
+    parallelRanges(icon.height, static_cast<std::size_t>(icon.width) * icon.height * 80,
+                   [&](std::size_t y0, std::size_t y1) {
+    for (std::uint32_t y = static_cast<std::uint32_t>(y0); y < y1; ++y) {
+        float* p = icon.rgba.data() + static_cast<std::size_t>(y) * icon.width * 4;
+        for (std::uint32_t x = 0; x < icon.width; ++x, p += 4) {
+            const double u = (icon.originX + x + 0.5) / canvasSize;
+            const double v = (icon.originY + y + 0.5) / canvasSize;
+            double b[3], raw[3], gc = 0.0;
+            backdropWithGlass(backdrop, &glass, squareX, squareY, squareSide, u, v, b, gc, raw);
+            const double A = std::clamp(static_cast<double>(p[3]), 0.0, 1.0);
+            const double alpha = std::max(A, gc);
+            if (alpha <= 0.0) continue;
+            for (int k = 0; k < 3; ++k) {
+                const double o = p[k] * A + b[k] * (1.0 - A);   // o icone sobre o vidro
+                p[k] = static_cast<float>(std::clamp((o - raw[k] * (1.0 - alpha)) / alpha, 0.0, 1.0));
+            }
+            p[3] = static_cast<float>(alpha);
+        }
+    }
+    });
 }
 
 }  // namespace rb

@@ -582,7 +582,8 @@ Result<void> refract(Resident& r, const Slab& target, const Slab& field, const P
 }
 
 bool highlightModeTranscribed(BlendMode m) {
-    return m == BlendMode::Normal || m == BlendMode::PlusLighter || m == BlendMode::PlusDarker;
+    return m == BlendMode::Normal || m == BlendMode::PlusLighter || m == BlendMode::PlusDarker ||
+           m == BlendMode::Screen || m == BlendMode::Multiply;
 }
 
 bool resolveHighlights(const HighlightSlot* slots, std::size_t count,
@@ -613,6 +614,8 @@ bool resolveHighlights(const HighlightSlot* slots, std::size_t count,
         rec[11] = vcm.lumaCeiling;
         rec[12] = vcm.saturation;
         rec[13] = band;
+        rec[14] = g.colour[1];   // a cor por canal (a mascara do Clear)
+        rec[15] = g.colour[2];
         records.insert(records.end(), rec, rec + kHighlightStride);
     }
     return true;

@@ -218,7 +218,7 @@ async fn core_render(
     subdivisions: u32,
     effects: Option<bool>,
     tint: Option<[f64; 4]>,
-    clear: Option<[f64; 3]>,
+    clear: Option<[f64; 4]>,
 ) -> Result<tauri::ipc::Response, String> {
     let s = state.inner().clone();
     let bytes = tauri::async_runtime::spawn_blocking(move || {
@@ -296,13 +296,14 @@ async fn core_backdrop(
     state: tauri::State<'_, CoreState>,
     width: u32,
     height: u32,
+    scale: f64,
     rgba: String,
 ) -> Result<(), String> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(rgba)
         .map_err(|e| e.to_string())?;
     let s = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || with_core(&s, |c| c.backdrop(width, height, &bytes)))
+    tauri::async_runtime::spawn_blocking(move || with_core(&s, |c| c.backdrop(width, height, scale, &bytes)))
         .await
         .map_err(|e| e.to_string())?
 }

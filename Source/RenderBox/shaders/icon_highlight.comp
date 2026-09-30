@@ -35,7 +35,7 @@ layout(push_constant) uniform Push {
 // O registro de um realce.
 const int kInset = 0, kHeight = 1, kCurvature = 2, kCone = 3, kDirX = 4, kDirY = 5,
           kBiasP = 6, kOpacity = 7, kColour = 8, kMode = 9, kLumaFloor = 10,
-          kLumaCeiling = 11, kSaturation = 12, kBand = 13;
+          kLumaCeiling = 11, kSaturation = 12, kBand = 13, kColourG = 14, kColourB = 15;
 const int kStride = 16;
 const double kEps = 0.0009765625lf;
 
@@ -150,9 +150,12 @@ void main() {
                 continue;
             }
 
-            double colour = at(s, kColour);
-            precise double sc = colour * alpha;
-            double src[4] = double[4](sc, sc, sc, alpha);
+            // A cor por canal: a mascara do Clear pinta (1,0,0), (1,0,1),
+            // (0.7,0,0); os outros realces tem as tres iguais.
+            precise double sr = at(s, kColour) * alpha;
+            precise double sg = at(s, kColourG) * alpha;
+            precise double sb = at(s, kColourB) * alpha;
+            double src[4] = double[4](sr, sg, sb, alpha);
             double dst[4] = double[4](double(px.r), double(px.g), double(px.b), double(px.a));
             double o[4];
             uint mode = uint(at(s, kMode));
@@ -174,6 +177,21 @@ void main() {
                 precise double slack = mode == 4u ? (a - sum) : 0.0lf;
                 for (int k = 0; k < 3; ++k) {
                     precise double v = src[k] + dst[k] + slack;
+                    o[k] = v;
+                }
+            } else if (mode == 6u) {
+                // screen, `BlendFormula.cpp` caso 12: os quatro canais
+                for (int k = 0; k < 4; ++k) {
+                    precise double v = src[k] + dst[k] * (1.0lf - src[k]);
+                    o[k] = v;
+                }
+            } else if (mode == 2u) {
+                // multiply, caso 25: `s*d` e a cauda compartilhada
+                precise double oa = src[3] + dst[3] - src[3] * dst[3];
+                o[3] = oa;
+                for (int k = 0; k < 3; ++k) {
+                    precise double v = src[k] * (1.0lf - dst[3]) + dst[k] * (1.0lf - src[3]) +
+                                       src[k] * dst[k];
                     o[k] = v;
                 }
             } else {

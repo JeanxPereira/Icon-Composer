@@ -182,3 +182,38 @@ a composição (`rgb = (saída − fundo·(1 − A)) / A`), então a casca só s
 Medido: GPU contra CPU com diferença máxima de 1 nível (Chromium e Delta);
 Clear a 256 px em 4 ms na GPU. Continuam `[OBS]` os itens da §5: se H lê o
 fundo original, o fosco do host e o conteúdo do PNG exportado.
+
+### 5.2. O vidro sob o ícone e a máscara completa (três investigações de 30/09)
+
+**Os passes leem o resultado corrente** `[BIN]`: são três `CAPortalLayer`
+irmãs do ícone (fonte = a camada do ícone, `hidesSourceLayer`), num contêiner
+com `allowsGroupBlending:NO` (0x57774–0x57894), sem backdrop isolado. H vê
+L e D. O `inputBackdropAware = YES` vale para L e para H (0x40898). O VCM é
+preso em [−0,75, 1,2^(1/2,2)] antes da tela.
+
+**O canvas desenha vidro** `[BIN]`: `ICRSimulatedGlassChicletLayer` fica
+DEBAIXO do ícone (Kit 0x128DE4/0x128DF4) nas quatro rendições Mono, fora do
+export mitigado (Kit 0x1290FC–0x129140). É uma cópia do fundo, redesenhada
+(0x7C870, 0x8036C) com recorte na pastilha, VCM claro [0,12, 1,0, 1,2] ou
+escuro [0,05, 0,3, 0,8] (conferidos: 0x807C4–0x807E0, 0x80934–0x80960),
+desfoque de 2 pontos, a lente `displacementMap_v1` (−0,28·S, faixa 0,11·S) e
+desfoque de 0,0065·S. `rb::simulatedGlass` implementa isso sobre a cópia do
+fundo; `[INF]` os dois desfoques viram um só antes da lente, e a matriz de tint
+do Tinted Light (0x7308) não foi transcrita.
+
+**A máscara, elemento a elemento** `[BIN]`, e o que o render faz agora:
+
+| elemento | no alvo | aqui |
+|---|---|---|
+| fundo do documento | sólido (0, 1, 0, 1) (0x486D0) | idem |
+| sombra do vidro | crua, preta neutra (0x49F40) | idem |
+| vidro das camadas | cru | idem |
+| especular do glifo | (1,0,0) screen / (1,0,1) multiply, sem VCM (0x49554, 0x49A44) | idem, na GPU |
+| realces do chiclet | (0,7, 0, 0) plusLighter; darklights fora (0x478B4, 0x47874) | idem, na GPU |
+| contorno | só em `.color` (0x47B88) | não existe aqui |
+
+Clear Light e Clear Dark desenham a MESMA máscara (0x5E6A0); a diferença é o
+VCM do vidro. Os gradientes `lightClear`/`darkClear` não têm leitor no desenho.
+
+Medido: GPU × CPU máximo 1 nível; Clear a 1200 px em ~24 ms (o shader dos
+realces ganhou cor por canal e screen/multiply, antes caía na CPU: 233 ms).

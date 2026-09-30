@@ -283,6 +283,9 @@ void applyTintedDark(RenderedIcon& icon, const IconRenderOptions::TintRecolour& 
 struct ClearBackdrop {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    // Pixels da copia por ponto da tela: a casca manda em meia resolucao, e o
+    // `resultBlurRadius` do vidro (2 pontos) e medido nisto.
+    double pixelsPerPoint = 1.0;
     std::vector<std::uint8_t> rgba;
 };
 
@@ -298,8 +301,19 @@ struct ClearBackdrop {
 // o alfa da mascara, de modo que compor sobre o MESMO fundo devolve a
 // composicao: `rgb = (saida - fundo (1 - A)) / A`. Fora da mascara nada muda.
 // `[OBS]` H le o resultado de L e D, nao o fundo original (nao lido).
+//
+// `glass`: o vidro simulado sob o icone (`SimulatedGlass.h`); as passadas leem
+// o fundo COM ele, que e o que esta atras delas no alvo. Nulo, o fundo cru.
 void applyClear(RenderedIcon& icon, const ClearBackdrop& backdrop, double squareX,
-                double squareY, double squareSide, std::uint32_t canvasSize);
+                double squareY, double squareSide, std::uint32_t canvasSize,
+                const struct SimulatedGlass* glass = nullptr);
+
+// O icone pronto (cor reta, alfa) composto sobre o fundo com o vidro simulado,
+// reescrito como cor reta sobre o fundo cru -- para o Tinted Dark, que tambem
+// tem o vidro por baixo (Kit 0x1290FC: rendicao >= 2).
+void applyOverGlass(RenderedIcon& icon, const ClearBackdrop& backdrop, double squareX,
+                    double squareY, double squareSide, std::uint32_t canvasSize,
+                    const struct SimulatedGlass& glass);
 
 // The placement of one layer's art on the canvas, in the target's own terms.
 // Exposed so the transform can be checked without a GPU.

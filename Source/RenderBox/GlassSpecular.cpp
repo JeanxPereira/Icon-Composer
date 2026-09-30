@@ -211,6 +211,31 @@ GlassHighlightSettings resolveHighlight(const HighlightSlot& slot, const Specula
         out.directionY = std::cos(az);
         out.directionZ = 0.0;
     }
+    // A MASCARA DO CLEAR: a cor e o modo de cada passo sao os do alvo, e o
+    // caminho VCM do glifo nao roda (o chamador desliga `useVCM`).
+    //   glifo, realce      (1, 0, 0, 1) screen     `[BIN]` 0x49554-0x4956C
+    //   glifo, darklight   (1, 0, 1, 1) multiply   `[BIN]` 0x49A44-0x49A5C
+    //   chiclet, realce    (0.7, 0, 0, 1) plusLighter  `[BIN]` 0x478B4-0x478EC
+    //   chiclet, darklight nao desenha: `leaveChicletDarklightsToSystem`
+    //                      `[BIN]` 0x47874-0x4788C
+    // O alfa da cor e `glyph(High|Dark)lightNonVCMScale` = 1.0 (0x62B30).
+    if (args.clearPaint == 1) {
+        out.colour[0] = 1.0;
+        out.colour[1] = 0.0;
+        out.colour[2] = slot.isDarklight ? 1.0 : 0.0;
+        out.colour[3] = 1.0;
+        out.blendMode = slot.isDarklight ? BlendMode::Multiply : BlendMode::Screen;
+    } else if (args.clearPaint == 2) {
+        if (slot.isDarklight) {
+            out.opacity = 0.0;
+        } else {
+            out.colour[0] = 0.7;
+            out.colour[1] = 0.0;
+            out.colour[2] = 0.0;
+            out.colour[3] = 1.0;
+            out.blendMode = BlendMode::PlusLighter;
+        }
+    }
     return out;
 }
 

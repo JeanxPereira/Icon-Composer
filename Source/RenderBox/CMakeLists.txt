@@ -32,6 +32,7 @@ add_library(RenderBox STATIC
     ChicletHighlights.cpp
     ChicletShape.cpp
     IconRenderer.cpp
+    SimulatedGlass.cpp
     IconRendererGpu.cpp
     GpuResident.cpp
     GpuGlass.cpp

@@ -43,9 +43,11 @@
 //       -> "asset <nome>\n" | "err <motivo>\n"
 //   undo | redo   -> "json <n>\n" + o icon.json | "err nada a desfazer"
 //   get           -> "json <n>\n" + o icon.json
-//   backdrop <w> <h> <n>\n<n bytes RGBA8>
+//   backdrop <w> <h> <n> [pixels por ponto]\n<n bytes RGBA8>
 //       o fundo da janela como a tela o mostra, para o Clear -> "ok\n"
-//   render ... clear <x> <y> <lado>, depois de effects: o Clear (a mascara
+//   render ... tint <r> <g> <b> <s> [<x> <y> <lado>]: com o quadrado, o
+//       Tinted Dark sobre o vidro simulado (SimulatedGlass.h)
+//   render ... clear <x> <y> <lado> [dark], depois de effects: o Clear (a mascara
 //       por `clearMask` e os passes clarear/escurecer/realcar de
 //       `rb::applyClear`), com o quadrado do canvas em pixels do backdrop; a
 //       cor sai tal que compor sobre o mesmo fundo da a composicao
@@ -71,6 +73,8 @@
 #include "Source/RenderBox/GpuResident.h"
 #include "Source/RenderBox/Parallel.h"
 #include "Source/RenderBox/RenderCache.h"
+#include "Source/RenderBox/SimulatedGlass.h"
+#include "Source/RenderBox/ChicletShape.h"
 
 #include <array>
 #include <chrono>
@@ -487,14 +491,16 @@ int main(int argc, char** argv) {
         if (cmd == "backdrop") {
             std::uint32_t w = 0, h = 0;
             std::size_t n = 0;
+            double ppp = 1.0;
             in >> w >> h >> n;
+            if (!(in >> ppp) || !(ppp > 0.0)) ppp = 1.0;
             std::vector<std::uint8_t> bytes(n);
             std::cin.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(n));
             if (n != static_cast<std::size_t>(w) * h * 4) {
                 fail("backdrop: n != w*h*4");
                 continue;
             }
-            backdrop = rb::ClearBackdrop{w, h, std::move(bytes)};
+            backdrop = rb::ClearBackdrop{w, h, ppp, std::move(bytes)};
             reply("ok");
             continue;
         }
@@ -585,13 +591,24 @@ int main(int argc, char** argv) {
             // Tinted Dark: `tint r g b saturation` depois de `effects`.
             std::optional<rb::IconRenderOptions::TintRecolour> tint;
             std::optional<std::array<double, 3>> clear;   // o quadrado no fundo
+            std::optional<std::array<double, 3>> glassSquare;
+            bool glassDark = false;   // o VCM escuro do vidro (Clear Dark, Tinted Dark)
             {
                 std::string word;
                 rb::IconRenderOptions::TintRecolour t;
                 std::array<double, 3> sq{};
                 if (in >> word) {
-                    if (word == "tint" && in >> t.r >> t.g >> t.b >> t.saturation) tint = t;
-                    else if (word == "clear" && in >> sq[0] >> sq[1] >> sq[2]) clear = sq;
+                    if (word == "tint" && in >> t.r >> t.g >> t.b >> t.saturation) {
+                        tint = t;
+                        glassDark = true;   // o tint desenha so no Tinted Dark
+                        // O quadrado, opcional: com ele o Tinted Dark vai sobre o vidro.
+                        if (in >> sq[0] >> sq[1] >> sq[2]) glassSquare = sq;
+                    } else if (word == "clear" && in >> sq[0] >> sq[1] >> sq[2]) {
+                        clear = sq;
+                        glassSquare = sq;
+                        std::string look;
+                        glassDark = (in >> look) && look == "dark";
+                    }
                 }
             }
             if (subdivisions < 1 || subdivisions > 256) {
@@ -661,12 +678,24 @@ int main(int argc, char** argv) {
                 continue;
             }
             if (tint) rb::applyTintedDark(*icon, *tint);
+            if (glassSquare && backdrop.width == 0) {
+                fail("clear sem backdrop");
+                continue;
+            }
+            // O vidro simulado sob o icone, nas rendicoes Mono (SimulatedGlass.h).
+            // Clear Light/Dark e Tinted Dark: a aparencia escura escolhe o VCM.
+            std::optional<rb::SimulatedGlass> glass;
+            if (glassSquare) {
+                const auto& g = *glassSquare;
+                glass = rb::simulatedGlass(backdrop, g[0], g[1], g[2],
+                                           rb::iconPlatformOf(io.context.idiom), glassDark);
+            }
             if (clear) {
-                if (backdrop.width == 0) {
-                    fail("clear sem backdrop");
-                    continue;
-                }
-                rb::applyClear(*icon, backdrop, (*clear)[0], (*clear)[1], (*clear)[2], size);
+                rb::applyClear(*icon, backdrop, (*clear)[0], (*clear)[1], (*clear)[2], size,
+                               glass ? &*glass : nullptr);
+            } else if (tint && glass) {
+                rb::applyOverGlass(*icon, backdrop, (*glassSquare)[0], (*glassSquare)[1],
+                                   (*glassSquare)[2], size, *glass);
             }
             const std::vector<std::uint8_t> bytes =
                 toRgba8Dithered(icon->rgba, icon->width, icon->originX, icon->originY);

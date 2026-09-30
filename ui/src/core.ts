@@ -16,8 +16,10 @@ export type RenderParams = {
   effects?: boolean;
   // Tinted Dark: [r, g, b, saturation] (`tintColor` em doc.ts).
   tint?: [number, number, number, number];
-  // Clear: o quadrado do canvas em pixels do backdrop (`coreBackdrop`).
-  clear?: [number, number, number];
+  // O quadrado do canvas em pixels do backdrop (`coreBackdrop`) e se a
+  // aparencia e escura: [x, y, lado, 0|1]. Sozinho e o Clear; com `tint`, o
+  // Tinted Dark sobre o vidro simulado.
+  clear?: [number, number, number, number];
 };
 
 async function renderNow(p: RenderParams): Promise<Frame> {
@@ -166,6 +168,7 @@ export function coreImport(file: string): Promise<string> {
 
 // O fundo da janela como a tela o mostra, para o Clear: ele e ENTRADA do
 // render (a composicao do alvo e sobre o fundo).
-export function coreBackdrop(width: number, height: number, rgba: Uint8Array): Promise<void> {
-  return invoke("core_backdrop", { width, height, rgba: bytesToBase64(rgba) });
+// `scale`: pixels da copia por ponto da tela.
+export function coreBackdrop(width: number, height: number, scale: number, rgba: Uint8Array): Promise<void> {
+  return invoke("core_backdrop", { width, height, scale, rgba: bytesToBase64(rgba) });
 }

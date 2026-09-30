@@ -158,9 +158,9 @@ impl Core {
     }
 
     // O fundo da janela como a tela o mostra (RGBA8), para o Clear.
-    pub fn backdrop(&mut self, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
+    pub fn backdrop(&mut self, w: u32, h: u32, scale: f64, rgba: &[u8]) -> Result<(), String> {
         self.stdin
-            .write_all(format!("backdrop {w} {h} {}\n", rgba.len()).as_bytes())
+            .write_all(format!("backdrop {w} {h} {} {scale}\n", rgba.len()).as_bytes())
             .and_then(|_| self.stdin.write_all(rgba))
             .and_then(|_| self.stdin.flush())
             .map_err(|e| e.to_string())?;
@@ -183,15 +183,17 @@ impl Core {
         subdivisions: u32,
         effects: bool,
         tint: Option<[f64; 4]>,
-        clear: Option<[f64; 3]>,
+        clear: Option<[f64; 4]>,
     ) -> Result<Vec<u8>, String> {
         let a = if appearance.is_empty() { "-" } else { appearance };
         let i = if idiom.is_empty() { "-" } else { idiom };
         // Tinted Dark: `tint r g b saturation` no fim da linha.
-        // Ou o Clear: `clear x y lado`, o quadrado do canvas no backdrop.
+        // `clear` e o quadrado do canvas no backdrop, [x, y, lado, escuro]. Com
+        // o tint (Tinted Dark) ele poe o icone sobre o vidro; sozinho e o Clear.
         let t = match (tint, clear) {
-            (Some(t), _) => format!(" tint {} {} {} {}", t[0], t[1], t[2], t[3]),
-            (None, Some(c)) => format!(" clear {} {} {}", c[0], c[1], c[2]),
+            (Some(t), Some(c)) => format!(" tint {} {} {} {} {} {} {}", t[0], t[1], t[2], t[3], c[0], c[1], c[2]),
+            (Some(t), None) => format!(" tint {} {} {} {}", t[0], t[1], t[2], t[3]),
+            (None, Some(c)) => format!(" clear {} {} {}{}", c[0], c[1], c[2], if c[3] != 0.0 { " dark" } else { "" }),
             _ => String::new(),
         };
         self.send(&format!(
