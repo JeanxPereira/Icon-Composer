@@ -33,6 +33,7 @@ type Props = {
   rects: LayerRect[];
   selection: Selection;
   onSelect: (s: Selection) => void;
+  onMove: (s: Selection, dx: number, dy: number, first: boolean) => void;
   busy: boolean;
   error: string;
   thumbs: Record<string, string>;
@@ -258,6 +259,7 @@ export function Canvas(p: Props) {
           rects={p.rects}
           selection={p.selection}
           onSelect={p.onSelect}
+          onMove={p.onMove}
         />
         {p.error ? (
           <pre className="error stage-note">{p.error}</pre>

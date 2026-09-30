@@ -6,7 +6,7 @@ import { Background, BACKGROUNDS, Canvas, EffectsMode } from "./Canvas";
 import { Edit, Inspector, Pane } from "./Inspector";
 import { Menu, Menubar } from "./Menubar";
 import { ExportChoice, ExportSheet } from "./ExportSheet";
-import { groups, layers, Node, Platform, Rendition, RENDITIONS, Selection, supportedPlatforms } from "./doc";
+import { groups, layers, Node, nodeAt, Platform, Rendition, RENDITIONS, resolve, Selection, supportedPlatforms, writeScope } from "./doc";
 import {
   blobToBase64,
   coreHistory,
@@ -132,6 +132,35 @@ export default function App() {
       })
       .catch((e) => setError(String(e)));
   };
+  // Arrastar no canvas (`DragState.Operation.move`): `dx`/`dy` sao o
+  // deslocamento TOTAL desde o inicio, em pontos do canvas. A posicao lida e a
+  // que vale no contexto mostrado, e a escrita cai na entrada que ganha nele.
+  // Uma camada anda no espaco do grupo, entao o deslocamento se divide pela
+  // escala dele. O primeiro passo abre a entrada no desfazer; os outros juntam.
+  const moveStart = useRef<{ s: number; x: number; y: number; gs: number } | null>(null);
+  const onMove = (sel: Selection, dx: number, dy: number, first: boolean) => {
+    if (!doc || sel.kind === "icon") return;
+    const appearance = appearanceOf(rendition);
+    const node = nodeAt(doc, sel);
+    type Pos = { scale?: number; "translation-in-points"?: number[] } | undefined;
+    if (first || !moveStart.current) {
+      const pos = resolve(node, "position", appearance, platform) as Pos;
+      const gp = sel.kind === "layer" ? (resolve(groups(doc)[sel.g], "position", appearance, platform) as Pos) : undefined;
+      moveStart.current = {
+        s: pos?.scale ?? 1,
+        x: pos?.["translation-in-points"]?.[0] ?? 0,
+        y: pos?.["translation-in-points"]?.[1] ?? 0,
+        gs: gp?.scale || 1,
+      };
+    }
+    const st = moveStart.current;
+    const value = {
+      scale: st.s,
+      "translation-in-points": [Math.round(st.x + dx / st.gs), Math.round(st.y + dy / st.gs)],
+    };
+    onEdit(sel, writeScope(node, "position", appearance, platform, false), "position", value, !first);
+  };
+
   const at = (sel: Selection): [number, number] => [sel.kind === "icon" ? -1 : sel.g, sel.kind === "layer" ? sel.l : -1];
   const groupOf = (sel: Selection) => (sel.kind === "icon" ? 0 : sel.g);
 
@@ -501,6 +530,7 @@ export default function App() {
         tile={tiled ? tile : null}
         onView={setView}
         rects={rects}
+        onMove={onMove}
         selection={selection}
         onSelect={setSelection}
         busy={busy}

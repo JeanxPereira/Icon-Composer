@@ -1064,3 +1064,7 @@ button:disabled {
 .sel-box.hovered {
   border: 1px solid color-mix(in srgb, var(--accent) 70%, transparent);
 }
+
+.stage-view.moving {
+  cursor: move;
+}

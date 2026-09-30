@@ -33,6 +33,7 @@ type Props = {
   rects: LayerRect[];
   selection: Selection;
   onSelect: (s: Selection) => void;
+  onMove: (s: Selection, dx: number, dy: number, first: boolean) => void;
 };
 
 // Ate onde um arraste ainda e um clique, em px CSS.
@@ -45,8 +46,29 @@ export function Stage(p: Props) {
   const [shown, setShown] = useState({ zoom: p.zoom, pan: { x: 0, y: 0 } as Vec });
   const shownRef = useRef(shown);
   const raf = useRef(0);
-  const drag = useRef<{ x: number; y: number; x0: number; y0: number; moved: boolean } | null>(null);
+  // `move`: o que o toque pegou (`DragState.Operation {selection, move}`); sem
+  // ele o arraste move a vista.
+  const drag = useRef<{
+    x: number;
+    y: number;
+    x0: number;
+    y0: number;
+    moved: boolean;
+    move: Selection | null;
+    base: LayerRect[];
+    sent: boolean;
+  } | null>(null);
   const [hover, setHover] = useState<LayerRect | null>(null);
+  // Os retangulos com a camada (ou o grupo) ja no lugar novo: o contorno anda
+  // com o ponteiro, sem esperar o nucleo. Depois de soltar, valem ate os
+  // retangulos novos chegarem.
+  const [live, setLive] = useState<{ rects: LayerRect[]; settling: boolean } | null>(null);
+  const pendingMove = useRef<{ dx: number; dy: number } | null>(null);
+  const moveRaf = useRef(0);
+  useEffect(() => {
+    if (live?.settling) setLive(null);
+  }, [p.rects]);
+  const rects = live?.rects ?? p.rects;
 
   // A animacao: um laco de rAF que so roda enquanto o mostrado nao chegou.
   const kick = useCallback(() => {
@@ -154,20 +176,65 @@ export function Stage(p: Props) {
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0 && e.button !== 1) return;
-    drag.current = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, moved: false };
+    // O toque decide o alvo: dentro de uma camada do grupo selecionado, o
+    // grupo; noutra camada, ela (e ja fica selecionada); no vazio, a vista.
+    // O botao do meio sempre move a vista.
+    let move: Selection | null = null;
+    if (e.button === 0) {
+      const pt = toPoints(e);
+      const hit = layerAt(p.rects, pt.x, pt.y);
+      if (hit && p.selection.kind === "group" && hit.g === p.selection.g) move = p.selection;
+      else if (hit) {
+        move = { kind: "layer", g: hit.g, l: hit.l };
+        if (p.selection.kind !== "layer" || p.selection.g !== hit.g || p.selection.l !== hit.l) p.onSelect(move);
+      }
+    }
+    drag.current = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, moved: false, move, base: p.rects, sent: false };
     (e.target as Element).setPointerCapture(e.pointerId);
+  };
+
+  // O passo ao nucleo, no maximo um por quadro de tela.
+  const flushMove = () => {
+    moveRaf.current = 0;
+    const d = drag.current;
+    const m = pendingMove.current;
+    if (!d?.move || !m) return;
+    pendingMove.current = null;
+    p.onMove(d.move, m.dx, m.dy, !d.sent);
+    d.sent = true;
   };
   const onPointerMove = (e: React.PointerEvent) => {
     const d = drag.current;
     if (!d) {
       // Sem botao: o destaque de passagem (`HighlightStyle.hovered`).
       const pt = toPoints(e);
-      const h = layerAt(p.rects, pt.x, pt.y);
+      const h = layerAt(rects, pt.x, pt.y);
       if (h?.g !== hover?.g || h?.l !== hover?.l) setHover(h);
       return;
     }
     if (!d.moved && Math.hypot(e.clientX - d.x0, e.clientY - d.y0) <= CLICK_SLOP) return;
     d.moved = true;
+    if (d.move) {
+      // Em pontos do canvas; Shift trava no eixo que mais andou
+      // (`ConstrainedDragGesture`).
+      const k = CANVAS_POINTS / (SIDE * shownRef.current.zoom);
+      let dx = (e.clientX - d.x0) * k;
+      let dy = (e.clientY - d.y0) * k;
+      if (e.shiftKey) {
+        if (Math.abs(dx) > Math.abs(dy)) dy = 0;
+        else dx = 0;
+      }
+      const sel = d.move;
+      const moves = (r: LayerRect) =>
+        sel.kind !== "icon" && r.g === sel.g && (sel.kind === "group" || r.l === sel.l);
+      setLive({
+        rects: d.base.map((r) => (moves(r) ? { ...r, x0: r.x0 + dx, x1: r.x1 + dx, y0: r.y0 + dy, y1: r.y1 + dy } : r)),
+        settling: false,
+      });
+      pendingMove.current = { dx, dy };
+      if (!moveRaf.current) moveRaf.current = requestAnimationFrame(flushMove);
+      return;
+    }
     const t = target.current;
     setTarget(t.zoom, { x: t.pan.x + e.clientX - d.x, y: t.pan.y + e.clientY - d.y });
     d.x = e.clientX;
@@ -177,23 +244,29 @@ export function Stage(p: Props) {
   // ponteiro, ou o icone no vazio (`ick::canvasLayerAt`).
   const onPointerUp = (e: React.PointerEvent) => {
     const d = drag.current;
+    if (d?.move && d.moved) {
+      if (moveRaf.current) cancelAnimationFrame(moveRaf.current);
+      flushMove();
+      setLive((l) => (l ? { ...l, settling: true } : null));
+    }
     drag.current = null;
-    if (!d || d.moved || e.button !== 0) return;
-    const pt = toPoints(e);
-    const hit = layerAt(p.rects, pt.x, pt.y);
-    p.onSelect(hit ? { kind: "layer", g: hit.g, l: hit.l } : { kind: "icon" });
+    // Um clique no vazio volta ao icone; numa camada, o toque ja escolheu.
+    if (d && !d.moved && !d.move && e.button === 0) p.onSelect({ kind: "icon" });
   };
 
   const side = SIDE * shown.zoom;
   return (
     <div
       ref={el}
-      className={`stage-view${drag.current ? " dragging" : ""}`}
+      className={`stage-view${drag.current?.moved ? (drag.current.move ? " moving" : " dragging") : ""}`}
       onWheel={onWheel}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      onPointerCancel={() => (drag.current = null)}
+      onPointerCancel={() => {
+        drag.current = null;
+        setLive(null);
+      }}
       onPointerLeave={() => setHover(null)}
     >
       {p.frame && (
@@ -207,7 +280,7 @@ export function Stage(p: Props) {
               alt=""
             />
           )}
-          <SelectionOverlay rects={p.rects} selection={p.selection} hover={hover} side={side} />
+          <SelectionOverlay rects={rects} selection={p.selection} hover={hover} side={side} />
         </div>
       )}
     </div>
