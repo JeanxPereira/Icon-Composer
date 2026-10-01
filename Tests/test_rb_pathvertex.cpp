@@ -111,6 +111,7 @@ void agreeOn(const char* d_, PathPass pass, int subdivisions) {
     REQUIRE(parsed.has_value());
     BuildOptions o;
     o.subdivisions = subdivisions;
+    o.closeOpenSubpaths = false;  // the raw transcription
     auto buffer = buildPathBuffer(*parsed, o);
     REQUIRE(buffer.has_value());
 
@@ -151,6 +152,7 @@ PathBuffer buildOrDie(const char* d_, int subdivisions) {
     if (!parsed) return PathBuffer{};
     BuildOptions o;
     o.subdivisions = subdivisions;
+    o.closeOpenSubpaths = false;  // the raw transcription
     auto b = buildPathBuffer(*parsed, o);
     return b ? std::move(*b) : PathBuffer{};
 }

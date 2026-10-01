@@ -9,15 +9,39 @@ using icf::svg::parsePath;
 
 namespace {
 
-Result<PathBuffer> build(const char* d, int subdivisions = 4) {
+// The conventions below are about the raw transcription, so the closing edge of
+// an open subpath is off unless a test asks for it.
+Result<PathBuffer> build(const char* d, int subdivisions = 4, bool closeOpen = false) {
     auto p = parsePath(d);
     if (!p) return std::unexpected(std::string("the path did not parse"));
     BuildOptions o;
     o.subdivisions = subdivisions;
+    o.closeOpenSubpaths = closeOpen;
     return buildPathBuffer(*p, o);
 }
 
 }  // namespace
+
+// A fill closes what the author left open: without the edge back to the start
+// the coverage leaks along the row to the right edge of the canvas.
+TEST_CASE(an_open_subpath_is_closed_for_the_fill) {
+    auto open = build("M0 0 L10 0 L10 10", 4, true);
+    auto closed = build("M0 0 L10 0 L10 10 Z", 4, true);
+    REQUIRE(open.has_value());
+    REQUIRE(closed.has_value());
+    CHECK_EQ(open->vertexCount(), closed->vertexCount());
+    CHECK_EQ(open->entries.size(), closed->entries.size());
+
+    // each subpath gets its own closing edge, the one before a move included
+    auto two = build("M0 0 L10 0 L10 10 M20 0 L30 0 L30 10", 4, true);
+    REQUIRE(two.has_value());
+    CHECK_EQ(two->vertexCount(), 24);  // three edges per triangle, four vertices each
+
+    // and a subpath that already ends where it began gets none
+    auto back = build("M0 0 L10 0 L10 10 L0 0", 4, true);
+    REQUIRE(back.has_value());
+    CHECK_EQ(back->vertexCount(), 12);
+}
 
 // Convention 1: entry 0 is a header, not a segment.
 TEST_CASE(the_first_entry_is_a_header_and_counts_the_segments) {

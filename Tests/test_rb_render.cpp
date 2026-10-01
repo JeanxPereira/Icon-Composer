@@ -48,6 +48,7 @@ std::vector<Texel> render(Device& d, const char* pathData, int subdivisions = 1)
     if (!parsed) return {};
     BuildOptions o;
     o.subdivisions = subdivisions;
+    o.closeOpenSubpaths = false;  // the raw transcription
     auto buffer = buildPathBuffer(*parsed, o);
     if (!buffer) {
         std::printf("  FAIL path buffer: %s\n", buffer.error().c_str());

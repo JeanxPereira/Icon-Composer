@@ -93,9 +93,21 @@ Result<PathBuffer> buildPathBuffer(const icf::svg::Path& path, BuildOptions opti
         return emitCubic(c1, c2, end);
     };
 
+    // The edge an open subpath is missing, written where the subpath ends: at
+    // the next move and at the end of the path.
+    auto closeOpen = [&] {
+        if (!options.closeOpenSubpaths || !started) return true;
+        if (current.x == subpathStart.x && current.y == subpathStart.y) return true;
+        return lineTo(subpathStart);
+    };
+
     for (const auto& seg : path.segments) {
         switch (seg.kind) {
             case icf::svg::SegmentKind::Move: {
+                if (!closeOpen()) {
+                    return std::unexpected(std::string("a non-finite coordinate would read "
+                                                       "as a subpath break"));
+                }
                 CubicSegment s;
                 markSubpathBreak(s);                                 // convention 4
                 setPoint(s.p3, seg.p[0]);                            // convention 3
@@ -134,6 +146,10 @@ Result<PathBuffer> buildPathBuffer(const icf::svg::Path& path, BuildOptions opti
                 }
                 break;
         }
+    }
+    if (!closeOpen()) {
+        return std::unexpected(std::string("a non-finite coordinate would read "
+                                           "as a subpath break"));
     }
 
     // Zero VERTICES, not zero entries: `M0 0 M5 5` writes two breaks and no

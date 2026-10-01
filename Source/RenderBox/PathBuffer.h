@@ -79,6 +79,17 @@ struct BuildOptions {
     // right SHAPE of buffer; the rule that picks it per curve is an open question
     // recorded in doc 03 §7, not something to invent here.
     int subdivisions = 16;
+
+    // A subpath that ends without a `Z` is closed with a line back to its start.
+    //
+    // That is what filling means in SVG -- an open subpath is filled as if it
+    // were closed -- and every caller of this buffer fills. Without the closing
+    // edge the coverage does not sum back to zero on the rows between the last
+    // point and the first, and the leftover runs to the right edge of the
+    // canvas: a path that stops a fraction of a pixel short of where it began
+    // draws a one-pixel line across the icon. Off only for reading the raw
+    // transcription of a path.
+    bool closeOpenSubpaths = true;
 };
 
 // The buffer for one normalised path, or the reason there is none.
