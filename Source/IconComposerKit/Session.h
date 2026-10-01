@@ -28,6 +28,7 @@
 #include "Source/IconComposerFoundation/Edit.h"
 #include "Source/IconComposerFoundation/IconBundle.h"
 #include "Source/IconComposerKit/Tile.h"
+#include "Source/RenderBox/DesignGeneration.h"
 #include "Source/RenderBox/FillResolve.h"
 
 #include <cstdint>
@@ -95,6 +96,14 @@ struct ViewContext {
     // tint do Tinted Dark (`DEFAULT_TINT` do doc.ts: espectro 0,75, alfa 0,625,
     // os dois [BIN]).
     rb::Rendition mono = rb::Rendition::LightClear;
+    // A GERACAO DE DESIGN (`RenderingParameters.h`). `[BIN]` No alvo e estado de
+    // vista e nao campo do documento: o Kit a escreve em
+    // `ICRIconStyle.designGeneration` (`0x10D5E4`-`0x10D5F8`). A 27 e o padrao
+    // do motor; a 26 e a que desenhou os bitmaps dos catalogos da Apple.
+    rb::DesignGeneration generation = rb::DesignGeneration::G27;
+    // E o terceiro caso do `EffectsRenderMode` do alvo: "Liquid Glass Effects
+    // Disabled". Falso, o render sai com `glass` desligado em toda camada.
+    bool effects = true;
     double tintPosition = 0.75, tintAlpha = 0.625;
     // O palco e o quadrado do icone nele, em pontos, escritos pelo canvas no
     // MESMO assentamento do ladrilho: o vidro e o Clear leem o fundo sob o

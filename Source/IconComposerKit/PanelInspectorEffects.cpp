@@ -42,7 +42,8 @@
 //   `refractivity`   1 yes (`icf::Refractivity`, `refractivityFrom/ToJson`)
 //                    2 `[ART]` 5 of 271 groups, 3 of 145 documents, 0
 //                      specialization lists. Thin, and real.
-//                    3 YES, and it is the only one of the four that is:
+//                    3 YES -- the only one of the four that was until `lighting`
+//                      joined it on 2026-10-01:
 //                      `strength` becomes `displacementShaderArgument` and
 //                      `depth` becomes `refractionHeightPoints`, both of which
 //                      `IconRenderer.cpp` hands to `glassDisplacementMap`, which
@@ -53,11 +54,13 @@
 //   `lighting`       1 yes (`icf::Lighting`, `lightingFrom/ToString`)
 //                    2 `[ART]` 99 of 271 groups, 74 of 145 documents, 17
 //                      specialization lists; `individual` 64, `combined` 18
-//                    3 NO, and deliberately so: `readGlassMaterial` reads it and
-//                      `glassMaterialFrom` drops it, because `[INF]` it maps to
+//                    3 YES, since 2026-10-01. `readGlassMaterial` reads it and
+//                      `glassMaterialFrom` still drops it, because it maps to
 //                      `Icon.Layer.performsLightingByElement`, which is not a
-//                      field of `GlassMaterial`. `DenormalisedGlass` has no slot
-//                      for it at all. Live, with the warning.
+//                      field of `GlassMaterial` -- but `IconRenderer.cpp` takes
+//                      it straight off the read material and builds the
+//                      group's distance field by it: stacked per element, or
+//                      the field of the union. Live, and no warning.
 //
 //   Group Effects    1 NO. Greyed, with the reason in the tooltip.
 //
@@ -113,10 +116,10 @@ void blurMaterial(Section& x) {
         double strength = numberOr(v.value, 0.5);
         const char* preview = absent ? "not set" : (isNull ? "null" : "Explicit strength");
         if (ui::combo("Value", preview)) {
-            if (ImGui::Selectable("null", isNull)) {
+            if (ui::menuItem("null", nullptr, isNull)) {
                 x.write("blur-material", icf::json::Value::null(), false);
             }
-            if (ImGui::Selectable("Explicit strength", !absent && !isNull)) {
+            if (ui::menuItem("Explicit strength", nullptr, !absent && !isNull)) {
                 x.write("blur-material", icf::json::Value::number(strength), false);
             }
             ImGui::EndCombo();
@@ -215,19 +218,18 @@ void lighting(Section& x) {
         }
         if (ui::combo("Mode", lightingLabel(current))) {
             for (auto c : kCases) {
-                if (ImGui::Selectable(lightingLabel(c), c == current)) {
+                if (ui::menuItem(lightingLabel(c), nullptr, c == current)) {
                     x.write("lighting", icf::json::Value::string(std::string(icf::lightingToString(c))),
                             false);
                 }
             }
             ImGui::EndCombo();
         }
-        caveat("The document stores this; the renderer does not draw it yet.",
-               "readGlassMaterial reads lighting and glassMaterialFrom deliberately drops it: "
-               "[INF] it maps to Icon.Layer.performsLightingByElement, which lives on the layer "
-               "struct and not inside GlassMaterial, and DenormalisedGlass has no slot for it. No "
-               "arithmetic or branch on it was read, so editing this changes the saved icon.json "
-               "and no pixel.");
+        // No caveat here since 2026-10-01: the renderer consumes the key. `[BIN]`
+        // It is `Icon.Layer.performsLightingByElement` and it picks how the
+        // group's one distance field is built -- the glass layers' fields
+        // stacked, or the field of their union (`IconRenderer.cpp`). It moves a
+        // pixel only in a group with two or more glass layers.
     }
     x.end();
 }

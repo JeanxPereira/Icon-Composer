@@ -760,7 +760,7 @@ void drawRim(Shell& shell) {
 
 }  // namespace
 
-int run(const fs::path& initial) {
+int run(const fs::path& initial, rb::DesignGeneration generation) {
     // Validation off: nobody here is checking the driver, and the tower's
     // default (on) costs every frame (spec 13/09 §6).
     //
@@ -823,6 +823,7 @@ int run(const fs::path& initial) {
     shell->onDrop([&state](const fs::path& p) { state.dropped = p; });
 
     if (!initial.empty()) state.open(initial);
+    if (state.session) state.session->view.generation = generation;
 
     shell->run([&] {
         // Os `done` dos renders rodam aqui, na thread principal, antes de

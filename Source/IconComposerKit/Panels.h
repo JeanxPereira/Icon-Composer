@@ -386,6 +386,7 @@ struct CanvasStats {
     bool textured = false;
     std::size_t contextControls = 0;   // appearance, idiom, size, zoom
     std::size_t zoomControls = 0;      // -, +, 1:1, Fit
+    std::size_t effectsControls = 0;   // efeitos desligados, geracao 26, geracao 27
     MenuStats menu;
     std::vector<CanvasChip> chips;
 

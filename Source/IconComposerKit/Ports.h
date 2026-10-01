@@ -8,6 +8,7 @@
 #include "Source/IconComposerFoundation/IconBundle.h"
 #include "Source/IconComposerFoundation/IconDocument.h"
 #include "Source/IconComposerKit/Tile.h"
+#include "Source/RenderBox/DesignGeneration.h"
 #include "Source/RenderBox/Mono.h"
 #include "imgui.h"
 
@@ -34,6 +35,10 @@ struct MonoBackdrop {
 struct RenderLook {
     icf::Context context;
     std::optional<rb::MonoLook> mono;
+    // A geracao de design e os efeitos ligados ou nao (`EffectsRenderMode`):
+    // parte da chave, como o contexto.
+    rb::DesignGeneration generation = rb::DesignGeneration::G27;
+    bool effects = true;
     bool operator==(const RenderLook&) const = default;
 };
 
@@ -50,12 +55,17 @@ struct RenderRequest {
     // O Mono, quando a rendicao e uma das quatro (Renditions.h, `lookOf`).
     std::optional<rb::MonoLook> mono;
     MonoBackdrop backdrop;
+    rb::DesignGeneration generation = rb::DesignGeneration::G27;
+    bool effects = true;
 };
 
 struct RenderResult {
     std::uint64_t version = 0;
     // O eco do Mono pedido: parte da chave, como o contexto.
     std::optional<rb::MonoLook> mono;
+    // E o da geracao de design e dos efeitos.
+    rb::DesignGeneration generation = rb::DesignGeneration::G27;
+    bool effects = true;
     // What this result ANSWERS, echoed back from the request that produced it.
     // The implementor of RenderScheduler must copy it across: the coordinator
     // decides "is this still the frame I am waiting for?" by comparing version,
@@ -111,6 +121,11 @@ struct TextureSink {
 // `why` vai para `error`, que por contrato quer dizer "nada mais aqui e
 // valido" -- entao nao ha pixels, e o coordenador preserva a textura anterior.
 RenderResult failedResult(const RenderRequest& r, std::string why);
+
+// "Liquid Glass Effects Disabled": `glass` falso em toda camada de `bundle` (a
+// lista de especializacao de `glass` sai junto, senao ela ganharia da chave
+// simples). E para uma COPIA: o documento aberto nao muda.
+void disableGlassEffects(icf::IconBundle& bundle);
 
 // Straight RGBA floats, as `rb::RenderedIcon::rgba` gives them, to 8 bits:
 // clamped to [0,1] and rounded, the same rule `icf::encodePng` applies, so the

@@ -39,7 +39,7 @@ void RenderCoordinator::apply(const RenderResult& r, bool asTile) {
     // por quadro, para sempre, para um documento que nao rende. Fica marcado,
     // sem textura, e so uma chave NOVA (uma edicao, outro zoom) tenta de novo.
     if (!r.error.empty() || r.rgba8.empty()) {
-        const Key k{r.version, r.context, r.size, r.tile, r.mono};
+        const Key k{r.version, r.context, r.size, r.tile, r.mono, r.generation, r.effects};
         if (asTile) {
             tile_ = k;
             haveTile_ = true;
@@ -58,7 +58,7 @@ void RenderCoordinator::apply(const RenderResult& r, bool asTile) {
         view_.tileY = r.originY;
         view_.tileVersion = r.version;
         view_.refined = true;
-        tile_ = Key{r.version, r.context, r.size, r.tile, r.mono};
+        tile_ = Key{r.version, r.context, r.size, r.tile, r.mono, r.generation, r.effects};
         haveTile_ = true;
         return;
     }
@@ -68,7 +68,8 @@ void RenderCoordinator::apply(const RenderResult& r, bool asTile) {
     view_.originY = 0;
     view_.version = r.version;
     view_.refined = !asTile;
-    base_ = Key{r.version, r.context, asTile ? r.gridSize : r.size, TileRect{}, r.mono};
+    base_ = Key{r.version, r.context, asTile ? r.gridSize : r.size, TileRect{}, r.mono,
+                r.generation, r.effects};
     haveBase_ = true;
 }
 
@@ -79,19 +80,25 @@ void RenderCoordinator::tick(Session& s) {
     const RenderLook look = lookOf(s, canvasRendition(s), v.context.idiom, true);
     const std::optional<rb::MonoLook> mono = look.mono;
     const MonoBackdrop backdrop = backdropOf(s, look, true);
-    const Key wantBase{s.version(), v.context, baseSize, TileRect{}, mono};
+    const Key wantBase{s.version(), v.context, baseSize, TileRect{}, mono, look.generation,
+                       look.effects};
     const bool tiled = v.tileSize > 0 && v.tile.w > 0;
-    const Key wantTile{s.version(), v.context, v.tileSize, v.tile, mono};
+    const Key wantTile{s.version(), v.context, v.tileSize, v.tile, mono, look.generation,
+                       look.effects};
 
     // Primeiro colhe. Uma base de uma versao ANTERIOR ainda serve: num arraste
     // o documento muda a cada passo, e descartar o que estava em voo deixava o
     // canvas parado ate soltar (o mesmo achado do App.tsx do Tauri). O que nao
     // pode e andar para tras, entao a versao so sobe.
     while (auto result = scheduler_.poll()) {
-        const Key answered{result->version, result->context, result->size, result->tile, result->mono};
+        const Key answered{result->version, result->context, result->size, result->tile, result->mono,
+                           result->generation, result->effects};
         const bool isTile = answered.tile.w > 0;
         if (flying_ && answered == inFlight_) flying_ = false;
-        if (result->context != v.context || !(result->mono == mono)) continue;
+        if (result->context != v.context || !(result->mono == mono) ||
+            result->generation != look.generation || result->effects != look.effects) {
+            continue;
+        }
         if (isTile) {
             if (!result->refined) {
                 if (!haveBase_ || result->version >= base_.version) apply(*result, true);
@@ -120,7 +127,7 @@ void RenderCoordinator::tick(Session& s) {
         // A base para onde cair vai em todo pedido, e nunca e zero: com ela o
         // job nunca devolve "recusado, sem pixels e sem erro".
         RenderRequest r{next->version, s.bundle().clone(), next->context, next->size, next->tile,
-                        baseSize, next->mono, backdrop};
+                        baseSize, next->mono, backdrop, next->generation, next->effects};
         scheduler_.request(std::move(r));
         inFlight_ = *next;
         flying_ = true;

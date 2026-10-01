@@ -73,6 +73,11 @@ struct NumberEdit {
     bool released = false;   // the drag ended this frame -- time to end coalescing
 };
 
+// A largura de uma caixa de numero, em pt: cabe "100.0000 %" e "0.500000".
+inline constexpr float kNumboxWidth = 82.0f;
+// `count` caixas lado a lado, com os 4 pt que o ImGui poe entre elas.
+inline constexpr float numboxesWidth(int count) { return kNumboxWidth * count + 4.0f * (count - 1); }
+
 inline void numberHint(const char* what) {
     ImGui::SetItemTooltip("%s\nDrag to scrub; Ctrl+click (or double-click) to type an exact value.",
                           what);
@@ -81,22 +86,36 @@ inline void numberHint(const char* what) {
 // `lo`/`hi` may be null, and that is a real case rather than laziness: the
 // gradient axis is normalised over the box but NOT clamped -- the corpus has a
 // stop.y of 1.029, and a clamp here would silently rewrite that document.
-inline NumberEdit dragNumbers(const char* label, double* v, int count, float speed, const double* lo,
-                              const double* hi, const char* fmt, const char* what) {
+//
+// `dragNumbersAt` is the control alone, at the cursor and in the next item's
+// width, for a row that puts something else beside it (a ramp stop's remove
+// button): `id` is what `ui::leftLabelFixed` returned for the row.
+inline NumberEdit dragNumbersAt(const char* id, double* v, int count, float speed, const double* lo,
+                                const double* hi, const char* fmt, const char* what) {
     NumberEdit e;
-    e.changed = ImGui::DragScalarN(ui::leftLabel(label), ImGuiDataType_Double, v, count, speed, lo, hi, fmt,
+    e.changed = ImGui::DragScalarN(id, ImGuiDataType_Double, v, count, speed, lo, hi, fmt,
                                    ImGuiSliderFlags_AlwaysClamp);
     e.released = ImGui::IsItemDeactivatedAfterEdit();
+    if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
     numberHint(what);
     return e;
 }
 
+inline NumberEdit dragNumbers(const char* label, double* v, int count, float speed, const double* lo,
+                              const double* hi, const char* fmt, const char* what) {
+    return dragNumbersAt(ui::leftLabelFixed(label, numboxesWidth(count)), v, count, speed, lo, hi, fmt, what);
+}
+
 inline NumberEdit sliderNumber(const char* label, double* v, double lo, double hi, const char* fmt,
                                const char* what) {
+    // A `.numbox` do Tauri, nao um slider: a caixa do numero, que se arrasta
+    // para os lados. O intervalo inteiro cabe em 200 px de arrasto.
     NumberEdit e;
-    e.changed = ImGui::SliderScalar(ui::leftLabel(label), ImGuiDataType_Double, v, &lo, &hi, fmt,
-                                    ImGuiSliderFlags_AlwaysClamp);
+    e.changed = ImGui::DragScalar(ui::leftLabelFixed(label, kNumboxWidth), ImGuiDataType_Double, v,
+                                  static_cast<float>((hi - lo) / 200.0), &lo, &hi, fmt,
+                                  ImGuiSliderFlags_AlwaysClamp);
     e.released = ImGui::IsItemDeactivatedAfterEdit();
+    if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
     numberHint(what);
     return e;
 }
@@ -156,124 +175,105 @@ struct Section {
     MenuActions& menu;
 
     // Opens a section for `prop`; returns the view and whether the body draws.
+    //
+    // O CABECALHO DO TAURI (`.isection-head`): 11 pt, secundario, sem barra nem
+    // seta; clicar nele recolhe a secao. O que a secao tem a dizer sobre o
+    // ESCOPO vai no fim da mesma linha, como o `.scope` do Tauri, e a frase
+    // inteira no tooltip -- nao em linhas dentro da caixa, que e onde ficam os
+    // controles.
     bool begin(const char* label, std::string_view prop, PropertyView& view) {
         view = viewProperty(s, path, prop);
         ImGui::PushID(label);
-        // O CABECALHO DO TAURI (`.isection-head`): 11 pt, secundario, sem
-        // barra. O conteudo vai numa caixa arredondada (`.isection-box`),
-        // desenhada no fim (`end`) atras do que a secao desenhou.
-        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
-        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1, 1, 1, 0.04f));
-        ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(1, 1, 1, 0.06f));
-        ImGui::PushStyleColor(ImGuiCol_Text, theme::kText2);
-        ImGui::PushFont(nullptr, 11.0f);
-        const bool open = ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen);
-        ImGui::PopFont();
-        ImGui::PopStyleColor(4);
-        open_ = open;
-        if (open) {
-            ImDrawList* dl = ImGui::GetWindowDrawList();
-            dl->ChannelsSplit(2);
-            dl->ChannelsSetCurrent(1);
-            boxTop_ = ImGui::GetCursorScreenPos().y;
-            ImGui::Indent(10.0f * ui::dpi());
-            ImGui::Dummy(ImVec2(0.0f, 2.0f * ui::dpi()));
+        ImGuiStorage* store = ImGui::GetStateStorage();
+        const ImGuiID openId = ImGui::GetID("##open");
+        bool open = store->GetBool(openId, true);
+        if (ui::sectionHead(label)) {
+            open = !open;
+            store->SetBool(openId, open);
         }
+        open_ = open;
         ++st.sections;
         if (!view.own) ++st.inherited;
         // O inventario, gravado aqui porque aqui e o unico caminho (Panels.h,
         // `SectionInfo`).
         st.drawn.push_back(SectionInfo{label, std::string(prop), view.own, open});
-        if (open) {
-            // Said BEFORE the value, and whether or not this scope owns one: a
-            // person about to move a control needs to know that the number under
-            // his hand is not the only one this property has.
-            const OtherScopes others = otherScopesOwning(s, path, prop);
-            if (others.count > 0) {
-                ImGui::TextDisabled("also written under %d other scope%s", others.count,
-                                    others.count == 1 ? "" : "s");
-                ImGui::SetItemTooltip(
-                    "This property has its own entry under: %s.\nEditing here changes only "
-                    "%s / %s; the others keep the values they have, and one of them may be what "
-                    "the canvas is drawing.",
-                    others.list.c_str(), appearanceLabel(s.scope.appearance),
-                    idiomLabel(s.scope.idiom));
-            }
+
+        const bool base = s.scope.appearance == icf::Appearance::Base && s.scope.idiom == icf::Idiom::Base;
+        // A person about to move a control needs to know that the number under
+        // his hand is not the only one this property has.
+        const OtherScopes others = otherScopesOwning(s, path, prop);
+        char also[48] = "";
+        if (others.count > 0) {
+            std::snprintf(also, sizeof also, "  +%d scope%s", others.count, others.count == 1 ? "" : "s");
         }
-        if (open) {
-            if (!view.own) {
-                // Two different silences: a value inherited from a more general
-                // scope, and a property nobody has written anywhere.
-                //
-                // AND WHAT THE NEXT EDIT WILL DO, WHICH IS THE PART THAT WAS
-                // MISSING. Touching a control here does not change a number in
-                // place: it ADDS an entry the document did not have -- a plain
-                // key under Base, an entry in `<prop>-specializations` under any
-                // other scope. That is a byte the round-trip gate compares, and
-                // the person moving the slider is the one who has to know it is
-                // about to happen. The scope is named in the line, so the answer
-                // does not depend on reading the selector above it.
-                const bool base = s.scope.appearance == icf::Appearance::Base &&
-                                  s.scope.idiom == icf::Idiom::Base;
-                ImGui::TextDisabled("%s -- editing writes %s", view.value ? "inherited" : "not set",
-                                    base ? "the plain key" : "a new override here");
-                if (base) {
-                    ImGui::SetItemTooltip(
-                        "No value of its own under Base. The first edit writes the plain key into "
-                        "this node, which is a member the document did not carry.");
-                } else {
-                    ImGui::SetItemTooltip(
-                        "This scope (%s / %s) has no entry of its own; the value shown is resolved "
-                        "from a more general one. The first edit appends an entry to this "
-                        "property's specialization list, which is a member the document did not "
-                        "carry -- and 'Remove override' will then be here to take it back out.",
-                        appearanceLabel(s.scope.appearance), idiomLabel(s.scope.idiom));
-                }
-            } else if (s.scope.appearance != icf::Appearance::Base || s.scope.idiom != icf::Idiom::Base) {
-                // The scope is named on the button, not only in the selector at
-                // the top: this button DELETES an entry, and a person about to
-                // press it should not have to look somewhere else to find out
-                // which one.
-                char label[96];
-                std::snprintf(label, sizeof label, "Remove %s / %s override",
-                              appearanceLabel(s.scope.appearance), idiomLabel(s.scope.idiom));
-                const bool pressed = ImGui::SmallButton(label);
+        if (!open) {
+            ui::sectionStatus("collapsed", theme::kText3);
+        } else if (!view.own) {
+            // Two different silences: a value inherited from a more general
+            // scope, and a property nobody has written anywhere.
+            //
+            // AND WHAT THE NEXT EDIT WILL DO. Touching a control here does not
+            // change a number in place: it ADDS an entry the document did not
+            // have -- a plain key under Base, an entry in
+            // `<prop>-specializations` under any other scope. That is a byte the
+            // round-trip gate compares, and the person moving the control is the
+            // one who has to know it is about to happen.
+            char note[96];
+            std::snprintf(note, sizeof note, "%s%s", view.value ? "inherited" : "not set", also);
+            ui::sectionStatus(note, theme::kText3);
+            if (base) {
                 ImGui::SetItemTooltip(
-                    "Deletes this scope's own entry for the property. The value then goes back to "
-                    "being resolved from a more general scope, which is what the line above says "
-                    "when there is no entry.");
-                if (pressed) s.setProperty(path, prop, s.scope, std::nullopt);
+                    "No value of its own under Base. The first edit writes the plain key into "
+                    "this node, which is a member the document did not carry.%s%s",
+                    others.count > 0 ? "\n\nAlso written under: " : "", others.list.c_str());
+            } else {
+                ImGui::SetItemTooltip(
+                    "This scope (%s / %s) has no entry of its own; the value shown is resolved "
+                    "from a more general one. The first edit appends an entry to this "
+                    "property's specialization list, which is a member the document did not "
+                    "carry -- and 'Remove override' will then be here to take it back out.%s%s",
+                    appearanceLabel(s.scope.appearance), idiomLabel(s.scope.idiom),
+                    others.count > 0 ? "\n\nAlso written under: " : "", others.list.c_str());
             }
+        } else if (!base) {
+            // This DELETES an entry, and the tooltip names which one.
+            const bool pressed = ui::sectionAction("Remove override");
+            ImGui::SetItemTooltip(
+                "Deletes the %s / %s entry for this property. The value then goes back to being "
+                "resolved from a more general scope.%s%s",
+                appearanceLabel(s.scope.appearance), idiomLabel(s.scope.idiom),
+                others.count > 0 ? "\n\nAlso written under: " : "", others.list.c_str());
+            if (pressed) s.setProperty(path, prop, s.scope, std::nullopt);
+        } else if (others.count > 0) {
+            ui::sectionStatus(also + 2, theme::kText3);
+            ImGui::SetItemTooltip(
+                "This property has its own entry under: %s.\nEditing here changes only "
+                "%s / %s; the others keep the values they have, and one of them may be what "
+                "the canvas is drawing.",
+                others.list.c_str(), appearanceLabel(s.scope.appearance), idiomLabel(s.scope.idiom));
         }
+        if (open) ui::boxBegin();
         return open;
     }
 
     void end() {
         if (open_) {
-            const float k = ui::dpi();
-            ImGui::Dummy(ImVec2(0.0f, 2.0f * k));
-            ImGui::Unindent(10.0f * k);
-            ImDrawList* dl = ImGui::GetWindowDrawList();
-            dl->ChannelsSetCurrent(0);
-            const float x0 = ImGui::GetWindowPos().x + ImGui::GetStyle().WindowPadding.x;
-            const float x1 = x0 + ImGui::GetContentRegionAvail().x;
-            dl->AddRectFilled(ImVec2(x0, boxTop_), ImVec2(x1, ImGui::GetCursorScreenPos().y), theme::u32(theme::kBox),
-                              10.0f * k);
-            dl->ChannelsMerge();
+            ui::boxEnd();
             open_ = false;
+        } else {
+            ImGui::Dummy(ImVec2(0.0f, 10.0f * ui::dpi()));
         }
         ImGui::PopID();
     }
     bool open_ = false;
-    float boxTop_ = 0.0f;
 
     void disabled(const char* label, const char* why) {
-        ImGui::BeginDisabled();
-        ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_Leaf);
-        ImGui::EndDisabled();
+        ui::sectionHead(label, false);
         // The default tooltip hover flags carry AllowWhenDisabled, so the reason
         // still reaches a greyed header.
         ImGui::SetItemTooltip("%s", why);
+        ui::sectionStatus("not editable yet", theme::kText3);
+        ImGui::Dummy(ImVec2(0.0f, 10.0f * ui::dpi()));
         ++st.disabled;
     }
 

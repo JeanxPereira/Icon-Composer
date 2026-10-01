@@ -99,11 +99,11 @@ void imageAsset(Section& x) {
         const bool present =
             !name.empty() && std::find(files.begin(), files.end(), name) != files.end();
 
-        ImGui::SetNextItemWidth(220.0f);
         if (ui::combo("File", name.empty() ? "(none)" : name.c_str())) {
-            if (files.empty()) ImGui::TextDisabled("Assets/ is empty");
+            // A line of the list like the others, greyed: there is nothing to pick.
+            if (files.empty()) ui::menuItem("Assets/ is empty", nullptr, false, false);
             for (const std::string& f : files) {
-                if (ImGui::Selectable(f.c_str(), f == name)) {
+                if (ui::menuItem(f.c_str(), nullptr, f == name)) {
                     // A file name is written as the raw bytes between the quotes,
                     // which is what `addLayer` already does with the name it is
                     // handed (Edit.cpp): no name that came out of a directory
@@ -125,15 +125,14 @@ void imageAsset(Section& x) {
         //                   renders nothing teaches the author that the layer is
         //                   wrong when it is the reference that is.
         if (name.empty()) {
-            ImGui::TextDisabled("no image: this layer draws nothing");
+            ui::note("No image: this layer draws nothing.");
         } else if (!present) {
-            ImGui::TextColored(kAlarm, "missing from Assets/: %s", name.c_str());
+            ui::note((std::string("Missing from Assets/: ") + name).c_str(), kAlarm);
             ImGui::SetItemTooltip(
                 "The document names this file and Assets/ does not have it, so the layer renders "
                 "nothing. Import the file below, or pick another from the list.");
         }
 
-        ImGui::Separator();
         // DUAS PORTAS, E ANTES DE 19/09 HAVIA UMA SO.
         //
         // O Kit continua sem poder abrir dialogo: `Ports.h` lhe da duas portas
@@ -149,13 +148,20 @@ void imageAsset(Section& x) {
         // rapido do que navegar ate ele, e um caminho digitado e a unica porta
         // que sobra se o dialogo nativo falhar (o laudo de 18/09 tem um caso
         // desses, com o COM do seletor de pasta).
-        ImGui::TextDisabled("Import into Assets/");
-        ImGui::SetNextItemWidth(220.0f);
+        // A LINHA DE IMPORTAR: o campo ocupa o que sobra dos dois botoes, e os
+        // tres cabem na caixa em qualquer largura da coluna.
+        ui::rowStart();
+        {
+            const ImGuiStyle& style = ImGui::GetStyle();
+            const float buttons = ImGui::CalcTextSize("Import").x + ImGui::CalcTextSize("Browse…").x +
+                                  style.FramePadding.x * 4.0f + style.ItemSpacing.x * 2.0f;
+            ImGui::SetNextItemWidth(std::max(40.0f * ui::dpi(), ui::rowAvail() - buttons));
+        }
         // Typing clears the last failure. The buffer and the error are file
         // statics -- one editor window, one document -- so without this the
         // message from a path typed against ANOTHER layer stays on screen under
         // the next one, red and wrong, until an import happens to succeed.
-        if (ImGui::InputTextWithHint("##import-path", "full path to an .svg or .png file",
+        if (ImGui::InputTextWithHint("##import-path", "Path to an .svg or .png",
                                      g_importPath, sizeof g_importPath)) {
             g_importError.clear();
         }
@@ -205,7 +211,7 @@ void imageAsset(Section& x) {
             g_importError.clear();
         }
 
-        if (!g_importError.empty()) ImGui::TextColored(kAlarm, "%s", g_importError.c_str());
+        if (!g_importError.empty()) ui::note(g_importError.c_str(), kAlarm);
     }
     x.end();
 }
@@ -302,20 +308,36 @@ void assetMirroring(Section& x) {
 
         // The labels say what the value DOES. See the note above for why they do
         // not say `inherited` / `fixed` / `mirror`.
-        if (ImGui::RadioButton("Inherited", now == Mirror::Inherited)) next = Mirror::Inherited;
-        ImGui::SetItemTooltip(
-            "No decision of its own: the value in force comes from further up, with the "
-            "document's Implicit Asset Mirroring at the root of the chain. Picking this REMOVES "
-            "this node's entry; it does not write false, and it does not leave an empty object "
-            "behind.");
-        if (ImGui::RadioButton("Does not mirror", now == Mirror::Off)) next = Mirror::Off;
-        ImGui::SetItemTooltip(
-            "Writes {\"mirrorable\": false}: this node keeps its artwork as authored in a "
-            "right-to-left language, whatever the document asks for.");
-        if (ImGui::RadioButton("Mirrors", now == Mirror::On)) next = Mirror::On;
-        ImGui::SetItemTooltip(
-            "Writes {\"mirrorable\": true}: this node's asset is flipped for right-to-left "
-            "languages.");
+        static const struct {
+            Mirror value;
+            const char* label;
+            const char* tip;
+        } kChoices[] = {
+            {Mirror::Inherited, "Inherited",
+             "No decision of its own: the value in force comes from further up, with the "
+             "document's Implicit Asset Mirroring at the root of the chain. Picking this REMOVES "
+             "this node's entry; it does not write false, and it does not leave an empty object "
+             "behind."},
+            {Mirror::Off, "Does not mirror",
+             "Writes {\"mirrorable\": false}: this node keeps its artwork as authored in a "
+             "right-to-left language, whatever the document asks for."},
+            {Mirror::On, "Mirrors",
+             "Writes {\"mirrorable\": true}: this node's asset is flipped for right-to-left "
+             "languages."},
+        };
+        // As tres posicoes VISIVEIS, um clique cada: o tri-estado e a unica
+        // escolha do painel em que "herdado" e uma resposta, e ela nao pode
+        // ficar escondida numa lista.
+        const char* labels[3];
+        const char* tips[3];
+        int current = 0;
+        for (int i = 0; i < 3; ++i) {
+            labels[i] = kChoices[i].label;
+            tips[i] = kChoices[i].tip;
+            if (kChoices[i].value == now) current = i;
+        }
+        const int picked = ui::segmented(labels, tips, 3, current);
+        if (picked >= 0) next = kChoices[picked].value;
 
         if (next != now) {
             if (std::optional<icf::json::Value> value = mirrorToJson(next)) {
@@ -328,8 +350,8 @@ void assetMirroring(Section& x) {
         // The arithmetic of the chain, shown because the tri-state is the only
         // control in this panel whose displayed position does NOT tell you what
         // the icon does -- "Inherited" is an answer of "look somewhere else".
-        ImGui::TextDisabled("in force here: %s",
-                            effectiveMirroring(x.s, x.path, x.s.scope) ? "mirrors" : "does not mirror");
+        ui::note(effectiveMirroring(x.s, x.path, x.s.scope) ? "In force here: mirrors."
+                                                            : "In force here: does not mirror.");
         ImGui::SetItemTooltip(
             "The fold is 'own value, or else the inherited one' (laudo 19/09 sec. 3.4), and the "
             "root of the chain is the document's Implicit Asset Mirroring. That a layer inherits "
@@ -342,7 +364,7 @@ void assetMirroring(Section& x) {
         // writes is correct and the canvas is unchanged, and a person who
         // toggles a control and sees nothing is entitled to be told which of
         // the two it is.
-        ImGui::TextDisabled("the canvas does not show this yet");
+        ui::note("The canvas does not show this yet.");
         ImGui::SetItemTooltip(
             "The document is written correctly and the renderer does not read mirroring at all "
             "yet, so nothing on the canvas changes. This says so rather than letting the control "

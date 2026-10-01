@@ -150,6 +150,8 @@ constexpr double kBackdropScale = 0.5;
 RenderLook lookOf(const Session& s, rb::Rendition r, icf::Idiom idiom, bool canvas, std::uint32_t thumbSize) {
     RenderLook look;
     look.context = renditionContext(r, idiom);
+    look.generation = s.view.generation;
+    look.effects = s.view.effects;
     if (!renditionIsMono(r)) return look;
     rb::MonoLook m;
     switch (r) {
@@ -360,7 +362,8 @@ void RenditionThumbnails::tick(Session& s, const std::vector<RenderLook>& want) 
         // A chave INTEIRA, como o coordenador do canvas: versão, contexto e
         // tamanho. Um resultado que responde outra pergunta não é a resposta.
         if (!inFlight_ || res->version != flightVersion_ || !(res->context == flightLook_.context) ||
-            !(res->mono == flightLook_.mono) || res->size != size_) {
+            !(res->mono == flightLook_.mono) || res->generation != flightLook_.generation ||
+            res->effects != flightLook_.effects || res->size != size_) {
             continue;
         }
         inFlight_ = false;
@@ -408,7 +411,7 @@ void RenditionThumbnails::tick(Session& s, const std::vector<RenderLook>& want) 
         RenditionThumb* t = mut(c);
         if (!t || t->version == s.version()) continue;
         RenderRequest r{s.version(), s.bundle().clone(), c.context, size_, TileRect{}, size_, c.mono,
-                        backdropOf(s, c, false, size_)};
+                        backdropOf(s, c, false, size_), c.generation, c.effects};
         scheduler_.request(std::move(r));
         inFlight_ = true;
         flightVersion_ = s.version();
@@ -689,7 +692,7 @@ RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs, ImGuiWind
             // AS OPCOES DO MONO (`.rcaption-btn` + `TintPopover` do Tauri): so
             // com uma das quatro na tela.
             if (renditionIsMono(current)) {
-                const char* opt = "Optionsâ¦";
+                const char* opt = "Options…";
                 const ImVec2 os = ImGui::CalcTextSize(opt);
                 ImGui::SetCursorScreenPos(ImVec2(c1.x + 6.0f * k, c0.y));
                 if (ImGui::InvisibleButton("##mono-options", ImVec2(os.x, c1.y - c0.y))) ImGui::OpenPopup("mono-options");

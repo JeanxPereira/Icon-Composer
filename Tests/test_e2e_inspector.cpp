@@ -418,14 +418,18 @@ ImGuiID itemId(ick::HeadlessImGui& gui, const char* section, const char* label) 
 ImVec2 locate(ick::HeadlessImGui& gui, ick::Session& s, icf::NodePath path, icf::Context scope,
               ImGuiID target) {
     ImGuiIO& io = ImGui::GetIO();
-    const float x = 40.0f;
-    for (float y = 8.0f; y < 1390.0f; y += 6.0f) {
-        io.AddMousePosEvent(x, y);
-        inspectorFrame(gui, s, path, scope);
-        if (ImGui::GetHoveredID() == target) {
-            io.AddMousePosEvent(-1.0f, -1.0f);
+    // Varias colunas, da esquerda para a direita: as posicoes de um controle
+    // segmentado ficam LADO A LADO na mesma linha, e so a primeira cai na
+    // coluna de x = 40.
+    for (float x : {40.0f, 110.0f, 180.0f, 250.0f, 320.0f, 390.0f}) {
+        for (float y = 8.0f; y < 1390.0f; y += 6.0f) {
+            io.AddMousePosEvent(x, y);
             inspectorFrame(gui, s, path, scope);
-            return ImVec2(x, y);
+            if (ImGui::GetHoveredID() == target) {
+                io.AddMousePosEvent(-1.0f, -1.0f);
+                inspectorFrame(gui, s, path, scope);
+                return ImVec2(x, y);
+            }
         }
     }
     io.AddMousePosEvent(-1.0f, -1.0f);

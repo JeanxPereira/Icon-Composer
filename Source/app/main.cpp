@@ -1,6 +1,6 @@
 // iconcomposer -- the editor.
 //
-//   iconcomposer [bundle.icon]
+//   iconcomposer [bundle.icon] [--generation 26|27]
 //   iconcomposer --selftest <bundle.icon> [--frames N]
 //
 // The selftest is the assertion that "the UI opens" (spec 13/09 §8): every
@@ -52,5 +52,12 @@ int main(int argc, char** argv) {
         }
         return selftest(argv[2], frames);
     }
-    return icapp::run(argc >= 2 ? argv[1] : "");
+    // `iconcomposer <bundle.icon> --generation 26`: abre ja na geracao pedida.
+    rb::DesignGeneration generation = rb::DesignGeneration::G27;
+    for (int i = 2; i + 1 < argc; ++i) {
+        if (std::strcmp(argv[i], "--generation") == 0 && std::strcmp(argv[i + 1], "26") == 0) {
+            generation = rb::DesignGeneration::G26;
+        }
+    }
+    return icapp::run(argc >= 2 ? argv[1] : "", generation);
 }

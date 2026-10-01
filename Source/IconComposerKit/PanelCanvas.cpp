@@ -341,7 +341,7 @@ std::size_t contextBar(Session& s) {
     if (popupBelow("appearance-menu", apClick)) {
         for (auto a : {icf::Appearance::Base, icf::Appearance::Light, icf::Appearance::Dark,
                        icf::Appearance::Tinted}) {
-            if (ImGui::MenuItem(appearanceLabel(a), nullptr, a == s.view.context.appearance))
+            if (ui::menuItem(appearanceLabel(a), nullptr, a == s.view.context.appearance))
                 s.view.context.appearance = a;
         }
         ImGui::EndPopup();
@@ -370,7 +370,7 @@ std::size_t contextBar(Session& s) {
     if (popupBelow("idiom-menu", idClick)) {
         for (auto i : {icf::Idiom::Base, icf::Idiom::Square, icf::Idiom::IOS, icf::Idiom::MacOS,
                        icf::Idiom::WatchOS}) {
-            if (ImGui::MenuItem(idiomLabel(i), nullptr, i == s.view.context.idiom)) s.view.context.idiom = i;
+            if (ui::menuItem(idiomLabel(i), nullptr, i == s.view.context.idiom)) s.view.context.idiom = i;
         }
         ImGui::EndPopup();
     }
@@ -382,8 +382,8 @@ std::size_t contextBar(Session& s) {
     ui::beginCapsule("size", 72.0f);
     const bool szClick = ui::capText("##size", sizeLabel, 72.0f, "Render size of the preview");
     if (popupBelow("size-menu", szClick)) {
-        if (ImGui::MenuItem("512 px", nullptr, s.view.size == 512)) s.view.size = 512;
-        if (ImGui::MenuItem("1024 px", nullptr, s.view.size == 1024)) s.view.size = 1024;
+        if (ui::menuItem("512 px", nullptr, s.view.size == 512)) s.view.size = 512;
+        if (ui::menuItem("1024 px", nullptr, s.view.size == 1024)) s.view.size = 1024;
         ImGui::EndPopup();
     }
     ui::endCapsule();
@@ -402,7 +402,7 @@ std::size_t contextBar(Session& s) {
             std::snprintf(l, sizeof l, "%d%%", static_cast<int>(z * 100.0f + 0.5f));
             // The request, not the target: the canvas is the only place that
             // knows where the viewport centre is (Session.h).
-            if (ImGui::MenuItem(l, nullptr, s.view.zoomTarget == z)) s.view.zoomRequest = z;
+            if (ui::menuItem(l, nullptr, s.view.zoomTarget == z)) s.view.zoomRequest = z;
         }
         ImGui::EndPopup();
     }
@@ -411,6 +411,29 @@ std::size_t contextBar(Session& s) {
 
     ui::popMenuStyle();
     return n;
+}
+
+// O `EffectsRenderModePicker` do alvo (`.capsule` do Canvas.tsx): efeitos
+// desligados, geracao 26, geracao 27. Um dos tres esta sempre aceso.
+std::size_t effectsBar(Session& s) {
+    ui::beginCapsule("effects-mode", 3 * 32.0f + 6.0f);
+    if (ui::capButton("##effects-off", "slash.circle", !s.view.effects, 17.0f, false,
+                      "Liquid Glass Effects Disabled", 32.0f, "/"))
+        s.view.effects = false;
+    if (ui::capButton("##generation-26", "26.circle",
+                      s.view.effects && s.view.generation == rb::DesignGeneration::G26, 17.0f, false,
+                      "Design Generation 26", 32.0f, "26")) {
+        s.view.effects = true;
+        s.view.generation = rb::DesignGeneration::G26;
+    }
+    if (ui::capButton("##generation-27", "27.circle",
+                      s.view.effects && s.view.generation == rb::DesignGeneration::G27, 17.0f, false,
+                      "Design Generation 27", 32.0f, "27")) {
+        s.view.effects = true;
+        s.view.generation = rb::DesignGeneration::G27;
+    }
+    ui::endCapsule();
+    return 3;
 }
 
 // Zoom out / zoom in / 1:1 / Fit, numa capsula so. They write the same two
@@ -483,27 +506,38 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
         const float barRight = barRect.Max.x;
         // Os menus, a 12 pt da borda da coluna e centrados na altura: o titulo
         // de um menu tem a altura da linha de texto.
-        ImGui::SetCursorScreenPos(ImVec2(bar0.x + 4.0f * dk, barTop + (barH - ImGui::GetTextLineHeight()) * 0.5f));
+        // O titulo de um menu e desenhado `CurrLineTextBaseOffset` abaixo do
+        // cursor (o recuo de quadro da linha da barra); descontado aqui, senao
+        // os menus ficam esse tanto abaixo do centro da barra.
+        const float baseline = ImGui::GetCurrentWindow()->DC.CurrLineTextBaseOffset;
+        ImGui::SetCursorScreenPos(ImVec2(bar0.x + 4.0f * dk,
+                                         barTop + (barH - ImGui::GetTextLineHeight()) * 0.5f - baseline));
         st.menu = drawMenus(s, actions);
-        // O nome do documento (`.doc-title`): 15 pt, semi-negrito no alvo.
-        ImGui::SameLine(0.0f, 10.0f * dk);
-        float titleEnd = 0.0f;
+        // O nome do documento (`.doc-title`): 15 pt, semi-negrito no alvo, a
+        // 10 pt do fim do ultimo titulo de menu. Esse fim e LIDO, sem
+        // `SameLine`: numa barra de menus ele devolve o cursor a linha da
+        // barra, e daqui em diante tudo e posto a mao (o nome, as capsulas).
+        const float titleX = ImGui::GetCurrentWindow()->DC.CursorPosPrevLine.x + 10.0f * dk;
+        // As capsulas, encostadas a direita (`.toolbar-spacer`): 12 pt da borda.
+        // Elas ficam la em qualquer largura: quem cede e o nome, cortado a 16 pt
+        // delas -- um nome comprido as empurrava para fora da barra.
+        const float capsules = (3 * 32 + 6 + 84 + 84 + 72 + 70 + 4 * 26 + 6) * dk + 8.0f * dk * 5;
+        const float capsulesX = std::max(barRight - 12.0f * dk - capsules, titleX);
         {
             const std::string title = s.bundle().path().stem().string();
             ImGui::PushFont(nullptr, 15.0f);
             const ImVec2 ts = ImGui::CalcTextSize(title.c_str());
-            // Centrado na linha dos MENUS, e nao na barra: o titulo de um menu
-            // cai onde o ImGui o poe, e o nome ao lado tem de estar na mesma altura.
-            const float menuMid = (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f;
-            const ImVec2 at(ImGui::GetCursorScreenPos().x, menuMid - ts.y * 0.5f);
-            ImGui::GetWindowDrawList()->AddText(at, theme::u32(theme::kText), title.c_str());
-            titleEnd = at.x + ts.x;
+            // No centro da barra, que e onde os menus e as capsulas estao.
+            const ImVec2 at(titleX, barTop + (barH - ts.y) * 0.5f);
+            ImDrawList* bar = ImGui::GetWindowDrawList();
+            bar->PushClipRect(ImVec2(titleX, barTop), ImVec2(std::max(titleX, capsulesX - 16.0f * dk), barTop + barH),
+                              true);
+            bar->AddText(at, theme::u32(theme::kText), title.c_str());
+            bar->PopClipRect();
             ImGui::PopFont();
         }
-        // As capsulas, encostadas a direita (`.toolbar-spacer`): 12 pt da borda.
-        const float capsules = (84 + 84 + 72 + 70 + 4 * 26 + 6) * dk + 8.0f * dk * 4;
-        ImGui::SetCursorScreenPos(ImVec2(std::max(barRight - 12.0f * dk - capsules, titleEnd + 16.0f * dk),
-                                         barTop + (barH - 34.0f * dk) * 0.5f));
+        ImGui::SetCursorScreenPos(ImVec2(capsulesX, barTop + (barH - 34.0f * dk) * 0.5f));
+        st.effectsControls = effectsBar(s);
         st.contextControls = contextBar(s);
         st.zoomControls = zoomBar(s);
         ImGui::EndMenuBar();

@@ -52,10 +52,13 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
     out.size = r.size;
     out.tile = r.tile;
     out.mono = r.mono;
+    out.generation = r.generation;
+    out.effects = r.effects;
 
     rb::IconRenderOptions io;
     io.size = r.size;
     io.context = r.context;
+    io.generation = r.generation;
     io.viewport = rb::IconViewport{r.tile.x, r.tile.y, r.tile.w, r.tile.h};
     io.cache = cache;
     // O CAMINHO DO `icserver` (30/09): o residente na GPU, o mesmo que o canvas
@@ -65,7 +68,15 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
     io.subdivisions = std::clamp(static_cast<int>(std::lround(16.0 * r.size / 512.0)), 16, 256);
     // O MONO (Renditions.h, `lookOf`): a mascara ou o tint antes do render.
     if (r.mono) rb::prepareMono(io, *r.mono);
-    auto icon = rb::renderIconGpu(device, r.bundle, io);
+    // "Liquid Glass Effects Disabled": o mesmo documento com o vidro desligado
+    // em toda camada. O pedido e `const`, entao a copia e daqui.
+    std::optional<icf::IconBundle> flat;
+    if (!r.effects) {
+        flat = r.bundle.clone();
+        ick::disableGlassEffects(*flat);
+    }
+    const icf::IconBundle& bundle = flat ? *flat : r.bundle;
+    auto icon = rb::renderIconGpu(device, bundle, io);
 
     // Um ladrilho pode ser impossivel de desenhar de duas formas (spec
     // 2026-09-16, "O teto de area"):
@@ -96,7 +107,7 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
         io.size = r.fallbackSize;
         io.viewport = rb::IconViewport{};
         io.subdivisions = std::clamp(static_cast<int>(std::lround(16.0 * io.size / 512.0)), 16, 256);
-        icon = rb::renderIconGpu(device, r.bundle, io);
+        icon = rb::renderIconGpu(device, bundle, io);
         out.refined = false;
         if (icon.has_value()) {
             if (!tileError.empty()) {

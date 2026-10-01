@@ -273,18 +273,18 @@ RowResult drawRow(Session& s, icf::NodePath path, LayersStats& st, Pending& pend
     // 3. The context menu, on that same item. `clickedRow` in the target: the
     //    menu belongs to the row under the pointer, not to the selection.
     if (!renaming && ImGui::BeginPopupContextItem("row-menu")) {
-        if (ImGui::MenuItem("Rename", "F2")) beginRename(path, title);
+        if (ui::menuItem("Rename", "F2")) beginRename(path, title);
         ImGui::Separator();
         // `[BIN]` MenuContent.ArrangeSection.Subsections -- two subsections, and
         // the four items AppKit puts in them. To Front / To Back are the drag a
         // person would otherwise have to perform to the end of a long list.
-        if (ImGui::MenuItem("Bring to Front")) pending = Pending{Act::ToFront, path};
-        if (ImGui::MenuItem("Move Up", "Ctrl+Up")) pending = Pending{Act::MoveUp, path};
-        if (ImGui::MenuItem("Move Down", "Ctrl+Down")) pending = Pending{Act::MoveDown, path};
-        if (ImGui::MenuItem("Send to Back")) pending = Pending{Act::ToBack, path};
+        if (ui::menuItem("Bring to Front")) pending = Pending{Act::ToFront, path};
+        if (ui::menuItem("Move Up", "Ctrl+Up")) pending = Pending{Act::MoveUp, path};
+        if (ui::menuItem("Move Down", "Ctrl+Down")) pending = Pending{Act::MoveDown, path};
+        if (ui::menuItem("Send to Back")) pending = Pending{Act::ToBack, path};
         ImGui::Separator();
-        if (!isLayer && ImGui::MenuItem("Add Image Layer")) pending = Pending{Act::AddLayer, path};
-        if (ImGui::MenuItem("Delete", "Del")) pending = Pending{Act::Delete, path};
+        if (!isLayer && ui::menuItem("Add Image Layer")) pending = Pending{Act::AddLayer, path};
+        if (ui::menuItem("Delete", "Del")) pending = Pending{Act::Delete, path};
         ImGui::EndPopup();
     }
 
@@ -631,11 +631,11 @@ LayersStats drawLayers(Session& s) {
         ui::pushMenuStyle();
         ImGui::SetNextWindowPos(ImVec2(wp.x + 10.0f * k, y - 6.0f * k), ImGuiCond_Always, ImVec2(0.0f, 1.0f));
         if (ImGui::BeginPopup("add-menu")) {
-            if (ImGui::MenuItem("New Image...", nullptr, false, count > 0)) {
+            if (ui::menuItem("New Image...", nullptr, false, count > 0)) {
                 const std::size_t g = s.selection && s.selection->group ? *s.selection->group : count - 1;
                 pending = Pending{Act::AddLayer, icf::NodePath{g, std::nullopt}};
             }
-            if (ImGui::MenuItem("New Group")) pending = Pending{Act::AddGroup, icf::NodePath{}};
+            if (ui::menuItem("New Group")) pending = Pending{Act::AddGroup, icf::NodePath{}};
             ImGui::EndPopup();
         }
         ui::popMenuStyle();
@@ -649,7 +649,12 @@ LayersStats drawLayers(Session& s) {
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
     }
 
-    if (count == 0) ImGui::TextDisabled("No groups yet -- use + to add one.");
+    // Com quebra de linha: na largura minima da sidebar a frase nao cabe numa so.
+    if (count == 0) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("No groups yet -- use + to add one.");
+        ImGui::PopTextWrapPos();
+    }
 
     ImGui::End();
 

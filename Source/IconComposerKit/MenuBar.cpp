@@ -70,7 +70,7 @@ struct Builder {
               bool selected = false) {
         ++st.items;
         if (!enabled) ++st.disabled;
-        const bool pressed = ImGui::MenuItem(label, shortcut, selected, enabled);
+        const bool pressed = ui::menuItem(label, shortcut, selected, enabled);
         // Gravado aqui porque aqui e o unico caminho por onde um item nasce
         // (Panels.h, `MenuItemInfo`): um item novo entra no relato sem ninguem
         // o acrescentar.
@@ -187,30 +187,49 @@ MenuStats drawMenus(Session& s, MenuActions& a) {
         // These four write `Session::view` directly. They are NOT commands: the
         // context a person is looking through is not part of the document, it
         // does not move `version()`, and it is not on the undo stack.
-        if (ImGui::BeginMenu("Appearance")) {
+        //
+        // `ui::beginMenu`, e nao o do ImGui: a linha do submenu e o popup dele
+        // no mesmo desenho dos itens em volta (Widgets.h).
+        if (ui::beginMenu("Appearance")) {
             for (auto ap : {icf::Appearance::Base, icf::Appearance::Light, icf::Appearance::Dark,
                             icf::Appearance::Tinted}) {
                 if (b.item(appearanceLabel(ap), nullptr, true, nullptr, s.view.context.appearance == ap)) {
                     s.view.context.appearance = ap;
                 }
             }
-            ImGui::EndMenu();
+            ui::endMenu();
         }
-        if (ImGui::BeginMenu("Idiom")) {
+        if (ui::beginMenu("Idiom")) {
             for (auto id : {icf::Idiom::Base, icf::Idiom::Square, icf::Idiom::IOS, icf::Idiom::MacOS,
                             icf::Idiom::WatchOS}) {
                 if (b.item(idiomLabel(id), nullptr, true, nullptr, s.view.context.idiom == id)) {
                     s.view.context.idiom = id;
                 }
             }
-            ImGui::EndMenu();
+            ui::endMenu();
         }
-        if (ImGui::BeginMenu("Preview Size")) {
+        // O `EffectsRenderMode` do alvo, que tambem e estado de vista: efeitos
+        // desligados, geracao 26 ou geracao 27. A 27 e o padrao do motor, a 26 a
+        // dos bitmaps que a Apple gravou nos catalogos. A capsula da barra
+        // (`effectsBar`, PanelCanvas.cpp) escreve os mesmos dois campos.
+        if (ui::beginMenu("Liquid Glass Effects")) {
+            if (b.item("Disabled", nullptr, true, nullptr, !s.view.effects)) s.view.effects = false;
+            for (auto g : {rb::DesignGeneration::G26, rb::DesignGeneration::G27}) {
+                const char* label = g == rb::DesignGeneration::G26 ? "Design Generation 26"
+                                                                   : "Design Generation 27";
+                if (b.item(label, nullptr, true, nullptr, s.view.effects && s.view.generation == g)) {
+                    s.view.effects = true;
+                    s.view.generation = g;
+                }
+            }
+            ui::endMenu();
+        }
+        if (ui::beginMenu("Preview Size")) {
             if (b.item("512", nullptr, true, nullptr, s.view.size == 512)) s.view.size = 512;
             if (b.item("1024", nullptr, true, nullptr, s.view.size == 1024)) s.view.size = 1024;
-            ImGui::EndMenu();
+            ui::endMenu();
         }
-        if (ImGui::BeginMenu("Zoom")) {
+        if (ui::beginMenu("Zoom")) {
             // Zoom is NOT a render (spec 13/09 §6): it is the same pixels shown
             // larger, so it never reaches the render key.
             for (float z : {0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 4.0f}) {
@@ -226,7 +245,7 @@ MenuStats drawMenus(Session& s, MenuActions& a) {
             ImGui::Separator();
             if (b.item("Fit", nullptr, true, "Fit the whole icon in the canvas and centre it."))
                 s.view.fitRequest = true;
-            ImGui::EndMenu();
+            ui::endMenu();
         }
         ImGui::EndMenu();
     }

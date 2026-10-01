@@ -14,8 +14,24 @@ RenderResult failedResult(const RenderRequest& r, std::string why) {
     out.size = r.size;
     out.tile = r.tile;
     out.mono = r.mono;
+    out.generation = r.generation;
+    out.effects = r.effects;
     out.error = std::move(why);
     return out;
+}
+
+void disableGlassEffects(icf::IconBundle& bundle) {
+    icf::json::Value* groups = bundle.json().find("groups");
+    if (!groups) return;
+    for (icf::json::Value& group : groups->elements()) {
+        icf::json::Value* layers = group.find("layers");
+        if (!layers) continue;
+        for (icf::json::Value& layer : layers->elements()) {
+            std::erase_if(layer.members(),
+                          [](const auto& kv) { return kv.first == "glass-specializations"; });
+            layer.set("glass", icf::json::Value::boolean(false));
+        }
+    }
 }
 
 std::vector<std::uint8_t> toRgba8(const std::vector<float>& in) {

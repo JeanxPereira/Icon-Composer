@@ -71,6 +71,17 @@ bool capText(const char* id, const char* label, float width, const char* tooltip
 // hover na cor de destaque. Empilhar em volta de quem abre menus.
 void pushMenuStyle();
 void popMenuStyle();
+// UMA LINHA DE MENU (`.menu-item`): 24 pt, o realce na cor de destaque com o
+// canto de 5 pt, a marca de selecionado numa coluna a esquerda e o atalho a
+// direita. Vale para os menus e para as listas dos seletores; a mesma
+// assinatura e o mesmo id de `ImGui::MenuItem`.
+bool menuItem(const char* label, const char* shortcut = nullptr, bool selected = false, bool enabled = true);
+// UM SUBMENU: a mesma linha de `menuItem` com a seta a direita no lugar do
+// atalho, acesa enquanto o filho esta aberto, e o popup do filho com a margem,
+// o canto e a borda do pai. Mesma semantica de `ImGui::BeginMenu`: verdadeiro
+// com o submenu aberto, e entao `endMenu()`.
+bool beginMenu(const char* label, bool enabled = true);
+void endMenu();
 
 // O INTERRUPTOR DO SISTEMA (`.toggle` do Tauri): trilho de 38 x 22, botao de
 // 26 x 18, a cor de destaque ligado. O rotulo fica a esquerda e o
@@ -84,12 +95,48 @@ bool toggle(const char* label, bool* on);
 // escondido para o controle usar. Um rotulo que ja comeca com `##` passa sem
 // mudar nada.
 const char* leftLabel(const char* label, float share = 0.58f);
+// O mesmo, com o controle numa largura fixa em pt (a `.numbox` do Tauri: o
+// numero nao estica com a coluna).
+const char* leftLabelFixed(const char* label, float width);
+
+// A SECAO DO INSPETOR (`.isection`): o cabecalho de 11 pt secundario, e a
+// caixa arredondada com as linhas de 44 pt separadas por um fio (`.iline`).
+//
+// `sectionHead` desenha o cabecalho e devolve verdade quando foi clicado;
+// `sectionStatus` poe uma nota no fim da MESMA linha, alinhada a direita.
+// Entre `boxBegin` e `boxEnd`, cada `leftLabel`, `combo` e `toggle` abre uma
+// linha sozinho; um controle desenhado a mao chama `rowStart` antes, e
+// `rowAvail` diz ate onde a linha vai (a caixa tem 10 pt de margem dos lados).
+bool sectionHead(const char* label, bool enabled = true);
+void sectionStatus(const char* text, const ImVec4& colour);
+// A nota como botao, na cor de destaque (o `.scope` clicavel do Tauri).
+bool sectionAction(const char* text);
+void boxBegin();
+void boxEnd();
+void rowStart();
+float rowAvail();
+// O CONTROLE SEGMENTADO: as opcoes lado a lado numa linha da caixa, a
+// escolhida em relevo. Cada segmento e um item com o id do rotulo dele.
+// Devolve o indice clicado neste frame, ou -1.
+int segmented(const char* const* labels, const char* const* tips, int count, int current);
+// Uma nota dentro da caixa: 11 pt, terciaria (ou a cor dada), com quebra de
+// linha na largura da caixa. E um item comum: aceita `SetItemTooltip` depois.
+void note(const char* text);
+void note(const char* text, const ImVec4& colour);
 
 // O SELETOR DO SISTEMA (`Select` do Inspector.tsx): o rotulo a esquerda, o
 // campo a direita com o valor e o `chevron.up.chevron.down` no fim, sem o
 // quadrado com triangulo do ImGui. Mesma semantica de `ImGui::BeginCombo`:
 // verdadeiro com o popup aberto, e entao `ImGui::EndCombo()`.
 bool combo(const char* label, const char* preview);
+
+// O POCO DE COR (`.well` do Inspector.tsx): a amostra arredondada, na altura
+// de um campo e na largura do proximo item (`SetNextItemWidth`, que e o que
+// `leftLabelFixed` deixa armado); clicar abre o seletor num popover. Devolve
+// verdade quando a cor mudou. `released` fica verdadeiro no quadro em que uma
+// edicao do seletor termina -- o fim do arrasto, para quem junta os passos
+// num comando so.
+bool colorWell(const char* id, float rgba[4], bool* released = nullptr, const char* tooltip = nullptr);
 
 // O xadrez de 8 pt das miniaturas (`.thumb`).
 void checkerboard(ImDrawList* dl, ImVec2 a, ImVec2 b, float cell, float rounding);

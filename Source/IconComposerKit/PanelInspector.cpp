@@ -32,7 +32,9 @@
 #include "Source/IconComposerKit/ViewModel.h"
 #include "imgui.h"
 
+#include <algorithm>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <optional>
 #include <string>
@@ -102,7 +104,7 @@ void blendMode(Section& x) {
         }
         if (ui::combo("Mode", blendModeLabel(current))) {
             for (auto m : kModes) {
-                if (ImGui::Selectable(blendModeLabel(m), m == current)) {
+                if (ui::menuItem(blendModeLabel(m), nullptr, m == current)) {
                     x.write("blend-mode", icf::json::Value::string(std::string(icf::blendModeToString(m))), false);
                 }
             }
@@ -329,35 +331,78 @@ const char* colorSpaceLabel(icf::ColorSpace s) {
 // A colour as the UI can show it. A PREVIEW, not a render: it ignores the
 // stop's colour space, so a display-p3 ramp draws here a little duller than the
 // canvas will draw it.
-ImU32 previewColor(const icf::Color& c) {
+ImVec4 previewColor(const icf::Color& c) {
     const float first = static_cast<float>(c.components[0]);
     // The grey spaces carry (luminance, alpha); the RGB spaces (r, g, b, a).
-    if (c.count == 2) return ImGui::ColorConvertFloat4ToU32(ImVec4(first, first, first,
-                                                                   static_cast<float>(c.components[1])));
-    return ImGui::ColorConvertFloat4ToU32(ImVec4(first, static_cast<float>(c.components[1]),
-                                                 static_cast<float>(c.components[2]),
-                                                 static_cast<float>(c.components[3])));
+    if (c.count == 2) return ImVec4(first, first, first, static_cast<float>(c.components[1]));
+    return ImVec4(first, static_cast<float>(c.components[1]), static_cast<float>(c.components[2]),
+                  static_cast<float>(c.components[3]));
 }
 
 // The ramp as a strip, in document order. Four numbers in a row do not say
 // which end of the gradient they are; a band does.
+//
+// It is an item like any other in a row: the width the row armed for it
+// (`ui::leftLabel`), a field's height and a field's corner. Each span is a
+// rounded rectangle whose vertices are recoloured along x afterwards --
+// `AddRectFilledMultiColor` has no rounding -- so a stop's alpha survives, over
+// the same chequer the colour well shows it on.
 void rampPreview(const std::vector<icf::Color>& stops) {
     if (stops.size() < 2) return;
+    const float k = ui::dpi();
     const float w = ImGui::CalcItemWidth();
     const float h = ImGui::GetFrameHeight();
+    const float r = theme::kControlRadius * k;
     const ImVec2 p = ImGui::GetCursorScreenPos();
+    const ImVec2 q(p.x + w, p.y + h);
     ImDrawList* dl = ImGui::GetWindowDrawList();
+    bool seeThrough = false;
+    for (const icf::Color& c : stops) seeThrough = seeThrough || previewColor(c).w < 1.0f;
+    if (seeThrough) ui::checkerboard(dl, p, q, 6.0f * k, r);
     // Evenly spaced: the format gives a stop a colour and no location, and
     // inventing one would be a picture of a document that does not exist.
     const float step = w / static_cast<float>(stops.size() - 1);
     for (std::size_t i = 0; i + 1 < stops.size(); ++i) {
-        const ImU32 a = previewColor(stops[i]);
-        const ImU32 b = previewColor(stops[i + 1]);
+        const ImVec4 a = previewColor(stops[i]);
+        const ImVec4 b = previewColor(stops[i + 1]);
+        const bool last = i + 2 == stops.size();
         const float x0 = p.x + step * static_cast<float>(i);
-        dl->AddRectFilledMultiColor(ImVec2(x0, p.y), ImVec2(x0 + step, p.y + h), a, b, b, a);
+        // A span that is not the last runs one pixel under its neighbour, so
+        // the two anti-aliased edges do not leave a seam at the stop.
+        const float x1 = last ? q.x : x0 + step + 1.0f;
+        ImDrawFlags corners = 0;
+        if (i == 0) corners |= ImDrawFlags_RoundCornersLeft;
+        if (last) corners |= ImDrawFlags_RoundCornersRight;
+        if (corners == 0) corners = ImDrawFlags_RoundCornersNone;
+        const int first = dl->VtxBuffer.Size;
+        dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x1, q.y), IM_COL32_WHITE, r, corners);
+        for (int n = first; n < dl->VtxBuffer.Size; ++n) {
+            ImDrawVert& vert = dl->VtxBuffer[n];
+            const float t = std::clamp((vert.pos.x - x0) / step, 0.0f, 1.0f);
+            // The anti-aliasing fringe arrives with alpha 0, and keeps it.
+            const float edge = static_cast<float>((vert.col >> IM_COL32_A_SHIFT) & 0xFF) / 255.0f;
+            vert.col = ImGui::ColorConvertFloat4ToU32(ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t,
+                                                             a.z + (b.z - a.z) * t,
+                                                             (a.w + (b.w - a.w) * t) * edge));
+        }
     }
-    dl->AddRect(p, ImVec2(p.x + w, p.y + h), ImGui::GetColorU32(ImGuiCol_Border));
+    dl->AddRect(p, q, IM_COL32(255, 255, 255, 36), r, 0, 1.0f);
     ImGui::Dummy(ImVec2(w, h));
+}
+
+// A row of the box with its name on the left and a button against the right
+// edge, as wide as its own text -- the row "Edit this" has in the scope box.
+bool buttonRow(const char* label, const char* button, const char* tooltip) {
+    ui::rowStart();
+    const float startX = ImGui::GetCursorPosX();
+    const float avail = ui::rowAvail();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    const float bw = ImGui::CalcTextSize(button).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    ImGui::SameLine(startX + avail - bw);
+    const bool pressed = ImGui::Button(button);
+    ImGui::SetItemTooltip("%s", tooltip);
+    return pressed;
 }
 
 void fill(Section& x) {
@@ -372,7 +417,7 @@ void fill(Section& x) {
         }
         if (ui::combo("Kind", fillKindLabel(f.kind))) {
             for (auto k : kKinds) {
-                if (ImGui::Selectable(fillKindLabel(k), k == f.kind)) {
+                if (ui::menuItem(fillKindLabel(k), nullptr, k == f.kind)) {
                     // A kind change carries over what the new kind can hold and
                     // nothing else: `solid` and `automatic-gradient` hold one
                     // colour, `linear-gradient` the ramp, the rest none.
@@ -400,47 +445,79 @@ void fill(Section& x) {
         const bool ramp = f.kind == icf::FillKind::LinearGradient;
         const bool gradient = ramp || f.kind == icf::FillKind::AutomaticGradient;
 
-        if (gradient) rampPreview(f.colors);
+        // The strip, in the value column the selector above it is in.
+        if (gradient && f.colors.size() >= 2) {
+            ui::leftLabel("Ramp");
+            rampPreview(f.colors);
+        }
 
         // ---- the stops ----
+        // One row each: its name on the left, the colour on the right in the
+        // column the number boxes of the other sections are in.
         bool released = false;
         std::optional<std::size_t> edited, remove;
         bool append = false;
+        // Two is the floor, not a preference: every one of the corpus's 97
+        // ramps carries exactly two, and the target decodes a ramp into
+        // `primaryColor` and `secondaryColor`. Shrinking past two would be a
+        // ramp with nothing to interpolate.
+        const bool removable = ramp && f.colors.size() > 2;
+        const float k = ui::dpi();
+        const float button = ImGui::GetFrameHeight();
         for (std::size_t i = 0; i < f.colors.size(); ++i) {
             icf::Color& c = f.colors[i];
             ImGui::PushID(static_cast<int>(i));
+            // THE SPACE IS IN THE LABEL, and it is not decoration. The picker
+            // and the swatch are sRGB, the stop may be display-p3, and the same
+            // four numbers mean two different colours in the two. The control
+            // cannot convert -- `colorToString` writes the numbers back under
+            // the space they arrived with -- so the least it can do is name the
+            // space it is not honouring.
+            char label[64];
+            if (ramp) {
+                std::snprintf(label, sizeof label, "Stop %d · %s", static_cast<int>(i) + 1,
+                              colorSpaceLabel(c.space));
+            } else {
+                std::snprintf(label, sizeof label, "Color · %s", colorSpaceLabel(c.space));
+            }
             // The grey spaces carry two components, the RGB spaces four, and the
             // count is a property of the space -- so the control follows the
             // value rather than normalising it (Values.h).
+            const float control = c.count == 4 ? kNumboxWidth : numboxesWidth(2);
+            const char* id = ui::leftLabelFixed(label, control + (removable ? button / k + 4.0f : 0.0f));
+            if (removable) {
+                // To the LEFT of the control, so the control stays in its column.
+                if (ui::plainButton("##remove", "minus", ImVec2(button, button), 12.0f, "-", true,
+                                    "Remove this stop")) {
+                    remove = i;
+                }
+                ImGui::SameLine(0.0f, 4.0f * k);
+                ImGui::SetNextItemWidth(std::min(control * k, ui::rowAvail()));
+            }
             if (c.count == 4) {
                 float rgba[4] = {static_cast<float>(c.components[0]), static_cast<float>(c.components[1]),
                                  static_cast<float>(c.components[2]), static_cast<float>(c.components[3])};
-                if (ImGui::ColorEdit4(colorSpaceLabel(c.space), rgba, ImGuiColorEditFlags_Float)) {
-                    for (int k = 0; k < 4; ++k) c.components[k] = rgba[k];
+                char tip[256];
+                std::snprintf(tip, sizeof tip,
+                              "Components are stored in %s and written back in it. The picker and this "
+                              "swatch are sRGB, so a wide-gamut stop draws here duller than the canvas "
+                              "draws it.",
+                              colorSpaceLabel(c.space));
+                bool done = false;
+                if (ui::colorWell(id, rgba, &done, tip)) {
+                    for (int n = 0; n < 4; ++n) c.components[n] = rgba[n];
                     edited = i;
                 }
-                released |= ImGui::IsItemDeactivatedAfterEdit();
-                // THE SPACE IS THE LABEL, and it is not decoration. The picker
-                // and the swatch are sRGB, the stop may be display-p3, and the
-                // same four numbers mean two different colours in the two. The
-                // control cannot convert -- `colorToString` writes the numbers
-                // back under the space they arrived with -- so the least it can
-                // do is name the space it is not honouring.
-                ImGui::SetItemTooltip(
-                    "Components are stored in %s and written back in it. This picker and the "
-                    "swatch beside it are sRGB, so a wide-gamut stop draws here duller than the "
-                    "canvas draws it.",
-                    colorSpaceLabel(c.space));
+                released |= done;
             } else {
                 double ga[2] = {c.components[0], c.components[1]};
                 static const double kZero = 0.0, kOne = 1.0;
                 // "%.5f": `[ART]` a colour component is written with five places
                 // in 1,978 of the corpus's 1,978 (spec 13/09 sec. 2.2), so the
                 // control shows exactly the precision the file will keep.
-                NumberEdit e = dragNumbers(colorSpaceLabel(c.space), ga, 2, 0.005f, &kZero, &kOne,
-                                           "%.5f",
-                                           "Luminance and alpha -- the grey spaces carry two "
-                                           "components, not four.");
+                NumberEdit e = dragNumbersAt(id, ga, 2, 0.005f, &kZero, &kOne, "%.5f",
+                                             "Luminance and alpha -- the grey spaces carry two "
+                                             "components, not four.");
                 if (e.changed) {
                     c.components[0] = ga[0];
                     c.components[1] = ga[1];
@@ -448,54 +525,44 @@ void fill(Section& x) {
                 }
                 released |= e.released;
             }
-            // Two is the floor, not a preference: every one of the corpus's 97
-            // ramps carries exactly two, and the target decodes a ramp into
-            // `primaryColor` and `secondaryColor`. Shrinking past two would be
-            // a ramp with nothing to interpolate.
-            if (ramp && f.colors.size() > 2) {
-                ImGui::SameLine();
-                if (ImGui::SmallButton("-")) remove = i;
-                ImGui::SetItemTooltip("Remove this stop");
-            }
             ImGui::PopID();
         }
         if (edited) writeColor(x, v, f, *edited, f.colors[*edited]);
         if (ramp) {
-            if (ImGui::SmallButton("Add stop")) append = true;
-            ImGui::SetItemTooltip("Appends a copy of the last stop");
+            if (buttonRow("Stops", "Add stop", "Appends a copy of the last stop")) append = true;
             if (f.colors.size() != 2) {
                 // `[BIN]` Said out loud rather than prevented. The document may
                 // hold a ramp of any length; the target's converter reads two
                 // named slots and `FillResolve` refuses any other count rather
                 // than truncating it, so this layer stops drawing until the
                 // ramp is two again.
-                ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.25f, 1.0f),
-                                   "%d stops: the renderer draws only two-colour ramps",
-                                   static_cast<int>(f.colors.size()));
+                char text[96];
+                std::snprintf(text, sizeof text, "%d stops: the renderer draws only two-colour ramps.",
+                              static_cast<int>(f.colors.size()));
+                ui::note(text, ImVec4(0.95f, 0.65f, 0.25f, 1.0f));
             }
         }
 
         // ---- the axis ----
         bool giveAxis = false, dropAxis = false;
         if (gradient) {
-            ImGui::SeparatorText("Axis");
             if (!f.orientation) {
-                // THE ABSENCE IS THE VALUE, and this is the row that says so
-                // instead of quietly writing one.
-                ImGui::TextDisabled("default axis  (0, 0) -> (0, 1)");
-                ImGui::SetItemTooltip(
-                    "This fill names no orientation, and the absence has a meaning: the draw path "
-                    "substitutes GradientPlacement.default, (0,0) to (0,1). Nothing here writes an "
-                    "orientation until the button below asks for one.");
                 // Offered for the ramp only. An `automatic-gradient` is the one
                 // kind no converter of the four reads an orientation from, so a
                 // button here would only add a member with nowhere to be read.
                 // The 8 corpus `automatic-gradient` fills that DO name one still
                 // get the controls below -- what is already written is shown.
-                if (ramp) {
-                    if (ImGui::SmallButton("Give it its own axis")) giveAxis = true;
-                    ImGui::SetItemTooltip("Writes the default axis down, so it can then be moved");
+                if (ramp && buttonRow("Axis", "Give it its own axis",
+                                      "Writes the default axis down, so it can then be moved")) {
+                    giveAxis = true;
                 }
+                // THE ABSENCE IS THE VALUE, and this is the line that says so
+                // instead of quietly writing one.
+                ui::note("Default axis, (0, 0) -> (0, 1).");
+                ImGui::SetItemTooltip(
+                    "This fill names no orientation, and the absence has a meaning: the draw path "
+                    "substitutes GradientPlacement.default, (0,0) to (0,1). Nothing here writes an "
+                    "orientation unless it is asked to.");
             } else {
                 // Normalised over the box, NOT points: the draw path reads
                 // `point = rect.origin + unit * (width, height)` (doc 03 §30.7).
@@ -523,19 +590,20 @@ void fill(Section& x) {
                     want.stop = {stop[0], stop[1]};
                     writeAxis(x, v, f, want);
                 }
-                if (ImGui::SmallButton("Back to the default axis")) dropAxis = true;
-                ImGui::SetItemTooltip(
-                    "Removes the orientation member, giving back the absence the document may have "
-                    "arrived with");
+                if (buttonRow("Axis", "Back to the default",
+                              "Removes the orientation member, giving back the absence the document "
+                              "may have arrived with")) {
+                    dropAxis = true;
+                }
             }
             // Where the target throws the axis away (doc 03 §30.8): only the
             // LAYER's `linear-gradient` builds a placement from it. Saying so
             // here is cheaper than a person wondering why the canvas ignores a
             // control that works.
             if (f.kind == icf::FillKind::AutomaticGradient) {
-                ImGui::TextDisabled("(automatic-gradient always draws on the default axis)");
+                ui::note("An automatic-gradient always draws on the default axis.");
             } else if (kindOf(x.path) == NodeKind::Root) {
-                ImGui::TextDisabled("(a background gradient always draws on the default axis)");
+                ui::note("A background gradient always draws on the default axis.");
             }
         }
 
@@ -558,7 +626,7 @@ void shadow(Section& x) {
         }
         if (ui::combo("Kind", shadowKindLabel(sh.kind))) {
             for (auto k : kKinds) {
-                if (ImGui::Selectable(shadowKindLabel(k), k == sh.kind)) {
+                if (ui::menuItem(shadowKindLabel(k), nullptr, k == sh.kind)) {
                     icf::Shadow next = sh;
                     next.kind = k;
                     x.write("shadow", icf::shadowToJson(next), false);
@@ -610,7 +678,7 @@ void specular(Section& x) {
         }
         if (ui::combo("Highlight", specularLabel(current))) {
             for (auto c : kCases) {
-                if (ImGui::Selectable(specularLabel(c), c == current)) {
+                if (ui::menuItem(specularLabel(c), nullptr, c == current)) {
                     x.write("specular", icf::json::Value::string(std::string(icf::specularHighlightToString(c))),
                             false);
                 }
@@ -657,21 +725,25 @@ void scopeSelector(Session& s) {
                                          icf::Appearance::Tinted};
     static const icf::Idiom kI[] = {icf::Idiom::Base, icf::Idiom::Square, icf::Idiom::IOS, icf::Idiom::MacOS,
                                     icf::Idiom::WatchOS};
-    ImGui::SeparatorText("Editing scope");
-    ImGui::SetNextItemWidth(140.0f);
+    // A caixa do escopo, no mesmo desenho das secoes: duas linhas, e uma
+    // terceira so quando o canvas e o inspetor discordam.
+    ui::sectionHead("Editing scope##scope-head");
+    const bool same = s.scope.appearance == s.view.context.appearance &&
+                      s.scope.idiom == s.view.context.idiom;
+    if (same) ui::sectionStatus("matches the canvas", theme::kText3);
+    ui::boxBegin();
     if (ui::combo("Appearance##scope-a", appearanceLabel(s.scope.appearance))) {
         for (auto a : kA) {
-            if (ImGui::Selectable(appearanceLabel(a), a == s.scope.appearance)) s.scope.appearance = a;
+            if (ui::menuItem(appearanceLabel(a), nullptr, a == s.scope.appearance)) s.scope.appearance = a;
         }
         ImGui::EndCombo();
     }
     ImGui::SetItemTooltip(
         "The appearance every section below reads and WRITES under. Base is the plain key; any "
         "other value appends to the property's specialization list.");
-    ImGui::SetNextItemWidth(140.0f);
     if (ui::combo("Idiom##scope-i", idiomLabel(s.scope.idiom))) {
         for (auto i : kI) {
-            if (ImGui::Selectable(idiomLabel(i), i == s.scope.idiom)) s.scope.idiom = i;
+            if (ui::menuItem(idiomLabel(i), nullptr, i == s.scope.idiom)) s.scope.idiom = i;
         }
         ImGui::EndCombo();
     }
@@ -680,31 +752,35 @@ void scopeSelector(Session& s) {
         "draws -- that one is in the canvas's own bar, and the line below says when the two "
         "disagree.");
 
-    const bool same = s.scope.appearance == s.view.context.appearance &&
-                      s.scope.idiom == s.view.context.idiom;
-    if (same) {
-        ImGui::TextDisabled("The canvas is showing the scope you are editing.");
-        return;
+    if (!same) {
+        // A warm amber, the colour this editor already uses for "true, and you
+        // need to know it" (the ramp-length note).
+        ui::rowStart();
+        char canvas[96];
+        std::snprintf(canvas, sizeof canvas, "Canvas shows %s / %s",
+                      appearanceLabel(s.view.context.appearance), idiomLabel(s.view.context.idiom));
+        const float avail = ui::rowAvail();
+        const float startX = ImGui::GetCursorPosX();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.25f, 1.0f), "%s", canvas);
+        ImGui::SetItemTooltip(
+            "The canvas is showing %s / %s -- you are editing %s / %s.\nLegitimate -- editing one "
+            "scope while looking at another is a real thing to want. But an edit made here may not "
+            "move a pixel on screen, and that is a different fact from the edit not having happened.",
+            appearanceLabel(s.view.context.appearance), idiomLabel(s.view.context.idiom),
+            appearanceLabel(s.scope.appearance), idiomLabel(s.scope.idiom));
+        const char* kMatch = "Edit this";
+        const float bw = ImGui::CalcTextSize(kMatch).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        ImGui::SameLine(startX + avail - bw);
+        if (ImGui::Button(kMatch)) {
+            // Only the SCOPE moves. Pulling the canvas to the scope instead
+            // would drag the view off the idiom the document declares, which is
+            // the one thing `Session::open` went out of its way to get right.
+            s.scope = s.view.context;
+        }
+        ImGui::SetItemTooltip("Sets the editing scope to the appearance and idiom the canvas is drawing.");
     }
-    // A warm amber, the colour this editor already uses for "true, and you need
-    // to know it" (PanelInspector's ramp-length note).
-    ImGui::PushTextWrapPos(0.0f);
-    ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.25f, 1.0f),
-                       "The canvas is showing %s / %s -- you are editing %s / %s.",
-                       appearanceLabel(s.view.context.appearance), idiomLabel(s.view.context.idiom),
-                       appearanceLabel(s.scope.appearance), idiomLabel(s.scope.idiom));
-    ImGui::PopTextWrapPos();
-    ImGui::SetItemTooltip(
-        "Legitimate -- editing one scope while looking at another is a real thing to want. But an "
-        "edit made here may not move a pixel on screen, and that is a different fact from the edit "
-        "not having happened.");
-    if (ImGui::SmallButton("Edit what the canvas shows")) {
-        // Only the SCOPE moves. Pulling the canvas to the scope instead would
-        // drag the view off the idiom the document declares, which is the one
-        // thing `Session::open` went out of its way to get right.
-        s.scope = s.view.context;
-    }
-    ImGui::SetItemTooltip("Sets the editing scope to the appearance and idiom the canvas is drawing.");
+    ui::boxEnd();
 }
 
 }  // namespace
@@ -727,14 +803,35 @@ void scopeSelector(Session& s) {
 // is; a front is in that file this round, so the door is opened here instead,
 // from the panel the sections are in. It costs one line and stops being dead
 // code the moment it is drawn.
-void documentRow(Session& s) {
-    const bool isRoot = s.selection && !s.selection->group;
-    if (ImGui::RadioButton("Document", isRoot)) s.selection = icf::NodePath{};
-    ImGui::SetItemTooltip(
-        "The root of the .icon: the background fill, the platforms it ships for, the SVG colour "
-        "space and the feature list. Selecting a layer or a group in the Layers panel comes back "
-        "here.");
-    ImGui::Separator();
+// O titulo do que esta selecionado, e no fim da linha a porta do documento.
+void titleRow(Session& s, const std::string& title, bool dim, bool isRoot) {
+    const float k = ui::dpi();
+    const float startX = ImGui::GetCursorPosX();
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const char* kDoc = "Document";
+    const float bw = isRoot ? 0.0f : ImGui::CalcTextSize(kDoc).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    // O nome para a 8 pt do botao: um nome de camada comprido e cortado ali, em
+    // vez de correr por baixo dele na coluna estreita.
+    const float nameEnd = ImGui::GetCursorScreenPos().x + avail - (isRoot ? 0.0f : bw + 8.0f * k);
+    ImGui::PushFont(nullptr, 15.0f);
+    ImGui::AlignTextToFramePadding();
+    ImGui::SetCursorPosX(startX + 10.0f * k);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::PushClipRect(p, ImVec2(std::max(p.x, nameEnd), p.y + ImGui::GetFrameHeight()), true);
+    ImGui::PushStyleColor(ImGuiCol_Text, dim ? theme::kText3 : theme::kText);
+    ImGui::TextUnformatted(title.c_str());
+    ImGui::PopStyleColor();
+    ImGui::PopClipRect();
+    ImGui::PopFont();
+    if (!isRoot) {
+        ImGui::SameLine(startX + avail - bw);
+        if (ImGui::Button(kDoc)) s.selection = icf::NodePath{};
+        ImGui::SetItemTooltip(
+            "The root of the .icon: the background fill, the platforms it ships for, the SVG colour "
+            "space and the feature list. Selecting a layer or a group in the Layers panel comes back "
+            "here.");
+    }
+    ImGui::Dummy(ImVec2(0.0f, 6.0f * k));
 }
 
 InspectorStats drawInspector(Session& s, MenuActions& actions) {
@@ -747,20 +844,20 @@ InspectorStats drawInspector(Session& s, MenuActions& actions) {
     // `.inspector-top` do Tauri). Vazio aqui: na sidebar o app desenha as luzes
     // nele; e a faixa por onde a janela se arrasta.
     ImGui::Dummy(ImVec2(1.0f, theme::kTitleBarH * ui::dpi() - ImGui::GetStyle().WindowPadding.y));
-    documentRow(s);
     // The selection names a node by index, so a structural edit can leave it
     // pointing past the end; the panel checks the node rather than the index.
-    if (!s.selection || !icf::nodeAt(s.root(), *s.selection)) {
-        st.title = "Nothing selected";
-        ImGui::TextDisabled("%s", st.title.c_str());
-        ImGui::End();
-        return st;
-    }
-    const icf::NodePath path = *s.selection;
+    //
+    // NOTHING SELECTED IS THE DOCUMENT. Until 2026-10-01 this panel said
+    // "Nothing selected" and stopped, and the root -- the background `fill`
+    // among it -- was behind the "Document" button alone: a new, empty document
+    // opened on a white chiclet with no visible way to change it. The root is
+    // what there is to inspect when no group or layer is picked, so it is shown
+    // without touching `selection`.
+    const bool selected = s.selection && icf::nodeAt(s.root(), *s.selection);
+    const icf::NodePath path = selected ? *s.selection : icf::NodePath{};
     st.title = nodeTitle(s, path);
-    ImGui::TextUnformatted(st.title.c_str());
+    titleRow(s, st.title, false, !path.group);
     scopeSelector(s);
-    ImGui::Separator();
 
     Section x{s, path, st, actions};
     // Only the properties `Values.h` types and the renderer already consumes get

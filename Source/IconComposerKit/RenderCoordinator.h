@@ -34,6 +34,8 @@ private:
         TileRect tile;
         // O Mono (Renditions.h, `lookOf`): duas rendicoes da mesma fatia.
         std::optional<rb::MonoLook> mono;
+        rb::DesignGeneration generation = rb::DesignGeneration::G27;
+        bool effects = true;
         bool operator==(const Key&) const = default;
     };
     // O que `tick` quer ver na tela neste quadro, e o que ja esta.

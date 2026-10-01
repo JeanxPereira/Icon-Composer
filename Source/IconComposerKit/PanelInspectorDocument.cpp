@@ -148,8 +148,8 @@ void platforms(Section& x) {
         static const char* kShared = "Shared";
         static const char* kSpecific = "Specific platforms";
         if (ui::combo("Squares", p.squaresShared ? kShared : kSpecific)) {
-            if (ImGui::Selectable(kShared, p.squaresShared)) next.squaresShared = true;
-            if (ImGui::Selectable(kSpecific, !p.squaresShared)) {
+            if (ui::menuItem(kShared, nullptr, p.squaresShared)) next.squaresShared = true;
+            if (ui::menuItem(kSpecific, nullptr, !p.squaresShared)) {
                 next.squaresShared = false;
                 // The list form is never empty in the corpus, so it starts at
                 // the commonest one it can be: macOS alone, 22 of 28.

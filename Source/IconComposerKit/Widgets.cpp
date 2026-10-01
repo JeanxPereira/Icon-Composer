@@ -27,14 +27,24 @@ float dpi() {
     return k > 0.0f ? k : 1.0f;
 }
 
-bool symbol(std::string_view name, ImVec2 c, float size, ImU32 colour, bool custom) {
+namespace {
+
+// O simbolo numa draw list DADA. Quem desenha depois de abrir um popup (a
+// linha de um submenu) ja nao esta na janela da linha, e a draw list corrente
+// e a do filho.
+bool symbolOn(ImDrawList* dl, std::string_view name, ImVec2 c, float size, ImU32 colour, bool custom) {
     if (!g_symbols) return false;
     const ImTextureID tex = g_symbols->symbol(name, custom);
     if (tex == ImTextureID_Invalid || tex == 0) return false;
     const float h = size * 0.5f;
-    ImGui::GetWindowDrawList()->AddImage(tex, ImVec2(c.x - h, c.y - h), ImVec2(c.x + h, c.y + h), ImVec2(0, 0),
-                                         ImVec2(1, 1), colour);
+    dl->AddImage(tex, ImVec2(c.x - h, c.y - h), ImVec2(c.x + h, c.y + h), ImVec2(0, 0), ImVec2(1, 1), colour);
     return true;
+}
+
+}  // namespace
+
+bool symbol(std::string_view name, ImVec2 c, float size, ImU32 colour, bool custom) {
+    return symbolOn(ImGui::GetWindowDrawList(), name, c, size, colour, custom);
 }
 
 namespace {
@@ -114,6 +124,16 @@ void endCapsule() {
     ImGui::SetCursorScreenPos(ImVec2(endX + 8.0f * k, top));
 }
 
+namespace {
+
+// O proximo botao da capsula, encostado neste e NO MESMO TOPO, posto a mao.
+// Um `SameLine` aqui volta para a linha que o ImGui guardou -- e dentro de uma
+// barra de menus essa e a linha de base da barra, nao a do botao que a capsula
+// posicionou: o primeiro botao caia no lugar e os outros desciam.
+void nextInCapsule(ImVec2 a, ImVec2 b) { ImGui::SetCursorScreenPos(ImVec2(b.x, a.y)); }
+
+}  // namespace
+
 bool capButton(const char* id, std::string_view sym, bool on, float symSize, bool custom, const char* tooltip,
                float width, const char* fallback) {
     const float k = dpi();
@@ -128,7 +148,7 @@ bool capButton(const char* id, std::string_view sym, bool on, float symSize, boo
     if (sym.empty() || !symbol(sym, c, symSize * k, theme::u32(theme::kText), custom))
         fallbackText(dl, c, theme::u32(theme::kText), fallback);
     if (tooltip) ImGui::SetItemTooltip("%s", tooltip);
-    ImGui::SameLine(0, 0);
+    nextInCapsule(a, b);
     return clicked;
 }
 
@@ -151,9 +171,125 @@ bool capText(const char* id, const char* label, float width, const char* tooltip
                               ImVec2(cc.x, cc.y + 2 * k), theme::u32(theme::kText2));
     }
     if (tooltip) ImGui::SetItemTooltip("%s", tooltip);
-    ImGui::SameLine(0, 0);
+    nextInCapsule(a, b);
     return clicked;
 }
+
+bool menuItem(const char* label, const char* shortcut, bool selected, bool enabled) {
+    const float k = dpi();
+    const char* hash = std::strstr(label, "##");
+    const char* end = hash ? hash : label + std::strlen(label);
+    const ImVec2 ts = ImGui::CalcTextSize(label, end);
+    const float gutter = 22.0f * k;   // a coluna da marca, a esquerda como no sistema
+    const float sw = shortcut ? ImGui::CalcTextSize(shortcut).x + 28.0f * k : 0.0f;
+    const float w = std::max({ImGui::GetContentRegionAvail().x, gutter + ts.x + sw + 12.0f * k, 96.0f * k});
+    const float h = 24.0f * k;
+    const ImVec2 a = ImGui::GetCursorScreenPos();
+    const ImVec2 b(a.x + w, a.y + h);
+
+    // O `Selectable` e so o comportamento (o id do rotulo, o clique que fecha
+    // o popup): o realce quadrado e o texto dele ficam invisiveis, e a linha e
+    // desenhada aqui com o canto do sistema.
+    const ImVec4 none(0, 0, 0, 0);
+    ImGui::PushStyleColor(ImGuiCol_Header, none);
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, none);
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, none);
+    ImGui::PushStyleColor(ImGuiCol_Text, none);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 1.0f * k));
+    ImGui::BeginDisabled(!enabled);
+    const bool clicked = ImGui::Selectable(label, false, ImGuiSelectableFlags_None, ImVec2(w, h));
+    const bool hovered = enabled && ImGui::IsItemHovered();
+    ImGui::EndDisabled();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(4);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (hovered) dl->AddRectFilled(a, b, theme::u32(theme::kAccent), 5.0f * k);
+    const ImVec4 col = !enabled ? theme::kText3 : hovered ? theme::kAccentText : theme::kText;
+    const float mid = (a.y + b.y) * 0.5f;
+    if (selected) {
+        const ImVec2 c(a.x + gutter * 0.5f, mid);
+        if (!symbol("checkmark", c, 11.0f * k, theme::u32(col))) {
+            const ImVec2 pts[3] = {ImVec2(c.x - 4 * k, c.y), ImVec2(c.x - 1 * k, c.y + 3 * k),
+                                   ImVec2(c.x + 4 * k, c.y - 4 * k)};
+            dl->AddPolyline(pts, 3, theme::u32(col), 0, 1.5f * k);
+        }
+    }
+    dl->AddText(ImVec2(a.x + gutter, mid - ts.y * 0.5f), theme::u32(col), label, end);
+    if (shortcut) {
+        const ImVec2 ss = ImGui::CalcTextSize(shortcut);
+        const ImVec4 sc = !enabled ? theme::kText3 : hovered ? theme::kAccentText : theme::kText2;
+        dl->AddText(ImVec2(b.x - 10.0f * k - ss.x, mid - ss.y * 0.5f), theme::u32(sc), shortcut);
+    }
+    return clicked && enabled;
+}
+
+bool beginMenu(const char* label, bool enabled) {
+    const float k = dpi();
+    const char* hash = std::strstr(label, "##");
+    const char* end = hash ? hash : label + std::strlen(label);
+    const ImVec2 ts = ImGui::CalcTextSize(label, end);
+    const float gutter = 22.0f * k;    // a mesma coluna da marca de `menuItem`
+    const float arrow = 28.0f * k;     // a coluna da seta, a do atalho
+    const float h = 24.0f * k;
+    const float w = std::max({ImGui::GetContentRegionAvail().x, gutter + ts.x + arrow, 96.0f * k});
+    const ImGuiStyle& style = ImGui::GetStyle();
+    // A draw list e a posicao da LINHA, guardadas antes: com o submenu aberto o
+    // `BeginMenu` volta ja dentro da janela do filho.
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 a = ImGui::GetCursorScreenPos();
+    const ImVec2 b(a.x + w, a.y + h);
+
+    // A largura que a linha pede ao popup. O `BeginMenu` so declara a do rotulo
+    // dele, que aqui e vazio; um item sem altura a declara sem descer o cursor.
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
+    ImGui::Dummy(ImVec2(w, 0.0f));
+    ImGui::PopStyleVar();
+
+    // O `BeginMenu` e so o comportamento -- abrir no hover, fechar ao sair, o
+    // triangulo ate o filho, o teclado. O realce, o texto e a seta dele ficam
+    // invisiveis e a linha e desenhada aqui, como em `menuItem`.
+    //
+    // A ALTURA: o `Selectable` de dentro tem a altura de uma linha de TEXTO do
+    // rotulo. Com o rotulo escondido atras de `##` e a fonte em 24 pt so nesta
+    // chamada, essa linha tem os 24 pt de `menuItem`, comeca no cursor e o
+    // popup do filho nasce com a primeira linha na altura desta. Esticar com
+    // `ItemSpacing` no lugar disso desce a linha e o filho meio espacamento.
+    char id[160];
+    std::snprintf(id, sizeof id, "##%s", label);
+    const ImVec4 none(0, 0, 0, 0);
+    ImGui::PushStyleColor(ImGuiCol_Header, none);
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, none);
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, none);
+    ImGui::PushStyleColor(ImGuiCol_Text, none);
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1, 1, 1, 0.12f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(style.ItemSpacing.x, 1.0f * k));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(5.0f * k, 5.0f * k));
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 9.0f * k);
+    // O filho de um menu e uma janela-filha: a borda dele vem de
+    // `ChildBorderSize`, que o tema zera. A do popup, para ficar igual ao pai.
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, style.PopupBorderSize);
+    ImGui::PushFont(nullptr, 24.0f);
+    const bool open = ImGui::BeginMenu(id, enabled);
+    ImGui::PopFont();
+    ImGui::PopStyleVar(4);
+    ImGui::PopStyleColor(5);
+    // O `BeginMenu` devolve o "ultimo item" a linha, aberto ou nao.
+    const bool lit = enabled && (open || ImGui::IsItemHovered());
+
+    if (lit) dl->AddRectFilled(a, b, theme::u32(theme::kAccent), 5.0f * k);
+    const ImVec4 col = !enabled ? theme::kText3 : lit ? theme::kAccentText : theme::kText;
+    const float mid = (a.y + b.y) * 0.5f;
+    dl->AddText(ImVec2(a.x + gutter, mid - ts.y * 0.5f), theme::u32(col), label, end);
+    const ImVec2 c(b.x - 12.0f * k, mid);
+    if (!symbolOn(dl, "chevron.right", c, 9.0f * k, theme::u32(col), false)) {
+        dl->AddTriangleFilled(ImVec2(c.x - 2 * k, c.y - 4 * k), ImVec2(c.x - 2 * k, c.y + 4 * k),
+                              ImVec2(c.x + 3 * k, c.y), theme::u32(col));
+    }
+    return open;
+}
+
+void endMenu() { ImGui::EndMenu(); }
 
 void pushMenuStyle() {
     const float k = dpi();
@@ -172,14 +308,181 @@ void popMenuStyle() {
     ImGui::PopStyleVar(4);
 }
 
+// ---- a caixa de secao e as linhas dela --------------------------------------
+namespace {
+
+// Uma caixa por vez: as secoes do inspetor nao se aninham.
+struct BoxState {
+    bool active = false;
+    int rows = 0;
+    float x0 = 0.0f, x1 = 0.0f, top = 0.0f;
+};
+BoxState g_box;
+
+constexpr float kBoxInset = 10.0f;     // `.isection-box` padding lateral
+// O `.iline` do Tauri tem 44 pt e o `.isection` 22 de margem; aqui o inspetor tem
+// uma secao por propriedade (o dobro das do Tauri), e nessa conta a coluna nao
+// cabia na janela: 38 pt de linha e 16 entre secoes.
+constexpr float kRowPad = 7.0f;        // (38 - 24) / 2
+constexpr float kSectionGap = 16.0f;
+
+}  // namespace
+
+bool sectionHead(const char* label, bool enabled) {
+    const float k = dpi();
+    ImGui::PushFont(nullptr, 11.0f);
+    const char* hash = std::strstr(label, "##");
+    const char* end = hash ? hash : label + std::strlen(label);
+    const ImVec2 ts = ImGui::CalcTextSize(label, end);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::BeginDisabled(!enabled);
+    ImGui::PushID("##section-head");
+    const bool clicked = ImGui::InvisibleButton(label, ImVec2(ts.x + 2.0f * kBoxInset * k, ts.y));
+    ImGui::PopID();
+    const bool hovered = ImGui::IsItemHovered();
+    ImGui::EndDisabled();
+    const ImVec4 col = !enabled ? theme::kText3 : hovered ? theme::kText : theme::kText2;
+    ImGui::GetWindowDrawList()->AddText(ImVec2(p.x + kBoxInset * k, p.y), theme::u32(col), label, end);
+    ImGui::PopFont();
+    return clicked && enabled;
+}
+
+void sectionStatus(const char* text, const ImVec4& colour) {
+    const float k = dpi();
+    ImGui::PushFont(nullptr, 11.0f);
+    const ImVec2 ts = ImGui::CalcTextSize(text);
+    ImGui::SameLine(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - ts.x - kBoxInset * k);
+    ImGui::PushStyleColor(ImGuiCol_Text, colour);
+    ImGui::TextUnformatted(text);
+    ImGui::PopStyleColor();
+    ImGui::PopFont();
+}
+
+bool sectionAction(const char* text) {
+    const float k = dpi();
+    ImGui::PushFont(nullptr, 11.0f);
+    const ImVec2 ts = ImGui::CalcTextSize(text);
+    ImGui::SameLine(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - ts.x - kBoxInset * k);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const bool clicked = ImGui::InvisibleButton(text, ts);
+    ImVec4 col = theme::kAccent;
+    if (!ImGui::IsItemHovered()) col.w = 0.85f;
+    ImGui::GetWindowDrawList()->AddText(p, theme::u32(col), text);
+    ImGui::PopFont();
+    return clicked;
+}
+
+void boxBegin() {
+    const float k = dpi();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->ChannelsSplit(2);
+    dl->ChannelsSetCurrent(1);
+    g_box.active = true;
+    g_box.rows = 0;
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    g_box.x0 = p.x;
+    g_box.x1 = p.x + ImGui::GetContentRegionAvail().x;
+    g_box.top = p.y;
+    ImGui::Indent(kBoxInset * k);
+    // Os campos sobre a caixa: um degrau acima dela, senao somem no fundo.
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, theme::kBoxStrong);
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, theme::kControl);
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, theme::kCapOn);
+}
+
+void boxEnd() {
+    if (!g_box.active) return;
+    const float k = dpi();
+    const float sp = ImGui::GetStyle().ItemSpacing.y;
+    ImGui::PopStyleColor(3);
+    ImGui::Unindent(kBoxInset * k);
+    // O cursor ja esta `sp` abaixo do ultimo item; o fundo fecha a 10 pt dele.
+    const float bottom = ImGui::GetCursorScreenPos().y + kRowPad * k - sp;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->ChannelsSetCurrent(0);
+    dl->AddRectFilled(ImVec2(g_box.x0, g_box.top), ImVec2(g_box.x1, bottom), theme::u32(theme::kBox), 10.0f * k);
+    dl->ChannelsMerge();
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + kRowPad * k - sp);
+    ImGui::Dummy(ImVec2(0.0f, kSectionGap * k - sp));
+    g_box = BoxState{};
+}
+
+void rowStart() {
+    if (!g_box.active) return;
+    const float k = dpi();
+    const float sp = ImGui::GetStyle().ItemSpacing.y;
+    float y = ImGui::GetCursorPosY();
+    if (g_box.rows > 0) {
+        // Fecha a linha de cima (10 pt abaixo do controle dela) com o fio.
+        const float line = ImGui::GetCursorScreenPos().y + kRowPad * k - sp;
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(g_box.x0 + kBoxInset * k, line),
+                                            ImVec2(g_box.x1 - kBoxInset * k, line), theme::u32(theme::kSep), 1.0f);
+        y += kRowPad * k - sp;
+    }
+    ImGui::SetCursorPosY(y + kRowPad * k);
+    ++g_box.rows;
+}
+
+int segmented(const char* const* labels, const char* const* tips, int count, int current) {
+    const float k = dpi();
+    rowStart();
+    const float h = ImGui::GetFrameHeight();
+    const float total = rowAvail();
+    const ImVec2 a = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    // O trilho, e cada segmento com a largura proporcional ao rotulo dele.
+    dl->AddRectFilled(a, ImVec2(a.x + total, a.y + h), theme::u32(theme::kBoxStrong), 6.0f * k);
+    float sum = 0.0f;
+    for (int i = 0; i < count; ++i) sum += ImGui::CalcTextSize(labels[i]).x;
+    const float pad = std::max(0.0f, (total - sum) / static_cast<float>(count));
+    int picked = -1;
+    float x = a.x;
+    for (int i = 0; i < count; ++i) {
+        const ImVec2 ts = ImGui::CalcTextSize(labels[i]);
+        const float w = i + 1 == count ? a.x + total - x : ts.x + pad;
+        ImGui::SetCursorScreenPos(ImVec2(x, a.y));
+        if (ImGui::InvisibleButton(labels[i], ImVec2(w, h))) picked = i;
+        const bool hovered = ImGui::IsItemHovered();
+        if (tips && tips[i]) ImGui::SetItemTooltip("%s", tips[i]);
+        const ImVec2 s0(x + 2.0f * k, a.y + 2.0f * k), s1(x + w - 2.0f * k, a.y + h - 2.0f * k);
+        if (i == current) {
+            dl->AddRectFilled(ImVec2(s0.x, s0.y + 0.5f * k), ImVec2(s1.x, s1.y + 0.5f * k), IM_COL32(0, 0, 0, 60),
+                              4.5f * k);
+            dl->AddRectFilled(s0, s1, theme::u32(theme::kTrack), 4.5f * k);
+        }
+        const ImVec4 col = i == current || hovered ? theme::kText : theme::kText2;
+        dl->AddText(ImVec2(x + (w - ts.x) * 0.5f, a.y + (h - ts.y) * 0.5f), theme::u32(col), labels[i]);
+        x += w;
+    }
+    return picked;
+}
+
+void note(const char* text, const ImVec4& colour) {
+    ImGui::PushFont(nullptr, 11.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, colour);
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + rowAvail());
+    ImGui::TextUnformatted(text);
+    ImGui::PopTextWrapPos();
+    ImGui::PopStyleColor();
+    ImGui::PopFont();
+}
+
+void note(const char* text) { note(text, theme::kText3); }
+
+float rowAvail() {
+    if (!g_box.active) return ImGui::GetContentRegionAvail().x;
+    return g_box.x1 - kBoxInset * dpi() - ImGui::GetCursorScreenPos().x;
+}
+
 bool toggle(const char* label, bool* on) {
     const float k = dpi();
+    rowStart();
     // A LINHA INTEIRA E O CONTROLE, como o `Checkbox` que este substitui era
     // (caixa e rotulo): clicar no nome liga e desliga. O id e o do rotulo CRU,
     // para quem procura o controle pelo id continuar achando.
     const ImVec2 size(38.0f * k, 22.0f * k);
     const ImVec2 row0 = ImGui::GetCursorScreenPos();
-    const float rowW = ImGui::GetContentRegionAvail().x;
+    const float rowW = rowAvail();
     const float rowH = std::max(size.y, ImGui::GetFrameHeight());
     const bool clicked = ImGui::InvisibleButton(label, ImVec2(rowW, rowH));
     if (clicked) *on = !*on;
@@ -191,10 +494,13 @@ bool toggle(const char* label, bool* on) {
     const float th = ImGui::GetTextLineHeight();
     ImVec4 tc = theme::kText;
     if (disabled) tc = theme::kText3;
-    dl->AddText(ImVec2(row0.x, row0.y + (rowH - th) * 0.5f), theme::u32(tc), label, end);
-    // O interruptor encostado a direita.
+    // O interruptor encostado a direita, e o rotulo cortado a 6 pt dele: na
+    // coluna estreita um nome comprido nao corre por baixo do trilho.
     const ImVec2 a(row0.x + rowW - size.x, row0.y + (rowH - size.y) * 0.5f);
     const ImVec2 b(a.x + size.x, a.y + size.y);
+    dl->PushClipRect(row0, ImVec2(std::max(row0.x, a.x - 6.0f * k), row0.y + rowH), true);
+    dl->AddText(ImVec2(row0.x, row0.y + (rowH - th) * 0.5f), theme::u32(tc), label, end);
+    dl->PopClipRect();
     ImVec4 track = *on ? theme::kAccent : theme::kTrack;
     if (disabled) track.w *= 0.45f;
     dl->AddRectFilled(a, b, theme::u32(track), size.y * 0.5f);
@@ -205,7 +511,11 @@ bool toggle(const char* label, bool* on) {
     return clicked;
 }
 
-const char* leftLabel(const char* label, float share) {
+namespace {
+
+// O rotulo desenhado e o controle posto a direita com `width` px (0: logo
+// depois do rotulo, na largura que o ImGui der).
+const char* labelled(const char* label, float share, float fixed) {
     if (!label || (label[0] == '#' && label[1] == '#')) return label;
     static char ring[8][160];
     static int next = 0;
@@ -213,12 +523,19 @@ const char* leftLabel(const char* label, float share) {
     const char* hash = std::strstr(label, "##");
     const std::size_t n = hash ? static_cast<std::size_t>(hash - label) : std::strlen(label);
     std::snprintf(out, sizeof ring[0], "##%s", label);
+    rowStart();
     const float startX = ImGui::GetCursorPosX();
-    const float avail = ImGui::GetContentRegionAvail().x;
+    const float avail = rowAvail();
+    const float w = fixed > 0.0f ? std::min(fixed, avail) : avail * share;
+    // O rotulo para a 6 pt do controle: na coluna estreita um nome comprido e
+    // cortado ali, em vez de correr por baixo do campo.
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::PushClipRect(p, ImVec2(p.x + std::max(0.0f, avail - w - 6.0f * dpi()), p.y + ImGui::GetFrameHeight()),
+                        true);
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(label, label + n);
-    if (share > 0.0f) {
-        const float w = avail * share;
+    ImGui::PopClipRect();
+    if (w > 0.0f) {
         ImGui::SameLine(startX + avail - w);
         ImGui::SetNextItemWidth(w);
     } else {
@@ -227,10 +544,23 @@ const char* leftLabel(const char* label, float share) {
     return out;
 }
 
+}  // namespace
+
+const char* leftLabel(const char* label, float share) { return labelled(label, share, 0.0f); }
+
+const char* leftLabelFixed(const char* label, float width) { return labelled(label, 0.0f, width * dpi()); }
+
 bool combo(const char* label, const char* preview) {
     const float k = dpi();
     const char* id = leftLabel(label);
+    // A lista aberta e um menu do sistema: 5 pt de margem, e as linhas de
+    // `menuItem` dentro dela.
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(5.0f * k, 5.0f * k));
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 9.0f * k);
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1, 1, 1, 0.12f));
     const bool open = ImGui::BeginCombo(id, preview, ImGuiComboFlags_NoArrowButton);
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(2);
     // O chevron duplo no fim do campo, onde o ImGui poria a seta.
     const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
     const ImVec2 c(b.x - 11.0f * k, (a.y + b.y) * 0.5f);
@@ -242,6 +572,50 @@ bool combo(const char* label, const char* preview) {
                               ImVec2(c.x, c.y + 5 * k), theme::u32(theme::kText2));
     }
     return open;
+}
+
+bool colorWell(const char* id, float rgba[4], bool* released, const char* tooltip) {
+    const float k = dpi();
+    const ImVec2 size(ImGui::CalcItemWidth(), ImGui::GetFrameHeight());
+    ImGui::PushID(id);
+    const bool clicked = ImGui::InvisibleButton("##well", size);
+    const bool hovered = ImGui::IsItemHovered();
+    const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+    if (tooltip) ImGui::SetItemTooltip("%s", tooltip);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float r = theme::kControlRadius * k;
+    // O xadrez so aparece atras de uma cor que deixa ver atraves.
+    if (rgba[3] < 1.0f) checkerboard(dl, a, b, 6.0f * k, r);
+    dl->AddRectFilled(a, b, ImGui::ColorConvertFloat4ToU32(ImVec4(rgba[0], rgba[1], rgba[2], rgba[3])), r);
+    dl->AddRect(a, b, IM_COL32(255, 255, 255, hovered ? 70 : 36), r, 0, 1.0f);
+
+    // O seletor, num popover no desenho dos menus. Sem posicao imposta: o ImGui
+    // o poe junto do ponteiro e DENTRO da janela, e o poco fica na borda direita
+    // do inspetor -- um popover alinhado a ele sairia da tela.
+    if (clicked) ImGui::OpenPopup("##picker");
+    bool changed = false;
+    if (released) *released = false;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f * k, 10.0f * k));
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 9.0f * k);
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1, 1, 1, 0.12f));
+    const bool open = ImGui::BeginPopup("##picker");
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(2);
+    if (open) {
+        // `Float`: os componentes vao e voltam como fracoes, sem passar por
+        // inteiros de 8 bits. Os campos RGB e o hex ficam, que e por onde se
+        // digita um valor exato.
+        ImGui::SetNextItemWidth(220.0f * k);
+        changed = ImGui::ColorPicker4("##colour", rgba,
+                                      ImGuiColorEditFlags_Float | ImGuiColorEditFlags_AlphaBar |
+                                          ImGuiColorEditFlags_NoSidePreview | ImGuiColorEditFlags_NoSmallPreview |
+                                          ImGuiColorEditFlags_NoOptions | ImGuiColorEditFlags_DisplayRGB |
+                                          ImGuiColorEditFlags_DisplayHex);
+        if (released) *released = ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+    return changed;
 }
 
 void checkerboard(ImDrawList* dl, ImVec2 a, ImVec2 b, float cell, float rounding) {
