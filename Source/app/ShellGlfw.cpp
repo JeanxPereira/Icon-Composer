@@ -20,7 +20,7 @@ namespace {
 
 void checkVk(VkResult err) {
     if (err == VK_SUCCESS) return;
-    std::fprintf(stderr, "iconcomposer: [vulkan] VkResult = %d\n", err);
+    std::fprintf(stderr, "IconComposer: [vulkan] VkResult = %d\n", err);
     if (err < 0) std::abort();
 }
 
@@ -84,7 +84,7 @@ bool Shell::Impl::init(const std::string& title, std::string* why) {
         return false;
     };
     glfwSetErrorCallback([](int code, const char* desc) {
-        std::fprintf(stderr, "iconcomposer: [glfw %d] %s\n", code, desc);
+        std::fprintf(stderr, "IconComposer: [glfw %d] %s\n", code, desc);
     });
     if (!glfwInit()) return fail("GLFW did not initialise");
     if (!glfwVulkanSupported()) return fail("GLFW found no Vulkan loader");

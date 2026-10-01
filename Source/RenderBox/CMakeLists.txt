@@ -101,12 +101,12 @@ target_link_libraries(RenderBox PUBLIC IconComposer::CoreSVG IconComposer::Found
 # VK_NO_PROTOTYPES PUBLIC, which turns every Vulkan entry point into a VARIABLE
 # in volk's own object file. A tower that also referenced those names as
 # FUNCTIONS, out of the loader's import library, gave the linker the same 62
-# names twice in two incompatible kinds: measured, and the reason `iconcomposer`
+# names twice in two incompatible kinds: measured, and the reason `IconComposer`
 # had no executable. So in that build this tower goes through volk as well --
 # but through a table of its OWN device (VulkanApi.h says why the global one
 # would send our work to Onyx's device).
 #
-# When the UI is out -- `icrender`, and `ic_tests` on a machine with no toolkit
+# When the UI is out -- `IconComposerCli`, and `ic_tests` on a machine with no toolkit
 # -- there is no volk to collide with and the loader's own prototypes are the
 # shortest path. Both shapes compile the same call sites.
 #

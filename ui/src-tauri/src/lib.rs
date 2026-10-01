@@ -1,6 +1,6 @@
 // A casca Tauri e so a ponte para o nucleo C++: nenhum pixel e calculado
 // deste lado. O canvas fala com o `icserver` (core.rs), um processo persistente
-// que guarda o dispositivo e o cache de render; `render_bundle` (o `icrender`
+// que guarda o dispositivo e o cache de render; `render_bundle` (o `IconComposerCli`
 // por chamada) fica para o que ainda nao migrou.
 
 mod core;
@@ -10,7 +10,7 @@ use core::{Core, CoreState};
 use std::path::PathBuf;
 use std::process::Command;
 
-// Onde mora o `icrender` e as DLLs do MinGW que ele carrega. Os padroes sao os
+// Onde mora o `IconComposerCli` e as DLLs do MinGW que ele carrega. Os padroes sao os
 // desta maquina; as variaveis de ambiente trocam sem recompilar.
 fn core_bin() -> PathBuf {
     std::env::var_os("IC_CORE_BIN")
@@ -135,7 +135,7 @@ async fn render_bundle(
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let out = std::env::temp_dir().join(format!("icon-composer-ui-{}-{n}.png", std::process::id()));
-    let exe = core_bin().join("icrender.exe");
+    let exe = core_bin().join("IconComposerCli.exe");
     let mut cmd = Command::new(&exe);
     cmd.arg(&path).arg("--out").arg(&out).arg("--size").arg(size.to_string());
     if let Some(i) = idiom.as_deref().filter(|s| !s.is_empty()) {
@@ -160,7 +160,7 @@ async fn render_bundle(
     let stdout = String::from_utf8_lossy(&run.stdout);
     let stderr = String::from_utf8_lossy(&run.stderr);
     if !run.status.success() {
-        return Err(format!("icrender saiu com {}: {}{}", run.status, stdout, stderr));
+        return Err(format!("IconComposerCli saiu com {}: {}{}", run.status, stdout, stderr));
     }
     let bytes = std::fs::read(&out).map_err(|e| format!("o PNG nao apareceu: {e}"))?;
     let _ = std::fs::remove_file(&out);

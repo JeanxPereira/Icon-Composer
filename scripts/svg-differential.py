@@ -26,7 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CORPUS = Path(os.environ.get('IC_CORPUS_DIR', ROOT / 'References' / 'corpus'))
-ICRENDER = ROOT / 'build' / 'mingw' / 'Source' / 'cli' / 'icrender.exe'
+ICRENDER = ROOT / 'build' / 'mingw' / 'Source' / 'cli' / 'IconComposerCli.exe'
 ORACLE = ROOT / 'scripts' / 'svg-oracle.py'
 
 
@@ -37,7 +37,7 @@ def main():
     args = ap.parse_args()
 
     if not ICRENDER.is_file():
-        raise SystemExit('build icrender first: %s' % ICRENDER)
+        raise SystemExit('build IconComposerCli first: %s' % ICRENDER)
 
     svgs = sorted(CORPUS.glob('*/Assets/*.svg'))
     if args.limit:

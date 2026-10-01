@@ -174,7 +174,7 @@ Device& gpu() {
     return d ? *d : dead;
 }
 
-// A render, timed the same way `icrender` times one: the clock is around
+// A render, timed the same way `IconComposerCli` times one: the clock is around
 // `renderIcon` and nothing else. The bundle is opened outside it, because a cold
 // page cache on an asset is not the renderer's cost and would be the single
 // noisiest thing in this file.

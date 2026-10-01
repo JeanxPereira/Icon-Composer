@@ -150,7 +150,7 @@ ExportFile renderExportFile(rb::Device& device, const icf::IconBundle& bundle,
         return out;
     }
 
-    // AS CINCO LINHAS DO `icrender`, e nada a mais. Ver o cabeçalho de
+    // AS CINCO LINHAS DO `IconComposerCli`, e nada a mais. Ver o cabeçalho de
     // Export.h: o canvas inteiro (sem `viewport`), `subdivisions` no padrão, e
     // os floats direto para o encoder.
     rb::IconRenderOptions io;

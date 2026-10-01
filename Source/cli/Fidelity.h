@@ -47,7 +47,7 @@ std::uint8_t fidelityByte(float v);
 // e os contadores de vidro), que tem de ser IGUAIS -- as decisoes sao as mesmas.
 FidelityStats compareIcons(const rb::RenderedIcon& a, const rb::RenderedIcon& b);
 
-// Um documento pelos dois caminhos, com as opcoes do `icrender` a `size` -- e a
+// Um documento pelos dois caminhos, com as opcoes do `IconComposerCli` a `size` -- e a
 // geracao de design dele (`icfidelity --generation`): os dois caminhos tem de
 // concordar nas duas.
 rb::Result<FidelityStats> fidelityOf(

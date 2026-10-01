@@ -24,6 +24,23 @@ if(IC_SANITIZE)
     add_link_options(-fsanitize=address,undefined)
 endif()
 
+# The two executables a release ships stand alone: with MinGW the C++ runtime,
+# libgcc and winpthreads are linked in, so no toolchain DLL has to travel beside
+# them (measured 30/09: launched from another shell, the editor found another
+# toolchain's `libstdc++-6.dll` first and stopped before the window, on
+# `__codecvt_utf8_utf16`). `cmake --install` puts them at the prefix root.
+function(ic_release_executable target)
+    target_compile_definitions(${target} PRIVATE IC_VERSION="${PROJECT_VERSION}")
+    # Not in Debug: at -O0 `std::type_info::operator==` is emitted out of line in
+    # our objects AND lives in the static libstdc++, and the link stops on the
+    # duplicate. A Debug executable is not what a release ships.
+    if(MINGW)
+        target_link_options(${target} PRIVATE
+            $<$<NOT:$<CONFIG:Debug>>:-static-libgcc;-static-libstdc++;-static>)
+    endif()
+    install(TARGETS ${target} RUNTIME DESTINATION .)
+endfunction()
+
 # The towers, in topological order -- see Docs/Specs/2026-08-31-arquitetura-design.md.
 # Each is named after the image of the target it answers for, and each is a clean
 # reimplementation of what that image does, never a copy of it.
@@ -101,3 +118,10 @@ if(IC_BUILD_TESTS)
     enable_testing()
     add_subdirectory(Tests)
 endif()
+
+# `cpack` writes IconComposer-<version>.zip: the two executables at its root,
+# nothing else.
+set(CPACK_GENERATOR ZIP)
+set(CPACK_PACKAGE_FILE_NAME "IconComposer-${PROJECT_VERSION}")
+set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
+include(CPack)

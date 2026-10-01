@@ -1,4 +1,4 @@
-// icrender -- draw an SVG with the transcribed pipeline, and write a PNG.
+// IconComposerCli -- draw an SVG with the transcribed pipeline, and write a PNG.
 //
 // WHY THIS IS A SEPARATE BINARY FROM `ictool`
 // -------------------------------------------
@@ -26,9 +26,9 @@
 namespace {
 
 const char* kUsage =
-    "icrender -- draws an SVG with the transcribed pipeline\n"
+    "IconComposerCli -- draws an SVG with the transcribed pipeline\n"
     "\n"
-    "  icrender <file.svg> --out <file.png>\n"
+    "  IconComposerCli <file.svg> --out <file.png>\n"
     "\n"
     "  --size N            the square target, in pixels (default 512)\n"
     "  --subdivisions N    line segments per cubic (default 16)\n"
@@ -43,7 +43,7 @@ const char* kUsage =
     "Flat fills only. Whatever cannot be drawn is named on stderr.\n";
 
 int fail(const std::string& message) {
-    std::fprintf(stderr, "icrender: %s\n", message.c_str());
+    std::fprintf(stderr, "IconComposerCli: %s\n", message.c_str());
     return 2;
 }
 
@@ -101,6 +101,10 @@ int main(int argc, char** argv) {
     if (args.empty() || args[0] == "--help" || args[0] == "-h") {
         std::fputs(kUsage, stdout);
         return args.empty() ? 2 : 0;
+    }
+    if (args[0] == "--version") {
+        std::puts("IconComposerCli " IC_VERSION);
+        return 0;
     }
 
     const std::string input = args[0];
@@ -241,7 +245,7 @@ int main(int argc, char** argv) {
         // The field is for the thing this project is most afraid of: a picture
         // that looks right and is short of a measurement. The glass ruler
         // (`GlassLayer.h`, GAP ONE) and the blur's kernel both announce
-        // themselves through it, and a reader of `icrender` saw "5 of 5
+        // themselves through it, and a reader of `IconComposerCli` saw "5 of 5
         // layer(s) drawn" and nothing else. A gap nobody prints becomes
         // folklore the moment the picture looks plausible.
         for (const auto& n : icon->notes) std::fprintf(stderr, "  [OBS] %s\n", n.c_str());

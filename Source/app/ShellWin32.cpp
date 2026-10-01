@@ -71,7 +71,7 @@ namespace {
 
 void checkVk(VkResult err) {
     if (err == VK_SUCCESS) return;
-    std::fprintf(stderr, "iconcomposer: [vulkan] VkResult = %d\n", err);
+    std::fprintf(stderr, "IconComposer: [vulkan] VkResult = %d\n", err);
     if (err < 0) std::abort();
 }
 
@@ -364,6 +364,12 @@ bool Shell::Impl::init(const std::string& title, std::string* why) {
     wc.lpfnWndProc = &Impl::thunk;
     wc.hInstance = inst;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    // O icone do `Resources/IconComposer.rc`: a barra de tarefas e o Alt+Tab
+    // pegam o grande, e o pequeno sai do mesmo grupo no tamanho do sistema.
+    wc.hIcon = LoadIconW(inst, L"APP_ICON");
+    wc.hIconSm = static_cast<HICON>(LoadImageW(inst, L"APP_ICON", IMAGE_ICON,
+                                               GetSystemMetrics(SM_CXSMICON),
+                                               GetSystemMetrics(SM_CYSMICON), 0));
     wc.lpszClassName = L"IconComposerWindow";
     RegisterClassExW(&wc);
 
@@ -681,7 +687,7 @@ void Shell::Impl::resize() {
         ctx->ClearState();
         ctx->Flush();
         swap->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0);
-        if (!createTarget(w, h)) std::fprintf(stderr, "iconcomposer: could not recreate the shared target\n");
+        if (!createTarget(w, h)) std::fprintf(stderr, "IconComposer: could not recreate the shared target\n");
     }
     applyClip();
     dcomp->Commit();

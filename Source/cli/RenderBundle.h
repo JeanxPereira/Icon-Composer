@@ -1,21 +1,21 @@
 #pragma once
-// O CAMINHO DE BUNDLE DO `icrender`, COMO FUNÇÃO EM VEZ DE TRECHO DE `main`.
+// O CAMINHO DE BUNDLE DO `IconComposerCli`, COMO FUNÇÃO EM VEZ DE TRECHO DE `main`.
 //
 // POR QUE ISTO EXISTE (revisão 19/09, I6)
 // -----------------------------------------------------------------------------
 // `Source/IconComposerKit/Export.h` promete, no cabeçalho, que
 // `Tests/test_e2e_export.cpp` "cobra essa igualdade byte a byte contra a
-// sequência do `icrender`". O que o caso fazia era comparar contra uma
+// sequência do `IconComposerCli`". O que o caso fazia era comparar contra uma
 // TRANSCRIÇÃO do `render_main.cpp` escrita dentro do próprio teste. As três
 // cópias concordavam em 19/09, e nada impedia a divergência de amanhã: se
 // `render_main.cpp` ganhasse um campo -- um `sizeClass`, um `viewport`, um
-// `subdivisions` diferente --, o `icrender` mudaria, a UI não, e o caso
+// `subdivisions` diferente --, o `IconComposerCli` mudaria, a UI não, e o caso
 // continuaria verde comparando a UI com a cópia que o teste tinha do que o
-// `icrender` fazia naquele dia.
+// `IconComposerCli` fazia naquele dia.
 //
 // Um portão que compara duas coisas contra uma terceira não é um portão. Então
 // as linhas que DECIDEM OS BYTES saíram do `main` e vieram para cá: o binário
-// `icrender` chama esta função, o caso chama esta função, e a promessa do
+// `IconComposerCli` chama esta função, o caso chama esta função, e a promessa do
 // cabeçalho passa a ser verdade por construção. Um campo novo aqui muda os dois
 // lados de uma vez, e é o caso que reprova.
 //
@@ -34,16 +34,16 @@
 
 namespace iccli {
 
-// As opções que o `icrender` monta para um bundle, e o render. `subdivisions`
+// As opções que o `IconComposerCli` monta para um bundle, e o render. `subdivisions`
 // é o do `--subdivisions` (padrão 16); tudo o mais em `IconRenderOptions` fica
 // no padrão -- em particular NÃO há `viewport`: um PNG exportado de um ladrilho
 // seria um recorte.
 // `gpu` troca `rb::renderIcon` por `rb::renderIconGpu` com AS MESMAS opcoes
-// (`icrender --gpu`); `cache` e o `RenderCache` de quem mede frio e quente
-// (`icrender --repeat`). Os dois no padrao sao o render que decide os bytes.
-// `viewport` e o ladrilho do `icrender --tile`, para MEDIR o zoom profundo; no
+// (`IconComposerCli --gpu`); `cache` e o `RenderCache` de quem mede frio e quente
+// (`IconComposerCli --repeat`). Os dois no padrao sao o render que decide os bytes.
+// `viewport` e o ladrilho do `IconComposerCli --tile`, para MEDIR o zoom profundo; no
 // padrao (o canvas inteiro) nada muda.
-// `generation` e o `icrender --generation 26|27`: o bloco de parametros com que
+// `generation` e o `IconComposerCli --generation 26|27`: o bloco de parametros com que
 // o icone e desenhado (`rb::DesignGeneration`). O padrao e a 27, a do render que
 // decide os bytes do export.
 rb::Result<rb::RenderedIcon> renderBundleIcon(

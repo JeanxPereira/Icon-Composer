@@ -113,7 +113,7 @@ struct State {
     // binario tambem roda como `--selftest` e da linha de comando, onde nao
     // ha painel para ler.
     void fail(std::string what) {
-        std::fprintf(stderr, "iconcomposer: %s\n", what.c_str());
+        std::fprintf(stderr, "IconComposer: %s\n", what.c_str());
         trouble = std::move(what);
     }
     // A pasta que continha o ultimo bundle aberto -- onde o seletor deve
@@ -210,10 +210,10 @@ struct State {
             fail("export " + made.name + ": " + why);
         }
         // O que foi desenhado sem ter sido medido continua indo para o
-        // stderr, como no `icrender`: uma nota nao e uma falha e nao pode
+        // stderr, como no `IconComposerCli`: uma nota nao e uma falha e nao pode
         // pintar a barra de vermelho, mas tambem nao pode sumir.
         for (const auto& n : made.notes) {
-            std::fprintf(stderr, "iconcomposer: [OBS] %s: %s\n", made.name.c_str(), n.c_str());
+            std::fprintf(stderr, "IconComposer: [OBS] %s: %s\n", made.name.c_str(), n.c_str());
         }
 
         exportQueue.erase(exportQueue.begin());
@@ -772,14 +772,14 @@ int run(const fs::path& initial, rb::DesignGeneration generation) {
     // valendo, so deixou de ser a unica coisa entre os dois.
     auto device = rb::Device::create(rb::DeviceOptions{.validation = false});
     if (!device) {
-        std::fprintf(stderr, "iconcomposer: no Vulkan device: %s\n", device.error().c_str());
+        std::fprintf(stderr, "IconComposer: no Vulkan device: %s\n", device.error().c_str());
         return 2;
     }
 
     std::string why;
     std::unique_ptr<Shell> shell = Shell::create("Icon Composer", &why);
     if (!shell) {
-        std::fprintf(stderr, "iconcomposer: no window: %s\n", why.c_str());
+        std::fprintf(stderr, "IconComposer: no window: %s\n", why.c_str());
         return 2;
     }
 

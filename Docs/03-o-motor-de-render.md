@@ -1647,7 +1647,7 @@ apenas maior.
 um codificador de Huffman que precisaria de gate próprio, e o que este
 repositório verifica é o **render**, não o codificador.
 
-### 20.7. `icrender`, e por que é um binário separado
+### 20.7. `IconComposerCli`, e por que é um binário separado
 
 O `ictool` lê documentos e não precisa de nada além do sistema de arquivos:
 roda numa máquina sem GPU, sem driver e sem loader Vulkan. Linkar o
@@ -2025,7 +2025,7 @@ paradas, não colocação (§24.4).
 
 `[INF]` Derivar as cores certas e inventar onde elas vão põe **cor certa em
 lugar errado** — pior que não desenhar, porque parece pronto. A camada é
-**nomeada**, com essa frase, e o `icrender` a imprime.
+**nomeada**, com essa frase, e o `IconComposerCli` a imprime.
 
 O mesmo vale para `automatic`/`system`: ele escolhe entre duas rampas enlatadas
 dos parâmetros de render (§24.3), e os **valores** dessas rampas não foram lidos
@@ -5436,7 +5436,7 @@ de especialização do documento** e nunca toca a forma; lá a forma vem de
 `platformOverrides` (`0x5EB38`) e dá o `cornerRadius = 512` ao watchOS. **São
 eixos diferentes com o mesmo nome coloquial**, e macOS mora em `main`, que não
 tem override nenhum. `[OBS]` E o nosso CLI **não expõe `style.platform`**: o
-círculo do watchOS é inalcançável pelo `icrender`.
+círculo do watchOS é inalcançável pelo `IconComposerCli`.
 
 `[BIN]` **Não é aparência.** O bitmap do gabarito está em `NSAppearanceNameSystem`
 (id 0) e as três aparências do documento compilado são `DarkAqua`, `Aqua` e
@@ -5555,7 +5555,7 @@ custo de `+0,10` a `+0,19 s` por render.
 | `chicletOutset` de 32 não entrou no código; `fill[+0x61]` (o índice do ramo `systemAppearance`) sem origem seguida; `ctx+0x21`, o portão real, **sem nome no metadado**; `chicletClear`/`chicletScreened` não transcritos | `chiclet-curva` §6, `chiclet-realces` §6 |
 | `chicletIsVisible` **sem consumidor**, com cinco negativas medidas (zero chamadores do getter e do setter; o renderizador nunca lê o byte; nunca é copiado para a `Configuration`; nenhuma outra fatia o toca; o formato não tem chave). Nasce `true`. **Comporta-se como superfície de API** — e a negativa é forte, **não selada** | `chiclet` §4.2 |
 | A chave do dicionário de `parameters+0x248` foi lida como 1 byte com entrada `Optional<Double>`, mas o enum não foi identificado; se alguma plataforma real trouxer override ≠ `nil`, `266,24` deixa de ser universal | `canto-do-chiclet` §7.3 |
-| `style.platform` **não tem botão no `icrender`**: o círculo do watchOS, que está `[BIN]` em `0x5EB38`, é inalcançável pela linha de comando | `canto-do-chiclet` §7.4 |
+| `style.platform` **não tem botão no `IconComposerCli`**: o círculo do watchOS, que está `[BIN]` em `0x5EB38`, é inalcançável pela linha de comando | `canto-do-chiclet` §7.4 |
 
 ---
 
@@ -5611,7 +5611,7 @@ raster.
 >
 > O caso que vale sozinho: `CamilleScholtz__swmpc__swmpc` é o único documento do
 > corpus com refração `.png` viva, e a única camada que ele tem **era pulada** —
-> o `icrender` dizia `0 of 1 layer(s) drawn`. Agora diz `1 of 1`. **Não é um
+> o `IconComposerCli` dizia `0 of 1 layer(s) drawn`. Agora diz `1 of 1`. **Não é um
 > efeito a mais numa camada que já desenhava: é o documento inteiro saindo do
 > vazio.**
 
@@ -6034,7 +6034,7 @@ faz dela uma eliminação e não um argumento.
 **O instrumento** — o mesmo que depois mataria os outros dois suspeitos (§36.7,
 §37.5): um **interruptor temporário por variável de ambiente**
 (`IC_EXP_REFRACT="depth,strength"`), que força `refractivity` em todo grupo de
-vidro, **revertido antes do commit** (`git diff` vazio, `icrender` reconstruído
+vidro, **revertido antes do commit** (`git diff` vazio, `IconComposerCli` reconstruído
 com o mesmo SHA-256). O perfil é de luma por profundidade no ápice superior **da
 arte de vidro**, com a borda achada na nossa própria saída para que as três
 imagens sejam amostradas nas **mesmas linhas**.

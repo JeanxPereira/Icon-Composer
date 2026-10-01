@@ -1,6 +1,6 @@
 // icserver -- o nucleo como processo PERSISTENTE, para a casca Tauri (ui/).
 //
-// O `icrender` abre o dispositivo, renderiza um PNG e morre: cada quadro paga o
+// O `IconComposerCli` abre o dispositivo, renderiza um PNG e morre: cada quadro paga o
 // Vulkan, o parse e um render frio. Este processo abre o dispositivo uma vez e
 // guarda um `rb::RenderCache` entre quadros, entao uma edicao so refaz o que
 // mudou. Desde a G5 o quadro sai de `rb::renderIconGpu` (a cadeia residente;
@@ -128,7 +128,7 @@ void fail(const std::string& why) {
 // O ruido e o interleaved gradient noise nas coordenadas ABSOLUTAS do canvas,
 // entao o ladrilho e a base concordam no mesmo ponto e o mesmo documento da
 // sempre os mesmos bytes. So a cor: o alfa sai como `toRgba8`. A exportacao
-// (Export.cpp / icrender) NAO passa por aqui.
+// (Export.cpp / IconComposerCli) NAO passa por aqui.
 float ditherAt(std::int64_t x, std::int64_t y) {
     const double f = 0.06711056 * static_cast<double>(x) + 0.00583715 * static_cast<double>(y);
     const double g = 52.9829189 * (f - std::floor(f));

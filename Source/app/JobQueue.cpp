@@ -50,9 +50,9 @@ void JobQueue::loop() {
         try {
             if (job.work) job.work();
         } catch (const std::exception& e) {
-            std::fprintf(stderr, "iconcomposer: a job threw: %s\n", e.what());
+            std::fprintf(stderr, "IconComposer: a job threw: %s\n", e.what());
         } catch (...) {
-            std::fprintf(stderr, "iconcomposer: a job threw\n");
+            std::fprintf(stderr, "IconComposer: a job threw\n");
         }
         std::lock_guard<std::mutex> lock(mutex_);
         finished_.push_back(std::move(job.done));

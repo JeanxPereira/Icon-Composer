@@ -1,0 +1,11 @@
+// The application icon: the executable's only icon group, so it is what Explorer and the
+// taskbar show, and `ShellWin32.cpp` loads it by this name for the window class. The path
+// resolves against the repository root, which is the target's include directory, for
+// windres and rc alike.
+//
+// AppIcon.ico is Apple's own Icon Composer icon: rebuilt from the application's compiled
+// Assets.car (`scripts/car_to_icon.py`) and drawn by this repository's renderer
+// (`IconComposerCli "Icon Composer.icon" --size N`, design generation 27), one native
+// render per size -- 16, 20, 24, 32, 40, 48, 64, 128 and 256 -- rather than one image
+// scaled down.
+APP_ICON ICON "Source/app/Resources/AppIcon.ico"

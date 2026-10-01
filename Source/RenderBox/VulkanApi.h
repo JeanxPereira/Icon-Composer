@@ -33,7 +33,7 @@
 //
 // AND WHEN VOLK IS NOT IN THE BUILD
 // ---------------------------------
-// `icrender` and `ic_tests` link this tower with no UI and no Onyx, so there is
+// `IconComposerCli` and `ic_tests` link this tower with no UI and no Onyx, so there is
 // no volk. `DeviceApi` is then a struct with the same member names, filled from
 // the loader's own prototypes. Every call site reads identically in both modes --
 // `device.api().vkCreateBuffer(...)` -- so there is one body of code, not two.

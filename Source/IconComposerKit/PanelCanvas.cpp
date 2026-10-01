@@ -72,7 +72,7 @@
 // THE DIAGNOSTICS PANEL IS WHAT KEEPS THE PICTURE FROM LYING (spec 13/09 §6)
 // --------------------------------------------------------------------------
 // `skipped`, `shapeGaps` and `notes` go to the screen for the same reason
-// `icrender` prints them: a plausible figure produced without measurement must
+// `IconComposerCli` prints them: a plausible figure produced without measurement must
 // not be silent. A layer the renderer declined to draw appears here by name
 // instead of simply not being in the image.
 #include "Source/IconComposerKit/Panels.h"

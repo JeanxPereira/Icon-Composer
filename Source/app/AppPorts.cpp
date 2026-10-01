@@ -20,7 +20,7 @@ namespace icapp {
 ImTextureID PoolTextureSink::create(std::uint32_t w, std::uint32_t h, const std::uint8_t* rgba8) {
     std::string err;
     const ImTextureID id = pool_.create(w, h, rgba8, &err);
-    if (!id) std::fprintf(stderr, "iconcomposer: texture: %s\n", err.c_str());
+    if (!id) std::fprintf(stderr, "IconComposer: texture: %s\n", err.c_str());
     return id;
 }
 
@@ -29,7 +29,7 @@ bool PoolTextureSink::update(ImTextureID id, std::uint32_t, std::uint32_t, const
     // coordinator already removes and recreates when the size moved.
     std::string err;
     const bool ok = pool_.update(id, rgba8, &err);
-    if (!ok) std::fprintf(stderr, "iconcomposer: texture: %s\n", err.c_str());
+    if (!ok) std::fprintf(stderr, "IconComposer: texture: %s\n", err.c_str());
     return ok;
 }
 

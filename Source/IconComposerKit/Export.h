@@ -9,7 +9,7 @@
 // `renderExportFile` uma vez por contexto, gravando os bytes que voltam. É por
 // isso que `ExportFile` carrega `png` e não um caminho: o caminho é do app.
 //
-// OS BYTES TÊM DE SER OS DO `icrender`
+// OS BYTES TÊM DE SER OS DO `IconComposerCli`
 // -----------------------------------------------------------------------------
 // `renderExportFile` é a MESMA sequência que `Source/cli/render_main.cpp` faz
 // no caminho de bundle -- `rb::IconRenderOptions` com o tamanho e o contexto,
@@ -18,7 +18,7 @@
 //   * canvas INTEIRO, nunca um `IconViewport`. O ladrilho existe para o canvas
 //     (spec 2026-09-16) e é uma otimização de tela; um PNG exportado de um
 //     ladrilho seria um recorte.
-//   * `subdivisions` no padrão, que é o padrão do `icrender` também.
+//   * `subdivisions` no padrão, que é o padrão do `IconComposerCli` também.
 //   * os floats do render vão DIRETO para `encodePng`. Passar por
 //     `toRgba8` (Ports.h) e voltar daria os mesmos bytes -- as duas funções
 //     aplicam a mesma regra de clamp e arredondamento --, mas seria uma
@@ -26,13 +26,13 @@
 //
 // `Tests/test_e2e_export.cpp` cobra essa igualdade byte a byte contra
 // `iccli::renderBundleIcon` (`Source/cli/RenderBundle.h`), que é a função que o
-// binário `icrender` CHAMA -- não uma transcrição dela. Divergir é defeito, não
+// binário `IconComposerCli` CHAMA -- não uma transcrição dela. Divergir é defeito, não
 // tolerância.
 //
 // A DIFERENÇA ENTRE AS DUAS COISAS, porque ela já custou uma promessa falsa: até
 // 19/09 o caso comparava contra as opções de `render_main.cpp` copiadas para
 // dentro do teste. As três cópias concordavam naquele dia, e nada impedia a
-// divergência: um campo novo no `main` mudava o `icrender`, não mudava a UI, e o
+// divergência: um campo novo no `main` mudava o `IconComposerCli`, não mudava a UI, e o
 // caso continuava verde. As linhas que decidem os bytes moraram para
 // `RenderBundle.h` por isso, e agora um campo novo muda os dois lados de uma vez.
 #include "Source/IconComposerFoundation/IconBundle.h"

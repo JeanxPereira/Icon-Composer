@@ -464,7 +464,7 @@ TEST_CASE(a_blend_spelling_the_reader_does_not_know_is_named) {
 // WHAT THE SVG READER WALKED PAST HAS TO REACH THE ICON'S REPORT.
 //
 // `SvgDocument::unsupported()` has always named the elements the reader does
-// not draw, and `icrender` has always printed them for a LOOSE `.svg`. The
+// not draw, and `IconComposerCli` has always printed them for a LOOSE `.svg`. The
 // BUNDLE path threw the set away, so an icon whose art carries a drop shadow,
 // a mask or a clip path rendered without it and reported `N of N layer(s)
 // drawn` -- a clean report over a wrong picture.

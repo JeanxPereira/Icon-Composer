@@ -384,7 +384,7 @@ eles**:
 em 6 arquivos** — porque o Illustrator exporta o `<linearGradient>` dentro do
 `<g>` da camada, logo antes do `<path>`.
 
-> **E o sintoma era a variante mais cara do "verde vazio".** O `icrender` dizia
+> **E o sintoma era a variante mais cara do "verde vazio".** O `IconComposerCli` dizia
 > **`6 of 6 layer(s) drawn`** e, no stderr, seis vezes
 > `url(#SVGID_1_) não resolve`. **A arte desenhava sem cor nenhuma e o relatório
 > dizia que tudo tinha desenhado.** Foi o gabarito de pixel que pegou (doc 03

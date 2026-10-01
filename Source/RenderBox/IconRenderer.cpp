@@ -2224,7 +2224,7 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                 //
                 // `SvgDocument::unsupported()` already names every element and
                 // value the reader walked past -- `filter`, `mask`, `pattern`,
-                // `use`, a class no stylesheet matched. `icrender` prints them
+                // `use`, a class no stylesheet matched. `IconComposerCli` prints them
                 // for a LOOSE svg and this path threw them away, so a bundle
                 // whose art carries a drop shadow reported "4 of 4 layers
                 // drawn" and said nothing about the shadow being gone.

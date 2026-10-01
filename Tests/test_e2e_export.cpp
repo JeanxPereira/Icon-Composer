@@ -21,7 +21,7 @@
 //       da vizinha é mentir na tela.
 //
 //   (d) E O QUE MAIS IMPORTA: os bytes. O PNG que a UI grava tem de ser, byte
-//       a byte, o que o `icrender` produz para o mesmo documento, tamanho e
+//       a byte, o que o `IconComposerCli` produz para o mesmo documento, tamanho e
 //       contexto. Se os dois caminhos divergirem é defeito, não tolerância.
 #include "check.h"
 #include "Source/IconComposerFoundation/Json.h"
@@ -90,7 +90,7 @@ fs::path makeBundle(const std::string& name, const char* document = kPlain) {
     fs::create_directories(dir / "Assets", ec);
     writeFile(dir / "icon.json", document);
     // COM UMA CURVA, e isso importa: o portao de bytes (caso (d)) afirma que a
-    // UI e o `icrender` concordam inclusive em `subdivisions`, e `subdivisions`
+    // UI e o `IconComposerCli` concordam inclusive em `subdivisions`, e `subdivisions`
     // so move um pixel onde ha cubica. Com quatro retas a arte desenhava igual
     // com 8 e com 16 -- medido -- e o portao passava por cima dessa metade.
     writeFile(dir / "Assets" / "art.svg",
@@ -481,10 +481,10 @@ TEST_CASE(export_offers_only_the_contexts_the_document_can_tell_apart) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// (d) OS BYTES SÃO OS DO `icrender`
+// (d) OS BYTES SÃO OS DO `IconComposerCli`
 //
 // Byte a byte, não "parecido". As duas sequências estão lado a lado aqui de
-// propósito: a da UI é `ick::renderExportFile`, a do `icrender` é o que
+// propósito: a da UI é `ick::renderExportFile`, a do `IconComposerCli` é o que
 // `Source/cli/render_main.cpp` faz no caminho de bundle, transcrito. Se
 // alguém puser um `IconViewport`, um `subdivisions` diferente, ou fizer os
 // pixels passarem por 8 bits e voltarem, esta linha é a que cai.
@@ -506,14 +506,14 @@ TEST_CASE(e2e_export_bytes_are_exactly_what_icrender_writes) {
     CHECK_EQ(made.name, std::string("ic-e2e-export-bytes-dark-square-128.png"));
     CHECK(made.drawn > 0);
 
-    // O CAMINHO DO `icrender`, que é o `icrender`. `iccli::renderBundleIcon`
+    // O CAMINHO DO `IconComposerCli`, que é o `IconComposerCli`. `iccli::renderBundleIcon`
     // (Source/cli/RenderBundle.h) é a função que o binário chama -- as opções
     // e o render saíram do `main` para lá exatamente para que esta linha
     // deixasse de ser uma TRANSCRIÇÃO. Enquanto era uma, um campo novo em
-    // `render_main.cpp` mudava o `icrender`, não mudava a UI, e este caso
+    // `render_main.cpp` mudava o `IconComposerCli`, não mudava a UI, e este caso
     // continuava verde comparando a UI com a cópia que ele tinha do que o
-    // `icrender` fazia em 19/09. `subdivisions` é o padrão do `--subdivisions`.
-    // O `subdivisions` que o `icrender` passa sem `--subdivisions` é o padrão
+    // `IconComposerCli` fazia em 19/09. `subdivisions` é o padrão do `--subdivisions`.
+    // O `subdivisions` que o `IconComposerCli` passa sem `--subdivisions` é o padrão
     // de `rb::RenderOptions`, que é de onde o `main` o tira.
     auto icon = iccli::renderBundleIcon(device, s->bundle(), kSize,
                                         rb::RenderOptions{}.subdivisions, ctx);
@@ -525,7 +525,7 @@ TEST_CASE(e2e_export_bytes_are_exactly_what_icrender_writes) {
     CHECK_EQ(made.png.size(), reference.size());
     CHECK(made.png == reference);
 
-    // E O QUE O `icrender` REALMENTE CHAMA é `icf::writePng`, que codifica e
+    // E O QUE O `IconComposerCli` REALMENTE CHAMA é `icf::writePng`, que codifica e
     // grava. Os bytes no disco são os mesmos que a UI entregaria ao app.
     const fs::path file = dir / "referencia.png";
     CHECK_EQ(icf::writePng(file.string(), icon->rgba, icon->width, icon->height), std::string());
@@ -541,8 +541,8 @@ TEST_CASE(e2e_export_bytes_are_exactly_what_icrender_writes) {
 
     // O TAMANHO PEDIDO É O TAMANHO GRAVADO. Esta linha não depende da
     // transcrição acima: um ladrilho que vazasse para a exportação sairia como
-    // um PNG menor que o pedido, e nenhuma comparação com o `icrender` o
-    // pegaria se o `icrender` ganhasse o mesmo defeito.
+    // um PNG menor que o pedido, e nenhuma comparação com o `IconComposerCli` o
+    // pegaria se o `IconComposerCli` ganhasse o mesmo defeito.
     const icf::DecodedPng back = icf::decodePng(made.png.data(), made.png.size());
     CHECK_EQ(back.error, std::string());
     CHECK_EQ(back.width, kSize);

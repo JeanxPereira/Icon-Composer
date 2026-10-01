@@ -82,7 +82,7 @@ void AppSymbols::schedule(JobQueue& jobs, rb::Device& device, TexturePool& pool,
             }
             const double ms =
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-            std::fprintf(stderr, "iconcomposer: %zu symbols rasterised in %.0f ms (%zu failed)\n", out->size(), ms,
+            std::fprintf(stderr, "IconComposer: %zu symbols rasterised in %.0f ms (%zu failed)\n", out->size(), ms,
                          failed);
         },
         [this, out, &pool] {

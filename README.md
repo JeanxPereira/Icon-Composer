@@ -49,9 +49,9 @@ A second front end, in `ui/`, is the same editor in Tauri and React, talking to 
 
 | Tool | Does |
 |---|---|
-| `iconcomposer [document.icon]` | The editor |
+| `IconComposer [document.icon]` | The editor |
 | `ictool <document.icon>` | Says what a bundle holds: the composition resolved under an appearance and an idiom, the asset references, the canonical `icon.json`. No GPU |
-| `icrender <document.icon \| file.svg> --out <file.png>` | Renders an icon or a single SVG to PNG (`--size`, `--appearance`, `--idiom`, `--gpu`) |
+| `IconComposerCli <document.icon \| file.svg> --out <file.png>` | Renders an icon or a single SVG to PNG (`--size`, `--appearance`, `--idiom`, `--generation 26\|27`, `--gpu`) |
 | `icfidelity` | Compares the GPU path against the CPU reference over the corpus |
 | `icserver` | The render server the Tauri front end talks to |
 | `python scripts/car_to_icon.py <Assets.car> --out <Name.icon>` | Rebuilds the `.icon` bundle a compiled asset catalog carries: layers, groups, fills, glass properties and the per-appearance variants |
@@ -67,10 +67,18 @@ Requires CMake 3.28+, Ninja, a C++23 compiler (MinGW-w64 GCC 13 or MSVC) and the
 ```powershell
 cmake --preset mingw-release
 cmake --build --preset mingw-release
-.\build\mingw-release\Source\app\iconcomposer.exe path\to\Document.icon
+.\build\mingw-release\Source\app\IconComposer.exe path\to\Document.icon
 ```
 
-`IC_BUILD_UI=OFF` builds the towers and the command-line tools without the editor. The editor loads Apple's symbols and window controls at run time from `ui/public/apple`, which is not in git; `IC_APPLE_ASSETS` points it elsewhere.
+`IC_BUILD_UI=OFF` builds the towers and the command-line tools without the editor. The editor loads Apple's symbols and window controls at run time from `ui/public/apple`, which is not in git; `IC_APPLE_ASSETS` points it elsewhere, and without them the buttons fall back to text.
+
+A release is the two executables, linked statically, in one archive:
+
+```powershell
+cmake --preset mingw-release
+cmake --build --preset mingw-release
+cd build\mingw-release; cpack    # IconComposer-<version>.zip: IconComposer.exe, IconComposerCli.exe
+```
 
 ### Tests
 

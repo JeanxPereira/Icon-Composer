@@ -589,7 +589,7 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
 // NAO e byte a byte com `renderIcon`: a GPU calcula em float onde a CPU calcula
 // em double. O teto medido pelo plano e media <= 0,5 nivel e pior pixel <= 4
 // niveis de 8 bits por documento; `Tests/test_gpu_fidelity.cpp` cobra. A
-// exportacao e o `icrender` sem `--gpu` seguem em `renderIcon`, o gabarito.
+// exportacao e o `IconComposerCli` sem `--gpu` seguem em `renderIcon`, o gabarito.
 Result<RenderedIcon> renderIconGpu(Device& device, const icf::IconBundle& bundle,
                                    IconRenderOptions options = IconRenderOptions{});
 

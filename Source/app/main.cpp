@@ -1,7 +1,8 @@
-// iconcomposer -- the editor.
+// IconComposer -- the editor.
 //
-//   iconcomposer [bundle.icon] [--generation 26|27]
-//   iconcomposer --selftest <bundle.icon> [--frames N]
+//   IconComposer [bundle.icon] [--generation 26|27]
+//   IconComposer --version
+//   IconComposer --selftest <bundle.icon> [--frames N]
 //
 // The selftest is the assertion that "the UI opens" (spec 13/09 §8): every
 // panel drawn every frame in a context with no backend, against a REAL device
@@ -16,7 +17,25 @@
 #include <cstring>
 #include <string>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 namespace {
+
+// This is a console-subsystem program, so a launch from a file manager or a
+// shortcut gets a console created FOR it: an empty black window beside the
+// editor. `GetConsoleProcessList` reporting exactly ONE attached process IS
+// that case -- a console inherited from a shell has the shell in the list too,
+// so a run from PowerShell keeps its stderr, which is what the selftest and
+// every diagnostic line depend on. Hidden, not freed: stderr keeps a place to go.
+void hideAConsoleMadeForUs() {
+#if defined(_WIN32)
+    DWORD attached = 0;
+    if (GetConsoleProcessList(&attached, 1) != 1) return;
+    if (HWND console = GetConsoleWindow(); console != nullptr) ShowWindow(console, SW_HIDE);
+#endif
+}
 
 // The selftest asserts that the canvas HAD a texture, not that a GPU accepted
 // it: there is no window here, so there is no pool to upload into.
@@ -31,7 +50,7 @@ struct NullSink : ick::TextureSink {
 int selftest(const std::string& bundle, int frames) {
     auto device = rb::Device::create(rb::DeviceOptions{.validation = false});
     if (!device) {
-        std::fprintf(stderr, "iconcomposer: no Vulkan device: %s\n", device.error().c_str());
+        std::fprintf(stderr, "IconComposer: no Vulkan device: %s\n", device.error().c_str());
         return 2;
     }
     icapp::SyncScheduler scheduler(*device);
@@ -45,6 +64,11 @@ int selftest(const std::string& bundle, int frames) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc >= 2 && std::strcmp(argv[1], "--version") == 0) {
+        std::puts("IconComposer " IC_VERSION);
+        return 0;
+    }
+    hideAConsoleMadeForUs();
     if (argc >= 3 && std::strcmp(argv[1], "--selftest") == 0) {
         int frames = 30;
         for (int i = 3; i + 1 < argc; ++i) {
@@ -52,7 +76,7 @@ int main(int argc, char** argv) {
         }
         return selftest(argv[2], frames);
     }
-    // `iconcomposer <bundle.icon> --generation 26`: abre ja na geracao pedida.
+    // `IconComposer <bundle.icon> --generation 26`: abre ja na geracao pedida.
     rb::DesignGeneration generation = rb::DesignGeneration::G27;
     for (int i = 2; i + 1 < argc; ++i) {
         if (std::strcmp(argv[i], "--generation") == 0 && std::strcmp(argv[i + 1], "26") == 0) {

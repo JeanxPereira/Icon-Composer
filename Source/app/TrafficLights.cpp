@@ -61,7 +61,7 @@ ImTextureID loadGlyph(TexturePool& pool, rb::Device& device, const fs::path& fil
     o.height = px;
     auto img = rb::renderSvg(device, *doc, o);
     if (!img || img->width == 0) {
-        std::fprintf(stderr, "iconcomposer: glyph %s: %s\n", file.filename().string().c_str(),
+        std::fprintf(stderr, "IconComposer: glyph %s: %s\n", file.filename().string().c_str(),
                      img ? "empty" : img.error().c_str());
         return 0;
     }
@@ -101,7 +101,7 @@ fs::path appleAssetsDir() {
 void TrafficLights::load(TexturePool& pool, rb::Device& device, float dpiScale) {
     const fs::path root = appleAssetsDir();
     if (root.empty()) {
-        std::fprintf(stderr, "iconcomposer: ui/public/apple not found; the window lights are drawn flat "
+        std::fprintf(stderr, "IconComposer: ui/public/apple not found; the window lights are drawn flat "
                              "(set IC_APPLE_ASSETS to the folder)\n");
         return;
     }
@@ -121,7 +121,7 @@ void TrafficLights::load(TexturePool& pool, rb::Device& device, float dpiScale) 
     glyphZoom_.id = loadGlyph(pool, device, t / "Zoom.svg", gpx);
     glyphFullEnter_.id = loadGlyph(pool, device, t / "FullScreenEnter.svg", gpx);
     loaded_ = close_.id && minimize_.id && expand_.id && inactive_.id;
-    if (!loaded_) std::fprintf(stderr, "iconcomposer: the window light bodies did not load from %s\n",
+    if (!loaded_) std::fprintf(stderr, "IconComposer: the window light bodies did not load from %s\n",
                                t.string().c_str());
 }
 
