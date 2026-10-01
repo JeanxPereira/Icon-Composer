@@ -210,6 +210,32 @@ std::string realRefractivity(double strength) {
     return std::string(buf);
 }
 
+// A ramp behind, and in front ONE group of TWO glass layers: the square
+// (pixels 256..768) and the same square at half scale on top of it (384..640).
+// No `lighting` key is `individual` (`[BIN]` Kit `0x10CA38`-`0x10CB08`) and no
+// `specular` key is `automatic`, so the group's field is the STACK of the two
+// elements' fields with a real highlight reach -- the upper element's texel in
+// a ring `reach + 1` pixels wide around the small square, the big square's
+// everywhere else (`stackFields`). `refractivity` is the group key verbatim, or
+// empty for a group that carries none.
+std::string rampAndStackedGlass(const std::string& refractivity) {
+    std::string doc = "{\n  \"groups\" : [\n    { ";
+    if (!refractivity.empty()) {
+        doc += "\"refractivity\" : " + refractivity + ",\n      ";
+    }
+    doc += "\"layers\" : [\n"
+           "        { \"image-name\" : \"square.svg\", \"name\" : \"top\", \"glass\" : true,\n"
+           "          \"opacity\" : 0.25,\n"
+           "          \"position\" : { \"scale\" : 0.5, \"translation-in-points\" : [0, 0] } },\n"
+           "        { \"image-name\" : \"square.svg\", \"name\" : \"slab\", \"glass\" : true,\n"
+           "          \"opacity\" : 0.25 } ] },\n"
+           "    { \"layers\" : [ { \"image-name\" : \"ramp.png\", \"name\" : \"bg\",\n"
+           "        \"glass\" : false,\n"
+           "        \"position\" : { \"scale\" : 8, \"translation-in-points\" : [0, 0] } } ] }\n"
+           "  ]\n}\n";
+    return doc;
+}
+
 const float* at(const RenderedIcon& img, std::uint32_t x, std::uint32_t y) {
     return img.rgba.data() + (static_cast<std::size_t>(y) * img.width + x) * 4;
 }
@@ -668,6 +694,98 @@ TEST_CASE(the_glass_displaces_the_backdrop_inside_the_shape_and_nowhere_else) {
     // reach rather than the whole interior being displaced.
     for (int k = 0; k < 4; ++k) {
         CHECK_EQ(at(*ga, 512, 512)[k], at(*gb, 512, 512)[k]);
+    }
+}
+
+// THE SAME TWO HALVES FOR A GROUP THAT STACKS, on both render paths, and why
+// this case exists at all.
+//
+// Since 2026-10-01 the refraction runs ONCE per group, through the group's
+// field (`[BIN]` `0x4A5E4`-`0x4A7AC`), and the field of a group lit element by
+// element is `stackFields`' pick between two elements' texels. That pick is a
+// field with JUMPS in it: at the outer edge of the ring around the upper
+// element it goes from "outside the upper shape, `reach + 1` pixels away" to
+// "deep inside the lower one". `[ART]` On `Icon Composer.icon` at 1024 px the
+// stacked distance steps by up to 35 px between two neighbouring texels, where
+// either element's own field steps by 1.
+//
+// A 1024 px render of that document was reported on 2026-10-01 as showing dark
+// boxes on the background beside the slabs and blotches inside them, and the
+// stacked field under the refraction was the suspect. `[ART]` It was measured
+// and it is not there: no accumulator texel whose stacked distance is above 0.5
+// changes in any of the three groups, the render is byte for byte the render
+// without `refractivity` outside the slabs' own columns, and the same PNG
+// stored compressed shows neither thing -- they came from how a 4 MB
+// uncompressed PNG was being displayed. What the measurement leaves worth
+// holding is the invariant it leaned on, which no case stated for a stack:
+//
+//   * the mask is `saturate(-d / w + 0.5) * coverage` (`sdfdisp::alpha`), zero
+//     wherever the field says outside, and `glassOver` skips a zero mask -- so
+//     OUTSIDE the union of the group's shapes the refraction changes nothing,
+//     bit for bit, however far a far texel of either field is from its shape;
+//   * the group refracts ONCE (`glassRefracted == 1` for two glass layers);
+//   * and it still refracts: the big square's band moves the ramp, the same
+//     pixel and the same direction as the single-layer case above.
+//
+// The backdrop is the ramp for the reason it always is: a displacement leaking
+// outside the shape would read back as a different red.
+TEST_CASE(a_stacked_group_refracts_once_inside_its_shapes_and_nowhere_else) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 1024;
+
+    const TempBundle lens(rampAndStackedGlass(realRefractivity(kRealStrength)));
+    const TempBundle flat(rampAndStackedGlass(""));
+    auto a = icf::IconBundle::open(lens.path());
+    auto b = icf::IconBundle::open(flat.path());
+    REQUIRE(a.has_value() && b.has_value());
+
+    using Render = Result<RenderedIcon> (*)(Device&, const icf::IconBundle&, IconRenderOptions);
+    const struct {
+        const char* name;
+        Render render;
+    } paths[] = {{"cpu", &renderIcon}, {"gpu", &renderIconGpu}};
+    for (const auto& path : paths) {
+        auto ga = path.render(d, *a, o);
+        auto gb = path.render(d, *b, o);
+        REQUIRE(ga.has_value() && gb.has_value());
+        CHECK_EQ(ga->drawn, std::size_t{3});
+        CHECK(ga->skipped.empty());
+        // One refraction for the group, not one per glass layer.
+        CHECK_EQ(ga->glassRefracted, std::size_t{1});
+        CHECK_EQ(gb->glassRefracted, std::size_t{0});
+        // And the field it went through is the stack.
+        bool stacked = false;
+        for (const auto& n : ga->notes) stacked = stacked || n == std::string(kFieldStackNote);
+        CHECK(stacked);
+
+        // OUTSIDE the big square (256..768), EVERY pixel and not a sample: a
+        // leak would be a box or a streak, and a 37-pixel stride can step over
+        // either. Two pixels of margin keep the mask's own ramp out of it.
+        std::size_t outsideDiffering = 0;
+        std::size_t insideDiffering = 0;
+        REQUIRE(ga->rgba.size() == gb->rgba.size());
+        for (std::uint32_t y = 0; y < 1024; ++y) {
+            for (std::uint32_t x = 0; x < 1024; ++x) {
+                const bool inside = x >= 254 && x < 770 && y >= 254 && y < 770;
+                bool differs = false;
+                for (int k = 0; k < 4; ++k) {
+                    differs = differs || at(*ga, x, y)[k] != at(*gb, x, y)[k];
+                }
+                if (differs) ++(inside ? insideDiffering : outsideDiffering);
+            }
+        }
+        std::printf("  %s: %zu pixels differ inside the slab, %zu outside it\n", path.name,
+                    insideDiffering, outsideDiffering);
+        CHECK_EQ(outsideDiffering, std::size_t{0});
+        CHECK(insideDiffering > 0);
+
+        // The slab's own band, 24 px in from its left edge and well clear of
+        // the ring around the small square (which starts near x = 384 - 25):
+        // the sample comes from the left, a darker part of the ramp.
+        CHECK(at(*ga, 280, 512)[0] < at(*gb, 280, 512)[0] - 0.02f);
+        CHECK(at(*ga, 744, 512)[0] > at(*gb, 744, 512)[0] + 0.02f);
     }
 }
 
