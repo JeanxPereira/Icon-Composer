@@ -16,28 +16,36 @@ O que se extrai, por tipo de payload:
                        `image.svg` estao guardados.
   CELM (bytes 'MLEC')  bitmap comprimido; o container interno e 'KCBC', uma
                        sequencia de pedacos LZFSE.
-  COLR (bytes 'RLOC')  cor em componentes `double` -- ja lida por car_dump.py.
+  COLR (bytes 'RLOC')  cor em componentes `double`; vai para o manifesto.
+  ARGG                 gradiente nomeado: inicio, fim e as paradas, cada uma
+                       apontando para uma COLR pelo nome; vai para o manifesto.
 
-A secao TLV de um documento em camadas (medido no Assets.car do Icon Composer
-27.0 build 129, CoreUI-1007 / Xcode 27A262):
+A secao TLV de um documento em camadas. Um registro por filho em cada tag, na
+mesma ordem; todas abrem com `u32 count, u32 pad`.
 
-  0x3f4 (1012) FILHOS       u32 count, depois count * 48 bytes:
-                            8 float (so o [7] e usado: opacidade) +
-                            u32 0x10 + 12 bytes de chave de rendition
-                            (3 pares u16 attr/val) que apontam para um FACETKEY.
-  0x3fc (1020) PREENCHIMENTO u32 count, u32 pad, depois count registros
-                            [u32 kind][u32 flags][u32 strlen][char str[strlen]]
-                            -- `str` nomeia o asset de cor quando kind o exige.
-  0x3fd (1021) EFEITO A     u32 count, u32 pad, depois count * 20 bytes:
-                            [u32][f32][u32][f32][u32]
-  0x3fe (1022) EFEITO B     u32 count, u32 pad, depois count * 12 bytes:
-                            [f32][f32][u32]
-  0x3ec (1004) ESCALA       [f32][f32]
-  0x3ed (1005) UTI          [u32 len][u32][char str[]]  -> "public.layeredimage"
-  0x3ee (1006) ?            [u32]
+Os nomes NAO sao palpite: sao os setters de `CUIRenditionLayerReference` que
+`-[_CUILayerStackRendition _initWithCSIHeader:version:]` (CoreUI 26A5416b,
+0x18b51a1a4..0x18b51a724) chama com cada campo, na ordem em que os le:
 
-Os nomes dos campos dentro de 0x3fd/0x3fe sao INFERENCIA ([INF]); o que esta
-MEDIDO ([BIN]) e o tamanho, a contagem e o valor de cada campo.
+  0x3f4 (1012)  [u32 bit0 fixedFrame][i32 x][i32 y][u32 w][u32 h]   -> setFrame:
+                [u32 blendMode][f32 opacity][u32 keyLen][key]       -> setReferenceKey:
+                a chave sao pares u16 (atributo, valor) que apontam para um
+                FACETKEY; w x h e 1024 x 1024 nas folhas e 0 x 0 nos grupos.
+  0x3fc (1020)  [u32 bit0 hasLightingEffects, bit1 gathersSpecularByElement]
+                [f32 blurStrength][u32 strlen][char gradientOrColorName[strlen]]
+  0x3fd (1021)  [u32 bit0 hasSpecular][f32 translucency][u32 shadowStyle]
+                [f32 shadowOpacity][u32 specularPlacement]
+  0x3fe (1022)  [f32 refractionStrength][f32 refractionHeight][u32 ?]
+                -- o terceiro campo esse leitor nao le.
+  0x3ec (1004)  [f32][f32]
+  0x3ed (1005)  UTI: [u32 len][u32][char str[]]  -> "public.layeredimage"
+  0x3ee (1006)  [u32]
+
+Os seletores saem da ordem dos stubs: as chamadas vao a enderecos espacados de
+0x10 que sobem em ordem alfabetica de seletor, e os quinze desta funcao caem,
+um a um e com o tipo de argumento certo (bool, inteiro, float), nos setters que
+`CUIRenditionLayerReference` declara. A regiao dos stubs nao esta mapeada na
+extracao do cache, entao nenhum stub foi desmontado para confirmar o nome.
 
 Uso:
     python scripts/car_extract.py <file.car> --list
@@ -142,6 +150,48 @@ def decode_celm(pay: bytes) -> tuple[bytes, str]:
     return body, f"cru(comp={comp},raw={raw_len})"
 
 
+def decode_colr(pay: bytes) -> dict | None:
+    """COLR: tag(4) version(4) colorSpaceID(4) nComponents(4) double[nComponents].
+
+    Os componentes sao `double` e ficam como estao; quem escolhe a precisao de
+    escrita e quem monta o `icon.json`."""
+    if len(pay) < 16:
+        return None
+    _tag, _ver, cs, n = struct.unpack_from("<4sIII", pay, 0)
+    if n > 8 or 16 + 8 * n > len(pay):
+        return None
+    return {"colorSpaceID": cs & 0xFF,
+            "components": list(struct.unpack_from(f"<{n}d", pay, 16))}
+
+
+def decode_argg(pay: bytes) -> dict | None:
+    """ARGG (gradiente nomeado de um documento `.icon` compilado):
+
+        'ARGG'(4) u32 nStops u32 (=1) u32 (=0)
+        f32 startX f32 startY f32 endX f32 endY      -- unidade do quadro, y p/ baixo
+        nStops * [f32 offset][u32 strlen][char name[strlen]]   -- name com o NUL
+
+    Cada parada NOMEIA uma rendition COLR do mesmo catalogo; a cor nao esta
+    aqui. Medido em dois catalogos (Icon Composer 27.0-129 e SF Symbols 8), os
+    dois so com gradientes de duas paradas -- por isso `nStops` e conferido
+    contra o fim do payload em vez de so acreditado."""
+    if len(pay) < 32 or pay[:4] != b"ARGG":
+        return None
+    n, kind, pad = struct.unpack_from("<III", pay, 4)
+    sx, sy, ex, ey = struct.unpack_from("<4f", pay, 16)
+    stops, p = [], 32
+    while p + 8 <= len(pay):
+        off, slen = struct.unpack_from("<fI", pay, p)
+        p += 8
+        if p + slen > len(pay):
+            return None
+        stops.append({"offset": off,
+                      "color": pay[p:p + slen].split(b"\x00")[0].decode("utf-8", "replace")})
+        p += slen
+    return {"count": n, "kind": kind, "pad": pad,
+            "start": [sx, sy], "end": [ex, ey], "stops": stops}
+
+
 # ------------------------------------------------------------------ TLV
 
 
@@ -167,27 +217,29 @@ def key_pairs(b: bytes) -> list[tuple[int, int]]:
 
 
 def parse_children(b: bytes) -> list[dict]:
-    """TLV 0x3f4: u32 count + count * 48."""
-    if len(b) < 4:
+    """TLV 0x3f4: u32 count, u32 pad, depois count registros de 32 bytes + chave."""
+    if len(b) < 8:
         return []
     n = struct.unpack_from("<I", b, 0)[0]
-    if n == 0 or 4 + 48 * n > len(b):
-        return []
-    out = []
-    for i in range(n):
-        e = b[4 + 48 * i:4 + 48 * (i + 1)]
-        floats = list(struct.unpack_from("<8f", e, 0))
-        marker = struct.unpack_from("<I", e, 32)[0]
+    out, p = [], 8
+    for _ in range(n):
+        if p + 32 > len(b):
+            break
+        flags, x, y, w, h, blend, opacity, klen = struct.unpack_from("<IiiIIIfI", b, p)
+        p += 32
         out.append({
-            "floats": [round(v, 6) for v in floats],
-            "opacity": round(floats[7], 6),
-            "marker": marker,
-            "key": key_pairs(e[36:48]),
+            "fixedFrame": bool(flags & 1),
+            "origin": [x, y],
+            "size": [w, h],
+            "blend": blend,
+            "opacity": round(opacity, 6),
+            "key": key_pairs(b[p:p + klen]),
         })
+        p += klen
     return out
 
 
-def parse_fills(b: bytes) -> list[dict]:
+def parse_nodes(b: bytes) -> list[dict]:
     """TLV 0x3fc: u32 count, u32 pad, depois registros de tamanho variavel."""
     if len(b) < 8:
         return []
@@ -196,16 +248,18 @@ def parse_fills(b: bytes) -> list[dict]:
     for _ in range(n):
         if p + 12 > len(b):
             break
-        kind, flags, slen = struct.unpack_from("<III", b, p)
+        bits, blur, slen = struct.unpack_from("<IfI", b, p)
         p += 12
         s = b[p:p + slen]
         p += slen
-        out.append({"kind": kind, "flags": flags,
-                    "name": s.split(b"\x00")[0].decode("utf-8", "replace")})
+        out.append({"hasLightingEffects": bool(bits & 1),
+                    "gathersSpecularByElement": bool(bits & 2),
+                    "blurStrength": round(blur, 6),
+                    "gradientOrColorName": s.split(b"\x00")[0].decode("utf-8", "replace")})
     return out
 
 
-def parse_fx_a(b: bytes) -> list[dict]:
+def parse_effects(b: bytes) -> list[dict]:
     """TLV 0x3fd: u32 count, u32 pad, count * 20."""
     if len(b) < 8:
         return []
@@ -215,12 +269,14 @@ def parse_fx_a(b: bytes) -> list[dict]:
         o = 8 + 20 * i
         if o + 20 > len(b):
             break
-        a, f1, c, f2, e = struct.unpack_from("<IfIfI", b, o)
-        out.append({"a": a, "f1": round(f1, 6), "c": c, "f2": round(f2, 6), "e": e})
+        spec, transl, style, shadow, placement = struct.unpack_from("<IfIfI", b, o)
+        out.append({"hasSpecular": bool(spec & 1), "translucency": round(transl, 6),
+                    "shadowStyle": style, "shadowOpacity": round(shadow, 6),
+                    "specularPlacement": placement})
     return out
 
 
-def parse_fx_b(b: bytes) -> list[dict]:
+def parse_refraction(b: bytes) -> list[dict]:
     """TLV 0x3fe: u32 count, u32 pad, count * 12."""
     if len(b) < 8:
         return []
@@ -230,8 +286,9 @@ def parse_fx_b(b: bytes) -> list[dict]:
         o = 8 + 12 * i
         if o + 12 > len(b):
             break
-        f1, f2, c = struct.unpack_from("<ffI", b, o)
-        out.append({"f1": round(f1, 6), "f2": round(f2, 6), "c": c})
+        strength, height, tail = struct.unpack_from("<ffI", b, o)
+        out.append({"refractionStrength": round(strength, 6),
+                    "refractionHeight": round(height, 6), "unread": tail})
     return out
 
 
@@ -241,11 +298,11 @@ def parse_tlv_section(blob: bytes) -> dict:
         if tag == 0x3f4:
             out["children"] = parse_children(b)
         elif tag == 0x3fc:
-            out["fills"] = parse_fills(b)
+            out["nodes"] = parse_nodes(b)
         elif tag == 0x3fd:
-            out["fx_a"] = parse_fx_a(b)
+            out["effects"] = parse_effects(b)
         elif tag == 0x3fe:
-            out["fx_b"] = parse_fx_b(b)
+            out["refraction"] = parse_refraction(b)
         elif tag == 0x3ed and len(b) >= 8:
             out["uti"] = b[8:].split(b"\x00")[0].decode("utf-8", "replace")
         elif tag == 0x3ec and len(b) >= 8:
@@ -363,23 +420,19 @@ def resolve(facets: dict, pairs: list[tuple[int, int]]) -> str:
     return "?"
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("car", type=Path)
-    ap.add_argument("--out", type=Path, help="diretorio onde gravar os payloads")
-    ap.add_argument("--list", action="store_true", help="so lista, nao grava")
-    ap.add_argument("--grep", help="filtra por substring do nome")
-    args = ap.parse_args()
-
-    bom, facets = load(args.car)
+def extract(car: Path, out: Path | None = None, grep: str | None = None,
+            list_only: bool = False) -> list[dict]:
+    """Le o catalogo e devolve o manifesto; com `out`, grava os payloads e o
+    `manifest.json` la. E o que `car_to_icon.py` chama quando recebe um `.car`."""
+    bom, facets = load(car)
     tokens = bom.key_tokens()
     apps = bom.appearances()
     app_pos = tokens.index(APPEARANCE_TOKEN) if APPEARANCE_TOKEN in tokens else None
-    needle = args.grep.lower() if args.grep else None
+    needle = grep.lower() if grep else None
+    write = out is not None and not list_only
 
-    if args.out:
-        args.out.mkdir(parents=True, exist_ok=True)
+    if out:
+        out.mkdir(parents=True, exist_ok=True)
 
     manifest = []
     seen: dict[str, int] = {}
@@ -417,6 +470,14 @@ def main() -> int:
             data, how = decode_rawd(val[off:])
         elif tag == "MLEC":
             data, how = decode_celm(val[off:])
+        elif tag == "RLOC":
+            color = decode_colr(val[off:])
+            if color:
+                rec["color"], how = color, "colr"
+        elif tag == "ARGG":
+            grad = decode_argg(val[off:])
+            if grad:
+                rec["gradient"], how = grad, "argg"
         rec["decoded"] = how
         rec["decodedLength"] = len(data)
 
@@ -448,24 +509,38 @@ def main() -> int:
         rec["file"] = slot + ext
 
         rgba = rec.pop("_rgba8", None)
-        if args.out and not args.list:
+        if write:
             if data:
-                (args.out / rec["file"]).write_bytes(data)
+                (out / rec["file"]).write_bytes(data)
             if rgba:
                 png = Path(rec["file"]).with_suffix("").name + f"_{width}x{height}.png"
-                write_png(args.out / png, width, height, rgba)
+                write_png(out / png, width, height, rgba)
                 rec["png"] = png
         manifest.append(rec)
 
     manifest.sort(key=lambda r: (r["name"], r["appearance"]))
+    if write:
+        (out / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    return manifest
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("car", type=Path)
+    ap.add_argument("--out", type=Path, help="diretorio onde gravar os payloads")
+    ap.add_argument("--list", action="store_true", help="so lista, nao grava")
+    ap.add_argument("--grep", help="filtra por substring do nome")
+    args = ap.parse_args()
+
+    manifest = extract(args.car, args.out, args.grep, args.list)
     for r in manifest:
         print(f"{r['name'][:44]:<46} {r['appearance']:<10} {r['facet'][:26]:<28} "
               f"layout={r['layout']:<5} {r['payload']} {r['decoded']:<22} "
               f"{r['decodedLength']:>8}  -> {r['file']}")
 
     if args.out and not args.list:
-        (args.out / "manifest.json").write_text(
-            json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"\n{len(manifest)} rendition(s) -> {args.out}")
     return 0
 

@@ -1,0 +1,9 @@
+{
+  "what": "SF Symbols 8 (SF Symbols Beta.app) -- Contents/Resources/Assets.car",
+  "source": "SF-Symbols-8.dmg -> SF Symbols.pkg -> Payload (D:/CodingProjects/SF-Symbols, Docs/06-open-questions.md §6)",
+  "path": "G:\\AquaKit-refs\\sfsymbols-app\\app\\Applications\\SF Symbols Beta.app\\Contents\\Resources\\Assets.car",
+  "sha256": "b8839f0acb6a52157e52d7bdf823d8aa187c3f57f02d8b32b072d55ffb9ea2b9",
+  "size": 1774488,
+  "extracted": "2026-10-01",
+  "command": "python scripts/car_to_icon.py <Assets.car> --out \"References/sf-symbols-8/out/SF Symbols.icon\" --keep References/sf-symbols-8/out/car"
+}
