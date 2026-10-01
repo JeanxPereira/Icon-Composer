@@ -14,3 +14,6 @@ __pycache__/
 
 # Worktrees que o harness cria para agentes paralelos.
 .claude/
+
+# O layout que o ImGui grava ao lado de onde o editor foi aberto.
+imgui.ini
