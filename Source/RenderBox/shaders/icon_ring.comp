@@ -2,7 +2,7 @@
 // O ANEL DA SOMBRA, METADE DE COLUNA (frente GPU, G3). `shadowRingEach` de
 // GlassShadow.cpp faz a transformada euclidiana EXATA do conjunto `alpha < 0.5`
 // (as sementes) e le a distancia de cada texel de dentro; o anel so pede essa
-// distancia ate `ringWidth + 0.5`, acima dela o valor satura em 1.
+// distancia ate `ringWidth + 0.5`, acima dela o valor e zero (o miolo).
 //
 // Entao aqui a transformada e exata DENTRO de uma janela de raio `R >= ringWidth
 // + 0.5`: esta passada guarda, por texel, a distancia vertical a semente mais

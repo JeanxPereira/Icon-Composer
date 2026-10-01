@@ -1,5 +1,6 @@
 #include "Source/RenderBox/GlassTranslucency.h"
 
+#include "Source/RenderBox/GradientOracle.h"
 #include "Source/RenderBox/Parallel.h"
 
 #include <algorithm>
@@ -38,13 +39,21 @@ double effectiveOpacity(double x, double f) {
     return 1.0 - oneMinusX * f;
 }
 
+bool translucencyDrawsMask(double materialTranslucency) {
+    // `[BIN]` `b.le` at `0x4AD10`. After an `fcmp`, `le` is also taken when the
+    // operands are unordered, so a NaN skips the mask -- which is `x > 0`.
+    return materialTranslucency > 0.0;
+}
+
 OpacityMaskArguments opacityMaskArguments(const TranslucencyEffect& effect,
                                           IconSizeClass sizeClass,
-                                          double materialTranslucency) {
+                                          double materialTranslucency,
+                                          double texelsPerPoint) {
     const double f = translucencyFactor(effect, sizeClass, materialTranslucency);
 
     OpacityMaskArguments args;
-    args.borderWidth = static_cast<float>(effect.borderWidth);
+    // `[BIN]` `0x00010048`-`0x00010054`: the product in double, narrowed once.
+    args.borderWidth = static_cast<float>(effect.borderWidth * texelsPerPoint);
 
     // Index 1, `0x10078`-`0x10088`: the LOWER goes through `eff`, the upper does
     // not.
@@ -63,7 +72,75 @@ OpacityMaskArguments opacityMaskArguments(const TranslucencyEffect& effect,
         args.contourOpacityBounds[1] =
             static_cast<float>(effectiveOpacity(effect.upperContourOpacity, f));
     }
+
+    // `[BIN]` `cbz w8, #0xfea8` at `0x0000FE00`: `useSimpleMask` takes the
+    // gradient, and everything above this line except the body pair is then
+    // unread.
+    if (effect.useSimpleMask) {
+        args.kind = OpacityMaskKind::Gradient;
+        const double lowerEff = effectiveOpacity(effect.lowerOpacity, f);
+        const double upper = effect.upperOpacity;
+
+        // The stops' alphas, in double as the target computes them, narrowed
+        // where it narrows them (`fcvtn`, `0x000105F0`).
+        float alpha[kOpacityMaskRampSegments + 1];
+        std::uint32_t stops = 0;
+        if (effect.replicateBadSmoothing) {
+            // `[BIN]` `0xD28C`: `x = k * 0.0625` (`fmadd`, `0xD38C`), then
+            // `0xD3A4`-`0xD3B8` in this order.
+            stops = kOpacityMaskRampSegments + 1;
+            const double span = lowerEff - upper;
+            for (std::uint32_t k = 0; k < stops; ++k) {
+                const double x = static_cast<double>(k) * 0.0625;
+                const double a = upper + span * x;
+                alpha[k] = static_cast<float>((a * a) * (3.0 - (a + a)));
+            }
+        } else {
+            // `[BIN]` `0x00010484`-`0x000104A8`.
+            stops = 2;
+            alpha[0] = static_cast<float>(upper);
+            alpha[1] = static_cast<float>(lowerEff);
+        }
+
+        // `[BIN]` Interpolation code 4: one Fritsch-Carlson cubic per segment,
+        // from the four stops around it, the two ends duplicated under `pad`
+        // (`GradientOracle.h`). Black stops: only the alpha channel carries
+        // anything.
+        args.rampSegments = stops - 1;
+        for (std::uint32_t s = 0; s + 1 < stops; ++s) {
+            auto stop = [&alpha, stops](std::int64_t i, float (&out)[4]) {
+                const std::int64_t last = static_cast<std::int64_t>(stops) - 1;
+                const std::int64_t at = i < 0 ? 0 : (i > last ? last : i);
+                out[0] = out[1] = out[2] = 0.0f;
+                out[3] = alpha[at];
+            };
+            float p0[4], p1[4], p2[4], p3[4];
+            const std::int64_t i = static_cast<std::int64_t>(s);
+            stop(i - 1, p0);
+            stop(i, p1);
+            stop(i + 1, p2);
+            stop(i + 2, p3);
+            const CubicColor cc = smoothColorCoefficients(p0, p1, p2, p3);
+            for (int k = 0; k < 4; ++k) args.ramp[s][k] = cc.c[k][3];
+        }
+    }
     return args;
+}
+
+float gradientOpacityMask(const OpacityMaskArguments& args, float py) {
+    if (args.rampSegments == 0) return 1.0f;
+    // The parameter along the axis: 0 at `minY`, 1 at `maxY`, held past both.
+    const float height = args.bounds[3];
+    const float v = height != 0.0f ? saturate((py - args.bounds[1]) / height) : 0.0f;
+
+    // `[BIN]` Ramp kind 3: `t` scaled by `stops - 1`, the integer part the
+    // segment and the fraction the cubic's argument (`rampSmoothAtPositions`).
+    const float scaled = v * static_cast<float>(args.rampSegments);
+    std::uint32_t seg = static_cast<std::uint32_t>(scaled);
+    if (seg >= args.rampSegments) seg = args.rampSegments - 1;
+    const float f = scaled - static_cast<float>(seg);
+    const float* c = args.ramp[seg];
+    return c[0] + f * (c[1] + f * (c[2] + f * c[3]));
 }
 
 bool opacityMaskIsIdentity(const OpacityMaskArguments& args) {
@@ -115,6 +192,17 @@ OpacityMask glassOpacityMask(const FieldImage& field, const OpacityMaskArguments
         // exatamente `y + 0.5`, a aritmetica de antes.
         const float py =
             static_cast<float>(static_cast<std::int64_t>(y) + field.originY) + 0.5f;
+        if (args.kind == OpacityMaskKind::Gradient) {
+            // The gradient is laid on an infinite shape: the same value across
+            // the row, and nothing for the field to say about it.
+            const float m = gradientOpacityMask(args, py);
+            for (std::uint32_t x = 0; x < field.width; ++x) {
+                const std::size_t i = static_cast<std::size_t>(y) * field.width + x;
+                out.a[i] = m;
+                out.coverage[i] = 1.0f;
+            }
+            continue;
+        }
         for (std::uint32_t x = 0; x < field.width; ++x) {
             // `FieldSample::distance` is NEGATIVE INSIDE and the shader's `sd` is
             // positive inside.

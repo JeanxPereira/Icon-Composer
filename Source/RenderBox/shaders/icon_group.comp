@@ -1,0 +1,57 @@
+#version 450
+// A IMAGEM DE UM GRUPO, NA GPU: `addToGroupImage` e `takeGroupImage` da
+// `CpuSurface` (IconRenderer.cpp), passo a passo.
+//
+//   mode 0 -- um elemento composto no alvo do grupo, pre-multiplicado: o
+//        `blendOver` de IconRenderer.cpp, como em icon_blend.comp. O que muda e
+//        `precise`. O alfa desta imagem e LIMIAR mais adiante -- o anel da sombra
+//        e o campo de um raster cortam em 0.5, a mascara conta os pintados acima
+//        de 0.5 -- entao a conta do `over` nao pode virar uma fma aqui e nao na
+//        CPU: um ulp de um lado do limiar muda uma contagem, e a contagem e
+//        texto do relatorio. Os modos transcritos seguem em float (`rbBlend`),
+//        como em icon_blend.comp.
+//   mode 1 -- o alvo des-multiplicado para a arte RETA, `rgb = a > 0 ? c / a : 0`,
+//        com a divisao corretamente arredondada (float -> double -> float): a
+//        divisao float da GPU nao e (icon_glass_mask.comp).
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) buffer Dst { vec4 dst[]; };
+layout(std430, binding = 1) readonly buffer Src { vec4 src[]; };
+
+layout(push_constant) uniform Push {
+    uint w, h;
+    uint mode;
+    uint blend;
+    float alpha;
+} p;
+
+#include "BlendFormula.glsl"
+
+void main() {
+    uvec2 g = gl_GlobalInvocationID.xy;
+    if (g.x >= p.w || g.y >= p.h) return;
+    uint i = g.y * p.w + g.x;
+    vec4 s = src[i];
+
+    if (p.mode == 1u) {
+        float a = s.a;
+        vec4 o = vec4(0.0, 0.0, 0.0, a);
+        if (a > 0.0) {
+            for (int c = 0; c < 3; ++c) o[c] = float(double(s[c]) / double(a));
+        }
+        dst[i] = o;
+        return;
+    }
+
+    vec4 d = dst[i];
+    precise float a = s.a * p.alpha;
+    if (p.blend == 0u) {
+        if (a <= 0.0) return;
+        precise float inv = 1.0 - a;
+        precise vec3 rgb = s.rgb * a + d.rgb * inv;
+        precise float oa = a + d.a * inv;
+        dst[i] = vec4(rgb, oa);
+        return;
+    }
+    dst[i] = rbBlend(p.blend, vec4(s.rgb * a, a), d);
+}

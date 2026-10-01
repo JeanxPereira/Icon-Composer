@@ -3,7 +3,7 @@
 //
 // Ate este arquivo, `ICRRenderingParameters.Highlights` entregava luz a UM dos
 // dois lados que a pedem. `GlassSpecular.*` desenha o lado do GLIFO -- o
-// conjunto `glyphs*`, cinco realces por camada de vidro. O outro lado, a
+// conjunto `glyphs*`, seis realces por grupo de vidro na geracao 27. O outro lado, a
 // propria pastilha, tinha os numeros lidos (`Docs/Laudos/2026-09-15-highlights.md`
 // §4.3) e NADA os consumia; o `[OBS] 6` daquele laudo dizia exatamente isso:
 // "o chiclet -- numeros lidos, nada os consome; o `hasSpecular` desta cadeia e
@@ -71,6 +71,18 @@
 //   ramo `systemAppearance` (modo != 1), `0x00062698`-`0x000626AC`:
 //       fill[+0x61] == 1 -> chicletDim ; senao chicletDefault
 //
+// `[BIN]` E A GERACAO 26 E O RAMO `systemAppearance`: `0x76FC0` grava `0` em
+// `Highlights+0x110` (`0x77298`). La o conjunto sai so da aparencia do estilo
+// (`+0x61`, `1` e escura -- o mesmo byte que `0x0005E59C` le para decidir o
+// clear mode efetivo), sem olhar o modo de renderizacao nem `iconBrightness`.
+// `chicletHighlightsSetFor`, abaixo, e a arvore inteira.
+//
+// `[BIN]` E o "fill simples" do primeiro ramo NAO e sobre o fill: as cinco
+// palavras e a tag de `+0x68..+0x90` sao o MODO DE RENDERIZACAO do icone, e o
+// teste e `renderingMode == .color` (`GlassSpecular.h`, `glyphHighlightsSetFor`).
+// As "duas comparacoes de forma" sao a igualdade do clear mode efetivo com nil:
+// nil escolhe `chicletScreened`, senao `chicletClear`.
+//
 // `[BIN]` E ENTAO O SELETOR CHAMA O MESMO EXPANSOR DO GLIFO, com os dois
 // campos de curvatura DO CHICLET e um booleano a menos:
 //
@@ -80,11 +92,15 @@
 //       strb wzr, [sp, #0x1A0]       ; o terceiro argumento e FALSO aqui
 //       bl #0x30e88                  ; o expansor de sete posicoes
 //
-// `[BIN]` Os dois sao `[0.75]x4` (`fmov v0.2d, #0.75`, `0x00062ABC`, escrito
-// quatro vezes sobre `+0x50` e `+0x70` em `0x00062ADC`-`0x00062AE0`), os mesmos
-// numeros do glifo. O booleano falso e onde `glyphHighlightsUseVCM` (true,
-// `Highlights+0x90`) NAO vale para o chiclet -- `[OBS]` e como nenhum dos dois
-// `VCM` foi seguido ate um pixel, esta diferenca fica nomeada e nao desenhada.
+// `[BIN]` Os dois sao `[0.75]x4` na geracao 27 (`fmov v0.2d, #0.75`,
+// `0x00062ABC`, escrito quatro vezes sobre `+0x50` e `+0x70` em
+// `0x00062ADC`-`0x00062AE0`), os mesmos numeros do glifo, e `[1]x4` na geracao
+// 26 (`0x77244`, `0x77270`). `[BIN]` O booleano falso e o byte de `x1+0x20`
+// que o expansor le em `0x00030EBC`: ligado, as duas posicoes `dark` tomariam a
+// curvatura do REALCE em vez da do darklight (`0x000311C4`). Os dois seletores
+// passam zero. (Ate 01/10 este paragrafo o lia como "o VCM nao vale para o
+// chiclet"; o VCM nao passa por aqui -- o chiclet tem o proprio rasterizador,
+// §4.)
 //
 // -----------------------------------------------------------------------
 // 2.1. `fill[+0x5B]` E A CLASSE DE LUMINANCIA, E A ESCRITA DELE ESTA LIDA
@@ -111,9 +127,15 @@
 //     0x0001A978  mov  w8, #2               ; DIM
 //     0x0001A8C4  strb w8, [x19, #0x5b]
 //
-// e o mesmo teste de "fill simples" do seletor guarda a entrada
-// (`0x0001A89C`-`0x0001A8B4`): um fill que NAO e simples nunca chega a
-// classificar e o byte fica **0**, `Default`.
+// e o mesmo teste do seletor guarda a entrada (`0x0001A89C`-`0x0001A8B4`):
+// fora dele ninguem classifica e o byte fica **0**, `Default`.
+//
+// `[BIN]` ESSE TESTE E O MODO DE RENDERIZACAO, e nao o tipo do fill, como este
+// paragrafo dizia ate 01/10. As cinco palavras e a tag que ele olha (`x25`,
+// `x22`, `x21`, `x26`, `x24`, `w27`) sao as que `0x0001A80C`-`0x0001A824` gravam
+// em `+0x68..+0x90`, o campo que `0x0005E59C` le como o modo; a faixa de leveza
+// sai do fill RESOLVIDO em `+0x10` (`0x0001A928`-`0x0001A944`), qualquer que
+// seja o tipo dele. Um fill de sistema classifica pelas duas paradas dele.
 //
 // `[BIN]` `0x0001F10C`-`0x0001F32C` e a faixa de luminancia de um fill, e ela
 // e uma conta so, por PARADA de gradiente, com passo `0x28`:
@@ -130,7 +152,7 @@
 // consumidor, e e o unico.
 //
 // -----------------------------------------------------------------------
-// 2.2. E O RESULTADO E QUE A CLASSE NAO MOVE PIXEL NENHUM EM 2.0-125
+// 2.2. E O RESULTADO E QUE A CLASSE NAO MOVE PIXEL NENHUM NA GERACAO 27
 // -----------------------------------------------------------------------
 //
 // `[BIN]` O laudo dos realces fechou com "`fill[+0x5B]` ... inertes em 2.0-125
@@ -159,13 +181,20 @@
 // > que tambem nao se ve hoje: o dia em que um arquivo de parametros
 // > diferenciar os conjuntos, a regra ja esta certa.
 //
-// `[OBS]` `chicletClear` (`+0x13A8`) e `chicletScreened` (`+0x19D8`) NAO estao
-// transcritos. Eles so sao alcancados pelo ramo de fill NAO-simples, e quem
-// escolhe entre os dois sao `0x00040E60` e `0x0006D6B0`, duas comparacoes de
-// forma que esta frente nao seguiu.
+// `[BIN]` NA GERACAO 26 ELA MOVE, e pelo outro lado: o chiclet de la nem a
+// consulta (o ramo `systemAppearance`), mas o seletor do GLIFO consulta, e
+// `glyphsBright` da 26 nao e `glyphsDefault`.
+//
+// `[BIN]` `chicletClear` (`+0x13A8`) e `chicletScreened` (`+0x19D8`) ESTAO
+// transcritos desde 01/10 (`RenderingParameters.cpp`), e o seletor que escolhe
+// entre os dois tambem -- e o renderizador os ALCANCA: fora de `.color` a
+// geracao 27 desenha `chicletClear` sob a mascara do Clear (onde os claros saem
+// repintados pela cor dela, `SpecularArguments::clearPaint`, e os escuros ficam
+// para o sistema) e `chicletScreened` no Tinted Dark, cujo modo efetivo do
+// Clear e nil (`0x62684`-`0x62740`).
 //
 // ===========================================================================
-// 3. OS SEIS MEMBROS DE `chicletDefault`, RELIDOS DO BINARIO
+// 3. OS SEIS MEMBROS DE `chicletDefault` DA GERACAO 27, RELIDOS DO BINARIO
 // ===========================================================================
 //
 // `[BIN]` `0x00062AB8`-`0x00062EDC`. Campo a campo, com o endereco de cada
@@ -195,13 +224,21 @@
 //      `slots[3 - sizeClass]` continua aplicada aqui e continua invisivel.
 //
 // TODOS OS SEIS EXISTEM, o que e a diferenca que mais muda a figura: no glifo
-// `fillDiffuse` e `rim` sao `nil` e sobram cinco realces. No chiclet os seis
-// estao presentes, o expansor faz SETE posicoes (o `dark` duas vezes), e o
-// `rim` -- presente mas com `opacity == 0` -- e o unico que nao pinta. Ficam
-// **seis realces vivos**, contra os cinco do glifo.
+// o `rim` e `nil` e `fillDiffuse` e `matchKey`. No chiclet os seis estao
+// presentes, o expansor faz SETE posicoes (o `dark` duas vezes), e o `rim` --
+// presente mas com `opacity == 0` -- e o unico que nao pinta. Ficam **seis
+// realces vivos**, os mesmos seis do glifo por outro caminho.
+//
+// `[BIN]` NA GERACAO 26 SAO TRES, e outros (`0x772BC`-`0x7745C`, e
+// `chicletDim` em `0x775BC`-`0x776F8`): `keySharp` (brightness 1.1, cone de
+// 78 graus), `fillSharp` com payload proprio (1.1, 65 graus) e o `rim` (1.0,
+// cone pi) -- `keyDiffuse` e `dark` nil, `fillDiffuse` `.custom(nil)`. Os tres
+// com `distance` `[22, 22, 30, 39]`, bias 0.5, a opacidade POR CLASSE de
+// tamanho e `blendModeOverride == .normal`: la o realce nao soma, ele cobre.
+// `chicletBright`, `chicletClear` e `chicletScreened` nao sao reescritos.
 //
 // ===========================================================================
-// 4. O QUE ESTE ARQUIVO NAO TRANSCREVE: O RASTERIZADOR
+// 4. O RASTERIZADOR: O QUE FOI LIDO, E O QUE ESTE ARQUIVO TOMA DELE
 // ===========================================================================
 //
 // `[BIN]` O glifo termina no shader Metal `glassHighlight` (`0x0000E834` monta
@@ -220,14 +257,50 @@
 // distancia: o conico da o termo ANGULAR e a camada recortada da o termo
 // RADIAL.
 //
-// `[INF]` ESTE RENDERIZADOR NAO TRANSCREVE ESSE CAMINHO. Ele resolve os seis
-// realces pelo MESMO `0x0004BD90` que o alvo usa nos dois lados -- e que
-// `resolveHighlight` ja e -- e depois os avalia com o corpo de
+// `[BIN]` LIDO EM 01/10, passo a passo, por passada de realces. (O passo 1 foi
+// relido instrucao por instrucao para este arquivo; os passos 2 a 5 sao do
+// levantamento da geracao 26, lidos uma vez -- nenhum deles e transcrito aqui.)
+//
+//   1. 256 amostras angulares. Por realce: `theta = atan2(dir.x, dir.y)`
+//      (`0x0000DB90`), e por amostra `i`
+//
+//          phi_i = theta - pi/2 - 2 pi i / 256                  0x0000DBC8, 0x0000DC90
+//          lit_i = max(0, (cos phi_i - cos spread)
+//                         / max(1 - cos spread, 1e-6))          0x0000DBCC-0x0000DCB8
+//
+//      OU `lit_i = 1` quando `|spread / (2 pi) - 0.5| < 1e-6` -- o cone de pi
+//      exato (`0x0000DBA0`-`0x0000DBBC`, testado em `0x0000DC50`). Cada realce
+//      entra por cima do anterior na mesma amostra, `a <- w + (1 - w) a`
+//      (`0x0000DBF4`-`0x0000DC40`): a uniao dos realces da passada. NAO ha aqui
+//      a sentinela `spread > pi` do shader do glifo.
+//   2. Uma rampa de 65 paradas de alfa, `t = j / 64`, na cor da passada:
+//      `alpha = cor.a t / max(1 + (1/bias - 2)(1 - t), 1e-6)`, instalada com
+//      `addStyle:1`.
+//   3. Uma camada: `0x000126EC` desenha a forma do chiclet com
+//      `setRenderingMode:2` e `setRenderingModeArgument: height`, sob uma
+//      matriz de cor `alfa <- curvature x alfa`; depois
+//      `clipLayerWithAlpha:1.0 mode:1` (`0x0000E134`).
+//   4. A forma TRACADA com largura `2 x height`, preenchida pelo gradiente
+//      conico centrado no meio do retangulo (257 paradas, `0x0000E448`).
+//   5. `drawLayerWithAlpha:(float)opacidade blendMode:` pela tabela `0x978F4`
+//      (`0x0000E500`).
+//
+// Ele nunca le `inset` nem `outsetOpacity`.
+//
+// `[INF]` ESTE RENDERIZADOR CONTINUA SEM TRANSCREVER ESSE CAMINHO INTEIRO. Ele
+// resolve os realces pelo MESMO `0x0004BD90` que o alvo usa nos dois lados -- e
+// que `resolveHighlight` ja e -- e os avalia com o corpo de
 // `glassHighlightFragment` sobre o campo de distancia do proprio chiclet. Os
-// NUMEROS sao `[BIN]`; a maquina que os converte em cobertura e `[INF]`, e o
-// que ela pode errar e a forma exata da queda angular perto dos cantos, onde a
-// normal do contorno e o angulo polar do centro deixam de coincidir. As
-// paradas do conico (`0x0000E1AC`-`0x0000E330`, passo `0x28`) nao foram lidas.
+// NUMEROS sao `[BIN]`; a maquina que os converte em cobertura e `[INF]`. Duas
+// coisas do rasterizador lido entram, porque sem elas a geracao 26 sai errada
+// a olho: o cone de pi exato acende o contorno INTEIRO (`chicletHighlightCone`)
+// e o `inset` nao e lido (`resolveChicletHighlight`). O resto fica como estava
+// e `kChicletRasteriserNote` diz o que: o perfil radial (o modo de renderizacao
+// 2 do RBShape e o `clipLayerWithAlpha mode:1` nao foram lidos; aqui e o
+// `shade` do shader do glifo), a convencao de angulo do conico (aqui a normal
+// do contorno, que nos cantos nao e o angulo polar do centro), a uniao dos
+// realces de uma passada (aqui um por vez), e os dois pisos `1e-6` (aqui o
+// `2^-10` do shader).
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -237,11 +310,26 @@
 #include "Source/RenderBox/GlassSpecular.h"
 #include "Source/RenderBox/GradientOracle.h"
 #include "Source/RenderBox/PixelGrid.h"
+#include "Source/RenderBox/RenderingParameters.h"
 
 namespace rb {
 
-// `[BIN]` O que `fill[+0x5B]` guarda, e o que `0x00062744` faz com ele.
-enum class ChicletAppearance : std::uint8_t { Default = 0, Bright = 1, Dim = 2 };
+// `[BIN]` O que `fill[+0x5B]` guarda, e o que `0x00062744` faz com ele, e
+// `ChicletAppearance` -- declarado em `GlassSpecular.h` desde 01/10, porque o
+// seletor do GLIFO (`0x000627B4`) troca pelo mesmo byte.
+
+// `[BIN]` O SELETOR DO CHICLET, `0x00062588`, inteiro (§2):
+//
+//     modo == chicletLuminance (geracao 27)
+//         renderingMode == .color   iconBrightness: 0 -> Default, 1 -> Bright,
+//                                   senao Dim                     0x00062744
+//         senao                     clear mode efetivo nil ? Screened : Clear
+//     modo == systemAppearance (geracao 26)
+//         aparencia escura ? Dim : Default                        0x00062698
+HighlightsSetKind chicletHighlightsSetFor(ChicletHighlightsAppearanceMode mode,
+                                          bool appearanceIsDark, bool colourMode,
+                                          ChicletAppearance iconBrightness,
+                                          bool effectiveClearModeIsNil);
 
 // `[BIN]` O par que `0x0001F10C` devolve: a menor e a maior LEVEZA HSL
 // `(max(r,g,b) + min(r,g,b)) / 2` entre as paradas do fill. Sem paradas,
@@ -258,28 +346,65 @@ ChicletLuminance chicletFillLuminance(const std::vector<RampPoint>& stops);
 ChicletLuminance chicletFillLuminance(const float rgb[3]);
 
 // `0x0001A920`-`0x0001A97C`. `simpleFill == false` devolve `Default` sem
-// classificar, que e o `mov w8, #0` de `0x0001A8C0`.
+// classificar, que e o `mov w8, #0` de `0x0001A8C0` -- e o que o nome chama de
+// "fill simples" e `renderingMode == .color` (§2.1).
 //
 // Os dois limiares entram com os valores que o preambulo escreve
 // (`Highlights+0x98` e `+0xA0`, pool `0x986E0` == `{0.2, 0.99}`), e
-// `onlyUsesMax` com o `false` de `0x00062AF8`.
+// `onlyUsesMax` com o `false` de `0x00062AF8` -- a geracao 27. A 26 liga
+// `iconBrightnessOnlyUsesMax` (`0x77848`); quem chama passa os tres do bloco.
 ChicletAppearance classifyChicletAppearance(const ChicletLuminance& l, bool simpleFill = true,
                                             bool onlyUsesMax = false,
                                             double maxDimLuminance = 0.2,
                                             double minBrightLuminance = 0.99);
 
-// `[BIN]` As SETE posicoes que `0x00030E88` monta a partir de um
-// `HighlightsSet` do chiclet, na ordem em que as monta. A sexta (`rim`) tem
-// `opacity == 0` e por isso nao pinta -- ela esta aqui porque esta la, e porque
-// um leitor que a visse sumir precisaria saber se ela foi descartada (como no
-// glifo, onde `rim` e `nil`) ou apenas nao pinta (como aqui).
+// `[BIN]` As SETE posicoes que `0x00030E88` monta a partir do `chicletDefault`
+// da geracao 27, na ordem em que as monta. A setima (`rim`) tem `opacity == 0`
+// e por isso nao pinta -- ela esta aqui porque esta la, e porque um leitor que
+// a visse sumir precisaria saber se ela foi descartada (como no glifo, onde
+// `rim` e `nil`) ou apenas nao pinta (como aqui). E
+// `expandedHighlights(G27, Chiclet, Default)` (`RenderingParameters.h`) sob o
+// nome antigo; o renderizador pede a lista da geracao e do conjunto que escolheu.
 const HighlightSlot* chicletHighlightSlots(std::size_t& count);
+
+// `[BIN]` O TERMO ANGULAR DO RASTERIZADOR DO CHICLET (§4, passo 1), na forma
+// que `glassHighlightFragment` consome: o cosseno do cone, ou -- no cone de pi
+// exato -- "aceso em todo o contorno".
+//
+//     0x0000DBA0  fmul d1, d11, #0.5 ; fdiv d1, d1, pi ; fadd d1, d1, #-0.5
+//     0x0000DBBC  fabs d11, d1                 ; |spread / (2 pi) - 0.5|
+//     0x0000DC50  fcmp d11, 1e-6 ; b.pl ...    ; menor: lit = 1.0 (fmov d4, #1.0)
+//
+// E a diferenca que a geracao 26 mostra: o `rim` dela tem `spread == pi` e
+// opacidade positiva, e pelo shader do glifo sairia `lit = (dot + 1) / 2` --
+// meia volta acesa em vez da volta inteira.
+struct ChicletCone {
+    double cone = 0.0;
+    bool alwaysLit = false;
+};
+ChicletCone chicletHighlightCone(double spread);
+
+// `resolveHighlight` para o lado do chiclet: o mesmo `0x0004BD90`, e depois o
+// `inset` zerado -- `[BIN]` `0x0000D904` le `height`, `curvature`, `spread`,
+// `bias`, a direcao, a cor, a opacidade e o modo, e nunca `+0x38`.
+GlassHighlightSettings resolveChicletHighlight(const HighlightSlot& slot,
+                                               const SpecularArguments& args);
+
+// Um fragmento do realce do chiclet: `highlightFragment` com o termo angular de
+// `chicletHighlightCone`.
+double chicletHighlightFragment(const GlassHighlightSettings& s, double sd, double nx,
+                                double ny);
+
+// O que deste rasterizador continua desenhado sem ter sido lido (§4). Vai no fim
+// de `chicletHighlightsNote`.
+extern const char* const kChicletRasteriserNote;
 
 // O contorno da pastilha que `drawChicletHighlights` usa para o campo, exposto
 // para o caminho residente (que faz o mesmo campo na GPU).
 std::vector<FieldContour> chicletFieldContours(std::uint32_t size, IconPlatform platform);
 
-// Compoe os realces do chiclet sobre `rgba` (pre-multiplicado, `size` x `size`,
+// Compoe os realces do chiclet -- os do conjunto `args.set` da geracao
+// `args.generation` -- sobre `rgba` (pre-multiplicado, `size` x `size`,
 // ja recortado a pastilha). Devolve quantos pixels distintos moveram.
 //
 // O campo de distancia e o do proprio contorno continuo de `ChicletShape.h`, e
@@ -305,6 +430,7 @@ std::size_t drawChicletHighlights(std::vector<float>& rgba, std::uint32_t size,
 // A frase que vai para `out.notes`: o que foi desenhado, com que conjunto, e o
 // que ficou por ler embaixo. `appearance` entra porque a classe medida e
 // informacao mesmo quando ela nao muda o pixel.
-std::string chicletHighlightsNote(ChicletAppearance appearance, const ChicletLuminance& l);
+std::string chicletHighlightsNote(DesignGeneration generation, HighlightsSetKind set,
+                                  ChicletAppearance appearance, const ChicletLuminance& l);
 
 }  // namespace rb

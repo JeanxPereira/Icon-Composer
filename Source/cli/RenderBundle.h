@@ -29,6 +29,8 @@
 #include "Source/RenderBox/IconRenderer.h"
 
 #include <cstdint>
+#include <optional>
+#include <string_view>
 
 namespace iccli {
 
@@ -41,10 +43,18 @@ namespace iccli {
 // (`icrender --repeat`). Os dois no padrao sao o render que decide os bytes.
 // `viewport` e o ladrilho do `icrender --tile`, para MEDIR o zoom profundo; no
 // padrao (o canvas inteiro) nada muda.
-rb::Result<rb::RenderedIcon> renderBundleIcon(rb::Device& device, const icf::IconBundle& bundle,
-                                              std::uint32_t size, int subdivisions,
-                                              icf::Context context, bool gpu = false,
-                                              rb::RenderCache* cache = nullptr,
-                                              rb::IconViewport viewport = {});
+// `generation` e o `icrender --generation 26|27`: o bloco de parametros com que
+// o icone e desenhado (`rb::DesignGeneration`). O padrao e a 27, a do render que
+// decide os bytes do export.
+rb::Result<rb::RenderedIcon> renderBundleIcon(
+    rb::Device& device, const icf::IconBundle& bundle, std::uint32_t size, int subdivisions,
+    icf::Context context, bool gpu = false, rb::RenderCache* cache = nullptr,
+    rb::IconViewport viewport = {},
+    rb::DesignGeneration generation = rb::DesignGeneration::G27);
+
+// "26" ou "27", a grafia do `--generation` das tres ferramentas. Qualquer outra
+// coisa e `nullopt`: uma geracao desconhecida e um erro de quem chamou, nunca
+// um padrao silencioso.
+std::optional<rb::DesignGeneration> designGenerationFromString(std::string_view text);
 
 }  // namespace iccli

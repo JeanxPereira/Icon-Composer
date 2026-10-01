@@ -22,6 +22,7 @@
 //      `defaultGradientPlacement()` -- calling it directly would test the
 //      constant and not the substitution, which is the part the draw path does.
 #include "check.h"
+#include "Source/RenderBox/RenderingParameters.h"
 #include "Source/RenderBox/SystemFill.h"
 
 #include <cmath>
@@ -277,33 +278,82 @@ TEST_CASE(system_fill_present_placement_is_not_replaced) {
     CHECK(axis.start.x > axis.end.x);
 }
 
-// THE GAP, GATED AS A GAP.
+// THE RECT, BOTH WAYS.
 //
-// `[BIN]` `supportsChicletAlignmentForSystemFills` is `true` by default
-// (`+0x360`, `strh w22,[x19,#0x360]` with `w22 = 1` at `0x5EDB0`), and `[BIN]`
-// the branch it guards fires only for `Contents == .system` (`0x1AD40`).
-// `[OBS]` The `CGSize` it takes from the drawing context at `+0x48` was not
-// read, so the alternative returns no rect at all. This test asserts the
-// ABSENCE: the moment someone fills that branch in with a plausible guess, this
-// fails and asks for the reading instead.
-TEST_CASE(system_fill_chiclet_aligned_rect_is_named_not_guessed) {
+// `[BIN]` `supportsChicletAlignmentForSystemFills` is `true` in generation 27
+// (`+0x360`, `strh w22,[x19,#0x360]` with `w22 = 1` at `0x5EDB0`) and `false`
+// in generation 26 (`0x7707C`), and the branch it guards fires only for
+// `Contents == .system` (`0x1AD40`). Set, the rect is origin `(0, 0)` -- three
+// zeroed registers at `0x1BAA0` -- with the size the drawing context carries at
+// `+0x48`, the canvas; clear, it is the shape's own bounding rect (`0x1BC8C`).
+//
+// This case asserted the ABSENCE of the aligned rect until 2026-10-01, and said
+// that whoever filled the branch in should bring the reading. That is the
+// reading; `SystemFill.h` carries the seals.
+TEST_CASE(system_fill_rect_is_the_canvas_when_aligned_and_the_shape_box_when_not) {
     const rb::PlacementRect bounds{10.0, 20.0, 200.0, 50.0};
+    const rb::PlacementRect canvas{0.0, 0.0, 512.0, 512.0};
 
-    const std::optional<rb::PlacementRect> drawn =
-        rb::systemFillRect(rb::SystemFillRectSource::BoundingRect, bounds);
-    REQUIRE(drawn.has_value());
-    CHECK(drawn->x == 10.0);
-    CHECK(drawn->y == 20.0);
-    CHECK(drawn->width == 200.0);
-    CHECK(drawn->height == 50.0);
+    const rb::PlacementRect own =
+        rb::systemFillRect(rb::SystemFillRectSource::BoundingRect, bounds, canvas);
+    CHECK(own.x == 10.0);
+    CHECK(own.y == 20.0);
+    CHECK(own.width == 200.0);
+    CHECK(own.height == 50.0);
 
-    const std::optional<rb::PlacementRect> chiclet =
-        rb::systemFillRect(rb::SystemFillRectSource::ChicletAligned, bounds);
-    CHECK(!chiclet.has_value());
+    const rb::PlacementRect aligned =
+        rb::systemFillRect(rb::SystemFillRectSource::ChicletAligned, bounds, canvas);
+    CHECK(aligned.x == 0.0);
+    CHECK(aligned.y == 0.0);
+    CHECK(aligned.width == 512.0);
+    CHECK(aligned.height == 512.0);
 
-    // The default is carried as read, and it is `true` -- so the branch this
-    // does not implement is the one the target normally takes for `.system`.
-    // Recording it here keeps the divergence in the gate rather than only in a
-    // comment.
-    CHECK(rb::kSupportsChicletAlignmentForSystemFills);
+    // The default vertical axis over each: the ramp of an aligned fill runs the
+    // whole canvas, whatever the shape.
+    const rb::GradientAxis axis = rb::placeGradient(std::nullopt, aligned);
+    CHECK(axis.start.y == 0.0);
+    CHECK(axis.end.y == 512.0);
+    const rb::GradientAxis ownAxis = rb::placeGradient(std::nullopt, own);
+    CHECK(ownAxis.start.y == 20.0);
+    CHECK(ownAxis.end.y == 70.0);
+
+    CHECK(rb::renderingParameters(rb::DesignGeneration::G27).supportsChicletAlignmentForSystemFills);
+    CHECK(!rb::renderingParameters(rb::DesignGeneration::G26).supportsChicletAlignmentForSystemFills);
+}
+
+// THE TWO RAMPS OF GENERATION 26, EXACT.
+//
+// `[BIN]` `0x76FC0` builds both again and stores them over `+0x80` and `+0x88`
+// (`0x77124`, `0x77190`): light `1.0 -> 0.925` (`0x770F8`-`0x77118`), dark
+// `0.19215686274509805 -> 0.0784313725490196` (`0x77154`-`0x77184`). Same
+// builder, so the same shape: two stops at 0 and 1, grey, alpha 1.
+TEST_CASE(system_fill_ramps_of_generation_26_are_exact) {
+    const rb::SystemGradients& g26 =
+        rb::renderingParameters(rb::DesignGeneration::G26).systemGradients;
+    const std::vector<rb::RampStop> light = rb::systemLightGradient(g26);
+    const std::vector<rb::RampStop> dark = rb::systemDarkGradient(g26);
+    REQUIRE(light.size() == 2u);
+    REQUIRE(dark.size() == 2u);
+    checkRampShape(light);
+    checkRampShape(dark);
+
+    CHECK(light[0].rgba[0] == 1.0);
+    CHECK(light[1].rgba[0] == 0.925);
+    CHECK(dark[0].rgba[0] == 0.19215686274509805);
+    CHECK(dark[1].rgba[0] == 0.0784313725490196);
+    // The dark pair is 49 and 20 two-hundred-and-fifty-fifths; 0.925 is not a
+    // 255th at all (it would be 235.875).
+    CHECK(dark[0].rgba[0] == 49.0 / 255.0);
+    CHECK(dark[1].rgba[0] == 20.0 / 255.0);
+
+    // Through the selector and the resolve, and generation 27 untouched by the
+    // parameter existing.
+    CHECK(rb::systemGradient(rb::SystemFill::Dark, g26)[0].rgba[0] == 49.0 / 255.0);
+    CHECK(rb::systemGradient(rb::SystemFill::Light, g26)[1].rgba[0] == 0.925);
+    CHECK(rb::resolveSystemFill(rb::SystemFill::Dark, 0.5, g26).stops[1].rgba[0] == 20.0 / 255.0);
+    CHECK(rb::resolveSystemFill(rb::SystemFill::Dark, 0.5, g26).stops[1].rgba[3] == 0.5);
+    const rb::SystemGradients& g27 =
+        rb::renderingParameters(rb::DesignGeneration::G27).systemGradients;
+    CHECK(rb::systemGradient(rb::SystemFill::Dark, g27)[0].rgba[0] == 31.0 / 255.0);
+    CHECK(rb::systemGradient(rb::SystemFill::Light, g27)[1].rgba[0] == 245.0 / 255.0);
 }

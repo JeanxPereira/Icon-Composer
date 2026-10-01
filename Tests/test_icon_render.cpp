@@ -736,6 +736,170 @@ TEST_CASE(a_half_transparent_layer_is_not_darkened) {
     CHECK(std::fabs(icon->rgba[c + 0] - 1.0f) < 0.02f);
 }
 
+// ---- the GROUP's own `hidden` and `opacity` -------------------------------
+//
+// Neither was read until 2026-10-01: the loop resolved `hidden` and `opacity`
+// off the LAYER only, so a hidden group drew and a half-transparent group drew
+// opaque, both with a clean report. `[ART]` 17 corpus groups are hidden and 26
+// carry an opacity other than 1.
+
+// `[BIN]` A hidden group never becomes an `Icon.Layer`: the converter
+// (`IconComposerKit` `0x10C494`) answers nil for it at `0x10C608`-`0x10C6D8`.
+// Nothing of it is drawn and -- like a hidden layer -- nothing is reported.
+TEST_CASE(a_hidden_group_is_neither_drawn_nor_reported_as_a_gap) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 64;
+
+    const TempBundle gone(groupWith("\"hidden\" : true,\n      "));
+    auto b = icf::IconBundle::open(gone.path());
+    REQUIRE(b.has_value());
+    auto dark = renderIcon(d, *b, o);
+    REQUIRE(dark.has_value());
+    CHECK_EQ(dark->drawn, std::size_t{0});
+    CHECK(dark->skipped.empty());          // hidden is not a gap
+    CHECK(dark->notes.empty());
+    CHECK_EQ(dark->total, std::size_t{1}); // the document still has the layer
+    CHECK(centreAlpha(*dark) < 0.01f);
+
+    // And `false` is the value that means "draw": without this the case above
+    // would pass for a reader that hid every group carrying the key.
+    const TempBundle shown(groupWith("\"hidden\" : false,\n      "));
+    auto s = icf::IconBundle::open(shown.path());
+    REQUIRE(s.has_value());
+    auto lit = renderIcon(d, *s, o);
+    REQUIRE(lit.has_value());
+    CHECK_EQ(lit->drawn, std::size_t{1});
+    CHECK(centreAlpha(*lit) > 0.9f);
+}
+
+// `[BIN]` The group's `opacity` is `FinalizedIcon.Layer.opacity` (`+0x38`,
+// copied at `0x19934`-`0x19940`) and it is the `alpha:` of the group's content
+// draw (`0x4B4EC`); the layer's is `Icon.Element.opacity`, applied when the
+// element goes INTO the group's image (`0x1AD9C`). Two fields, two draws, so
+// the two multiply: 0.4 alone, and 0.4 x 0.5 = 0.2 with both.
+TEST_CASE(a_groups_opacity_reaches_the_pixels_and_multiplies_the_layers) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 64;
+
+    const TempBundle group(groupWith("\"opacity\" : 0.4,\n      "));
+    auto gb = icf::IconBundle::open(group.path());
+    REQUIRE(gb.has_value());
+    auto alone = renderIcon(d, *gb, o);
+    REQUIRE(alone.has_value());
+    CHECK_EQ(alone->drawn, std::size_t{1});
+    CHECK(std::fabs(centreAlpha(*alone) - 0.4f) < 0.02f);
+    // White at 0.4 is still WHITE: the group's alpha must not be multiplied
+    // into the colour twice.
+    CHECK(std::fabs(channelAt(*alone, 32, 32, 0) - 1.0f) < 0.02f);
+
+    const std::string doc =
+        "{\n  \"groups\" : [\n    {\n      \"opacity\" : 0.4,\n      \"layers\" : [\n"
+        "        { \"image-name\" : \"square.svg\", \"name\" : \"only\", \"opacity\" : 0.5 }\n"
+        "      ]\n    }\n  ]\n}\n";
+    const TempBundle both(doc);
+    auto bb = icf::IconBundle::open(both.path());
+    REQUIRE(bb.has_value());
+    auto product = renderIcon(d, *bb, o);
+    REQUIRE(product.has_value());
+    CHECK(std::fabs(centreAlpha(*product) - 0.2f) < 0.02f);
+}
+
+// `[BIN]` THE HIGHLIGHTS FOLLOW THE GROUP'S OPACITY AND NOT THE LAYER'S. The
+// pass at `0x491C0` multiplies each highlight's alpha by `[descriptor+0x38]`
+// (`0x495F0`), which is `FinalizedIcon.Layer.opacity` -- the GROUP's. Until
+// 2026-10-01 this renderer fed it the layer's.
+//
+// The oracle is a RATIO, so no highlight value is pinned: the alpha is linear in
+// that factor, so a group at 0.02 draws fifty times less highlight than a group
+// at 1, and a LAYER at 0.02 inside a group at 1 draws all of it. Each render is
+// compared with its own twin that has `specular` off, so what is measured is
+// the highlight and nothing else.
+TEST_CASE(the_specular_follows_the_groups_opacity_and_not_the_layers) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 128;
+
+    auto highlight = [&](const std::string& groupOpacity, const std::string& layerOpacity) {
+        float worst = -1.0f;
+        std::vector<float> lit, flat;
+        for (const char* specular : {"true", "false"}) {
+            const TempBundle tb(twoGroups(
+                std::string("\"specular\" : ") + specular + ",\n      \"opacity\" : " +
+                    groupOpacity + ",\n      ",
+                ",\n          \"opacity\" : " + layerOpacity));
+            auto bundle = icf::IconBundle::open(tb.path());
+            if (!bundle) return worst;
+            auto icon = renderIcon(d, *bundle, o);
+            if (!icon) return worst;
+            (std::string(specular) == "true" ? lit : flat) = icon->rgba;
+        }
+        if (lit.size() != flat.size()) return worst;
+        worst = 0.0f;
+        for (std::size_t i = 0; i < lit.size(); ++i) {
+            worst = std::fmax(worst, std::fabs(lit[i] - flat[i]));
+        }
+        return worst;
+    };
+
+    const float byLayer = highlight("1", "0.02");
+    const float byGroup = highlight("0.02", "1");
+    std::printf("  highlight: layer at 0.02 -> %.5f, group at 0.02 -> %.5f\n", byLayer, byGroup);
+    // The highlight is really there...
+    CHECK(byLayer > 0.01f);
+    // ...and it is the GROUP's opacity that scales it: 0.02 of it, with a
+    // decade of headroom either side.
+    CHECK(byGroup >= 0.0f);
+    CHECK(byGroup < 0.1f * byLayer);
+}
+
+// `[BIN]` AND SO DOES THE SHADOW. Its alpha is `shadowOpacity x
+// Opacity[3 - sizeClass] x [descriptor+0x38]` (`0x4A06C`/`0x4A070`), and the
+// third factor is the same `FinalizedIcon.Layer.opacity` -- the GROUP's.
+//
+// A ratio again. The shadow is `neutral`, so it is black under `multiply` and
+// what it takes off an opaque red backdrop is exactly its own alpha: halving the
+// group's opacity halves the darkening. The probe sits BELOW the square, where
+// only the shadow reaches -- the square spans rows 64..192 at this size and the
+// shadow is its rim pushed 8 px down and blurred.
+TEST_CASE(the_shadow_follows_the_groups_opacity) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 256;
+
+    auto darkening = [&](const std::string& groupOpacity) {
+        const std::string doc =
+            "{\n  \"groups\" : [\n"
+            "    { \"opacity\" : " + groupOpacity + ",\n"
+            "      \"shadow\" : { \"kind\" : \"neutral\", \"opacity\" : 1.0 },\n"
+            "      \"specular\" : false,\n"
+            "      \"layers\" : [ { \"image-name\" : \"square.svg\", \"name\" : \"front\" } ] },\n"
+            "    { \"layers\" : [ { \"image-name\" : \"red.svg\", \"name\" : \"back\",\n"
+            "        \"glass\" : false,\n"
+            "        \"position\" : { \"scale\" : 2, \"translation-in-points\" : [0, 0] } } ] }\n"
+            "  ]\n}\n";
+        const TempBundle tb(doc);
+        auto bundle = icf::IconBundle::open(tb.path());
+        if (!bundle) return -1.0f;
+        auto icon = renderIcon(d, *bundle, o);
+        if (!icon || icon->glassShadowed != 1) return -1.0f;
+        return 1.0f - channelAt(*icon, 128, 200, 0);
+    };
+
+    const float full = darkening("1");
+    const float half = darkening("0.5");
+    std::printf("  shadow below the square: group at 1 takes %.5f, at 0.5 takes %.5f\n", full,
+                half);
+    CHECK(full > 0.02f);   // the shadow is really there
+    CHECK(half > 0.0f);
+    CHECK(std::fabs(half / full - 0.5f) < 0.02f);
+}
+
 // A raster whose transparent half carries red bytes. Sampled across the hard
 // edge WITHOUT premultiplying, the invisible red bleeds into the visible green
 // and the boundary pixel turns yellow-ish. Premultiplied, it cannot.
@@ -1052,4 +1216,448 @@ TEST_CASE(the_array_runs_front_to_back_at_both_levels) {
     // Layers inside one group: the same rule, one level down.
     CHECK(channelAt(*lWhite, 32, 32, 1) > 0.9f);
     CHECK(channelAt(*lRed, 32, 32, 1) < 0.1f);
+}
+
+// ---- the group, composited as ONE thing ------------------------------------
+//
+// `[BIN]` `FinalizedIcon.Layer` -- a document GROUP -- carries one image, one
+// SDF and one shadow image, and the compositor (`IconRendering` `0x48B74`) has
+// no element loop. Until 2026-10-01 this renderer ran every effect per LAYER and
+// let a layer's blend meet the whole icon. The cases below pin what moved, each
+// against the reading and none against a picture.
+
+namespace {
+
+// A group in FRONT of an opaque red backdrop that fills the canvas. `layers` is
+// the front group's layer array, verbatim, and `groupExtra` its other keys.
+std::string overRed(const std::string& groupExtra, const std::string& layers) {
+    return "{\n  \"groups\" : [\n    { " + groupExtra + "\"layers\" : [\n" + layers +
+           "\n      ] },\n"
+           "    { \"layers\" : [ { \"image-name\" : \"red.svg\", \"name\" : \"back\",\n"
+           "        \"glass\" : false,\n"
+           "        \"position\" : { \"scale\" : 2, \"translation-in-points\" : [0, 0] } } ] }\n"
+           "  ]\n}\n";
+}
+
+}  // namespace
+
+// `[BIN]` AN ELEMENT'S BLEND MEETS ITS OWN GROUP, NOT THE ICON. The finaliser
+// draws a group's elements into one list (`0x1A9D0`) and rasterises that alone
+// (`0x13590`), applying each element's opacity and blend inside it
+// (`0x1AD9C`/`0x1B448`): an element blends against the EARLIER ELEMENTS OF ITS
+// GROUP over transparent.
+//
+// Two red layers at half opacity, the upper one `plus-lighter`, over an opaque
+// red backdrop. Inside the group: `(0.5, 0, 0, 0.5)` plus `(0.5, 0, 0, 0.5)` is
+// `(1, 0, 0, 1)`, an opaque red, and that over the backdrop is the backdrop's
+// own red -- premultiplied red 1.0. Blended against the ICON, as it used to be,
+// the upper layer adds its 0.5 to a red that is already 1.0 and the pixel
+// reaches 1.5.
+TEST_CASE(a_layers_blend_meets_its_own_group_and_not_the_icon) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 64;
+    const TempBundle tb(overRed(
+        "\"specular\" : false, ",
+        "        { \"image-name\" : \"red.svg\", \"name\" : \"upper\", \"glass\" : false,\n"
+        "          \"opacity\" : 0.5, \"blend-mode\" : \"plus-lighter\" },\n"
+        "        { \"image-name\" : \"red.svg\", \"name\" : \"lower\", \"glass\" : false,\n"
+        "          \"opacity\" : 0.5 }"));
+    auto bundle = icf::IconBundle::open(tb.path());
+    REQUIRE(bundle.has_value());
+    auto icon = renderIcon(d, *bundle, o);
+    REQUIRE(icon.has_value());
+    CHECK_EQ(icon->drawn, std::size_t{3});
+    CHECK(icon->skipped.empty());
+    const float red = channelAt(*icon, 32, 32, 0) * alphaAt(*icon, 32, 32);
+    CHECK(std::fabs(red - 1.0f) < 0.02f);
+    CHECK(std::fabs(alphaAt(*icon, 32, 32) - 1.0f) < 0.02f);
+}
+
+// `[BIN]` THE TRANSLUCENCY IS A CLIP OVER THE WHOLE GROUP IMAGE. The content
+// pass opens with it (`0x4ACB4`-`0x4AD88`: `beginLayer`, the mask from the SDF,
+// `clipLayerWithAlpha:1 mode:0`) and draws the group's image under it, so it
+// fades every element the group's field covers -- the ones that do not take
+// part in the glass included. Until 2026-10-01 it multiplied only the glass
+// layer's own art, and a plain layer on top of it stayed opaque.
+//
+// The group here is a glass square with a PLAIN red square over it. The frame
+// is the glass square's, the image is the red one's, and the alpha at the
+// centre is the mask's own value there -- computed below from the transcribed
+// mask, not read off the render: `f = 1.0 x 0.5`, so the lower bound is
+// `1 - (1 - 0) * 0.5 = 0.5` against an upper bound of 1, the ramp runs down the
+// glass element's box, and the result goes through `a * a * (3 - 2a)`.
+//
+// `[BIN]` AND IN GENERATION 27 THE MASK IS A GRADIENT. `useSimpleMask` takes
+// the other branch of `0x0000FD28` (`0x0000FE04`-`0x0001064C`): an axial
+// gradient whose rect is the frame on the canvas, with no texture border. Until
+// 2026-10-01 this case computed the rect grown by the SDF's one-texel border,
+// because the mask drawn was generation 26's shader. The case below this one
+// holds what the gradient does that the shader does not.
+TEST_CASE(the_translucency_fades_the_whole_group_image_plain_layers_included) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 64;
+    const std::string doc =
+        "{\n  \"groups\" : [\n    { \"specular\" : false,\n"
+        "      \"translucency\" : { \"enabled\" : true, \"value\" : 0.5 },\n"
+        "      \"layers\" : [\n"
+        "        { \"image-name\" : \"red.svg\", \"name\" : \"plain\", \"glass\" : false },\n"
+        "        { \"image-name\" : \"square.svg\", \"name\" : \"glass\", \"glass\" : true }\n"
+        "      ] }\n  ]\n}\n";
+    const TempBundle tb(doc);
+    auto bundle = icf::IconBundle::open(tb.path());
+    REQUIRE(bundle.has_value());
+    auto icon = renderIcon(d, *bundle, o);
+    REQUIRE(icon.has_value());
+    CHECK_EQ(icon->drawn, std::size_t{2});
+    CHECK_EQ(icon->glassTranslucent, std::size_t{1});
+
+    // The glass square spans rows 16..48 of 64, and the gradient's rect is that
+    // box on the canvas: `v = (y - 16) / 32` at the pixel centre 32.5. The
+    // seventeen stops are `S(1 - 0.5 k/16)` and the cubic between two of them
+    // stays within a thousandth of `S` itself.
+    const double v = (32.5 - 16.0) / 32.0;
+    const double body = 1.0 + (0.5 - 1.0) * v;
+    const double mask = body * body * (3.0 - 2.0 * body);
+    std::printf("  centre alpha %.5f, mask %.5f\n", static_cast<double>(alphaAt(*icon, 32, 32)),
+                mask);
+    CHECK(std::fabs(alphaAt(*icon, 32, 32) - static_cast<float>(mask)) < 0.005f);
+    // And it is the PLAIN layer that was faded: the pixel is still red.
+    CHECK(channelAt(*icon, 32, 32, 0) > 0.98f);
+    CHECK(channelAt(*icon, 32, 32, 1) < 0.02f);
+
+}
+
+// `[BIN]` THE GRADIENT IS LAID ON AN INFINITE SHAPE (`setInfinite`,
+// `0x00010524`), so in generation 27 the mask has no silhouette: it fades the
+// group's image wherever there is image, inside the glass elements' field or
+// not. The frame it is measured in is still the glass elements' own.
+//
+// A plain red square over a glass square at HALF its size. The frame is the
+// small one's box, rows 24..40 of 64; the red one spans rows 16..48. Beside the
+// small square the red layer carries the row's mask to the float; above the
+// frame the ramp is held at its first stop, `S(1) = 1`; below it at its last,
+// `S(1 - 0.5) = 0.5`. Generation 26's shader leaves all three opaque: they are
+// outside the field.
+TEST_CASE(the_generation_27_mask_reaches_the_group_image_outside_the_glass) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    const std::string doc =
+        "{\n  \"groups\" : [\n    { \"specular\" : false,\n"
+        "      \"translucency\" : { \"enabled\" : true, \"value\" : 0.5 },\n"
+        "      \"layers\" : [\n"
+        "        { \"image-name\" : \"red.svg\", \"name\" : \"plain\", \"glass\" : false },\n"
+        "        { \"image-name\" : \"square.svg\", \"name\" : \"glass\", \"glass\" : true,\n"
+        "          \"position\" : { \"scale\" : 0.5, \"translation-in-points\" : [0, 0] } }\n"
+        "      ] }\n  ]\n}\n";
+    const TempBundle tb(doc);
+    auto bundle = icf::IconBundle::open(tb.path());
+    REQUIRE(bundle.has_value());
+    IconRenderOptions o;
+    o.size = 64;
+    auto g27 = renderIcon(d, *bundle, o);
+    REQUIRE(g27.has_value());
+    CHECK_EQ(g27->drawn, std::size_t{2});
+    CHECK_EQ(g27->glassTranslucent, std::size_t{1});
+    // The row through the middle: over the glass square and beside it.
+    CHECK(alphaAt(*g27, 32, 32) < 0.9f);
+    CHECK_EQ(alphaAt(*g27, 18, 32), alphaAt(*g27, 32, 32));
+    CHECK_EQ(alphaAt(*g27, 46, 32), alphaAt(*g27, 32, 32));
+    // Above the frame and below it, still on the red layer.
+    CHECK(std::fabs(alphaAt(*g27, 32, 18) - 1.0f) < 1e-5f);
+    CHECK(std::fabs(alphaAt(*g27, 32, 46) - 0.5f) < 1e-5f);
+    // No pixel is "missed": the blind-spot sentence has nothing to count.
+    for (const std::string& g : g27->shapeGaps) {
+        CHECK(g.find("translucidez aplicada com buraco") == std::string::npos);
+    }
+
+    o.generation = DesignGeneration::G26;
+    auto g26 = renderIcon(d, *bundle, o);
+    REQUIRE(g26.has_value());
+    CHECK_EQ(g26->glassTranslucent, std::size_t{1});
+    CHECK(alphaAt(*g26, 32, 32) < 0.9f);                       // inside the field: faded
+    CHECK(std::fabs(alphaAt(*g26, 18, 32) - 1.0f) < 1e-5f);    // beside it: the shader's `cov` is 0
+    CHECK(std::fabs(alphaAt(*g26, 32, 18) - 1.0f) < 1e-5f);
+    CHECK(std::fabs(alphaAt(*g26, 32, 46) - 1.0f) < 1e-5f);
+}
+
+// `[BIN]` THE SHADOW IS CAST FROM THE ART BEFORE THE MASK. The finaliser builds
+// `shadowImage` from a list of its own (`0x1C0DC`) through colour, translate,
+// blur and the ring clip (`0x19468`-`0x195CC`), and the translucency mask is
+// nowhere in that chain. Until 2026-10-01 this renderer cast it from the art
+// AFTER the mask, so a translucent group cast a thinner shadow.
+//
+// So switching the translucency on must not move the shadow. The probe sits
+// below the square, where only the shadow reaches (and where the overdraw, which
+// is clipped to the content, cannot), and the two renders must agree there to
+// the float -- same source, same blur, same backdrop.
+TEST_CASE(the_shadow_is_cast_from_the_art_before_the_translucency_mask) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 256;
+
+    auto render = [&](const char* translucency) -> std::optional<RenderedIcon> {
+        const TempBundle tb(overRed(
+            std::string("\"specular\" : false,\n"
+                        "      \"shadow\" : { \"kind\" : \"neutral\", \"opacity\" : 1.0 },\n"
+                        "      \"translucency\" : ") + translucency + ",\n      ",
+            "        { \"image-name\" : \"square.svg\", \"name\" : \"front\" }"));
+        auto bundle = icf::IconBundle::open(tb.path());
+        if (!bundle) return std::nullopt;
+        auto icon = renderIcon(d, *bundle, o);
+        if (!icon) return std::nullopt;
+        return std::move(*icon);
+    };
+    auto opaque = render("{ \"enabled\" : false, \"value\" : 0.5 }");
+    auto faded = render("{ \"enabled\" : true, \"value\" : 0.5 }");
+    REQUIRE(opaque && faded);
+    CHECK_EQ(opaque->glassShadowed, std::size_t{1});
+    CHECK_EQ(faded->glassShadowed, std::size_t{1});
+    CHECK_EQ(opaque->glassTranslucent, std::size_t{0});
+    CHECK_EQ(faded->glassTranslucent, std::size_t{1});
+
+    // The shadow is really there...
+    CHECK(1.0f - channelAt(*opaque, 128, 200, 0) > 0.02f);
+    // ...and the mask did not touch it.
+    for (int k = 0; k < 4; ++k) {
+        CHECK_EQ(channelAt(*faded, 128, 200, k), channelAt(*opaque, 128, 200, k));
+    }
+    // While the art itself WAS faded, or the case would pass with the mask off.
+    CHECK(alphaAt(*faded, 128, 128) > 0.9f);   // over an opaque backdrop
+    CHECK(channelAt(*faded, 128, 128, 1) < channelAt(*opaque, 128, 128, 1) - 0.05f);
+}
+
+// `[BIN]` THE OVERDRAW RUNS ONLY OVER A GROUP THAT BLENDS NORMALLY. `0x4ADBC`
+// (and `0x45F10`) require the byte at `[descriptor+0x31]` to be zero before the
+// pass opens, and that byte is `FinalizedIcon.Layer.blendMode`: the group's
+// `blend-mode`, where zero is `normal`. Until 2026-10-01 the gate was carried as
+// unread and the pass ran over every group.
+//
+// The main shadow has no such gate, so it is the control: one shadow either
+// way, and the second composite only without the blend.
+TEST_CASE(the_shadow_overdraw_is_gated_on_a_normal_group_blend) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 128;
+
+    auto render = [&](const char* blend) -> std::optional<RenderedIcon> {
+        const TempBundle tb(overRed(
+            std::string("\"specular\" : false,\n"
+                        "      \"blend-mode\" : \"") + blend + "\",\n"
+                        "      \"shadow\" : { \"kind\" : \"neutral\", \"opacity\" : 1.0 },\n"
+                        "      \"translucency\" : { \"enabled\" : true, \"value\" : 0.5 },\n      ",
+            "        { \"image-name\" : \"square.svg\", \"name\" : \"front\" }"));
+        auto bundle = icf::IconBundle::open(tb.path());
+        if (!bundle) return std::nullopt;
+        auto icon = renderIcon(d, *bundle, o);
+        if (!icon) return std::nullopt;
+        return std::move(*icon);
+    };
+    auto normal = render("normal");
+    auto blended = render("plus-lighter");
+    REQUIRE(normal && blended);
+    CHECK_EQ(normal->glassShadowed, std::size_t{1});
+    CHECK_EQ(blended->glassShadowed, std::size_t{1});
+    CHECK_EQ(normal->glassShadowOverdrawn, std::size_t{1});
+    CHECK_EQ(blended->glassShadowOverdrawn, std::size_t{0});
+}
+
+// `[BIN]` ONE OF EACH PER GROUP. Three glass layers in one group, with every
+// effect the material has: the group casts ONE shadow from its flattened source
+// (`0x1C0DC`), refracts ONCE (`0x4A5E4`), is clipped by ONE mask (`0x4ACB4`) and
+// is lit by ONE highlight pass (`0x491C0`). Until 2026-10-01 each layer did all
+// four, and the counters said three.
+//
+// The three squares are staggered so the group has a silhouette no single layer
+// has, and the layers are still counted one by one where they belong: `drawn`.
+TEST_CASE(a_groups_glass_effects_run_once_per_group_and_not_per_layer) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 128;
+    auto layer = [](const char* name, int tx, int ty) {
+        return std::string("        { \"image-name\" : \"square.svg\", \"name\" : \"") + name +
+               "\",\n          \"position\" : { \"scale\" : 0.6, \"translation-in-points\" : [" +
+               std::to_string(tx) + ", " + std::to_string(ty) + "] } }";
+    };
+    const TempBundle tb(overRed(
+        "\"specular\" : true,\n"
+        "      \"shadow\" : { \"kind\" : \"neutral\", \"opacity\" : 1.0 },\n"
+        "      \"translucency\" : { \"enabled\" : true, \"value\" : 0.5 },\n"
+        "      \"refractivity\" : { \"enabled\" : true, \"depth\" : 0.25, \"strength\" : -0.1 },\n"
+        "      ",
+        layer("a", -150, -150) + ",\n" + layer("b", 0, 0) + ",\n" + layer("c", 150, 150)));
+    auto bundle = icf::IconBundle::open(tb.path());
+    REQUIRE(bundle.has_value());
+    auto icon = renderIcon(d, *bundle, o);
+    REQUIRE(icon.has_value());
+    CHECK_EQ(icon->drawn, std::size_t{4});   // the three, and the backdrop
+    CHECK(icon->skipped.empty());
+    CHECK_EQ(icon->glassShadowed, std::size_t{1});
+    CHECK_EQ(icon->glassShadowOverdrawn, std::size_t{1});
+    CHECK_EQ(icon->glassTranslucent, std::size_t{1});
+    CHECK_EQ(icon->glassRefracted, std::size_t{1});
+    CHECK_EQ(icon->glassSpecular, std::size_t{1});
+    // And the stack that makes one field out of three says so.
+    bool stacked = false;
+    for (const std::string& n : icon->notes) {
+        if (n == kFieldStackNote) stacked = true;
+    }
+    CHECK(stacked);
+}
+
+// ---- `lighting`: one field per group, built two ways -----------------------
+
+namespace {
+
+// Two glass squares that ABUT: 256 points a side, the left one ending and the
+// right one starting on the canvas's centre line, over an opaque red backdrop.
+// `lighting` is the group key verbatim (with its trailing comma), or empty.
+std::string abuttingGlass(const std::string& lighting, bool specular) {
+    return overRed(
+        lighting + "\"specular\" : " + (specular ? "true" : "false") + ",\n      ",
+        "        { \"image-name\" : \"square.svg\", \"name\" : \"right\",\n"
+        "          \"position\" : { \"scale\" : 0.5, \"translation-in-points\" : [128, 0] } },\n"
+        "        { \"image-name\" : \"square.svg\", \"name\" : \"left\",\n"
+        "          \"position\" : { \"scale\" : 0.5, \"translation-in-points\" : [-128, 0] } }");
+}
+
+// The largest change the highlights make in a window astride the seam, halfway
+// down it: each render against its own twin with `specular` off, so nothing but
+// the highlight pass is measured. At 256 px the squares span x 64..128 and
+// 128..192 and y 96..160, so the window is 32 px from the top and the bottom
+// edges -- five times the reach of the widest highlight (24 points, 6 px).
+float seamHighlight(Device& d, const std::string& lighting, std::vector<std::string>* notes) {
+    IconRenderOptions o;
+    o.size = 256;
+    std::vector<float> lit, flat;
+    for (const bool specular : {true, false}) {
+        const TempBundle tb(abuttingGlass(lighting, specular));
+        auto bundle = icf::IconBundle::open(tb.path());
+        if (!bundle) return -1.0f;
+        auto icon = renderIcon(d, *bundle, o);
+        if (!icon || icon->drawn != 3) return -1.0f;
+        if (specular && notes) *notes = icon->notes;
+        (specular ? lit : flat) = icon->rgba;
+    }
+    float worst = 0.0f;
+    for (std::uint32_t y = 118; y < 138; ++y) {
+        for (std::uint32_t x = 122; x < 134; ++x) {
+            for (int k = 0; k < 4; ++k) {
+                const std::size_t i = (static_cast<std::size_t>(y) * 256 + x) * 4 + k;
+                worst = std::fmax(worst, std::fabs(lit[i] - flat[i]));
+            }
+        }
+    }
+    return worst;
+}
+
+bool says(const std::vector<std::string>& notes, const char* note) {
+    for (const std::string& n : notes) {
+        if (n == note) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+// `[BIN]` `lighting` IS `performsLightingByElement`, AND IT DECIDES HOW THE
+// GROUP'S ONE FIELD IS BUILT (`IconRendering` `0x1CB90`, the branch at
+// `0x1CDD8`). Element by element, every glass element gets a field of its own
+// and they are stacked, so each keeps its own rim. `combined`, all the
+// silhouettes go into ONE list and one field is taken of it: the field of the
+// UNION, in which a seam between two elements is deep inside the shape.
+//
+// So where two glass squares abut, `individual` puts a highlight along the seam
+// and `combined` puts NONE -- not a fainter one. The seam's middle is 32 px from
+// the union's nearest edge and no highlight reaches past 6, so the highlight
+// pass leaves those pixels exactly as it found them.
+//
+// `[BIN]` And a MISSING key is `individual`: the converter passes
+// `cmp w19, #0; cset w3, eq` (`IconComposerKit` `0x10CA38`-`0x10CB08`), case 0
+// is `individual`, and the key's default is 0 (`IconComposerFoundation`
+// `0x90978`). Until 2026-10-01 the key was read and nothing consumed it.
+TEST_CASE(combined_lighting_draws_no_rim_where_two_glass_elements_meet) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+
+    std::vector<std::string> individualNotes, combinedNotes, absentNotes;
+    const float individual =
+        seamHighlight(d, "\"lighting\" : \"individual\",\n      ", &individualNotes);
+    const float combined =
+        seamHighlight(d, "\"lighting\" : \"combined\",\n      ", &combinedNotes);
+    const float absent = seamHighlight(d, "", &absentNotes);
+    std::printf("  highlight on the seam: individual %.5f, combined %.5f, no key %.5f\n",
+                individual, combined, absent);
+
+    CHECK(individual > 0.01f);         // a rim along the seam
+    CHECK_EQ(combined, 0.0f);          // and none at all in the union
+    CHECK_EQ(absent, individual);      // no key is `individual`, to the float
+
+    // Each mode says which field it built, and only that one.
+    CHECK(says(individualNotes, kFieldStackNote));
+    CHECK(!says(individualNotes, kCombinedFieldNote));
+    CHECK(says(combinedNotes, kCombinedFieldNote));
+    CHECK(!says(combinedNotes, kFieldStackNote));
+    CHECK(says(absentNotes, kFieldStackNote));
+}
+
+// `[BIN]` THE QUIRK OF THE COMBINED LIST, reproduced and not corrected. The loop
+// that draws the silhouettes is `isOpaque = isOpaque && draw(element)`
+// (`0x1D15C`-`0x1D194`), and the draw answers 0 for raster content (`0x1B6FC`).
+// `&&` stops evaluating once its left side is false, so the first RASTER glass
+// element is drawn and every glass element after it -- in front of it -- is not.
+//
+// So a vector glass layer in front of a raster one shapes nothing: the field is
+// the same as if that layer did not take part in the glass at all. With no
+// shadow and no translucency the field is the only thing its `glass` bit
+// reaches, and the two documents must then render to the same floats.
+TEST_CASE(combined_lighting_leaves_out_the_glass_elements_after_the_first_raster) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    IconRenderOptions o;
+    o.size = 128;
+
+    auto render = [&](const char* frontGlass) -> std::optional<RenderedIcon> {
+        const TempBundle tb(overRed(
+            "\"lighting\" : \"combined\",\n      \"specular\" : true,\n      ",
+            std::string("        { \"image-name\" : \"square.svg\", \"name\" : \"front\",\n"
+                        "          \"glass\" : ") + frontGlass + ",\n"
+                        "          \"position\" : { \"scale\" : 0.4, \"translation-in-points\" : [150, 150] } },\n"
+                        "        { \"image-name\" : \"edge.png\", \"name\" : \"raster\",\n"
+                        "          \"position\" : { \"scale\" : 6, \"translation-in-points\" : [-150, 0] } },\n"
+                        "        { \"image-name\" : \"square.svg\", \"name\" : \"back\",\n"
+                        "          \"position\" : { \"scale\" : 0.4, \"translation-in-points\" : [150, -150] } }"));
+        auto bundle = icf::IconBundle::open(tb.path());
+        if (!bundle) return std::nullopt;
+        auto icon = renderIcon(d, *bundle, o);
+        if (!icon) return std::nullopt;
+        return std::move(*icon);
+    };
+    auto glass = render("true");
+    auto plain = render("false");
+    REQUIRE(glass && plain);
+    CHECK_EQ(glass->drawn, std::size_t{4});
+    CHECK(glass->skipped.empty());
+    CHECK_EQ(glass->glassSpecular, std::size_t{1});
+
+    // The quirk is said, and only where it bites: in `plain` nothing comes
+    // after the raster that the field would have taken.
+    CHECK(says(glass->notes, kCombinedRasterNote));
+    CHECK(!says(plain->notes, kCombinedRasterNote));
+    CHECK(says(plain->notes, kCombinedFieldNote));
+
+    REQUIRE(glass->rgba.size() == plain->rgba.size());
+    std::size_t differing = 0;
+    for (std::size_t i = 0; i < glass->rgba.size(); ++i) {
+        if (glass->rgba[i] != plain->rgba[i]) ++differing;
+    }
+    std::printf("  front glass layer left out: %zu of %zu components differ\n", differing,
+                glass->rgba.size());
+    CHECK_EQ(differing, std::size_t{0});
 }

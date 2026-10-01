@@ -34,6 +34,7 @@ add_executable(ic_tests EXCLUDE_FROM_ALL
     test_render_cache.cpp
     test_rb_gradient.cpp
     test_auto_gradient.cpp
+    test_color_space.cpp
     test_rb_glass.cpp
     test_rb_displacement.cpp
     test_rb_field.cpp
@@ -53,6 +54,8 @@ add_executable(ic_tests EXCLUDE_FROM_ALL
     test_stroke_render.cpp
     test_automatic_fill.cpp
     test_chiclet_highlights.cpp
+    test_rendering_parameters.cpp
+    test_generation_effects.cpp
     test_chiclet_shape.cpp
     test_time_budget.cpp
 )

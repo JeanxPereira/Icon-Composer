@@ -280,3 +280,42 @@ TEST_CASE(an_untranscribed_mode_says_so_instead_of_pretending) {
     const BlendColour over = rb::blend(BlendMode::Normal, src, dst);
     for (int k = 0; k < 4; ++k) CHECK(near(fell.rgba[k], over.rgba[k]));
 }
+
+// OVER NOTHING, EVERY TRANSCRIBED MODE IS THE SOURCE. The renderer leans on it:
+// `[BIN]` a group's elements are rasterised alone into the group's image
+// (`IconRendering` `0x1A9D0`, `0x13590`), so the FIRST element of a group blends
+// against transparent whatever its `blend-mode` says, and `IconRenderer.cpp`
+// composites it as `normal`. That is only the same picture if blending over
+// transparent leaves the source alone, and for a mode where it did not, the
+// group of one element -- drawn straight from its own art -- would be wrong.
+//
+// It was `[INF]` until this case: the tail `s*(1-ab) + d*(1-as)` is `s` at
+// `d = 0`, every `B` term carries a factor of `ab`, `screen` is `s + d*(1-s)`,
+// and the plus pair saturates a sum that is already in range.
+TEST_CASE(every_transcribed_mode_over_transparent_is_the_source) {
+    const BlendMode modes[] = {
+        BlendMode::Normal,    BlendMode::Darken,     BlendMode::Multiply,
+        BlendMode::ColorBurn, BlendMode::PlusDarker, BlendMode::Lighten,
+        BlendMode::Screen,    BlendMode::ColorDodge, BlendMode::PlusLighter,
+        BlendMode::Overlay,   BlendMode::SoftLight,  BlendMode::HardLight,
+        BlendMode::Difference, BlendMode::Exclusion, BlendMode::Hue,
+        BlendMode::Saturation, BlendMode::Color,     BlendMode::Luminosity,
+    };
+    const BlendColour nothing{{0.0, 0.0, 0.0, 0.0}};
+    const BlendColour sources[] = {
+        premul(0.9, 0.1, 0.4, 1.0), premul(0.9, 0.1, 0.4, 0.6), premul(1.0, 1.0, 1.0, 0.25),
+        premul(0.0, 0.0, 0.0, 0.5), premul(0.3, 0.7, 0.2, 0.0),
+    };
+    std::size_t transcribed = 0;
+    for (BlendMode m : modes) {
+        if (!rb::blendIsTranscribed(m)) continue;
+        ++transcribed;
+        for (const BlendColour& s : sources) {
+            const BlendColour got = rb::blend(m, s, nothing);
+            for (int k = 0; k < 4; ++k) CHECK(near(got.rgba[k], s.rgba[k]));
+        }
+    }
+    // The nine `IconRenderer.cpp` counts, at least: a mode that stopped being
+    // transcribed would otherwise leave this case passing over fewer of them.
+    CHECK(transcribed >= 9);
+}

@@ -1,0 +1,118 @@
+#version 450
+// O BRILHO INTERNO DA GERACAO 26, NA GPU: o laco por pixel de `drawGlow`
+// (GlassGlow.cpp) sobre o alvo pre-multiplicado, lendo o campo que ja mora aqui.
+// GlassGlow.h tem a leitura do alvo (IconRendering 0x48C20-0x48DA8, 0xF534, e o
+// fragmento `glow` de default_mod10.ll).
+//
+// Os argumentos chegam RESOLVIDOS da CPU (`glowArguments`): o raio, o
+// `1/bias - 2`, a alfa, o alcance em que a profundidade satura, as duas larguras
+// de borda e o retangulo de recorte. Tudo em double, com `precise` em cada conta
+// e na MESMA ordem da CPU -- inclusive a exponencial, que nao e a `exp` do
+// aparelho: e `glowGaussian`, reducao por `ln 2`, polinomio e metades, so com
+// soma, produto, divisao e um truncamento. Entao cada float sai igual ao da CPU.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) buffer Acc { vec4 acc[]; };
+layout(std430, binding = 1) readonly buffer Field { vec4 field[]; };
+
+layout(push_constant) uniform Push {
+    double radius;
+    double biasAmount;
+    double alpha;
+    double maxDistance;
+    double edgeWidth;
+    double edgeWidthFlat;
+    double clip0, clip1, clip2, clip3;
+    uint w, h;
+    int ox, oy;          // a origem do alvo na grade do canvas
+    uint fw;             // o campo pode ser de outra grade: a largura dele e
+    int fx, fy;          // onde o pixel (0, 0) do alvo cai nele
+} p;
+
+const double kEps = 0.0009765625lf;
+
+double sat(double v) { return v < 0.0lf ? 0.0lf : (v > 1.0lf ? 1.0lf : v); }
+
+// `glowGaussian`.
+double gaussian(double x) {
+    const double kInvLn2 = 1.4426950408889634lf;
+    const double kLn2Hi = 0.693147180369123816490lf;
+    const double kLn2Lo = 1.90821492927058770002e-10lf;
+    precise double xx = x * x;
+    precise double y = 0.5lf * xx;
+    if (!(y < 700.0lf)) return 0.0lf;
+    precise double scaled = y * kInvLn2 + 0.5lf;
+    int halvings = int(scaled);
+    double k = double(halvings);
+    precise double r0 = y - k * kLn2Hi;
+    precise double r = r0 - k * kLn2Lo;
+    double pp = 1.0lf;
+    for (int n = 13; n >= 1; --n) {
+        precise double q = r / double(n);
+        precise double t = 1.0lf - q * pp;
+        pp = t;
+    }
+    for (int i = 0; i < halvings; ++i) {
+        precise double hlf = pp * 0.5lf;
+        pp = hlf;
+    }
+    return pp;
+}
+
+// `glowFragment`.
+double fragmentOf(double depth) {
+    double d = depth;
+    bool flat_ = false;
+    if (d >= p.maxDistance) {
+        d = p.maxDistance;
+        flat_ = true;
+    } else if (d <= -p.maxDistance) {
+        d = -p.maxDistance;
+        flat_ = true;
+    }
+    precise double x = d / p.radius;
+    double g = gaussian(x);
+    precise double denom = 1.0lf + (1.0lf - g) * p.biasAmount;
+    double den = denom > kEps ? denom : kEps;
+    double fw = flat_ ? p.edgeWidthFlat : p.edgeWidth;
+    precise double e0 = x / fw + 0.5lf;
+    double edge = sat(e0);
+    precise double r = edge * g / den;
+    return r;
+}
+
+// `glowClipCoverage`.
+double clipOf(double x, double y) {
+    double x0 = x > p.clip0 ? x : p.clip0;
+    precise double xe = x + 1.0lf;
+    double x1 = xe < p.clip2 ? xe : p.clip2;
+    double y0 = y > p.clip1 ? y : p.clip1;
+    precise double ye = y + 1.0lf;
+    double y1 = ye < p.clip3 ? ye : p.clip3;
+    precise double cw = x1 - x0;
+    precise double ch = y1 - y0;
+    precise double c = sat(cw) * sat(ch);
+    return c;
+}
+
+void main() {
+    uvec2 g = gl_GlobalInvocationID.xy;
+    if (g.x >= p.w || g.y >= p.h) return;
+    uint i = g.y * p.w + g.x;
+    vec4 f = field[uint(int(g.y) + p.fy) * p.fw + uint(int(g.x) + p.fx)];
+    double depth = -double(f.x);
+    double fr = fragmentOf(depth);
+    if (fr <= 0.0lf) return;
+    double clip = clipOf(double(int(g.x) + p.ox), double(int(g.y) + p.oy));
+    if (clip <= 0.0lf) return;
+    precise double cov = fr * clip;
+    precise double alpha = cov * p.alpha;
+    vec4 px = acc[i];
+    for (int c = 0; c < 3; ++c) {
+        precise double v = alpha + double(px[c]);
+        px[c] = float(v);
+    }
+    precise double va = alpha + double(px.a);
+    px.a = float(sat(va));
+    acc[i] = px;
+}

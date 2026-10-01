@@ -88,6 +88,7 @@
 #include <vector>
 
 #include "Source/RenderBox/BlendMode.h"
+#include "Source/RenderBox/DesignGeneration.h"
 #include "Source/RenderBox/DistanceField.h"
 #include "Source/RenderBox/GlassMaterial.h"
 #include "Source/RenderBox/GlassTranslucency.h"
@@ -220,8 +221,17 @@ bool documentAsksForSpecular(const DenormalisedGlass& glass);
 // around this struct, which is how the whole thing stays 257 bytes and how a
 // disabled highlight is spelled: `0x00035450` reads `+0x100` and returns
 // `max(0, byte - 18)`, so **19 means `HighlightSettings? == nil`**;
-// `0x00033F04` uses 19 as `FillHighlights.matchKey`; `0x00035470` uses 20 as
-// `FillHighlights? == nil`. Three tag readers, one byte, no extra storage.
+// `0x00033F04` returns `max(0, byte - 19)`, so **20 is
+// `FillHighlights.matchKey`**; `0x00035470` returns `max(0, byte - 20)`, so
+// **21 is `FillHighlights? == nil`**. Three tag readers, one byte, no extra
+// storage -- and the three writers agree: `0x00033DE4` stores `0x13`,
+// `0x00033FA4` stores `0x14`, `0x00033E14` stores `0x15`.
+//
+// THE CORRECTION OF 2026-10-01. This paragraph read the last two one off --
+// "19 as matchKey, 20 as nil" -- and so did
+// `Docs/Laudos/2026-09-15-highlights.md` (§1.2 and §3). It is what made the
+// glyph's `fillDiffuse`, which the factory writes with `0x00033FA4`, look nil
+// when it is `matchKey`: see THE EXPANSION, below.
 //
 // THE SELECTION RULE, MEASURED
 // ----------------------------
@@ -240,13 +250,17 @@ bool documentAsksForSpecular(const DenormalisedGlass& glass);
 //         // (0x00040E60 / 0x0006D6B0) choose
 //         glyphsScreened or glyphsClear
 //
-// `[OBS]` What `fill[+0x5B]` IS was not read. Its three-way shape and the
-// preamble's `maxDimChicletLuminance = 0.2` / `minBrightChicletLuminance = 0.99`
-// (`Highlights+0x98`, `+0xA0`) say luminance class, but the write was not
-// found. IT DOES NOT MATTER FOR THIS VERSION'S PIXELS, and that is `[BIN]`:
-// `0x00063AEC`-`0x00063BF4` builds all five glyph sets by calling the SAME
-// factory `0x00064604` with the SAME three arguments. The five differ by
-// nothing. Measuring the index harder would change no pixel here.
+// `[BIN]` BOTH HALVES OF THAT ARE READ NOW, and `glyphHighlightsSetFor` below
+// carries the reading. `fill[+0x5B]` is `iconBrightness`
+// (`ChicletHighlights.h` §2.1 found its writer), and the test that guards the
+// switch is not about a fill at all: the five words and the tag are the
+// icon's RENDERING MODE, and the two "shape comparisons" are an Optional
+// equality of the effective clear mode against nil.
+//
+// `[BIN]` In generation 27 the choice moves no pixel: `0x00063AEC`-`0x00063BF4`
+// builds all five glyph sets by calling the SAME factory `0x00064604` with the
+// SAME three arguments. In generation 26 it does -- `0x76FC0` rewrites four of
+// the five and `glyphsBright` is not `glyphsDefault` (`RenderingParameters.h`).
 //
 // THE EXPANSION: ONE SET BECOMES UP TO SEVEN HIGHLIGHTS
 // -----------------------------------------------------
@@ -265,8 +279,11 @@ bool documentAsksForSpecular(const DenormalisedGlass& glass);
 //     6  rim                               0             glyphHighlight*  no
 //
 // then `0x00031338`-`0x000313EC` drops every slot whose settings were nil.
-// `[BIN]` With this version's glyph defaults `fillDiffuse` and `rim` ARE nil,
-// so **five highlights survive**, and the dark one is drawn twice, mirrored.
+// `[BIN]` With generation 27's glyph defaults only `rim` is nil, so **six
+// highlights survive**: the fourth is `keyDiffuse` again at `+pi`, because
+// `fillDiffuse` is `matchKey`, and the dark one is drawn twice, mirrored.
+// (Until 2026-10-01 this said five -- the tag correction above.) Generation
+// 26's glyph sets leave two: `keySharp` and the rim.
 //
 // THE RESOLUTION, FIELD BY FIELD
 // ------------------------------
@@ -278,7 +295,7 @@ bool documentAsksForSpecular(const DenormalisedGlass& glass);
 //     height    = max(distance[k], minDistancePixels[k] * pixelUnit)   0x0004BF00
 //     inset     = max(inset[k],    minInsetPixels[k]    * pixelUnit)   0x0004BF2C
 //                 minInsetPixels == nil feeds -INFINITY there          0x0004BF20
-//     theta     = angleFromKey + lightLongitude                        0x0004BEF8
+//     theta     = angleFromKey + light.longitude                       0x0004BEF8
 //     direction = (cos(phi)*sin(theta), cos(phi)*cos(theta), sin(phi)) 0x0004C014
 //     opacity   = ctx[0] * opacity[k]                                  0x0004C0A8
 //     colour    = (brightness, brightness, brightness, 1.0)            0x0004C0AC
@@ -321,7 +338,8 @@ bool documentAsksForSpecular(const DenormalisedGlass& glass);
 //      `ctx[0x20] == 1`, so `phi == 0` is at least a state the target has.
 //   2. `0x00012550`, a 1.5 KB post-pass over the resolved settings (the
 //      `spatialHighlighting` parameters, `params+0x258`). Not followed.
-//   3. `fill[+0x5B]`, above: three-way, source unread, and inert in 2.0-125.
+//   3. (closed 2026-10-01: `fill[+0x5B]` is `iconBrightness`, read -- THE
+//      SELECTION RULE, above.)
 //   4. The SDF texel encoding, which `GlassTranslucency.h` already carries as
 //      `[OBS]`. Here the `.gb` normal joins it: this file feeds the shader the
 //      field's own gradient, normalised, and the target feeds it `1 - 2*tex.gb`.
@@ -469,7 +487,7 @@ double highlightSizeValue(const HighlightSizeValue& v, IconSizeClass sizeClass);
 struct HighlightSettings {
     double brightness = 0.0;
     HighlightSizeValue opacity;
-    HighlightSizeValue outsetOpacity;      // `present == false` in four of five
+    HighlightSizeValue outsetOpacity;      // nil everywhere but 27's glyph `dark`
     HighlightSizeValue distance;           // -> the shader's `height`
     HighlightSizeValue minDistancePixels;
     HighlightSizeValue inset;
@@ -492,8 +510,97 @@ struct HighlightSlot {
     bool isDarklight = false;
 };
 
-// `[BIN]` The five that survive for a GLYPH in 2.0-125, in draw order.
-// Identical for all five `glyphs*` sets -- see the note above.
+// `[BIN]` One member of a `HighlightsSet` whose type is `HighlightSettings?`:
+// `keySharp`, `keyDiffuse`, `dark`, `rim`. The Optional has no storage of its
+// own -- it is the byte at `+0x100`, read by `0x00035450`, where `0x13` is nil
+// (the writer is `0x00033DE4`).
+struct OptionalHighlight {
+    bool present = false;
+    HighlightSettings settings;
+};
+
+// `[BIN]` `FillHighlights?`, the type of `fillSharp` and `fillDiffuse`, spelled
+// by the same byte through two more readers:
+//
+//     0x15  `FillHighlights? == nil`      reader 0x00035470, writer 0x00033E14
+//     0x14  `FillHighlights.matchKey`     reader 0x00033F04, writer 0x00033FA4
+//     0x13  `.custom(nil)`                reader 0x00035450
+//     else  `.custom(settings)`           (the byte is the blend override)
+enum class FillHighlightsKind : std::uint8_t { None, MatchKey, Custom };
+
+struct FillHighlights {
+    FillHighlightsKind kind = FillHighlightsKind::None;
+    OptionalHighlight custom;   // read only when `kind == Custom`
+};
+
+// `[BIN]` `IconRendering.HighlightsSet`, six members at stride `0x108`.
+struct HighlightsSet {
+    OptionalHighlight keySharp;
+    OptionalHighlight keyDiffuse;
+    FillHighlights fillSharp;
+    FillHighlights fillDiffuse;
+    OptionalHighlight dark;
+    OptionalHighlight rim;
+};
+
+// `[BIN]` `0x00030E88`, the table in the header above, as a function: seven
+// slots written in order, the empty ones dropped. A fill slot is empty when the
+// member is nil, takes the WHOLE key member (`keySharp` for the sharp one,
+// `keyDiffuse` for the diffuse one) when it is `matchKey` (`csel x1, x8, x20,
+// eq` at `0x00031040` and `0x00031108`), and otherwise its own payload -- which
+// can itself be nil. The two dark slots take `darklightCurvature`, or
+// `highlightCurvature` when `darkUsesHighlightCurvature` (the byte at
+// `x1+0x20`, `cmeq`/`bif`/`bsl` at `0x000311C4`); both selectors pass `false`
+// (`strb wzr`, `0x00062784` and `0x00062990`).
+std::vector<HighlightSlot> expandHighlights(const HighlightsSet& set,
+                                            const HighlightSizeValue& highlightCurvature,
+                                            const HighlightSizeValue& darklightCurvature,
+                                            bool darkUsesHighlightCurvature = false);
+
+// The five sets of a family, in the order `Highlights` stores them.
+enum class HighlightsSetKind : std::uint8_t {
+    Default = 0,
+    Bright = 1,
+    Dim = 2,
+    Clear = 3,
+    Screened = 4,
+};
+
+// `[BIN]` `iconBrightness`, the byte at `+0x5B` of the finalised icon's style:
+// what `0x0001A8C4` writes and both selectors switch on. `ChicletHighlights.h`
+// carries the classifier (`classifyChicletAppearance`).
+enum class ChicletAppearance : std::uint8_t { Default = 0, Bright = 1, Dim = 2 };
+
+// `[BIN]` THE GLYPH SELECTOR, `0x000627B4`. Two questions and neither is the
+// size class:
+//
+//     renderingMode == .color       switch (iconBrightness)   0x00062948
+//                                       0 -> glyphsDefault    (+0x2008)
+//                                       1 -> glyphsBright     (+0x2638)
+//                                       _ -> glyphsDim        (+0x2C68)
+//     otherwise                     effectiveClearMode == nil
+//                                       ? glyphsScreened      (+0x38C8)
+//                                       : glyphsClear         (+0x3298)
+//
+// `colourMode` is the first test (`0x000627E8`-`0x0006280C`): the tag byte at
+// `style+0x90` is `1` and the five words of payload at `+0x68..+0x88` are zero,
+// which is the one case of `RenderingMode` with no payload. `[INF]` That this
+// enum is the rendering mode rests on its shape -- a five-word payload is
+// `.tinted(colour, saturation)` -- and on `0x0005E59C`, which reads the byte
+// beside it (`+0x61`) as the appearance; no symbol names it.
+//
+// The effective clear mode is what the shared body `0x0005E59C` hands the
+// selector in `x1`: nil for `.color` and for a dark `.tinted`,
+// `parameters.clearMode` for `.clear`, and for a light `.tinted` the same when
+// it is non-nil and its `applyToLightTintToo` is set.
+HighlightsSetKind glyphHighlightsSetFor(bool colourMode, ChicletAppearance iconBrightness,
+                                        bool effectiveClearModeIsNil);
+
+// `[BIN]` The six that survive for a GLYPH in generation 27's `glyphsDefault`,
+// in draw order -- `expandedHighlights(G27, Glyph, Default)`
+// (`RenderingParameters.h`), kept under its old name for the callers that want
+// that one list. The renderer does not use it: it asks for the list of the
+// generation and the set it selected.
 const HighlightSlot* glyphHighlightSlots(std::size_t& count);
 
 // `[BIN]` `IconRendering.GlassHighlightSettings`, the `0x60`-byte element the
@@ -580,11 +687,23 @@ void spatialHighlight(GlassHighlightSettings& settings, const SpatialHighlightin
 // Everything the resolution needs that is not in the slot.
 struct SpecularArguments {
     IconSizeClass sizeClass = IconSizeClass::Large;
+    // WHICH LIST OF HIGHLIGHTS: the generation's block and one of the five
+    // sets of the family the caller draws -- `drawSpecular` reads the glyph
+    // family, `drawChicletHighlights` the chiclet one
+    // (`expandedHighlights`, `RenderingParameters.h`). The selectors are
+    // `glyphHighlightsSetFor` and `chicletHighlightsSetFor`.
+    DesignGeneration generation = DesignGeneration::G27;
+    HighlightsSetKind set = HighlightsSetKind::Default;
     // pixels per canvas point: `size / kCanvasPoints`, the same ratio the
     // shadow uses.
     double pixelsPerPoint = 1.0;
-    // `[BIN]` `Highlights.defaultGlyphLight.longitude`, `Highlights+0x08`,
-    // which this version sets to `0.0` (`stp xzr, xzr, [x8]`, `0x00062AB8`).
+    // `[BIN]` THE LIGHT'S LONGITUDE, and there are two of them: the glyph
+    // resolver is handed `Highlights.defaultGlyphLight` (`Highlights+0x08`,
+    // `ctx+0x5F8`, loaded at `0x0004930C`) and the chiclet one
+    // `Highlights.defaultChicletLight` (`+0x00`, `ctx+0x5F0`, `0x0004761C`).
+    // Generation 27 writes `0.0` into both (`stp xzr, xzr, [x8]`,
+    // `0x00062AB8`); generation 26 writes `-pi/4` into both (`0x771B8`,
+    // `0x771E0`). The caller fills this from the one its family reads.
     double lightLongitude = 0.0;
     // `[BIN]` THE SCALAR THAT MULTIPLIES EVERY RESOLVED OPACITY, and it has a
     // name now. `0x0004C010` loads `ctx[0x00]` and `0x0004C0A8`
@@ -627,7 +746,9 @@ struct SpecularArguments {
     double lightLatitude = 0.0;
     // `[BIN]` `[descriptor+0x38]`, the same multiplier the shadow front named:
     // it scales the `alpha:` of the `drawShape:` (`fmul d0, d10, d0`,
-    // `0x000495F0`).
+    // `0x000495F0`). The descriptor is a `FinalizedIcon.Layer`, which is a
+    // document GROUP, so this is the group's `opacity` and never a layer's
+    // (`GlassShadow.h`, "WHOSE OPACITY IT IS").
     double layerOpacity = 1.0;
     SpecularPlacement placement = SpecularPlacement::Automatic;
     bool identityRecolour = true;
@@ -646,18 +767,28 @@ struct SpecularArguments {
     //
     // So the clamp is real, it is on in the target, and what it covers is NOT
     // this. Turning it on here moved zero pixels of the user's icon through the
-    // glyph path, which is what that reading predicts. The field is kept so the
-    // front that identifies the covered draws has somewhere to put the answer.
+    // glyph path, which is what that reading predicts. The covered draw was
+    // identified on 2026-10-01 -- the image of a group blended plus-lighter,
+    // `0x4B4EC` (`BlendFormula.h`) -- and the answer went where it belongs,
+    // `IconSurface::blendArt`. This field stays off.
     bool clampPlusLighter = false;
-    // `[BIN]` `glyphHighlightsUseVCM`, `Highlights+0x90`, read at `0x000494D8`,
-    // `true` in this version. When set, a highlight does not paint its colour:
-    // its shape becomes a CLIP and the backdrop under it is run through
-    // `glyphVCMMatrix()` -- see `applyGlyphVCM` for the whole chain and the
-    // RenderBox addresses that prove the matrix reads the backdrop.
+    // `[BIN]` `glyphHighlightsUseVCM`, `Highlights+0x90`, read at `0x000494D8`:
+    // `true` in generation 27, `false` in generation 26 (`0x77820`). When set,
+    // a highlight does not paint its colour: its shape becomes a CLIP and the
+    // backdrop under it is run through `glyphVCMMatrix()` -- see
+    // `applyGlyphVCM` for the whole chain and the RenderBox addresses that
+    // prove the matrix reads the backdrop.
     //
-    // `false` keeps the old plusLighter/plusDarker composite, which is the
-    // `useVCM == false` branch scaled by `glyphHighlightNonVCMScale == 1.0`
-    // (`0x0004955C`). No caller in this renderer takes it any more.
+    // `[BIN]` `false` IS THE PLAIN COMPOSITE (`0x00049570` -> `0x0000E834`): no
+    // layer, no clip and no colour matrix -- the shape is drawn with the
+    // highlight's colour at `coverage x opacity` under the highlight's own
+    // blend mode, through the table at `0x978F4`, unclamped. The two
+    // `glyph*NonVCMScale` are NOT on this branch, whatever this comment said
+    // until 2026-10-01: they scale the colour of the Clear PAINT sub-branch
+    // (`0x00049554`, `0x00049A44`), which needs a non-nil clear mode. The three
+    // branches of `0x000491C0` are `useVCM && clearMode == nil` (the matrix),
+    // `!useVCM && clearMode == nil` (this one) and `clearMode != nil`
+    // (`clearPaint`, below).
     bool useVCM = true;
 
     // A MASCARA DO CLEAR (`IconRenderOptions::clearMask`): 0 nao; 1 o especular
@@ -690,6 +821,20 @@ void applyGlyphVCM(const GlyphVCM& vcm, double rgb[3]);
 // `[BIN]` `0x0004BD90`, plus the `inside`/`outside` fold of `0x000495D8`.
 GlassHighlightSettings resolveHighlight(const HighlightSlot& slot, const SpecularArguments& args);
 
+// `[BIN]` THE CONE AS THE SHADER IS HANDED IT, `0x0000EE1C`-`0x0000EF5C`:
+//
+//     c       = (float) cos(spread)                         0x0000EE20, 0x0000EE24
+//     spread' = (spread > pi || (c == -1.0f && bias == 1.0)) ? -1000.0f : c
+//
+// Two conditions, and until 2026-10-01 only the first was here. The second is
+// `fcmp s14, #-1.0` / `fccmp d11, #1.0, #0, eq` at `0x0000EE2C`-`0x0000EE38`: a
+// cone of exactly pi -- whose cosine IS `-1.0f` once narrowed -- under a bias
+// of exactly `1.0` is also "no cone at all". The comparison is on the FLOAT, so
+// it is made on the float here. `-1000` makes `lit` saturate for every normal:
+// generation 26's glyph rim, at `spread == 2 pi`, is a full ring through the
+// first condition.
+double highlightCone(double spread, double bias);
+
 // `_glassHighlight`, `default_mod1.ll:60-116`, one fragment.
 //
 // `sd` is the signed distance in PIXELS, positive inside, BEFORE the `inset`
@@ -697,12 +842,24 @@ GlassHighlightSettings resolveHighlight(const HighlightSlot& slot, const Specula
 // image space (y down). `fwidthSd` is `fwidth(sd)`, which for a field whose
 // slope is 1 per pixel is 1.
 //
+// `[BIN]` The curvature the shader gets is zero when `inset < 0`
+// (`0x0000EF60`-`0x0000EF68`), whatever the settings carry.
+//
 // Returns the scalar the colour is multiplied by -- `band * a / max(...)`.
 double glassHighlightFragment(const GlassHighlightSettings& s, double sd, double nx, double ny,
                               double fwidthSd);
 
-// Composites the five highlights over `rgba` (premultiplied, `field.width` x
-// `field.height`). With `args.useVCM` (the shipped state) each highlight is
+// The same fragment with the angular term handed in instead of derived from
+// `s.spread`: `cone` is what the shader calls `spread'`, and `alwaysLit` skips
+// the cone altogether (`lit == 1`). `glassHighlightFragment` is this with
+// `highlightCone(s.spread, s.bias)`; the chiclet's side passes its own
+// rasteriser's term (`ChicletHighlights.h`, `chicletHighlightCone`).
+double highlightFragment(const GlassHighlightSettings& s, double cone, bool alwaysLit, double sd,
+                         double nx, double ny, double fwidthSd);
+
+// Composites the highlights of `args.generation`'s glyph set `args.set` over
+// `rgba` (premultiplied, `field.width` x
+// `field.height`). With `args.useVCM` (generation 27's state) each highlight is
 // `lerp(backdrop, VCM(backdrop), coverage)` with alpha untouched, so `rgba`
 // must be the BACKDROP -- the composite the layer has already gone into, not
 // the layer's own buffer. Without it, each highlight is its colour under its
@@ -718,8 +875,9 @@ std::size_t drawSpecular(std::vector<float>& rgba, const FieldImage& field,
 // art, which has no contour and therefore no distance field.
 const char* specularDoesNotDrawNote();
 
-// The sentence for the case that DOES draw: which five highlights went on, and
-// which two inputs are still `[OBS]` underneath them.
-const char* specularDrawnNote();
+// The sentence for the case that DOES draw: which highlights went on -- six
+// through the colour matrix in generation 27, two painted plainly in generation
+// 26 -- and what is still `[OBS]` underneath them.
+const char* specularDrawnNote(DesignGeneration generation = DesignGeneration::G27);
 
 }  // namespace rb

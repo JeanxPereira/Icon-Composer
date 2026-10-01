@@ -23,6 +23,23 @@ arquivo). A reflexão é `References/2.0-125/out/fieldmd_iconrendering.txt`.
 
 ---
 
+> **ERRATA — 2026-10-01. São SEIS realces de glifo na geração 27, não cinco**
+> (§1.2 e §3). O byte de tag `0x14` em `slot+0x100` é `FillHighlights.matchKey`,
+> não `nil`: `0x33F04` devolve 1 só para `0x14`, `0x35470` (o teste de `nil`) só
+> para `0x15`, e o expansor `0x30E88` copia o slot `keyDiffuse` inteiro para o
+> `fillDiffuse` (`0x310D4`–`0x31188`). O realce que faltava fica entre o
+> `fillSharp` e os dois `dark`: cópia do `keyDiffuse`, `angleFromKey = +π`,
+> curvatura `[1,1,1,1]`. Conferido por três rotas, uma delas a emulação do
+> próprio expansor sobre os conjuntos do binário. O código
+> (`GlassSpecular.cpp`, `expandHighlights`) já desenha os seis.
+>
+> No mesmo dia entrou a **geração de design 26** (`0x76FC0`,
+> `Source/RenderBox/RenderingParameters.h`): os valores deste laudo são os da
+> 27. Na 26 os conjuntos de glifo têm só `keySharp` e `rim`, o ramo é o
+> não-VCM, e há duas longitudes de luz (glifo e pastilha), ambas −π/4.
+
+---
+
 ## 1. O layout, e por que ele não é chute
 
 `[BIN]` `ICRRenderingParameters.Highlights` (`params+0x250`, `0x3EF1` = 16.113

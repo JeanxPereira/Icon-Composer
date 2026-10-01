@@ -1387,3 +1387,152 @@ TEST_CASE(the_supersample_knob_no_longer_moves_the_exact_field_and_2_still_means
     CHECK(m1 < 0.2);
     CHECK(w1 < 0.5);
 }
+
+// ---- part four: one field for a group ------------------------------------
+
+// `[BIN]` THE STACK, TEXEL BY TEXEL. `IconRendering` `0x11480` draws an upper
+// element's field inside a clip made from that same field -- a GradientMap whose
+// two stops sit one half-float step apart at `d = maxDistance + 1`
+// (`0x11580`-`0x115D0`) -- and, with `useAdvancedStacking`, first merges it with
+// blend `0x3F9`, which is `sdf_maximum`: `src.r > dst.r ? src : dst` (RenderBox
+// `default_mod66.ll` %582-%586). `DistanceField.h`, part four, carries the
+// reading and what in it is inference.
+//
+// The fixture is one row whose two fields disagree in every channel, so a texel
+// that came from the wrong side -- or a texel stitched together from both -- is
+// visible in whichever channel is looked at.
+TEST_CASE(stacked_fields_take_the_upper_texel_inside_its_dilated_footprint) {
+    //                 d      gx    gy   cov
+    const float lowerTexels[][4] = {
+        {-9.0f, 1.0f, 0.0f, 1.0f},   // 0: deep inside the lower element
+        {-9.0f, 1.0f, 0.0f, 1.0f},   // 1
+        {-9.0f, 1.0f, 0.0f, 1.0f},   // 2
+        {40.0f, 1.0f, 0.0f, 0.0f},   // 3: far outside the lower one
+        {40.0f, 1.0f, 0.0f, 0.0f},   // 4
+        {2.5f, 1.0f, 0.0f, 0.0f},    // 5
+    };
+    const float upperTexels[][4] = {
+        {-3.0f, 0.0f, 1.0f, 1.0f},   // 0: inside the upper element
+        {4.0f, 0.0f, 1.0f, 0.0f},    // 1: outside it, but inside its reach + 1
+        {30.0f, 0.0f, 1.0f, 0.0f},   // 2: beyond the reach, and the lower is inside
+        {30.0f, 0.0f, 1.0f, 0.0f},   // 3: beyond the reach, and the upper is NEARER
+        {50.0f, 0.0f, 1.0f, 0.0f},   // 4: beyond the reach, and the lower is nearer
+        {5.0f, 0.0f, 1.0f, 0.0f},    // 5: exactly ON the edge, reach + 1
+    };
+    FieldImage lower, upper;
+    lower.width = upper.width = 6;
+    lower.height = upper.height = 1;
+    for (int t = 0; t < 6; ++t) {
+        lower.rgba.insert(lower.rgba.end(), lowerTexels[t], lowerTexels[t] + 4);
+        upper.rgba.insert(upper.rgba.end(), upperTexels[t], upperTexels[t] + 4);
+    }
+    const float reach = 4.0f;   // so the edge is at d = 5
+
+    auto came = [&](const FieldImage& f, int t) {
+        // The gradient's two channels name the side: (1, 0) lower, (0, 1) upper.
+        return f.at(static_cast<std::uint32_t>(t), 0)[2] == 1.0f ? 'U' : 'L';
+    };
+    const FieldImage plain = stackFields(lower, upper, reach, false);
+    const FieldImage advanced = stackFields(lower, upper, reach, true);
+    REQUIRE(plain.width == 6 && advanced.width == 6);
+
+    // Inside the dilated footprint the upper texel wins, either way -- over the
+    // lower element's interior too, which is the cost `kFieldStackNote` names.
+    CHECK_EQ(came(plain, 0), 'U');
+    CHECK_EQ(came(plain, 1), 'U');
+    CHECK_EQ(came(advanced, 0), 'U');
+    CHECK_EQ(came(advanced, 1), 'U');
+    // Beyond it, without the advanced merge, the lower field is left alone.
+    CHECK_EQ(came(plain, 2), 'L');
+    CHECK_EQ(came(plain, 3), 'L');
+    CHECK_EQ(came(plain, 4), 'L');
+    // With it, the texel that is further INSIDE wins -- the smaller distance.
+    CHECK_EQ(came(advanced, 2), 'L');
+    CHECK_EQ(came(advanced, 3), 'U');
+    CHECK_EQ(came(advanced, 4), 'L');
+    // The edge itself belongs to the lower field: the gradient still answers
+    // with its first stop there. (And 5.0 is not below the lower's 2.5.)
+    CHECK_EQ(came(plain, 5), 'L');
+    CHECK_EQ(came(advanced, 5), 'L');
+
+    // A WHOLE texel, never a mix: every channel of the result is the winner's.
+    for (int t = 0; t < 6; ++t) {
+        for (const FieldImage* f : {&plain, &advanced}) {
+            const float* want = came(*f, t) == 'U' ? upperTexels[t] : lowerTexels[t];
+            for (int k = 0; k < 4; ++k) {
+                CHECK_EQ(f->at(static_cast<std::uint32_t>(t), 0)[k], want[k]);
+            }
+        }
+    }
+
+    // An empty field stacks to the other one, and two grids that do not match
+    // are nobody's field.
+    CHECK_EQ(stackFields(FieldImage{}, upper, reach, true).width, upper.width);
+    CHECK_EQ(stackFields(lower, FieldImage{}, reach, true).width, lower.width);
+    FieldImage shifted = upper;
+    shifted.originX = 3;
+    CHECK_EQ(stackFields(lower, shifted, reach, true).width, std::uint32_t{0});
+}
+
+// THE SILHOUETTE OF A CONTOUR SET, which a group lit as one shape joins into a
+// union before taking its field (`fieldCoverageFromContours`). OURS, so the
+// oracle is a count done by hand: `samples * samples` evenly spaced points per
+// pixel, each inside or not, box-averaged.
+//
+// A rectangle from (1.5, 2.25) to (5.5, 6.0) on an 8 x 8 grid at four samples a
+// side. Along x the sample points of pixel 1 are 1.125, 1.375, 1.625 and 1.875:
+// two of four are right of 1.5. Along y those of pixel 2 are 2.125, 2.375, 2.625
+// and 2.875: three of four are below 2.25. So the corner pixel (1, 2) is
+// `2/4 * 3/4 = 0.375`, an edge pixel is a half or three quarters, and the inside
+// is exactly 1.
+TEST_CASE(a_contours_coverage_is_the_fraction_of_its_sample_points_inside) {
+    FieldContour rect;
+    rect.xy = {1.5f, 2.25f, 5.5f, 2.25f, 5.5f, 6.0f, 1.5f, 6.0f};
+    FieldOptions fo;
+    std::vector<float> coverage;
+    const std::size_t inside = fieldCoverageFromContours({rect}, 8, 8, fo, 4, coverage);
+    REQUIRE(coverage.size() == 64);
+    // 4 x 3.75 pixels of area, sixteen samples a pixel.
+    CHECK_EQ(inside, std::size_t{240});
+    auto at = [&](int x, int y) { return coverage[static_cast<std::size_t>(y) * 8 + x]; };
+    CHECK_EQ(at(1, 2), 0.375f);   // the corner
+    CHECK_EQ(at(5, 2), 0.375f);
+    CHECK_EQ(at(3, 2), 0.75f);    // the top edge
+    CHECK_EQ(at(1, 4), 0.5f);     // the left edge
+    CHECK_EQ(at(5, 4), 0.5f);     // the right edge, [5, 5.5)
+    CHECK_EQ(at(3, 4), 1.0f);     // inside: exactly one, not fifteen sixteenths rounded
+    CHECK_EQ(at(3, 5), 1.0f);     // the bottom edge sits ON a pixel boundary
+    CHECK_EQ(at(3, 6), 0.0f);
+    CHECK_EQ(at(0, 4), 0.0f);
+    CHECK_EQ(at(6, 4), 0.0f);
+
+    // One sample a side is the inside mask itself, as zeros and ones.
+    std::vector<float> hard;
+    std::vector<char> mask;
+    CHECK(fieldCoverageFromContours({rect}, 8, 8, fo, 1, hard) > 0);
+    CHECK(fieldInsideMask({rect}, 8, 8, fo, 1, mask) > 0);
+    REQUIRE(hard.size() == mask.size());
+    for (std::size_t t = 0; t < hard.size(); ++t) CHECK_EQ(hard[t], mask[t] ? 1.0f : 0.0f);
+
+    // A VIEWPORT'S coverage is the full grid's, pixel for pixel: the sample
+    // points are absolute and only the index moves.
+    FieldOptions part = fo;
+    part.originX = 1;
+    part.originY = 2;
+    std::vector<float> cropped;
+    CHECK(fieldCoverageFromContours({rect}, 5, 4, part, 4, cropped) > 0);
+    REQUIRE(cropped.size() == 20);
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 5; ++x) {
+            CHECK_EQ(cropped[static_cast<std::size_t>(y) * 5 + x], at(x + 1, y + 2));
+        }
+    }
+
+    // A contour that covers no sample point has no silhouette, and says so by
+    // being empty rather than by being all zeros.
+    FieldContour sliver;
+    sliver.xy = {3.01f, 3.01f, 3.02f, 3.01f, 3.02f, 3.02f, 3.01f, 3.02f};
+    std::vector<float> none;
+    CHECK_EQ(fieldCoverageFromContours({sliver}, 8, 8, fo, 4, none), std::size_t{0});
+    CHECK(none.empty());
+}

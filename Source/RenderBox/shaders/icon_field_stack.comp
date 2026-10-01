@@ -1,0 +1,30 @@
+#version 450
+// O CAMPO DE UM GRUPO, EMPILHADO: `stackFields` de DistanceField.cpp, texel a
+// texel. O campo do elemento de cima substitui o de baixo dentro da pegada dele
+// dilatada (`d < edge`, com `edge = alcance + 1` ja somado em float pela CPU); fora
+// dela, com o empilhamento avancado, fica o de menor distancia (`sdf_maximum`), e
+// sem ele o de baixo. DistanceField.h tem a leitura e os enderecos.
+//
+// E uma ESCOLHA: nenhum float e calculado, entao a saida e um dos dois texels de
+// entrada bit a bit, e a GPU nao tem como divergir da CPU aqui.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) writeonly buffer Dst { vec4 dst[]; };
+layout(std430, binding = 1) readonly buffer Lower { vec4 lower[]; };
+layout(std430, binding = 2) readonly buffer Upper { vec4 upper[]; };
+
+layout(push_constant) uniform Push {
+    uint w, h;
+    float edge;
+    uint advanced;
+} p;
+
+void main() {
+    uvec2 g = gl_GlobalInvocationID.xy;
+    if (g.x >= p.w || g.y >= p.h) return;
+    uint i = g.y * p.w + g.x;
+    vec4 u = upper[i];
+    vec4 l = lower[i];
+    bool takesUpper = u.x < p.edge || (p.advanced != 0u && u.x < l.x);
+    dst[i] = takesUpper ? u : l;
+}

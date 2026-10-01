@@ -13,6 +13,7 @@
 
 #include "Source/RenderBox/BlendMode.h"
 #include "Source/RenderBox/DistanceField.h"
+#include "Source/RenderBox/GlassGlow.h"
 #include "Source/RenderBox/GlassLayer.h"
 #include "Source/RenderBox/GlassShadow.h"
 #include "Source/RenderBox/GlassSpecular.h"
@@ -67,9 +68,12 @@ struct ResidentShadow {
     Slab image;
     Slab overdraw;   // nulo quando nao ha overdraw
 };
+// `parameters`: o `Shadow` da geracao -- o que o passo le dele e o
+// `vibrantBrightness` (e se ele e 1, caso em que o filtro e pulado).
 Result<ResidentShadow> shadow(Resident& r, const Slab& art, std::uint32_t width,
                               std::uint32_t height, ShadowStyle style,
-                              const ShadowGeometry& geometry, double overdrawAlpha);
+                              const ShadowGeometry& geometry, double overdrawAlpha,
+                              const ShadowParameters& parameters = kShadow);
 
 // As duas metades de `shadow`. `shadowBlur`: o anel, a cor e a escada sobre a
 // grade inteira da arte (a parte cara, e a que o cache guarda). `shadowPlace`: a
@@ -85,11 +89,19 @@ struct ShadowOutput {
 };
 Result<ShadowBlur> shadowBlur(Resident& r, const Slab& art, std::uint32_t width,
                               std::uint32_t height, ShadowStyle style,
-                              const ShadowGeometry& geometry);
+                              const ShadowGeometry& geometry,
+                              const ShadowParameters& parameters = kShadow);
 Result<ResidentShadow> shadowPlace(Resident& r, const ShadowBlur& blur, const Slab& art,
                                    std::uint32_t width, std::uint32_t height,
                                    const ShadowGeometry& geometry, double overdrawAlpha,
                                    const ShadowOutput& to);
+// So o overdraw de `shadowPlace`: a sombra ja posta (`placed`, na grade de saida)
+// com o alfa vezes `content.a * overdrawAlpha`. A parte, porque num grupo o
+// conteudo so fica pronto DEPOIS da sombra -- a mascara de translucidez entra
+// nele e nao na fonte da sombra. `overdrawAlpha <= 0` devolve nulo.
+Result<Slab> shadowOverdraw(Resident& r, const Slab& placed, const Slab& content,
+                            std::uint32_t width, std::uint32_t height, double overdrawAlpha,
+                            const ShadowOutput& to);
 
 // `glassOpacityMask` + `opacityMaskMissedPixels` + `applyOpacityMask` sobre a
 // arte `art`, lendo o campo `field` (`icon_glass_mask`). Soma os pintados em
@@ -114,9 +126,13 @@ Result<void> refract(Resident& r, const Slab& target, const Slab& field, const P
 // Os realces resolvidos na CPU (`resolveHighlight`), um registro de
 // `kHighlightStride` doubles por realce que pinta, na ordem dos slots. Devolve
 // false quando um modo de mescla nao esta transcrito em `icon_highlight`.
-constexpr std::size_t kHighlightStride = 16;
+// `chiclet`: os realces da pastilha, resolvidos por `resolveChicletHighlight` e
+// com o termo angular do rasterizador dela (`chicletHighlightCone`: o cone de
+// pi exato vira o ultimo double do registro, "aceso em todo o contorno").
+constexpr std::size_t kHighlightStride = 17;
 bool resolveHighlights(const HighlightSlot* slots, std::size_t count,
-                       const SpecularArguments& args, std::vector<double>& records);
+                       const SpecularArguments& args, std::vector<double>& records,
+                       bool chiclet = false);
 
 // `drawSpecular` (`chiclet == false`) ou `drawChicletHighlights` sobre `target`,
 // lendo o campo; os pixels mudados somam em `counters[slot]`. Pede `float64()`.
@@ -124,5 +140,12 @@ Result<void> highlights(Resident& r, const Slab& target, const Slab& field, std:
                         std::uint32_t height, const std::vector<double>& records, bool chiclet,
                         bool useVCM, bool clampPlusLighter, const Slab& counters,
                         std::uint32_t slot, const SourceView* fieldView = nullptr);
+
+// `drawGlow` sobre `target` (W x H, com a origem `(originX, originY)` na grade
+// do canvas), lendo o campo: `icon_glow`. Sem contagem. Pede `float64()`, e
+// quem chama ja conferiu `glowDraws`.
+Result<void> glow(Resident& r, const Slab& target, const Slab& field, std::uint32_t width,
+                  std::uint32_t height, std::int32_t originX, std::int32_t originY,
+                  const GlowArguments& args, const SourceView* fieldView = nullptr);
 
 }  // namespace rb::gpu

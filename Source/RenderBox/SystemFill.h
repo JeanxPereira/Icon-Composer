@@ -91,11 +91,27 @@ enum class SystemFill : std::uint8_t { Light = 0, Dark = 1 };
 //
 // `[OBS]` The colour space of the greys is unread -- `IconColor` is four bare
 // `Double`s with no space tag (the same gap `AutomaticGradient.h` names).
-std::vector<RampStop> systemLightGradient();
-std::vector<RampStop> systemDarkGradient();
+//
+// `[BIN]` AND THE FOUR GREYS ARE A PARAMETER OF THE DESIGN GENERATION. The two
+// call sites above are generation 27's. `0x76FC0` builds both ramps again for
+// generation 26 and stores them over the same two fields (`0x77124`, `0x77190`):
+//
+//     light   1.0                  0.925                   (0x770F8-0x77118)
+//     dark    0.19215686274509805  0.0784313725490196      (0x77154-0x77184)
+//
+// The dark pair is 49 and 20 two-hundred-and-fifty-fifths; `0.925` is no 255th
+// at all. Same builder, same two stops, same locations.
+struct SystemGradients {
+    double light[2] = {1.0, 0.9607843137254902};
+    double dark[2] = {0.12156862745098039, 0.058823529411764705};
+};
+
+std::vector<RampStop> systemLightGradient(const SystemGradients& greys = SystemGradients{});
+std::vector<RampStop> systemDarkGradient(const SystemGradients& greys = SystemGradients{});
 
 // The `csel` at `0x3CF7C`, as a function.
-std::vector<RampStop> systemGradient(SystemFill which);
+std::vector<RampStop> systemGradient(SystemFill which,
+                                     const SystemGradients& greys = SystemGradients{});
 
 // ---------------------------------------------------------------------------
 // The opacity rewrite
@@ -184,41 +200,47 @@ GradientAxis placeGradient(const std::optional<GradientPlacement>& placement,
                            const PlacementRect& rect);
 
 // ---------------------------------------------------------------------------
-// THE RECT THAT WAS NOT READ
+// THE RECT A SYSTEM FILL IS PLACED AGAINST
 // ---------------------------------------------------------------------------
 //
 // `[BIN]` `ICRRenderingParameters+0x360` is written `1` by the default
-// initialiser -- `strh w22, [x19, #0x360]` with `w22 = 1` at `0x5EDB0`. When
-// set, and `[BIN]` ONLY for `Contents == .system` (the branch at `0x1AD40`),
-// the rect stops being the shape's `boundingRect` and becomes origin `(0,0)`
-// with a `CGSize` taken from the drawing context at `+0x48`.
+// initialiser -- `strh w22, [x19, #0x360]` with `w22 = 1` at `0x5EDB0` -- and
+// `0` by generation 26 (`0x7707C`). When set, and `[BIN]` ONLY for
+// `Contents == .system` (the branch at `0x1AD40`, which copies the byte into
+// the draw's frame at `0x1AD60`), the rect stops being the shape's
+// `boundingRect` and becomes origin `(0,0)` with a `CGSize` taken from the
+// drawing context at `+0x48`:
+//
+//     0x1BA94  ldp  d13, d12, [x19, #0x10]      ; the size, kept at 0x1AE3C
+//     0x1BA98  ldr  w8, [x19, #0x64]            ; the flag, for a .system fill
+//     0x1BA9C  tbz  w8, #0, 0x1BC8C             ; clear -> [shape boundingRect]
+//     0x1BAA0  movi v0, v4, v1 = 0              ; set   -> (0, 0, d13, d12)
 //
 // `[INF]` The NAME `supportsChicletAlignmentForSystemFills` rests on the
 // declaration order of the last three `Bool`s of that parameter block lining up
 // with the three field names, not on a symbol that points at `+0x360`. The
 // behaviour at that offset is read; the label on it is inference.
 //
-// `[OBS]` **WHETHER THAT `CGSize` IS THE CANVAS, THE CHICLET, OR THE FULL-BLEED
-// FRAME WAS NOT READ.** The three differ by enough to move the whole ramp, so
-// the alternative is declared here and left unimplemented rather than guessed.
-// `systemFillRect` answers `nullopt` for it, which is a gate a wrong guess
-// cannot slip past: there is no number to be wrong.
-inline constexpr bool kSupportsChicletAlignmentForSystemFills = true;
-
+// `[BIN-1]` THAT `CGSize` IS THE CANVAS. Until 2026-10-01 this file carried it
+// as unread -- canvas, chiclet or full-bleed frame -- and `systemFillRect`
+// answered `nullopt`. The pair is `ctx+0x48`/`+0x50` of the finalisation
+// context, loaded at `0x1AB64` and stored by the finaliser at `0x1A804`; it is
+// the same pair the element draw divides its display-list coordinates by
+// (`0x1B890`, `0x1BA00`), and the survey of generation 26 read it as the canvas
+// size -- once, which is the seal. So with the flag set every `.system` fill of
+// an icon is ONE gradient laid over the whole canvas, however small the layer;
+// with it clear each layer runs the ramp over its own box.
 enum class SystemFillRectSource {
-    // The shape's own bounding rect. This is what the first implementation
-    // draws over, and it is a real path in the target -- the one taken whenever
-    // chiclet alignment is off.
+    // The shape's own bounding rect: the flag clear -- generation 26.
     BoundingRect,
-    // Origin (0,0) with the drawing context's size. Named, not implemented.
+    // Origin (0,0) with the canvas size: the flag set -- generation 27.
     ChicletAligned,
 };
 
-// `nullopt` means "this branch exists in the target and its rect was not read",
-// never "no rect". A caller must not fall back to `boundingRect` on a `nullopt`
-// -- that would be the guess this refuses to make, wearing a default's clothes.
-std::optional<PlacementRect> systemFillRect(SystemFillRectSource source,
-                                            const PlacementRect& boundingRect);
+// The rect of one `.system` fill. `canvas` is the whole canvas in the units of
+// `boundingRect` (target pixels in the renderer).
+PlacementRect systemFillRect(SystemFillRectSource source, const PlacementRect& boundingRect,
+                             const PlacementRect& canvas);
 
 // ---------------------------------------------------------------------------
 // The resolve, whole
@@ -246,6 +268,7 @@ struct ResolvedSystemFill {
     std::optional<GradientPlacement> placement;
 };
 
-ResolvedSystemFill resolveSystemFill(SystemFill which, double opacity);
+ResolvedSystemFill resolveSystemFill(SystemFill which, double opacity,
+                                     const SystemGradients& greys = SystemGradients{});
 
 }  // namespace rb

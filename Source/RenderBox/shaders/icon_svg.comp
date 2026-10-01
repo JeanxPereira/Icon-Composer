@@ -14,7 +14,7 @@ layout(local_size_x = 16, local_size_y = 16) in;
 struct RampStop { vec4 location; vec4 rgba; };
 
 layout(std430, binding = 0) buffer Acc { vec4 acc[]; };
-layout(std430, binding = 1) readonly buffer Coverage { uint coverage[]; };
+layout(std430, binding = 1) readonly buffer Coverage { vec2 coverage[]; };
 layout(std430, binding = 2) readonly buffer Stops { RampStop rampStops[]; };
 layout(std430, binding = 3) buffer Clip { float clipMask[]; };
 layout(std430, binding = 4) readonly buffer Aux { float aux[]; };
@@ -45,7 +45,7 @@ void main() {
     uint i = g.y * p.w + g.x;
 
     if (p.mode == 2u) {
-        float a = rbAccumulatorShape(p.state, unpackHalf2x16(coverage[i]).y, vec4(0.0));
+        float a = rbAccumulatorShape(p.state, coverage[i].y, vec4(0.0));
         clipMask[i] = max(clipMask[i], a);
         return;
     }
@@ -60,7 +60,7 @@ void main() {
         return;
     }
 
-    float alpha = rbAccumulatorShape(p.state, unpackHalf2x16(coverage[i]).y, vec4(0.0));
+    float alpha = rbAccumulatorShape(p.state, coverage[i].y, vec4(0.0));
     if (alpha == 0.0) return;
     float px = float(int(g.x) + p.ox) + 0.5;
     float py = float(int(g.y) + p.oy) + 0.5;

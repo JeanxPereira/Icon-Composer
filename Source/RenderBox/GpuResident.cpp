@@ -48,6 +48,18 @@ static const std::uint32_t kBlurSpirv[] =
 static const std::uint32_t kStrokeSpirv[] =
 #include "icon_stroke.comp.inc"
     ;
+static const std::uint32_t kGroupSpirv[] =
+#include "icon_group.comp.inc"
+    ;
+static const std::uint32_t kFieldStackSpirv[] =
+#include "icon_field_stack.comp.inc"
+    ;
+static const std::uint32_t kGlowSpirv[] =
+#include "icon_glow.comp.inc"
+    ;
+static const std::uint32_t kTintSpirv[] =
+#include "icon_tint.comp.inc"
+    ;
 
 namespace rb::gpu {
 namespace {
@@ -213,10 +225,12 @@ Result<Resident*> Resident::of(Device& device) {
     const Spec specs[] = {
         {&r->paint, kPaintSpirv, sizeof kPaintSpirv, 2, 56},
         {&r->chiclet, kChicletSpirv, sizeof kChicletSpirv, 3, 28},
-        {&r->blend, kBlendSpirv, sizeof kBlendSpirv, 2, 32},
+        {&r->blend, kBlendSpirv, sizeof kBlendSpirv, 2, 36},
         {&r->svg, kSvgSpirv, sizeof kSvgSpirv, 5, 100},
         {&r->finish, kFinishSpirv, sizeof kFinishSpirv, 2, 20},
         {&r->raster, kRasterSpirv, sizeof kRasterSpirv, 3, 16},
+        {&r->fieldStack, kFieldStackSpirv, sizeof kFieldStackSpirv, 3, 16},
+        {&r->tint, kTintSpirv, sizeof kTintSpirv, 1, 24},
     };
     for (const Spec& s : specs) {
         auto k = Kernel::create(device, s.code, s.bytes, s.bindings, s.push);
@@ -232,10 +246,12 @@ Result<Resident*> Resident::of(Device& device) {
             {&r->shadow, kShadowSpirv, sizeof kShadowSpirv, 4, 80},
             {&r->blur, kBlurSpirv, sizeof kBlurSpirv, 3, 28},
             {&r->highlight, kHighlightSpirv, sizeof kHighlightSpirv, 4, 40},
-            {&r->glassMask, kGlassMaskSpirv, sizeof kGlassMaskSpirv, 3, 48},
+            {&r->glassMask, kGlassMaskSpirv, sizeof kGlassMaskSpirv, 4, 56},
             {&r->displace, kDisplaceSpirv, sizeof kDisplaceSpirv, 2, 44},
             {&r->refract, kRefractSpirv, sizeof kRefractSpirv, 3, 32},
             {&r->stroke, kStrokeSpirv, sizeof kStrokeSpirv, 2, 24},
+            {&r->group, kGroupSpirv, sizeof kGroupSpirv, 2, 20},
+            {&r->glow, kGlowSpirv, sizeof kGlowSpirv, 2, 112},
         };
         for (const Spec& s : wide) {
             auto k = Kernel::create(device, s.code, s.bytes, s.bindings, s.push);
@@ -647,7 +663,8 @@ Result<void> Resident::ensureCoverage(std::uint32_t width, std::uint32_t height)
         r != VK_SUCCESS) {
         return std::unexpected(std::string("vkCreateFramebuffer: ") + describe(r));
     }
-    auto buf = acquire(static_cast<VkDeviceSize>(width) * height * 4);
+    // Dois `float` por texel: a copia do alvo `kCoverageFormat`.
+    auto buf = acquire(static_cast<VkDeviceSize>(width) * height * 2 * sizeof(float));
     if (!buf) return std::unexpected(buf.error());
     covBuffer_ = *buf;
     return {};

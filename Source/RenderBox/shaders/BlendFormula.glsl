@@ -1,6 +1,7 @@
 // `BlendFormula.cpp`, transcrito para o caminho residente: os dez modos que
 // `blendIsTranscribed` aceita, com as opcoes no padrao (`extendedColor` e
-// `clampPlusLighter` desligados -- e o que `IconRenderer.cpp` passa). Os numeros
+// `clampPlusLighter` desligados). O grampo do plus-lighter e uma funcao a parte,
+// `rbClampedPlusL`, que so o composite da imagem de um grupo chama. Os numeros
 // dos modos sao os do `BlendMode` do host.
 //
 // A CPU faz esta conta em double sobre entradas float e arredonda no fim; aqui e
@@ -9,6 +10,14 @@
 #define RB_BLEND_FORMULA_GLSL
 
 const float kSoftLightAlphaFloor = 0.005;
+
+// `clampedPlusL` (BlendFormula.cpp): `max(dest, (min(1, source + dest).rgb,
+// saturate(source.a + dest.a)))`.
+vec4 rbClampedPlusL(vec4 s, vec4 d) {
+    vec4 sum = d + s;
+    vec4 capped = vec4(min(vec3(1.0), sum.rgb), clamp(sum.a, 0.0, 1.0));
+    return max(d, capped);
+}
 
 vec4 rbBlend(uint mode, vec4 s, vec4 d) {
     float as = s.a, ab = d.a;

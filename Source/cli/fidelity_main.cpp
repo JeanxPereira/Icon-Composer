@@ -2,7 +2,7 @@
 // erro de cada documento em niveis de 8 bits (restricao 2 do plano da frente
 // GPU, `Docs/Plans/2026-09-29-render-gpu.md`).
 //
-//   icfidelity <pasta do corpus> [--size N]
+//   icfidelity <pasta do corpus> [--size N] [--generation 26|27]
 //
 // Uma linha por documento (`<bundle> mean max over x,y canal`), e no fim a
 // distribuicao e os dez piores. Sai 1 se algum documento passa do teto (media
@@ -20,18 +20,28 @@
 #include <vector>
 
 #include "Source/cli/Fidelity.h"
+#include "Source/cli/RenderBundle.h"
 
 namespace fs = std::filesystem;
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::fputs("icfidelity <corpus dir> [--size N]\n", stderr);
+        std::fputs("icfidelity <corpus dir> [--size N] [--generation 26|27]\n", stderr);
         return 2;
     }
     const fs::path dir = argv[1];
     std::uint32_t size = 512;
+    rb::DesignGeneration generation = rb::DesignGeneration::G27;
     for (int i = 2; i + 1 < argc; i += 2) {
         if (std::string(argv[i]) == "--size") size = static_cast<std::uint32_t>(std::atoi(argv[i + 1]));
+        if (std::string(argv[i]) == "--generation") {
+            auto g = iccli::designGenerationFromString(argv[i + 1]);
+            if (!g) {
+                std::fputs("icfidelity: --generation must be 26 or 27\n", stderr);
+                return 2;
+            }
+            generation = *g;
+        }
     }
     auto device = rb::Device::create();
     if (!device) {
@@ -60,7 +70,7 @@ int main(int argc, char** argv) {
             ++failed;
             continue;
         }
-        auto s = iccli::fidelityOf(*device, *b, size);
+        auto s = iccli::fidelityOf(*device, *b, size, {}, generation);
         if (!s) {
             std::printf("%s ERRO %s\n", name.c_str(), s.error().c_str());
             ++failed;

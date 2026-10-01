@@ -18,6 +18,18 @@ deslocamento de arquivo), salvo onde estiver escrito `RenderBox`.
 
 ---
 
+> **ERRATA — 2026-10-01. O desfoque NÃO vê a arte do próprio grupo.** Este laudo
+> lê `0x4A488` como o desenho do conteúdo do grupo. Relido duas vezes: `0x4A488`
+> é `bl 0x49ED4` com `w1 = 0`, o desenho da SOMBRA (carrega `shadowStyle`,
+> `shadowOpacity`, `[+0x38]` e `shadowImage` em `0x49F08`–`0x49F14`); o conteúdo
+> é `0x4AC84`, chamado em `0x48C08` depois de `0x4A2D4` voltar. O desfoque vê o
+> fundo mais a sombra do grupo, e `0x4A594` (`bl 0x1135C`) o recorta ao interior
+> do SDF — recorte que a transcrição daqui omitiu. Os comentários do código
+> (`BlurKernel.h`, `IconRenderer.cpp`) foram corrigidos; o desfoque continua
+> desligado.
+
+---
+
 ## 1. A função, inteira
 
 `[BIN]` `0x4A2D4`–`0x4AC84` é **uma** função e os **dois** sítios de desfoque

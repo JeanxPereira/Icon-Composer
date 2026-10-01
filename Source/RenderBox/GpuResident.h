@@ -97,10 +97,19 @@ public:
     std::mutex& mutex() { return mutex_; }
 
     Kernel paint, chiclet, blend, svg, finish, raster;
+    // A recoloracao do Tinted Dark sobre o alvo (`icon_tint`), em float.
+    Kernel tint;
+    // O campo de um grupo, empilhado (`icon_field_stack`): uma escolha por texel,
+    // sem double.
+    Kernel fieldStack;
     // O vidro (GpuGlass.cpp). Os em double so sao montados com `float64()`.
     Kernel field, ring, shadow, blur, highlight, glassMask, displace, refract;
+    // O brilho interno da geracao 26 (`icon_glow`), em double.
+    Kernel glow;
     // A cobertura de um traco (`icon_stroke`), tambem em double.
     Kernel stroke;
+    // A imagem de um grupo (`icon_group`): a des-multiplicacao e em double.
+    Kernel group;
     bool float64() const { return device_->float64(); }
     CoveragePass coverage;
 
@@ -130,7 +139,7 @@ public:
     Result<void> upload(const Slab& s, const void* data, std::size_t bytes);
 
     // ---- a cobertura ------------------------------------------------------
-    // O alvo `R16G16` da passada de cobertura e o buffer para onde ele e copiado,
+    // O alvo `kCoverageFormat` da passada de cobertura e o buffer para onde ele e copiado,
     // do tamanho pedido (refeitos, com flush, quando o tamanho muda).
     Result<void> ensureCoverage(std::uint32_t width, std::uint32_t height);
     Image& coverageImage() { return covImage_; }

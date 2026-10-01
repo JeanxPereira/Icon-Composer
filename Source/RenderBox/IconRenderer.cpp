@@ -1,4 +1,5 @@
 #include "Source/RenderBox/IconRenderer.h"
+#include "Source/RenderBox/ColorSpace.h"
 
 #include <algorithm>
 #include <cmath>
@@ -16,6 +17,7 @@
 #include "Source/RenderBox/ChicletHighlights.h"
 #include "Source/RenderBox/ChicletShape.h"
 #include "Source/RenderBox/FillResolve.h"
+#include "Source/RenderBox/GlassGlow.h"
 #include "Source/RenderBox/GlassLayer.h"
 #include "Source/RenderBox/GlassShadow.h"
 #include "Source/RenderBox/GlassSpecular.h"
@@ -92,23 +94,43 @@ void note(std::vector<std::string>& notes, const std::string& text) {
     notes.push_back(text);
 }
 
-// A whole GROUP's accumulator mixed into the canvas, both sides PREMULTIPLIED.
-//
-// Not the same function as `blendOver`: that one takes straight colour with a
-// separate alpha, because that is the shape a layer's art arrives in. An
-// accumulator is already premultiplied, and running it through the straight
-// path would multiply the alpha in twice.
-void blendPremulOver(std::vector<float>& dst, const std::vector<float>& src,
-                     BlendMode mode) {
-    for (std::size_t i = 0; i + 3 < dst.size(); i += 4) {
-        BlendColour sc, dc;
-        for (int k = 0; k < 4; ++k) {
-            sc.rgba[k] = src[i + k];
-            dc.rgba[k] = dst[i + k];
+// Whether a layer's resolved fill paints with an alpha below one anywhere. It is
+// the one case where `Shadow.ignoreFillOpacity` changes the shadow's source: the
+// art is then drawn a second time, with `fillWithOpaqueAlpha` of the same paint.
+bool fillIsTranslucent(const FillOverride& paint) {
+    if (paint.kind == FillOverride::Kind::Solid) return paint.colour[3] < 1.0f;
+    if (paint.kind == FillOverride::Kind::Ramp) {
+        for (const RampPoint& p : paint.stops) {
+            if (p.rgba[3] < 1.0f) return true;
         }
-        const BlendColour o = rb::blend(mode, sc, dc);
-        for (int k = 0; k < 4; ++k) dst[i + k] = static_cast<float>(o.rgba[k]);
     }
+    return false;
+}
+
+// Whether a resolved fill puts any alpha on the pixel at all. A background that
+// does not -- `automatic` under `tinted` resolves to a clear colour -- leaves a
+// pastille with no surface, and the chiclet's highlights are not drawn over one.
+bool fillPaintsSomething(const FillOverride& paint) {
+    if (paint.kind == FillOverride::Kind::Solid) return paint.colour[3] > 0.0f;
+    if (paint.kind == FillOverride::Kind::Ramp) {
+        for (const RampPoint& p : paint.stops) {
+            if (p.rgba[3] > 0.0f) return true;
+        }
+    }
+    return false;
+}
+
+// `[BIN]` WHAT `Shadow.ignoreFillOpacity` DOES TO A FILL, in the list the shadow
+// is cast from (`0x1C0DC`; the flag is the byte at `Shadow+0xA8`, tested at
+// `0x1C260`). The loop of `0x1C3E8`-`0x1C430` copies every stop of a gradient
+// -- three `Double`s of colour and the location, a stride of `0x28` -- and
+// writes the literal `0x3FF0000000000000` where the fourth component was
+// (`str x10, [x9, #0x38]`): alpha 1.0. The solid colour and the opacity of the
+// other two fill kinds get the same constant. Nothing else about the fill moves.
+FillOverride fillWithOpaqueAlpha(FillOverride paint) {
+    paint.colour[3] = 1.0f;
+    for (RampPoint& p : paint.stops) p.rgba[3] = 1.0f;
+    return paint;
 }
 
 // One layer's art drawn over the accumulator, with `alpha` applied to all of it.
@@ -147,8 +169,12 @@ void over(std::vector<float>& acc, const std::vector<float>& src, float alpha) {
 //
 // It is left out anyway, because the loop is not hot enough to buy an
 // asymmetry with `over` that a reader would have to re-derive.
+//
+// `options` is the default everywhere but one call: the group's image under a
+// plus-lighter blend, which is the one composite `shouldClampPlusLBlending`
+// reaches (`BlendFormula.h`).
 void blendOver(std::vector<float>& acc, const std::vector<float>& src, float alpha,
-               BlendMode mode) {
+               BlendMode mode, const BlendOptions& options = {}) {
     if (mode == BlendMode::Normal) {
         over(acc, src, alpha);
         return;
@@ -162,7 +188,7 @@ void blendOver(std::vector<float>& acc, const std::vector<float>& src, float alp
         for (int k = 0; k < 3; ++k) s.rgba[k] = src[i + k] * a;
         BlendColour d;
         for (int k = 0; k < 4; ++k) d.rgba[k] = acc[i + k];
-        const BlendColour out = rb::blend(mode, s, d);
+        const BlendColour out = rb::blend(mode, s, d, options);
         for (int k = 0; k < 4; ++k) acc[i + k] = static_cast<float>(out.rgba[k]);
     }
     });
@@ -236,13 +262,10 @@ std::vector<float> placeRaster(const icf::DecodedPng& img, const LayerPlacement&
 // (luminance, alpha) and the RGB spaces four, and `Values.h` deliberately does
 // not normalise the two into one shape -- that is a rendering decision, and
 // this is where it is made.
-void asColour(const icf::Color& c, float (&rgba)[4]) {
-    const bool grey = c.count < 3;
-    rgba[0] = static_cast<float>(c.components[0]);
-    rgba[1] = static_cast<float>(grey ? c.components[0] : c.components[1]);
-    rgba[2] = static_cast<float>(grey ? c.components[0] : c.components[2]);
-    rgba[3] = static_cast<float>(grey ? c.components[1] : c.components[3]);
-}
+//
+// And it is where the colour SPACE is settled: `toWorking` (`ColorSpace.h`)
+// takes Display P3 components to the working space and leaves the rest alone.
+void asColour(const icf::Color& c, float (&rgba)[4]) { toWorking(c, rgba); }
 
 // `RampStop` (the resolver's, in doubles) into `RampPoint` (the compositor's,
 // in floats). Two types rather than one because the resolution is arithmetic on
@@ -313,25 +336,6 @@ void paintBackground(std::vector<float>& acc, const PixelGrid& grid,
     });
 }
 
-// Does this colour carry display-p3 components that nothing converts?
-bool isUnconvertedP3(const icf::Color& c) { return c.space == icf::ColorSpace::DisplayP3; }
-
-bool fillCarriesP3(const ResolvedFill& f) {
-    switch (f.contents) {
-        case ResolvedFill::Contents::Solid:
-        case ResolvedFill::Contents::AutomaticGradient:
-            return isUnconvertedP3(f.primary);
-        case ResolvedFill::Contents::Gradient:
-            return isUnconvertedP3(f.primary) || isUnconvertedP3(f.secondary);
-        case ResolvedFill::Contents::System:
-            // `[BIN]` The canned ramps are four bare `Double`s with no space
-            // tag at all -- a different gap, named in `SystemFill.h`, and not
-            // this one.
-            return false;
-    }
-    return false;
-}
-
 // ---- the cache keys (`RenderCache.h`) ----------------------------------------
 //
 // One hasher per parameter struct, naming every field. The static_assert beside
@@ -356,6 +360,10 @@ void hashInto(KeyHasher& h, const RenderOptions& o) {
     static_assert(sizeof(RenderOptions) == 136, "a RenderOptions field is missing from the key");
     h.value(o.width).value(o.height).value(o.originX).value(o.originY);
     h.value(o.projectionWidth).value(o.projectionHeight).value(o.subdivisions);
+    // `overrideForcesHiddenPaint` took one of the three padding bytes after
+    // `untaggedColoursAreDisplayP3`, so the size above did not move -- and it
+    // decides which shapes are painted, so it is in the key.
+    h.value(o.untaggedColoursAreDisplayP3).value(o.overrideForcesHiddenPaint);
     hashInto(h, o.override);
 }
 
@@ -375,6 +383,25 @@ void hashInto(KeyHasher& h, const ShadowGeometry& g) {
     if (g.ringWidth) h.value(*g.ringWidth);
 }
 
+// The whole `Shadow` block, field by field: it is what a design generation
+// changes about the shadow's image, and the step takes it as a parameter.
+void hashInto(KeyHasher& h, const SizeBasedValue& v) { h.span(v.slots, 4); }
+
+void hashInto(KeyHasher& h, const ShadowParameters& p) {
+    static_assert(sizeof(ShadowParameters) == 248,
+                  "a ShadowParameters field is missing from the key");
+    h.value(p.offsetX).value(p.offsetY).value(p.ringWidth.has_value());
+    if (p.ringWidth) hashInto(h, *p.ringWidth);
+    hashInto(h, p.radius);
+    hashInto(h, p.vibrantOpacity);
+    hashInto(h, p.neutralOpacity);
+    h.value(p.blendMode).value(p.blendModeForVibrantOnDim).value(p.overdrawBlendMode);
+    h.value(p.vibrantBrightness).value(p.ignoreFillOpacity).value(p.drawOverContent);
+    h.value(p.translucencyForMaxOverdraw);
+    hashInto(h, p.maxNeutralOverdrawOpacity);
+    hashInto(h, p.maxVibrantOverdrawOpacity);
+}
+
 void hashInto(KeyHasher& h, const PixelGrid& g) {
     static_assert(sizeof(PixelGrid) == 20, "a PixelGrid field is missing from the key");
     h.value(g.size).value(g.originX).value(g.originY).value(g.width).value(g.height);
@@ -383,7 +410,11 @@ void hashInto(KeyHasher& h, const PixelGrid& g) {
 void hashInto(KeyHasher& h, const SpecularArguments& a) {
     static_assert(sizeof(SpecularArguments) == 120,
                   "a SpecularArguments field is missing from the key");
-    h.value(a.sizeClass).value(a.pixelsPerPoint).value(a.lightLongitude);
+    // `generation` and `set` sit in what was padding after `sizeClass`, so the
+    // size above did not move when they arrived -- they are named here all the
+    // same: they pick the whole list of highlights.
+    h.value(a.sizeClass).value(a.generation).value(a.set);
+    h.value(a.pixelsPerPoint).value(a.lightLongitude);
     h.value(a.lightIntensity).value(a.lightLatitude).value(a.layerOpacity);
     h.value(a.placement).value(a.identityRecolour).value(a.clampPlusLighter).value(a.useVCM);
     h.value(a.clearPaint);
@@ -397,8 +428,12 @@ std::size_t bytesOf(const std::vector<float>& v) { return v.size() * sizeof(floa
 // ---- the four cached steps ----------------------------------------------------
 //
 // Each is the step it wraps when `cache` is null. With a cache, the key is every
-// input of the step; `kShadow` and the other `constexpr` parameter tables are
-// not inputs -- they are part of this binary, and so is the cache.
+// input of the step. A parameter the DESIGN GENERATION changes is an input: it
+// is in the key through the struct that carries it into the step -- the
+// generation and the set of a highlight pass (`SpecularArguments`), the flag
+// that lets a fill reach hidden shapes (`RenderOptions`), the stops and the
+// rect of a fill (`FillOverride`), and the `Shadow` block the shadow's image is
+// drawn with (`ShadowParameters`, in `shadow-image`).
 
 // The SVG's own TEXT is the key, not the parsed document: `SvgDocument::parse`
 // reads nothing else, and the text is what the bundle holds. The value is the
@@ -462,18 +497,20 @@ std::shared_ptr<const FieldImage> fieldFromAlphaCached(RenderCache* cache,
 
 std::shared_ptr<const std::vector<float>> shadowImageCached(
     RenderCache* cache, const std::vector<float>& art, std::uint32_t width,
-    std::uint32_t height, ShadowStyle style, const ShadowGeometry& geometry) {
+    std::uint32_t height, ShadowStyle style, const ShadowGeometry& geometry,
+    const ShadowParameters& parameters) {
     if (!cache) {
         return std::make_shared<const std::vector<float>>(
-            shadowImage(art, width, height, style, geometry));
+            shadowImage(art, width, height, style, geometry, parameters));
     }
     KeyHasher h("shadow-image");
     h.span(art.data(), art.size());
     h.value(width).value(height).value(style);
     hashInto(h, geometry);
+    hashInto(h, parameters);
     const CacheKey key = h.finish();
     if (auto hit = cache->find<std::vector<float>>(key)) return hit;
-    std::vector<float> made = shadowImage(art, width, height, style, geometry);
+    std::vector<float> made = shadowImage(art, width, height, style, geometry, parameters);
     const std::size_t bytes = bytesOf(made);
     return cache->store(key, std::move(made), bytes);
 }
@@ -508,13 +545,6 @@ std::size_t chicletHighlightsCached(RenderCache* cache, std::vector<float>& acc,
 
 }  // namespace
 
-const char* const kChicletRectNote =
-    "fill de sistema desenhado sobre o boundingRect da propria forma: `[BIN]` "
-    "supportsChicletAlignmentForSystemFills e true por padrao e troca esse rect por "
-    "origem (0,0) com um CGSize do contexto de desenho, e `[OBS]` se esse tamanho e o "
-    "canvas, o chiclet ou o quadro full-bleed NAO FOI LIDO -- systemFillRect devolve "
-    "nullopt nesse braco de proposito, entao nao ha numero a chutar";
-
 const char* const kGradientAxisDirectionNote =
     "`[OBS]` o eixo padrao (0,0)->(0,1) foi lido, a DIRECAO dele nao: a lateralidade de "
     "y do display list do RB nunca foi estabelecida, entao qual ponta da forma recebe a "
@@ -539,17 +569,47 @@ const char* const kRasterFillNote =
     "caminho vetorial, e `[OBS]` se o alvo repinta um elemento raster do mesmo jeito que "
     "repinta um vetorial nao foi lido";
 
-const char* const kBackgroundP3Note =
-    "fundo com componentes display-p3 desenhado SEM conversao de espaco -- a matriz "
-    "nunca foi medida do alvo, e desenha-los como sRGB os desloca em silencio";
-
 const char* const kTranslucencyBoundsNote =
-    "a mascara de translucidez corre uma rampa VERTICAL dentro de um retangulo, e o "
-    "retangulo nao foi lido: `[OBS]` 0x10140-0x101B8 chama quatro acessores de rect e o "
-    "laudo nao seguiu ate o dono deles, entao aqui vale a viewBox da arte posta no canvas "
-    "-- a mesma resposta que este renderizador ja da para o rect de um gradiente, e a "
-    "mesma pergunta em aberto; `[OBS]` e qual ponta do rect recebe upperOpacity depende da "
-    "lateralidade de y do display list do RB, que continua nao estabelecida";
+    "a mascara de translucidez tem dois ramos (0xFE00, useSimpleMask) e os dois estao "
+    "transcritos: `[BIN]` na geracao 27 e um gradiente axial numa forma INFINITA -- 17 paradas "
+    "de preto com alfa S(upper + (lowerEff - upper) k/16), interpoladas pela cubica monotona "
+    "(flags 0x400), sem campo de distancia, sem cobertura e com o rect do quadro no canvas "
+    "(0xFE04-0x1064C) --, que esmaece a imagem inteira do grupo, dentro e fora do vidro; na "
+    "geracao 26 (0x77F20) e o shader simplifiedShapeAwareGradientMask sobre o SDF, com a "
+    "borda de 25.8 pt e o par de contorno. `[OBS]` No gradiente, os coeficientes da cubica "
+    "sao half no alvo e float aqui. A mascara corre uma rampa VERTICAL dentro da caixa do que "
+    "os elementos de vidro do GRUPO desenham, e cobre a imagem inteira do grupo: `[BIN]` o "
+    "rect do shader "
+    "(0xFEA8-0x101B8) e o FinalizedIcon.Layer.effectsFrame "
+    "-- ou (0,0,1,1) quando nil -- vezes o tamanho da textura do SDF, e o finalizador o "
+    "calcula como [displayList boundingRect] / canvas, recortado no quadro unitario "
+    "(0x18234-0x182E4), sobre o display list dos elementos com participatesInGlass (0x1BFFC, "
+    "filtrado em 0x180FC); `[OBS]` a caixa de uma arte raster e a dos pixels dela, nao a do alfa; "
+    "`[OBS]` e qual ponta do rect recebe upperOpacity depende da lateralidade de y do "
+    "display list do RB, que continua nao estabelecida";
+
+const char* const kPlusLighterClampNote =
+    "mescla plus-lighter de grupo SEM o grampo clampedPlusL: `[BIN]` "
+    "ICRRenderingParameters.shouldClampPlusLBlending e true nesta geracao (0x5EAE8; a geracao 26 "
+    "o zera, 0x77080) e o desenho da imagem de um grupo de mescla plus-lighter e o unico que ele "
+    "alcanca (0x4B530-0x4B57C e 0x44614-0x44654: setBlendShader: clampedPlusL = max(dest, "
+    "(min(1, source + dest).rgb, saturate(source.a + dest.a)))). `[OBS]` Mas o alvo so troca o "
+    "composite quando um SEGUNDO byte tambem vale 1 -- ctx+0x528, um Bool da tupla do contexto de "
+    "desenho (lista, Bool, fill, forma em ctx+0x520..0x538) -- e quem o escreve nao foi achado: "
+    "os tres strb em +0x528 do binario (0x4DB38, 0x4E3C8, 0x4F08C) sao copias de value witness. "
+    "Entao o grampo esta ligado ao render (IconRenderOptions::drawingContextClampsPlusLighter) "
+    "e DESLIGADO por padrao: a soma passa de 1 onde o alvo, se o byte for 1, pararia em 1.";
+
+const char* const kClearModeNilNote =
+    "rendicao Clear / Tinted Light pedida na geracao 26: `[BIN]` ICRRenderingParameters.clearMode "
+    "e nil nesta geracao (0x77064 grava a tag de nil), entao o modo efetivo do Clear e nil em "
+    "todo modo de renderizacao: a passagem raiz dela (0x43150) so instala o headroom e o grampo "
+    "de cor -- a matriz total do Clear e de 0x47D2C, o corpo da geracao 27 --, o conteudo nao "
+    "passa pela matriz do conteudo, e os realces do glifo saem do conjunto glyphsScreened pelo "
+    "ramo simples. Aqui o render e o do icone, sem a mascara, e a rendicao termina com o icone "
+    "sobre o vidro simulado. `[OBS]` O que mais o alvo faz com uma rendicao .clear nesta geracao "
+    "-- o filtro de tons de cinza sobre a imagem e a fonte da sombra de cada grupo (0x1AA10, "
+    "0x1C128) e a composicao que o sistema faz por cima -- nao esta transcrito.";
 
 const char* const kGlassRasterFieldNote =
     "vidro sobre arte raster: o campo de distancia desta camada foi construido a partir do "
@@ -643,6 +703,19 @@ const char* const kGlassRasterFieldNote =
 // deste projeto, nao leitura do binario.
 constexpr std::uint32_t kFieldSuperSample = 1;
 
+// HOW MANY SAMPLES A SIDE the silhouette of a vector takes per pixel, when a
+// group is lit as ONE shape and its field comes from the union of its elements'
+// silhouettes (`fieldCoverageFromContours`, DistanceField.h).
+//
+// OURS, and not the knob above: that one picks where the SIGN of an exact field
+// is read, this one is how fine an ALPHA is. `[OBS]` The target rasterises its
+// silhouettes with RenderBox's own antialiased coverage, which was not read.
+// Sixteen levels are what the sub-texel seed of `generateFieldFromAlpha` needs
+// to place the contour inside a texel instead of on its edge; one sample would
+// hand it a hard step and give back the texel-quantised normals the exact field
+// was written to get rid of.
+constexpr std::uint32_t kSilhouetteSamples = 4;
+
 const char* const kGlassVectorFieldNote =
     "vidro sobre arte vetorial: o campo de distancia desta camada NAO vem mais de um argmin "
     "exato sobre os segmentos do contorno -- a arte e rasterizada na propria grade do campo "
@@ -658,6 +731,49 @@ const char* const kGlassVectorFieldNote =
     "aparece no desenho (em stem.svg, 3,22 px de diferenca por isso). `[OBS]` A GRADE do alvo "
     "continua nao lida (TXRTexture, e os tres botoes de ICRRenderingParameters.SDFGeneration em "
     "0xA46E0), entao uma amostra por pixel e escolha deste projeto, medida e nao lida.";
+
+const char* const kFieldStackNote =
+    "vidro: o campo deste grupo e o EMPILHAMENTO dos campos dos seus elementos de vidro. "
+    "`[BIN]` Com iluminacao por elemento o alvo da um DistanceFilter a cada elemento "
+    "(IconRendering 0x1CE98-0x1D084) e os empilha de tras para a frente em 0x11480: o campo de "
+    "cima e desenhado dentro de um recorte feito dele mesmo por um GradientMap de duas paradas, "
+    "a um degrau de meia precisao uma da outra, em d = alcance + 1 (0x11580-0x115D0), e com "
+    "useAdvancedStacking ele entra antes pela mescla 0x3F9, que e sdf_maximum -- src.r > dst.r "
+    "? src : dst (RenderBox default_mod66.ll %582-%586). `[INF]` O que NAO foi lido e que o campo "
+    "de cima SUBSTITUI o de baixo dentro do recorte: o fragmento do DistanceFilter escreve a "
+    "distancia codificada nos quatro canais, alfa inclusive (default_mod74.ll %96-%99), e se a "
+    "camada dele chega opaca a mescla normal nao foi seguido. O que essa leitura mostra: numa "
+    "faixa de alcance + 1 pixels em volta de cada elemento de cima o campo diz 'fora' mesmo "
+    "sobre a arte do elemento de baixo, entao ali a translucidez do grupo nao age e o realce "
+    "do de baixo e interrompido.";
+
+const char* const kInvisibleGlassNote =
+    "vidro: ha neste documento uma camada de vidro com opacity <= 0, e ela foi deixada de fora "
+    "por inteiro. `[BIN]` O alvo so a pula ao desenhar a IMAGEM do grupo (0x1ABB8); as fontes do "
+    "SDF e a lista do effectsFrame sao desenhadas com w5 = 1 -- opacidade forcada a 1 e sem o "
+    "teste de opacidade (0x1BFFC, 0x1CB90) --, entao la uma camada de vidro invisivel ainda molda "
+    "o campo do grupo: o realce, a translucidez e a refracao seguem a forma dela. `[OBS]` Isso "
+    "nao e reproduzido aqui.";
+
+const char* const kCombinedFieldNote =
+    "vidro: o campo deste grupo e o da UNIAO dos seus elementos de vidro (lighting `combined`). "
+    "`[BIN]` Com performsLightingByElement falso o alvo desenha as silhuetas de todos os "
+    "elementos de vidro num display list so -- opacidade forcada a 1 e fill forcado a preto "
+    "(w5 = 1), numa camada quando sao dois ou mais -- e aplica UM DistanceFilter (IconRendering "
+    "0x1CDDC-0x1D1DC), entao nao ha aro onde dois elementos se encontram. Aqui a silhueta e "
+    "montada na CPU: a cobertura de um vetor sai dos contornos dele em 4 x 4 amostras por pixel, "
+    "a de um raster e o alfa da arte colocada, as duas juntadas por source-over, e o campo e a "
+    "transformada euclidiana exata do contorno alpha >= 0.5 dessa uniao. `[OBS]` A cobertura do "
+    "alvo e a do rasterizador do RenderBox, que nao foi lida; 4 x 4 amostras e escolha deste "
+    "projeto.";
+
+const char* const kCombinedRasterNote =
+    "vidro: neste grupo de lighting `combined` ha elemento de vidro DEPOIS de um de arte raster, "
+    "e ele nao entra na silhueta do campo. `[BIN]` E o que o alvo faz: o laco de "
+    "0x1D15C-0x1D194 e isOpaque = isOpaque && desenha(elemento), o desenho (0x1AACC) devolve 0 "
+    "para conteudo raster (0x1B6FC), e o && nao avalia o lado direito depois disso. O elemento "
+    "e desenhado normalmente; so nao molda o campo, entao nem a translucidez, nem a refracao, "
+    "nem o realce seguem a forma dele.";
 
 // The box `placeRaster` drops the art into, in target pixels -- the raster's
 // answer to `artPlacementRect`, which does the same for a viewBox.
@@ -709,8 +825,86 @@ PlacementRect artPlacementRect(const icf::svg::ViewBox& box, const LayerPlacemen
     return r;
 }
 
+// A CAIXA DO CONTEUDO DA ARTE, no canvas e recortada nele.
+//
+// `[BIN]` E o retangulo em que o alvo mede a rampa da translucidez. O argumento
+// 5 do `simplifiedShapeAwareGradientMask` e montado em `0xFEA8`-`0x101B8`
+// (IconRendering.arm64): o `CGRect` que a funcao RECEBE, multiplicado pela
+// largura e pela altura em pixels da textura do SDF (`0x84304`, dois inteiros).
+// Os tres chamadores (`0x44118`, `0x45EC8`, `0x4AD70`) passam o mesmo: o
+// `FinalizedIcon.Layer.effectsFrame` (`+0x70`), ou `(0, 0, 1, 1)` quando o tag
+// dele (`+0x90`) diz nil. E o finalizador (`0x17F38`) o calcula em
+// `0x18234`-`0x182E4` e de novo em `0x183C8`-`0x18450`: `[displayList
+// boundingRect]`, cada lado dividido pelo tamanho do canvas (`fdiv` por
+// `[sp,#0x4b8]` e `[sp,#0x4c0]`), e `CGRectIntersection` com `(0, 0, 1, 1)`.
+// Um retangulo normalizado vezes o tamanho da textura: a caixa do que a camada
+// desenha, em pixels -- e nao o canvas inteiro, que e o que a viewBox de uma
+// arte de 1024 x 1024 dava.
+//
+// `[OBS]` Sao DOIS display lists e dois retangulos (`0x18234` e `0x183C8`), e
+// qual dos dois e o `effectsFrame` nao foi lido; o segundo e construido por
+// `0x1C0DC`, e se ele desenha algo alem da arte a caixa dele e maior do que
+// esta. `[OBS]` O `boundingRect` do RenderBox tambem nao foi lido: aqui a
+// caixa e a das curvas amostradas, sem a meia largura de um traco.
+PlacementRect artContentRect(const icf::svg::SvgDocument& svg, const LayerPlacement& p,
+                             std::uint32_t size) {
+    using icf::svg::SegmentKind;
+    double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    bool any = false;
+    auto grow = [&](double x, double y) {
+        if (!any) {
+            x0 = x1 = x;
+            y0 = y1 = y;
+            any = true;
+            return;
+        }
+        x0 = std::min(x0, x);
+        x1 = std::max(x1, x);
+        y0 = std::min(y0, y);
+        y1 = std::max(y1, y);
+    };
+    for (const icf::svg::Shape& shape : svg.shapes) {
+        icf::svg::Point cur{};
+        for (const icf::svg::Segment& s : shape.path.segments) {
+            switch (s.kind) {
+                case SegmentKind::Move:
+                case SegmentKind::Line:
+                    cur = s.p[0];
+                    grow(cur.x, cur.y);
+                    break;
+                case SegmentKind::Cubic:
+                    for (int i = 1; i <= 16; ++i) {
+                        const double t = i / 16.0, u = 1.0 - t;
+                        const double a = u * u * u, b = 3 * u * u * t, c = 3 * u * t * t, d = t * t * t;
+                        grow(a * cur.x + b * s.p[0].x + c * s.p[1].x + d * s.p[2].x,
+                             a * cur.y + b * s.p[0].y + c * s.p[1].y + d * s.p[2].y);
+                    }
+                    cur = s.p[2];
+                    break;
+                case SegmentKind::Close:
+                    break;
+            }
+        }
+    }
+    // Uma arte sem forma nenhuma nao tem caixa propria: a da viewBox.
+    if (!any) return artPlacementRect(svg.viewBox, p, size);
+
+    const PathGlobals g = placeOnCanvas(svg.viewBox, p, size);
+    const double sx = static_cast<double>(g.m0[0]), sy = static_cast<double>(g.m1[1]);
+    const double tx = static_cast<double>(g.m2[0]), ty = static_cast<double>(g.m2[1]);
+    const double limit = static_cast<double>(size);
+    const double l = std::clamp(tx + sx * x0, 0.0, limit), r = std::clamp(tx + sx * x1, 0.0, limit);
+    const double t = std::clamp(ty + sy * y0, 0.0, limit), b = std::clamp(ty + sy * y1, 0.0, limit);
+    PlacementRect out;
+    out.x = l;
+    out.y = t;
+    out.width = r - l;
+    out.height = b - t;
+    return out;
+}
+
 FillOverride fillPaint(const ResolvedFill& fill, const PlacementRect& shapeRect,
-                       std::string& why) {
+                       std::string& why, const RenderingParameters& params) {
     FillOverride out;
     switch (fill.contents) {
         case ResolvedFill::Contents::Solid:
@@ -743,15 +937,22 @@ FillOverride fillPaint(const ResolvedFill& fill, const PlacementRect& shapeRect,
             // `GradientPlacement.default`, `(0,0)->(0,1)`, substituted by the
             // draw path at `0x1BAB8`. §4.4's reason is gone, which is why this
             // case now draws instead of naming itself.
-            out.stops = rampPointsOf(automaticGradient(fill.primary));
+            //
+            // `[BIN]` The derivation is one function with no generation branch
+            // (`0x5864`); what the generation changes is its six constants
+            // (`ICRRenderingParameters+0x50`..`+0x78`, `0x770B0`/`0x770BC`).
+            out.stops = rampPointsOf(
+                automaticGradientInWorkingSpace(fill.primary, params.automaticGradient));
             break;
 
         case ResolvedFill::Contents::System:
             // `[BIN]` The two canned chiclet ramps, with every stop's alpha
             // REWRITTEN by the fill's opacity rather than multiplied
             // (`SystemFill.h`). The placement a `.system` resolve leaves behind
-            // is always nil, so this always takes the default axis below.
-            out.stops = rampPointsOf(resolveSystemFill(fill.ramp, fill.opacity).stops);
+            // is always nil, so this always takes the default axis below. The
+            // four greys are the generation's (`+0x80`, `+0x88`).
+            out.stops = rampPointsOf(
+                resolveSystemFill(fill.ramp, fill.opacity, params.systemGradients).stops);
             break;
     }
 
@@ -804,8 +1005,9 @@ PathGlobals placeOnCanvas(const icf::svg::ViewBox& box, const LayerPlacement& p,
     // versao desta frente subtraiu a origem aqui, que e a forma obvia, e ela
     // NAO fecha o invariante: `[ART]` medido em 18/09, com `m2` menos a origem
     // o disco do gate acusava 11 e 15 pixels da borda antialiasada com
-    // `max |d| = 0,00048828125`, que e UM ULP de `float16` -- a cobertura e
-    // `VK_FORMAT_R16G16_SFLOAT` (`Image.cpp`) --, porque `world = p.x*m0 + m2`
+    // `max |d| = 0,00048828125`, que e UM ULP de `float16` -- a cobertura era
+    // `VK_FORMAT_R16G16_SFLOAT` naquele dia, e o fragment continua estreitando
+    // para meia precisao (`PathFragment.glsl`) --, porque `world = p.x*m0 + m2`
     // arredonda noutro expoente quando `m2` encolhe e a cobertura cai do outro
     // lado de um degrau de meia precisao. Um viewport de origem ZERO e
     // extensao menor fechava em zero na mesma medida, o que isola a subtracao,
@@ -834,8 +1036,10 @@ class CpuSurface final : public IconSurface {
 public:
     explicit CpuSurface(Device& device) : device_(device) {}
 
-    Result<void> begin(const PixelGrid& grid, const PixelGrid&) override {
+    Result<void> begin(const PixelGrid& grid, const PixelGrid&,
+                       const RenderingParameters& params) override {
         grid_ = grid;
+        params_ = &params;
         acc_.assign(grid.texels() * 4, 0.0f);
         return {};
     }
@@ -852,16 +1056,48 @@ public:
         sink(chicletHighlightsCached(cache, target(), grid_, args, platform));
         return {};
     }
-    Result<void> beginGroup(bool isolated) override {
-        isolated_ = isolated;
-        groupAcc_.clear();
-        if (isolated) groupAcc_.assign(grid_.texels() * 4, 0.0f);
+    Result<void> addToGroupImage(SurfaceGroupImage& g, const SurfaceArtRef& art, double opacity,
+                                 BlendMode mode) override {
+        if (g.count == 0) {
+            // The first element is only HELD: a group of one never gets a
+            // target, and its image is the element's own art.
+            g.first = art;
+            g.firstOpacity = opacity;
+            g.count = 1;
+            return {};
+        }
+        if (g.count == 1) {
+            // The second element is what makes it a group image. The held one
+            // goes in first, `normal`: it meets nothing.
+            g.target.assign(grid_.texels() * 4, 0.0f);
+            blendOver(g.target, g.first->rgba, static_cast<float>(g.firstOpacity),
+                      BlendMode::Normal);
+            g.first.reset();
+        }
+        blendOver(g.target, art->rgba, static_cast<float>(opacity), mode);
+        ++g.count;
         return {};
     }
-    Result<void> endGroup(std::optional<BlendMode> blend) override {
-        if (isolated_ && blend) blendPremulOver(acc_, groupAcc_, *blend);
-        isolated_ = false;
-        return {};
+    Result<SurfaceGroupTaken> takeGroupImage(SurfaceGroupImage& g) override {
+        SurfaceGroupTaken taken;
+        if (g.count <= 1) {
+            taken.image = std::move(g.first);
+            taken.opacity = g.firstOpacity;
+            return taken;
+        }
+        // The un-multiply `finish` does, for the same reason: what reads the
+        // image -- the mask, the shadow, `blendOver` -- reads STRAIGHT colour.
+        auto image = std::make_shared<SurfaceArt>();
+        image->rgba = std::move(g.target);
+        std::vector<float>& px = image->rgba;
+        parallelRanges(grid_.height, grid_.texels() * 4, [&](std::size_t y0, std::size_t y1) {
+            for (std::size_t i = y0 * grid_.width * 4; i < y1 * grid_.width * 4; i += 4) {
+                const float a = px[i + 3];
+                for (int k = 0; k < 3; ++k) px[i + k] = a > 0.0f ? px[i + k] / a : 0.0f;
+            }
+        });
+        taken.image = std::move(image);
+        return taken;
     }
     Result<SurfaceArt> drawSvg(RenderCache* cache, const std::string& text,
                                const icf::svg::SvgDocument& svg, const PathGlobals& placement,
@@ -879,6 +1115,7 @@ public:
         art.rgba = rb::placeRaster(png, placement, grid_);
         return art;
     }
+    Result<const std::vector<float>*> artPixels(SurfaceArt& art) override { return &art.rgba; }
     Result<SurfaceField> contourField(RenderCache* cache, const std::vector<FieldContour>& contours,
                                       std::uint32_t width, std::uint32_t height,
                                       const FieldOptions& fo, std::uint32_t ss,
@@ -888,6 +1125,11 @@ public:
     Result<SurfaceField> alphaField(RenderCache* cache, SurfaceArt& art, std::uint32_t width,
                                     std::uint32_t height, const FieldOptions& fo) override {
         return fieldOf(fieldFromAlphaCached(cache, art.rgba, width, height, fo));
+    }
+    Result<SurfaceField> stackField(const SurfaceField& lower, const SurfaceField& upper,
+                                    float reach, bool advanced) override {
+        return fieldOf(std::make_shared<const FieldImage>(
+            stackFields(*lower.cpu, *upper.cpu, reach, advanced)));
     }
     Result<void> refract(const SurfaceField& field, const GlassRefraction& refraction) override {
         glassOver(target(), grid_, glassDisplacementMap(*field.cpu, refraction), refraction);
@@ -906,6 +1148,10 @@ public:
         sink(drawSpecular(target(), *field.cpu, args));
         return {};
     }
+    Result<void> glow(const SurfaceField& field, const GlowArguments& args) override {
+        drawGlow(target(), *field.cpu, args);
+        return {};
+    }
     Result<void> applyMask(SurfaceArt& art, const SurfaceMask& mask, MaskSink sink) override {
         std::size_t painted = 0;
         const std::size_t missed = opacityMaskMissedPixels(art.rgba, *mask.cpu, painted);
@@ -914,9 +1160,11 @@ public:
         return {};
     }
     Result<void> blendArt(const SurfaceArt& art, float alpha, BlendMode mode,
-                          bool clearContent) override {
+                          bool clearContent, bool clampPlusLighter) override {
+        BlendOptions blendOptions;
+        blendOptions.clampPlusLighter = clampPlusLighter;
         if (!clearContent) {
-            blendOver(target(), art.rgba, alpha, mode);
+            blendOver(target(), art.rgba, alpha, mode, blendOptions);
             return {};
         }
         std::vector<float> m = art.rgba;
@@ -925,24 +1173,33 @@ public:
             m[i + 1] = 1.0f;
             m[i + 2] = 0.0f;
         }
-        blendOver(target(), m, alpha, mode);
+        blendOver(target(), m, alpha, mode, blendOptions);
         return {};
     }
-    Result<SurfaceShadow> makeShadow(RenderCache* cache, SurfaceArt& art, ShadowStyle style,
-                                     const ShadowGeometry& geometry,
-                                     double overdrawAlpha) override {
+    Result<SurfaceShadow> makeShadow(RenderCache* cache, SurfaceArt& source, ShadowStyle style,
+                                     const ShadowGeometry& geometry) override {
         SurfaceShadow s;
-        s.image = shadowImageCached(cache, art.rgba, grid_.width, grid_.height, style, geometry);
-        if (overdrawAlpha > 0.0) {
-            s.overdraw = shadowOverdrawImage(*s.image, art.rgba, grid_.width, grid_.height,
-                                             overdrawAlpha);
-        }
-        s.hasOverdraw = !s.overdraw.empty();
+        s.image = shadowImageCached(cache, source.rgba, grid_.width, grid_.height, style,
+                                    geometry, params_->shadow);
         return s;
+    }
+    Result<void> clipShadowOverdraw(SurfaceShadow& shadow, SurfaceArt& content,
+                                    double clipAlpha) override {
+        shadow.overdraw.clear();
+        if (clipAlpha > 0.0) {
+            shadow.overdraw = shadowOverdrawImage(*shadow.image, content.rgba, grid_.width,
+                                                  grid_.height, clipAlpha);
+        }
+        shadow.hasOverdraw = !shadow.overdraw.empty();
+        return {};
     }
     Result<void> blendShadow(const SurfaceShadow& shadow, bool overdraw, float alpha,
                              BlendMode mode) override {
         blendOver(target(), overdraw ? shadow.overdraw : *shadow.image, alpha, mode);
+        return {};
+    }
+    Result<void> tint(const IconRenderOptions::TintRecolour& tint) override {
+        tintDark(acc_.data(), acc_.size() / 4, tint);
         return {};
     }
     Result<std::vector<float>> finish(std::int32_t cropX, std::int32_t cropY,
@@ -962,7 +1219,9 @@ public:
     }
 
 private:
-    std::vector<float>& target() { return isolated_ ? groupAcc_ : acc_; }
+    // The accumulator, always: since the group image, a blended group no longer
+    // redirects what is drawn "on the picture" to a target of its own.
+    std::vector<float>& target() { return acc_; }
 
     static SurfaceField fieldOf(std::shared_ptr<const FieldImage> image) {
         SurfaceField f;
@@ -976,6 +1235,10 @@ private:
 
     Device& device_;
     PixelGrid grid_;
+    // The block of the generation this render runs with (`begin`). The step
+    // whose parameters do not arrive as an argument -- the shadow's image --
+    // reads them from it.
+    const RenderingParameters* params_ = nullptr;
     // The accumulator is PREMULTIPLIED while layers stack -- `over` is only
     // associative in that form -- and is un-multiplied once at the end, which is
     // what `RenderedIcon::rgba` promises and what a PNG wants.
@@ -986,8 +1249,6 @@ private:
     // as straight -- a semi-transparent icon came out too dark and every test
     // stayed green.
     std::vector<float> acc_;
-    std::vector<float> groupAcc_;
-    bool isolated_ = false;
 };
 
 }  // namespace
@@ -1003,9 +1264,22 @@ Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
     return renderIconOn(surface, bundle, options);
 }
 
+IconSizeClass effectiveSizeClass(const IconRenderOptions& options) {
+    if (options.sizeClass) return *options.sizeClass;
+    return sizeClassFor(kReferenceIconSidePoints,
+                        renderingParameters(options.generation).thresholds);
+}
+
 Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& bundle,
                                   IconRenderOptions options) {
     if (options.size == 0) return std::unexpected("a canvas of zero size was asked for");
+
+    // THE PARAMETER BLOCK OF THE GENERATION ASKED FOR, read once
+    // (`RenderingParameters.h`), and the size class every per-size table below
+    // is indexed with. Nothing under this line reaches for a module's own
+    // default where the block carries the field.
+    const RenderingParameters& params = renderingParameters(options.generation);
+    const IconSizeClass sizeClass = effectiveSizeClass(options);
 
     // O DOCUMENTO E LIDO AQUI porque a margem sai DELE: `documentReach` mede o
     // alcance de cada efeito nos parametros ja denormalizados dos grupos, e o
@@ -1015,7 +1289,7 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
     const std::vector<icf::Group> groups = doc.groups();
 
     auto planned = planViewport(options.viewport, options.size,
-                                documentReach(doc, options.context, options.sizeClass),
+                                documentReach(doc, options.context, sizeClass, params),
                                 surface.bufferLattice());
     if (!planned) return std::unexpected(planned.error());
     const PixelGrid grid = planned->buffer;
@@ -1033,12 +1307,60 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
     }
     // O acumulador (pre-multiplicado) mora na superficie -- `CpuSurface` diz
     // por que ele e pre-multiplicado.
-    if (auto began = surface.begin(grid, planned->narrow); !began) {
+    if (auto began = surface.begin(grid, planned->narrow, params); !began) {
         return std::unexpected(began.error());
     }
 
     // Qual pastilha este contexto pede -- `ChicletShape.h`, `platformOverrides`.
     const IconPlatform platform = iconPlatformOf(options.context.idiom);
+
+    // THE RENDERING MODE, as far as the two highlight selectors ask about it
+    // (`GlassSpecular.h`, `glyphHighlightsSetFor`). `.color` is the document as
+    // authored: no recolouring and no Clear mask. The effective clear mode is
+    // the block's `clearMode` under the Clear mask and nil everywhere else --
+    // `prepareMono` sends Clear and Tinted Light through the mask and Tinted
+    // Dark through the recolouring alone, which is the split `0x0005E59C` makes
+    // (`[INF]` a Tinted Light whose `applyToLightTintToo` were false would be
+    // nil too; it is `true` in the one block that has a clear mode).
+    const bool colourMode = !options.tint.has_value() && !options.clearMask;
+    // `[BIN]` THE CLEAR MASK IS DRAWN ONLY BY A GENERATION THAT HAS A CLEAR MODE.
+    // `ICRRenderingParameters.clearMode` is an Optional (`params+0x120`), and
+    // `0x76FC0` writes its nil tag (`0x77064`): in generation 26 the resolved
+    // clear mode is nil in every rendering mode. The root pass of that
+    // generation (`0x43150`) installs the content headroom and the colour clamp
+    // and never the Clear's total matrix -- that is `0x47D2C`, generation 27's
+    // body -- and the highlight passes take their plain branches. So under
+    // generation 26 a render asked for the mask draws the icon itself:
+    // `kClearModeNilNote`, and `RenderedIcon::clearMask` tells whoever finishes
+    // the rendition (`finishMono`) that there is no mask to read.
+    const bool clearMask = options.clearMask && params.clearMode.has_value();
+    const bool effectiveClearModeIsNil = !clearMask;
+    out.clearMask = clearMask;
+    if (options.clearMask && !clearMask) note(out.notes, kClearModeNilNote);
+    // `[BIN]` `iconBrightness` (`+0x5B`), which BOTH selectors switch on and
+    // the shadow's blend consults: classified below from the background's fill,
+    // and `Default` when no background is painted (the byte is zeroed at
+    // `0x0001A8C0`).
+    ChicletAppearance iconBrightness = ChicletAppearance::Default;
+
+    // THE CHICLET'S HIGHLIGHTS, settled where the background's fill is known and
+    // DRAWN AFTER THE GROUPS -- the pass below the group loop says why.
+    struct ChicletPass {
+        SpecularArguments args;
+        HighlightsSetKind set = HighlightsSetKind::Default;
+        ChicletAppearance appearance = ChicletAppearance::Default;
+        ChicletLuminance lum;
+    };
+    std::optional<ChicletPass> chicletPass;
+
+    // `[BIN]` The root key `color-space-for-untagged-svg-colors` has one case,
+    // `display-p3` (`IconComposition.assumedSVGColorSpace`); with it, every SVG
+    // colour that carries no tag of its own is Display P3 (`SvgRenderer.h`).
+    bool untaggedSvgIsDisplayP3 = false;
+    if (const icf::json::Value* v = doc.json().find("color-space-for-untagged-svg-colors")) {
+        untaggedSvgIsDisplayP3 =
+            v->kind() == icf::json::Value::Kind::String && v->rawString() == "display-p3";
+    }
 
     // ---- the background, before anything else --------------------------
     //
@@ -1061,12 +1383,12 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
             const PlacementRect canvas{0.0, 0.0, static_cast<double>(options.size),
                                        static_cast<double>(options.size)};
             std::string why;
-            FillOverride paint = fillPaint(bg.fill, canvas, why);
+            FillOverride paint = fillPaint(bg.fill, canvas, why, params);
             // Na MASCARA DO CLEAR o fundo do documento vira um solido (0, 1, 0, 1)
             // `[BIN]` (0x486D0-0x486E8 -> 0x48920-0x48964): fora da matriz do
             // conteudo, e pela matriz total vira (0, 0, 0, 1) -- cobre sem
             // clarear, escurecer nem realcar.
-            if (options.clearMask && why.empty()) {
+            if (clearMask && why.empty()) {
                 paint = FillOverride{};
                 paint.kind = FillOverride::Kind::Solid;
                 paint.colour[0] = 0.0f;
@@ -1096,56 +1418,80 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                 out.backgroundPainted = true;
                 note(out.notes, kBackgroundShapeNote);
 
-                // A UNICA LINHA QUE A FRENTE DOS REALCES DO CHICLET ACRESCENTA
-                // A ESTE ARQUIVO. Ate aqui o fundo era uma rampa chapada: a
-                // cadeia `chiclet*` de `Highlights` estava lida e nada a
-                // consumia (`[OBS] 6` de `Docs/Laudos/2026-09-15-highlights.md`).
+                // OS REALCES DO CHICLET SAO PREPARADOS AQUI E DESENHADOS DEPOIS
+                // DOS GRUPOS (`chicletPass`). Ate 01/10 eles eram desenhados
+                // nesta linha, logo sobre o fundo recortado -- que e onde a
+                // frente que os trouxe os pos, sem ter lido a ordem.
                 //
                 // A classe de aparencia sai da LUMINANCIA do proprio fill, que
                 // e o que `0x0001A920` mede e `0x00062744` consome -- ver
-                // `ChicletHighlights.h` §2.1. Um fill de sistema nao expoe as
-                // paradas aqui, e o alvo tambem so classifica um fill SIMPLES,
-                // entao esse caso entra como `simpleFill == false` e cai em
-                // `chicletDefault`, que e o `mov w8, #0` de `0x0001A8C0`.
+                // `ChicletHighlights.h` §2.1.
+                //
+                // `[BIN]` O PORTAO DA CLASSIFICACAO E O MODO DE RENDERIZACAO, e
+                // nao o tipo do fill, como este bloco dizia ate 01/10 (um fill
+                // de sistema entrava como "nao simples" e caia em `Default`). O
+                // teste de `0x0001A89C`-`0x0001A8B4` e sobre as cinco palavras e
+                // a tag que `0x0001A80C`-`0x0001A824` gravam em `+0x68..+0x90`
+                // -- o mesmo campo que `0x0005E59C` le como o modo -- enquanto
+                // a faixa de leveza sai do fill resolvido em `+0x10`
+                // (`0x0001A928`-`0x0001A944`), seja ele qual for. Entao um fill
+                // de sistema classifica pelas duas paradas dele, e fora de
+                // `.color` ninguem classifica.
                 {
-                    const bool simpleFill =
-                        bg.fill.contents != ResolvedFill::Contents::System;
                     ChicletLuminance lum;
                     if (paint.kind == FillOverride::Kind::Ramp) {
                         lum = chicletFillLuminance(paint.stops);
                     } else if (paint.kind == FillOverride::Kind::Solid) {
                         lum = chicletFillLuminance(paint.colour);
                     }
-                    const ChicletAppearance appearance =
-                        classifyChicletAppearance(lum, simpleFill);
+                    const HighlightParameters& hp = params.highlights;
+                    const ChicletAppearance appearance = classifyChicletAppearance(
+                        lum, colourMode, hp.iconBrightnessOnlyUsesMax, hp.maxDimChicletLuminance,
+                        hp.minBrightChicletLuminance);
+                    iconBrightness = appearance;
+                    // `[BIN]` QUAL CONJUNTO, pelo seletor `0x00062588`
+                    // (`chicletHighlightsSetFor`). Na geracao 26 e a aparencia do
+                    // estilo que escolhe, e ela e escura no contexto `dark` e na
+                    // rendicao Tinted Dark -- a unica recoloracao que nao passa
+                    // pela mascara do Clear (`prepareMono`). `[OBS]` O Clear Dark
+                    // nao chega aqui como aparencia: as opcoes do render nao
+                    // dizem se o Clear e o claro ou o escuro.
+                    const bool appearanceIsDark =
+                        options.context.appearance == icf::Appearance::Dark ||
+                        (options.tint.has_value() && !options.clearMask);
+                    // `[BIN]` FORA DE `.color` A GERACAO 27 DESENHA O CONJUNTO QUE
+                    // O SELETOR MANDA: `chicletClear` (`+0x13A8`) quando o modo
+                    // efetivo do Clear nao e nil -- as rendicoes que passam pela
+                    // mascara -- e `chicletScreened` (`+0x19D8`) quando e -- o
+                    // Tinted Dark (`0x62684`-`0x62740`). Ate 01/10 este render
+                    // desenhava `chicletDefault` ali, com o seletor ja transcrito
+                    // e uma linha que o desfazia. Sob a mascara os realces
+                    // continuam repintados pela cor dela (`clearPaint`).
+                    const HighlightsSetKind chicletSet = chicletHighlightsSetFor(
+                        hp.chicletHighlightsAppearanceMode, appearanceIsDark, colourMode,
+                        appearance, effectiveClearModeIsNil);
                     SpecularArguments chicletArgs;
-                    chicletArgs.sizeClass = options.sizeClass;
+                    chicletArgs.sizeClass = sizeClass;
+                    chicletArgs.generation = options.generation;
+                    chicletArgs.set = chicletSet;
                     chicletArgs.pixelsPerPoint =
                         static_cast<double>(options.size) / kCanvasPoints;
-                    if (options.clearMask) chicletArgs.clearPaint = 2;
-                    // A nota depende de quantos pixels mudaram: o lugar dela fica
-                    // guardado ate a contagem chegar (na GPU, no `finish`).
-                    const std::size_t noteAt = out.notes.size();
-                    out.notes.push_back(kPendingEntry);
-                    std::vector<std::string>* notes = &out.notes;
-                    if (auto ok = surface.chicletHighlights(
-                            options.cache, chicletArgs, platform,
-                            [notes, noteAt, appearance, lum](std::size_t highlighted) {
-                                (*notes)[noteAt] = highlighted > 0
-                                                       ? chicletHighlightsNote(appearance, lum)
-                                                       : std::string(kDroppedEntry);
-                            });
-                        !ok) {
-                        return std::unexpected(ok.error());
+                    // `[BIN]` A luz do chiclet e `defaultChicletLight`, e nao a do
+                    // glifo (`ctx+0x5F0`, `0x0004761C`).
+                    chicletArgs.lightLongitude = hp.defaultChicletLightLongitude;
+                    if (clearMask) chicletArgs.clearPaint = 2;
+                    // `[INF]` Uma pastilha SEM SUPERFICIE nao e acesa: o fundo que
+                    // `automatic` sob `tinted` resolve e `IconColor.clear`, alfa
+                    // zero, e o realce poria luz sobre o nada. Era o que o recorte
+                    // pelo alfa do fundo dava enquanto a passada vinha antes dos
+                    // grupos; agora que ela vem depois, e dito aqui.
+                    if (fillPaintsSomething(paint)) {
+                        chicletPass = ChicletPass{chicletArgs, chicletSet, appearance, lum};
                     }
                 }
                 if (paint.kind == FillOverride::Kind::Ramp) {
                     note(out.notes, kGradientAxisDirectionNote);
                 }
-                if (bg.fill.contents == ResolvedFill::Contents::System) {
-                    note(out.notes, kChicletRectNote);
-                }
-                if (fillCarriesP3(bg.fill)) note(out.notes, kBackgroundP3Note);
 
                 // THE CORRECTION OF §5.2, and it is deliberately a step
                 // BACKWARDS in cleverness. `[BIN]` The background converter
@@ -1193,6 +1539,31 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
     for (std::size_t gr = 0; gr < groups.size(); ++gr) {
         const std::size_t gi = groups.size() - 1 - gr;
         const icf::Group& group = groups[gi];
+
+        // `[BIN]` A HIDDEN GROUP NEVER BECOMES AN `Icon.Layer`. The converter
+        // (`IconComposerKit.arm64` `0x10C494`) answers nil for it at
+        // `0x10C608`-`0x10C6D8`, before one of its layers is looked at -- so it
+        // has no image, no field and no shadow. Like a hidden layer it is an
+        // instruction and not a gap: nothing is skipped and nothing is noted.
+        // Its layers still COUNT, because `total` is the document's ruler and
+        // the document has them.
+        if (boolOr(group.resolve("hidden", options.context), false)) {
+            out.total += group.layers().size();
+            continue;
+        }
+
+        // `[BIN]` THE GROUP'S OWN `opacity`, which nothing here read until
+        // 2026-10-01. The converter calls `Group.opacity.getter` at `0x10C91C`
+        // and hands the value to the `Icon.Layer` init at `0x10CB08`, and the
+        // finaliser copies it verbatim into `FinalizedIcon.Layer.opacity`
+        // (`0x19934`-`0x19940`) -- the `Double` at `+0x38` that `GlassShadow.h`
+        // names. It is the `alpha:` of the group's content draw (`0x4B4EC`),
+        // the third factor of the shadow (`0x4A070`) and the multiplier of
+        // every highlight (`0x495F0`). The LAYER's `opacity` is a different
+        // field, `Icon.Element.opacity`, and it goes into the group's image
+        // (`0x1AD9C`/`0x1B448`) and nowhere else.
+        const double groupOpacity = numberOr(group.resolve("opacity", options.context), 1.0);
+
         const LayerPlacement gp = placementOf(group.resolve("position", options.context));
 
         // `[ART]` THE GLASS PARAMETERS ARE ON THE GROUP, NOT ON THE LAYER. All
@@ -1209,8 +1580,14 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
         GlassMaterialReadError materialError;
         const std::optional<GlassMaterialDocument> materialDoc =
             readGlassMaterial(group, options.context, &materialError);
+        // `[BIN]` THE DENORMALISATION RUNS ON THE GENERATION'S OWN BLOCK
+        // (`ICRRenderingParameters+0x1E8`..). The one number of it a generation
+        // changes is `refractionStrengthMax`: 640 in 27, and `0x77F64` stores
+        // zero over it in 26 -- so there every strength denormalises to zero
+        // and no group refracts, whatever the document says.
         const DenormalisedGlass glassNumbers =
-            materialDoc ? denormaliseGlass(glassMaterialFrom(*materialDoc)) : DenormalisedGlass{};
+            materialDoc ? denormaliseGlass(glassMaterialFrom(*materialDoc), params.glass)
+                        : DenormalisedGlass{};
         const GlassRefraction refraction = glassRefractionFor(glassNumbers, options.size);
 
         // ---- the translucency, which is the OTHER half of the material -----
@@ -1234,9 +1611,16 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
         // inference about where, not about what.
         const double groupTranslucency =
             glassNumbers.translucencyEnabled ? glassNumbers.translucency : 0.0;
+        // The profile is the generation's (`ICRRenderingParameters+0x2B8`), and
+        // its border is handed over in texels of the SDF -- `size / 1024` of
+        // them per canvas point (`0x00010048`).
         const OpacityMaskArguments groupMaskArgs = opacityMaskArguments(
-            kGlyphTranslucency, options.sizeClass, groupTranslucency);
-        const bool groupWantsMask = !opacityMaskIsIdentity(groupMaskArgs);
+            params.glyphTranslucency, sizeClass, groupTranslucency,
+            static_cast<double>(options.size) / kCanvasPoints);
+        // `[BIN]` THE GATE IS THE RAW NUMBER (`0x4AD08`-`0x4AD10`), not whether
+        // the profile it opens is flat: `GlassTranslucency.h` says what the
+        // difference is in generation 26.
+        const bool groupWantsMask = translucencyDrawsMask(groupTranslucency);
 
         // ---- the specular, which NOW DRAWS ---------------------------------
         //
@@ -1246,20 +1630,30 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
         // read the 16113 bytes of `ICRRenderingParameters.Highlights` those
         // numbers come from, so this stops being a note and starts being pixels.
         //
-        // FIVE highlights, not one: `0x00030E88` expands one `HighlightsSet`
-        // into seven candidates and this version's glyph defaults leave five
-        // alive -- a sharp key rim, a diffuse key wash, a sharp fill rim
-        // opposite it, and the dark one drawn twice at +-90 degrees.
+        // SIX highlights, not one, in generation 27: `0x00030E88` expands one
+        // `HighlightsSet` into seven candidates and that generation's glyph
+        // sets leave six alive -- a sharp key rim, a diffuse key wash, a sharp
+        // fill rim and a diffuse fill wash opposite them, and the dark one
+        // drawn twice at +-90 degrees. Generation 26's leave two: the key rim
+        // and a full ring. WHICH set is the selector's answer (`0x000627B4`).
         //
         // `[ART]` It fires for real: over the 145 corpus documents 67 carry a
         // group-level `specular`, and of the 103 values 64 are `true` and 3 are
         // the string `"inside"`.
         const bool wantsSpecular = documentAsksForSpecular(glassNumbers);
         SpecularArguments specularArgs;
-        specularArgs.sizeClass = options.sizeClass;
+        specularArgs.sizeClass = sizeClass;
+        specularArgs.generation = options.generation;
+        specularArgs.set =
+            glyphHighlightsSetFor(colourMode, iconBrightness, effectiveClearModeIsNil);
         specularArgs.pixelsPerPoint = static_cast<double>(options.size) / kCanvasPoints;
+        specularArgs.lightLongitude = params.highlights.defaultGlyphLightLongitude;
+        specularArgs.useVCM = params.highlights.glyphHighlightsUseVCM;
         specularArgs.placement = glassNumbers.specularPlacement;
-        if (options.clearMask) {
+        // The list those two pick, for the two loops below that measure it.
+        const std::vector<HighlightSlot>& glyphHighlights = expandedHighlights(
+            specularArgs.generation, HighlightFamily::Glyph, specularArgs.set);
+        if (clearMask) {
             specularArgs.clearPaint = 1;
             specularArgs.useVCM = false;   // `[BIN]` 0x4967C-0x4969C: o VCM nao roda
         }
@@ -1274,9 +1668,11 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
         // branch (it is always the `needs-background` one, because the only
         // thing that would pick the other is a `refractionStrength` no document
         // has), the clip (`0x4A4A4`-`0x4A56C`, an outset of exactly one pixel),
-        // and the order (content first, so the backdrop includes the group).
-        // What is left `[OBS]` is the layer FRAME, and it is an argument below
-        // rather than a constant inside the blur.
+        // and the order (the group's SHADOW first, so the backdrop includes it
+        // -- and not the group's art, as this line said until 2026-10-01; see
+        // the correction in `BlurKernel.h`). What is left `[OBS]` is the layer
+        // FRAME, and it is an argument below rather than a constant inside the
+        // blur.
         //
         // `[ART]` It fires for real, and for a smaller number than the raw key
         // count suggests: 123 corpus GROUPS over 73 documents carry
@@ -1317,10 +1713,12 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
         // drawing: a plausible picture that is wrong, with a clean report.
         // Twelve corpus documents were coming out that way.
         //
-        // Blending a group is not blending a layer. The whole group has to be
-        // drawn into a target of its own and only then mixed, so it cannot be
-        // handled by choosing a blend function per layer -- which is why the
-        // answer here is a named refusal and not a quiet approximation.
+        // Blending a group is not blending a layer. The whole group is
+        // flattened into ONE image first and that image is what meets the
+        // mode -- `[BIN]` `0x4B4EC`, a `drawShape:fill:alpha:blendMode:` whose
+        // blend is the byte at `[descriptor+0x31]` (`0x4B518`-`0x4BA6C`). A
+        // spelling this reader does not know is still a named refusal, never a
+        // quiet `normal`.
         const std::string* groupBlend = nullptr;
         std::optional<BlendMode> groupMode;
         if (const icf::json::Value* gbm = group.resolve("blend-mode", options.context)) {
@@ -1332,93 +1730,327 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                 }
             }
         }
+        const bool groupBlendRefused = groupBlend && !groupMode;
+        const BlendMode groupBlendMode = groupMode ? *groupMode : BlendMode::Normal;
 
-        // A BLENDED GROUP THAT CONTAINS GLASS USED TO BE REFUSED HERE, and the
-        // refusal's premise turned out to be false.
+        // A BLENDED GROUP WHOSE GLASS REFRACTS USED TO BE REFUSED HERE, and the
+        // refusal went away with the thing it was protecting against.
         //
-        // The reasoning was: glass refracts its BACKDROP, so a group composited
-        // into a target of its own would refract an empty one, and a group
-        // composited into the canvas would mix the backdrop in twice. Which of
-        // the two the target does was `[OBS]` -- unread -- so the group was not
-        // drawn at all.
+        // It stood for as long as a blended group was drawn into a target of
+        // its own and mixed at the end. `glassOver` displaces whatever buffer it
+        // is handed, a fresh group target has nothing in it, and such a group
+        // would have drawn with its refraction silently missing -- the defect
+        // this file names as the worst of the three. Two earlier paragraphs
+        // here argued about whether the TARGET had the same problem, one by
+        // reading `GlassDisplacementStyle::draw` (`0x000F3B38`, the map
+        // generator, which does filter the item it wears) and one by reading
+        // the displacement installed after it (`0x10C14` closing the map layer
+        // with `addFilterLayerWithShader:`, then `beginLayerWithFlags: 1` at
+        // `0x4A794`/`0x4AA00`, whose bit 0 hangs a `BackdropFilterItem` on the
+        // PARENT -- `Docs/Laudos/2026-09-15-refracao.md`). The second reading
+        // holds: the refraction displaces what is already underneath.
         //
-        // THE NEXT PARAGRAPH IS SUPERSEDED. It is kept because the correction
-        // below only makes sense against it, but read the two together or not
-        // at all -- stopping at the end of it leaves you with the false half.
-        //
-        // `[BIN]` It was read (doc 03 §34.3), and NEITHER happens, because the
-        // glass does not sample the destination in the first place.
-        // `GlassDisplacementStyle::draw` (`0x000F3B38`) builds a
-        // `GenericFilter<GlassDisplacementEffect>` over the ITEM being drawn and
-        // calls `Builder::apply_filter_`; when that will not go inline it calls
-        // `ensure_layer` on that same item. Both are the item's own content, and
-        // neither reaches `make_backdrop_item` -- a route that exists for this
-        // effect and is not the one this path takes.
-        //
-        // THAT PARAGRAPH IS NOW KNOWN TO BE HALF A READING, and the correction
-        // runs the other way -- `Docs/Laudos/2026-09-15-refracao.md`. It is
-        // right about `GlassDisplacementStyle::draw`, and that function is the
-        // MAP GENERATOR: style 3 turns the shape's field into a displacement
-        // map, so of course it filters the item it wears. The DISPLACEMENT is a
-        // different object, installed right after it, and it does read the
-        // backdrop. `[BIN]` `0x10C14` closes the map layer with
-        // `addFilterLayerWithShader:` (`RenderBox 0x40A18` = `end_layer` +
-        // `restore` + `State::add_custom_effect`), and then `IconRendering`
-        // begins the layer that wears the shader with `beginLayerWithFlags: 1`
-        // -- `0x4A794` and `0x4AA00`, both immediately on return. Bit 0 is the
-        // background bit the VCM front read (`0x3BCA0` keeps it through the
-        // `0x7B` mask; `null_style_draw` tests it at `0xCE02C` and hangs a
-        // `BackdropFilterItem` on the PARENT layer), and `CustomEffectStyle::draw`
-        // (`0xF4030`) ends in `Builder::draw` (`0xCDAA0`), which tail-calls
-        // exactly that `null_style_draw` at `0xCDAF4`.
-        //
-        // So the target's refraction displaces what is already underneath, which
-        // is what `glassOver` does. The refusal below still stands -- but its
-        // reason is the FIRST one again, not the corrected one: a group drawn
-        // into a target of its own really would refract an empty backdrop, for
-        // Apple as much as for us. Making the glass filter the item it wears
-        // would NOT dissolve the coupling, because that is not what the target
-        // does either.
-        //
-        // BUT OUR GLASS IS NOT APPLE'S, and a test caught the difference.
-        // `glassOver` displaces the accumulation buffer IN PLACE -- it snapshots
-        // whatever has been drawn so far and refracts that. Point it at a
-        // group's fresh target and it has nothing to displace, so the group
-        // would draw with the refraction silently gone. That is the defect this
-        // file already names as the worst of the three: drawing silently.
-        //
-        // So the refusal survives, with its reason corrected: it is not that
-        // Apple's behaviour is unread, it is that OUR glass reads the
-        // destination and Apple's does not. Aligning the two -- making the
-        // glass filter the item it wears -- would dissolve the coupling, and it
-        // is a front of its own.
-        //
-        // WHAT NARROWS IT: the coupling only bites when the refraction actually
-        // MOVES something. `[ART]` Only 5 of the corpus's 271 groups carry
-        // `refractivity` at all and only 2 of those a non-zero strength, so a
-        // glass layer whose refraction is the identity draws as ordinary art
-        // and its group can blend like any other. Refusing every group that
-        // merely CONTAINS glass refused those too, for nothing.
+        // `[BIN]` What neither paragraph had was the group's own pipeline, and
+        // it dissolves the question. `0x48B74` runs once per group and puts
+        // everything on the icon's own list (`[ctx+0x520]`), in this order: the
+        // glass pass `0x4A2D4` -- the refraction of what is underneath, and the
+        // shadow --, then the content `0x4AC84`, then the highlights `0x491C0`.
+        // The ONLY draw in it that takes the group's blend byte is the content's
+        // `0x4B4EC`. There is no target of the group's own to starve: its
+        // refraction, shadow and highlights meet the icon exactly as a normal
+        // group's do, and only its flattened image is mixed with the mode.
         //
         // `[ART]` 8 corpus documents put a non-normal blend and a glass layer on
         // the same group, `insidegui/AssetCatalogTinkerer` and `RuntimeViewer`
-        // among them.
-        bool groupWouldRefract = false;
-        if (groupBlend && !glassRefractionIsIdentity(refraction)) {
+        // among them; 18 groups in all.
+
+        // ---- what the group IS, read before any of it is drawn ---------------
+        //
+        // Two facts about the layers decide how the group's buffers are built,
+        // and both are answers of the document: how many of them take part in
+        // the glass, and whether any does not. (A missing `glass` is `true` --
+        // the `[BIN]` note at the layer gate below.)
+        std::size_t glassLayers = 0;
+        bool hasPlainLayer = false;
+        for (const icf::Layer& l : group.layers()) {
+            if (boolOr(l.resolve("hidden", options.context), false)) continue;
+            if (boolOr(l.resolve("glass", options.context), true)) {
+                ++glassLayers;
+            } else {
+                hasPlainLayer = true;
+            }
+        }
+
+        // `[BIN]` THE REACH OF THE GROUP'S FIELD, `0x1C6B8`: the largest
+        // `max(distance[sizeClass] * min(w, h) / 1024, minDistancePixels[sizeClass])`
+        // over the enabled highlights, and zero for a group with no specular.
+        // `resolveHighlight` already computes that maximum per highlight, as
+        // `height`, in pixels. `[OBS]` The gates of `0x1C72C`-`0x1C774` were read
+        // as branches only. It is how far an upper element's field reaches over
+        // a lower one's when the two are stacked (`DistanceField.h`, part four).
+        float fieldReach = 0.0f;
+        if (wantsSpecular) {
+            for (const HighlightSlot& slot : glyphHighlights) {
+                const GlassHighlightSettings g = resolveHighlight(slot, specularArgs);
+                fieldReach = std::max(fieldReach, static_cast<float>(g.height));
+            }
+        }
+        // `[BIN]` `SDFGeneration.useAdvancedStacking`, `true` in generation 27's
+        // parameter block (`0x5EAB0`) and `false` in generation 26's
+        // (`0x77F68`). `[OBS]` The `RBProjectVersion` gate beside it (`0x11B00`)
+        // was not read; it is taken as open. See `DistanceField.h` for why
+        // neither can move a pixel here.
+        const bool advancedStacking = params.useAdvancedStacking;
+
+        // ---- `lighting`, WHICH NOW DRAWS ------------------------------------
+        //
+        // `[BIN]` The key is `Icon.Layer.performsLightingByElement`, and the
+        // mapping is read: the converter (`IconComposerKit` `0x10CA38`-
+        // `0x10CB08`) takes `Group.lighting.getter` through
+        // `effectiveSpecialization(for:)` to a byte and passes
+        // `cmp w19, #0; cset w3, eq` -- case 0 is `individual`
+        // (`IconComposerFoundation`'s enum order is `individual, combined`) and
+        // a missing key defaults to 0 (`0x90978`). So `individual` AND a missing
+        // key light element by element; only `combined` does not. Until
+        // 2026-10-01 `readGlassMaterial` read the key and nothing consumed it.
+        //
+        // `[BIN]` WHAT IT SWITCHES is how the group's ONE field is built,
+        // `0x1CB90` at `0x1CDD8`. Element by element: a `DistanceFilter` per
+        // glass element, stacked (`stackFields`). Combined
+        // (`0x1CDDC`-`0x1D1DC`): ONE source list -- every glass element drawn
+        // into it as a silhouette, opacity forced to 1 and fill to black
+        // (`w5 = 1`), wrapped in a layer when there are two or more -- and one
+        // `DistanceFilter` over that: the field of the UNION, with no rim where
+        // two elements meet.
+        //
+        // It only matters with two glass elements or more: the union of one
+        // silhouette is that silhouette, and such a group keeps the field it
+        // always had. `[ART]` In the default context 73 of the corpus's groups
+        // resolve `individual` and 22 `combined` (`test_glass_material.cpp` pins
+        // both counts), and the rest carry no key; 10 groups are `combined` with
+        // two or more glass layers.
+        const bool combinedLighting = materialDoc && materialDoc->lighting &&
+                                      *materialDoc->lighting == icf::Lighting::Combined;
+        const bool combinedField = combinedLighting && glassLayers > 1;
+        // THE UNION'S ALPHA, one float per texel, built on the CPU on both
+        // render paths. The field is taken from it with `alpha >= 0.5` as the
+        // contour (`generateFieldFromAlpha`), and a threshold tolerates no ulp:
+        // a silhouette composited on the GPU would put a texel on the other side
+        // of it now and then, and the field around that texel would differ. So
+        // each element contributes a coverage both paths compute identically --
+        // a vector its contours' (`fieldCoverageFromContours`), a raster the
+        // alpha of its exact CPU placement -- and they are joined source-over,
+        // which is what drawing opaque silhouettes into one list does.
+        //
+        // Not the minimum of the elements' fields, and not their contours
+        // concatenated: both leave a crease along the seam where two elements
+        // abut, which is the one thing this mode exists to remove.
+        std::vector<float> silhouette;
+        std::size_t silhouetteParts = 0;
+        // `[BIN]` THE QUIRK of `0x1D15C`-`0x1D194`: the loop that draws the
+        // silhouettes is `isOpaque = isOpaque && draw(element)`, and the draw
+        // (`0x1AACC`) answers 0 for raster content (`0x1B6FC`). `&&` does not
+        // evaluate its right side once the left is false, so the first raster
+        // element is drawn and every glass element AFTER it is not.
+        bool silhouetteClosed = false;
+        bool silhouetteLeftOut = false;
+        // The key of the union for the resident cache (`gpu-field-stack`): what
+        // went into it, in order. The CPU path ignores it.
+        KeyHasher silhouetteKey("gpu-field-stack");
+        silhouetteKey.bytes("combined", 8);
+        bool silhouetteKeyed = true;
+
+        // ---- the shadow, which is the GROUP's --------------------------------
+        //
+        // `[BIN]` Until 2026-09-15 this renderer drew NO shadow at all:
+        // `GlassMaterial.h` transported `shadowStyle` and `shadowOpacity` and
+        // named them as fields with no known consumer.
+        // `Docs/Laudos/2026-09-15-sombra.md` read the alpha and the geometry end
+        // to end, so it now draws. `GlassShadow.h` carries the whole of it.
+        //
+        // ONE SHADOW PER GROUP, CAST FROM A LIST OF ITS OWN. `[BIN]`
+        // `FinalizedIcon.Layer.shadowImage` is one image, and the finaliser
+        // makes it from a third display list (`0x1C0DC`): the elements that
+        // take part in the glass -- or ALL of them when `Shadow.ringWidth` is
+        // nil (`0x18338`-`0x18354`) -- drawn with their real opacity and blend,
+        // then colour, translate, blur and the ring clip (`0x19468`-`0x195CC`).
+        // The translucency mask is not in that chain: the shadow is cast from
+        // the art BEFORE the mask.
+        //
+        // That closes the gate this block used to carry as `[INF]`. A group with
+        // no glass element has an empty source list and casts nothing -- `[ART]`
+        // all 271 corpus groups carry a `shadow` key while only 113 contain
+        // glass -- and it is the ring's presence, a parameter, that says so.
+        //
+        // Num modo tingido a sombra e `neutral` (`[BIN]` 0x49F40); `none`
+        // continua `none`, porque a saida de `none` vem antes do portao.
+        //
+        // THE NUMBERS ARE THE GENERATION'S (`ICRRenderingParameters+0x2B0`), every
+        // one of them: generation 26 moves the offset to (16, 16), widens the
+        // blur, drops the ring, lowers both opacity tables, blends with
+        // `plusDarker` and draws no overdraw (`0x77E80`-`0x77ED0`).
+        const ShadowParameters& shadowParams = params.shadow;
+        const ShadowStyle shadowStyle =
+            shadowEffectiveStyle(glassNumbers.shadowStyle, options.tint.has_value());
+        const ShadowGeometry shadowGeom =
+            shadowGeometry(options.size, sizeClass, shadowParams, params.glass);
+        // `[BIN]` THE RING DECIDES WHO CASTS (`0x18338`-`0x18354`): the tag of
+        // `Shadow.ringWidth` is tested, and nil replaces the glass-filtered list
+        // with the list of ALL the group's elements. So in generation 26 a group
+        // with no glass element at all casts a shadow, and nothing is clipped to
+        // a ring (`0x20C48`).
+        const bool shadowFromGlassOnly = shadowGeom.ringWidth.has_value();
+        // Whether the group asks for a shadow at all, before any element is
+        // known: the element's own opacity can scale the alpha and cannot change
+        // its sign.
+        const bool wantsShadow = shadowDraws(
+            ShadowInputs{shadowStyle, glassNumbers.shadowOpacity, groupOpacity, sizeClass},
+            shadowParams);
+        // `[BIN]` `Shadow.ignoreFillOpacity` (`0x1C260`): whether some element
+        // of the source is drawn AGAIN for the shadow, its fill's alpha rewritten
+        // to one (`fillWithOpaqueAlpha`). Asked of the document before the
+        // element pass, because it decides whether the source can share the
+        // group's image. The rect a fill is placed against does not change its
+        // alpha, so a unit rect answers the question; an element this pass counts
+        // and the element pass then skips only costs a buffer.
+        bool shadowSourceRewritten = false;
+        if (wantsShadow && shadowParams.ignoreFillOpacity) {
             for (const icf::Layer& l : group.layers()) {
-                // Same default as the layer gate below, and for the same read:
-                // a missing `glass` is `true`. See the `[BIN]` note there.
-                if (boolOr(l.resolve("glass", options.context), true)) {
-                    groupWouldRefract = true;
+                if (boolOr(l.resolve("hidden", options.context), false)) continue;
+                if (shadowFromGlassOnly && !boolOr(l.resolve("glass", options.context), true)) {
+                    continue;
+                }
+                const std::string* image = textOf(l.resolve("image-name", options.context));
+                if (!image || image->empty()) continue;
+                std::string e = bundle.assetPath(*image).extension().string();
+                std::transform(e.begin(), e.end(), e.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (e != ".svg") continue;   // a fill does not reach a raster (`kRasterFillNote`)
+                const FillResolution f = resolveLayerFill(l, options.context);
+                if (f.outcome != FillOutcome::Resolved) continue;
+                std::string why;
+                const FillOverride probe =
+                    fillPaint(f.fill, PlacementRect{0.0, 0.0, 1.0, 1.0}, why, params);
+                if (why.empty() && fillIsTranslucent(probe)) {
+                    shadowSourceRewritten = true;
                     break;
                 }
             }
         }
+        // The source is a buffer of its own only when it is NOT the group's
+        // image: some element stays out of it, or some element goes into it
+        // drawn differently.
+        const bool separateShadowSource =
+            wantsShadow && ((shadowFromGlassOnly && hasPlainLayer) || shadowSourceRewritten);
 
-        const bool blendTheGroup = groupBlend && groupMode && !groupWouldRefract;
-        // O alvo proprio do grupo, quando ele mescla: a superficie passa a
-        // desenhar nele ate `endGroup`.
-        if (auto ok = surface.beginGroup(blendTheGroup); !ok) return std::unexpected(ok.error());
+        // ---- the group's `effectsFrame`, the rect the translucency ramp runs in
+        //
+        // `[BIN]` ONE RECT PER GROUP, and it is the union of the boxes of the
+        // elements that participate in the glass. The finaliser (`0x17F38`)
+        // builds three display lists: all the elements (`0x1A9D0`), which gives
+        // `contentFrame`; only the elements whose byte `+0x19` is set
+        // (`0x1BFFC`, filtered at `0x180FC`), which gives `effectsFrame`
+        // (`0x18234`-`0x182E4`, stored at `0x19960`); and the shadow's source
+        // (`0x1C0DC`). Nothing in the second one outsets the content, and its
+        // opacity is forced to one. The tag is nil exactly when that box is
+        // empty (`CGRectIsEmpty` at `0x182F0`, stored at `0x19968`).
+        //
+        // Parsed here a second time, and only for a group that has a
+        // translucency to draw. `[OBS]` A glass RASTER contributes its whole
+        // placement rect in the target (`setRect:` at `0x1B090`); the size of a
+        // raster is only known further down, so for a group that has one the
+        // box is gathered in the element pass instead (`glassBox`) -- which
+        // sees the elements that are DRAWN, and so leaves out a glass layer at
+        // zero opacity that the target's list still measures (`w5 = 1`, no
+        // opacity skip).
+        //
+        // `[BIN]` THE GLOW OF GENERATION 26 READS THE SAME RECT, as its clip
+        // (`0x48C6C`-`0x48D78`), and unlike the mask it does not draw at all
+        // when the rect is nil (`0x48C60`-`0x48C68`). It needs a field with a
+        // reach, which only a group with a specular has (`GlassGlow.h`).
+        const bool wantsGlow = params.glow.has_value() && wantsSpecular;
+        const bool wantsEffectsRect = groupWantsMask || wantsGlow;
+        std::optional<PlacementRect> groupEffectsRect;
+        // The box was settled here and it is empty: a nil `effectsFrame`.
+        bool groupEffectsNil = false;
+        if (wantsEffectsRect) {
+            bool vectorOnly = true, any = false;
+            double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+            for (const icf::Layer& l : group.layers()) {
+                if (!boolOr(l.resolve("glass", options.context), true)) continue;
+                if (boolOr(l.resolve("hidden", options.context), false)) continue;
+                const std::string* image = textOf(l.resolve("image-name", options.context));
+                if (!image || image->empty()) continue;
+                const std::filesystem::path file = bundle.assetPath(*image);
+                if (!std::filesystem::is_regular_file(file)) continue;
+                std::string e = file.extension().string();
+                std::transform(e.begin(), e.end(), e.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (e != ".svg") {
+                    vectorOnly = false;
+                    break;
+                }
+                const auto doc = icf::svg::SvgDocument::parse(readAll(file));
+                if (!doc) continue;
+                const PlacementRect r = artContentRect(
+                    *doc, compose(gp, placementOf(l.resolve("position", options.context))),
+                    options.size);
+                if (!(r.width > 0.0 && r.height > 0.0)) continue;
+                x0 = any ? std::min(x0, r.x) : r.x;
+                y0 = any ? std::min(y0, r.y) : r.y;
+                x1 = any ? std::max(x1, r.x + r.width) : r.x + r.width;
+                y1 = any ? std::max(y1, r.y + r.height) : r.y + r.height;
+                any = true;
+            }
+            if (vectorOnly) {
+                // An empty box is a nil `effectsFrame`, and the callers of the
+                // mask then pass `(0, 0, 1, 1)`: the whole canvas.
+                const double whole = static_cast<double>(options.size);
+                groupEffectsRect = any ? PlacementRect{x0, y0, x1 - x0, y1 - y0}
+                                       : PlacementRect{0.0, 0.0, whole, whole};
+                groupEffectsNil = !any;
+            }
+        }
+
+        // ---- THE GROUP'S OWN BUFFERS, filled by the element pass below --------
+        //
+        // `[BIN]` EVERY EFFECT IS PER GROUP BY CONSTRUCTION. `FinalizedIcon.Layer`
+        // carries ONE image, ONE SDF and ONE shadow image, and the compositor
+        // (`0x48B74`) has no element loop at all. So the pass below composites
+        // nothing: each element it draws goes INTO these, and the group is put
+        // on the picture once, after the last one.
+        //
+        // `[BIN]` THE IMAGE. The finaliser draws every element of a group into
+        // ONE display list (`0x1A9D0`, in array order -- which the converter has
+        // already turned back to front, `0x10C7A8`-`0x10C7C4`) and rasterises
+        // that alone into the group's own image (`0x13590`, cropped to
+        // `contentFrame`). The element's `opacity` and `blendMode` are applied
+        // INSIDE it (`drawLayerWithAlpha:blendMode:` at `0x1AD9C`/`0x1B448`), so
+        // an element's blend meets only what its own group drew before it, over
+        // transparent -- and the first one meets nothing, which is `normal`.
+        // Until 2026-10-01 only that first case was applied here and a later
+        // element blended against the whole icon.
+        SurfaceGroupImage groupImage;
+        // The shadow's source, when it is not the image (see above).
+        SurfaceGroupImage shadowSource;
+        std::size_t elements = 0;        // drawn into the image
+        std::size_t shadowElements = 0;  // in the shadow's source list
+        // The ring's silhouette, where the source here is not the target's:
+        // `kShadowSourceNote`.
+        bool shadowSourceDiffers = false;
+        // `[BIN]` THE FIELD. One per group too (`0x1CB90`): the fields of the
+        // glass elements stacked back to front (`DistanceField.h`, part four),
+        // or -- lit as one shape -- the field of their union, taken after the
+        // loop from `silhouette`.
+        std::optional<SurfaceField> groupField;
+        // The box of the glass elements drawn, for a group whose
+        // `effectsFrame` was not settled above.
+        bool glassBoxAny = false;
+        double glassBox[4] = {0.0, 0.0, 0.0, 0.0};   // x0, y0, x1, y1
+        // The one element of a group of one, for the sentences that used to be
+        // per layer and still should name it.
+        std::string soleLabel;
+        bool soleIsVector = false;
 
         // ...and so does the layer array inside a group, for the same reason
         // and by the same proof. The corpus signal here is weak on its own --
@@ -1426,6 +2058,12 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
         // what carries it is the Apollo render: `Eyes` sits at index 1 and
         // `Apollo Helmet Space` at index 3, and only the reversed order puts
         // the eyes on top, where the shipped icon has them.
+        //
+        // `[BIN]` AT THIS LEVEL IT IS NOW READ AS WELL. The converter's loop at
+        // `0x10C7A8`-`0x10C7C4` (`IconComposerKit.arm64`) walks the document's
+        // layer array BACKWARDS and appends, so `Icon.Layer.elements` is back to
+        // front and the finaliser draws it in that order. The order of the
+        // GROUPS across the document is still the `[ART]` of the outer loop.
         std::vector<icf::Layer> backToFront = group.layers();
         std::reverse(backToFront.begin(), backToFront.end());
         for (const icf::Layer& layer : backToFront) {
@@ -1444,13 +2082,9 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
             // this layer's pixel either. Reported per layer, because `skipped`
             // is a per-layer list and a group-shaped gap would be invisible in
             // the count that the ruler and the report both read.
-            if (groupBlend && !blendTheGroup) {
-                skip(groupWouldRefract
-                         ? ("mescla de grupo '" + *groupBlend + "' sobre um grupo cujo"
-                            " vidro refrata -- o nosso glassOver desloca o buffer de"
-                            " acumulacao no lugar, e o alvo proprio do grupo chega vazio")
-                         : ("mescla de grupo '" + *groupBlend + "' -- grafia ou modo"
-                            " que este leitor nao desenha"));
+            if (groupBlendRefused) {
+                skip("mescla de grupo '" + *groupBlend + "' -- grafia ou modo"
+                     " que este leitor nao desenha");
                 continue;
             }
 
@@ -1537,7 +2171,20 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                 compose(gp, placementOf(layer.resolve("position", options.context)));
             const double opacity =
                 numberOr(layer.resolve("opacity", options.context), 1.0);
-            if (opacity <= 0.0) continue;
+            if (opacity <= 0.0) {
+                // `[BIN]` `0x1ABB8`: an element at zero opacity is skipped when
+                // the group's image is drawn. It is NOT skipped when the SDF's
+                // sources and the `effectsFrame` list are (`w5 = 1`: opacity
+                // forced to 1, and no opacity test), so in the target an
+                // invisible glass element still shapes the group's field.
+                // `[OBS]` That is not reproduced -- the element is dropped
+                // whole here -- and it is said where it could show.
+                if (isGlass && (!glassRefractionIsIdentity(refraction) || groupWantsMask ||
+                                wantsSpecular)) {
+                    note(out.notes, kInvisibleGlassNote);
+                }
+                continue;
+            }
 
             std::string ext = art.extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(),
@@ -1559,29 +2206,11 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                 continue;
             }
 
-            // ---- the glass, before the layer's own art -------------------
+            // ---- the element's ART, parsed and placed ---------------------
             //
-            // THE ORDERING, AND IT IS A DECISION. `[INF]` The accumulator as it
-            // stands IS the backdrop -- that is exactly what the target hands
-            // its glass as a texture (spec §4.3: `glassBackground_v1` receives
-            // the backdrop wrapped in an `RB::MultiLevelLayer`, and in an
-            // isolated icon the only possible content of that texture is the
-            // document's own stack so far). So: refract what is underneath
-            // through this layer's shape, composite that, THEN draw this
-            // layer's art over the result.
-            //
-            // THE ALTERNATIVE, which is not what this does: the shape refracts
-            // and the layer's art is NOT painted -- the layer contributing only
-            // a lens. Both readings survive what was measured. `[OBS]` Spec
-            // §4.3 records the question as open, and nothing read settles it.
-            //
-            // Why this one. `Icon.Element.participatesInGlass` is a
-            // PARTICIPATION flag on an element that still carries `contents`
-            // and `fill` -- a lens-only element would not need either. And
-            // `[ART]` 138 of the corpus's 171 glass layers carry their own
-            // `fill`, which under the lens-only reading would be 138 authored
-            // values that nothing consumes. Painting the art is the reading
-            // that leaves no dead data.
+            // (The decision that the glass refracts what is underneath and the
+            // art is then painted over it sits with the group's composite,
+            // below the loop.)
             std::optional<icf::svg::SvgDocument> svg;
             std::string svgText;   // the cache key of the SVG render
             if (ext == ".svg") {
@@ -1654,17 +2283,27 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
             if (fill.outcome == FillOutcome::Resolved) {
                 if (svg) {
                     std::string why;
-                    paint = fillPaint(fill.fill,
-                                      artPlacementRect(svg->viewBox, lp, options.size), why);
+                    // THE RECT THE FILL IS PLACED AGAINST: the art's own box --
+                    // except for a `.system` fill in a generation that aligns
+                    // them to the chiclet, where it is the whole canvas and
+                    // every layer of the icon shares one ramp (`[BIN]` `0x1BA98`;
+                    // `SystemFill.h`). Generation 27 aligns; 26 does not.
+                    PlacementRect fillRect = artPlacementRect(svg->viewBox, lp, options.size);
+                    if (fill.fill.contents == ResolvedFill::Contents::System) {
+                        const double whole = static_cast<double>(options.size);
+                        fillRect = systemFillRect(
+                            params.supportsChicletAlignmentForSystemFills
+                                ? SystemFillRectSource::ChicletAligned
+                                : SystemFillRectSource::BoundingRect,
+                            fillRect, PlacementRect{0.0, 0.0, whole, whole});
+                    }
+                    paint = fillPaint(fill.fill, fillRect, why, params);
                     if (!why.empty()) {
                         skip(why);
                         continue;
                     }
                     if (paint.kind == FillOverride::Kind::Ramp && !fill.fill.placement) {
                         note(out.notes, kGradientAxisDirectionNote);
-                    }
-                    if (fill.fill.contents == ResolvedFill::Contents::System) {
-                        note(out.notes, kChicletRectNote);
                     }
                 } else {
                     // Not a skip: the raster IS drawn, with its own colours.
@@ -1684,33 +2323,35 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                 continue;
             }
 
-            // BOTH GLASS EFFECTS EAT THE SAME DISTANCE FIELD, so it is built
-            // once. The refraction displaces the backdrop through it; the
-            // translucency mask is cut by it. Two fields would be the same
-            // arithmetic twice over the most expensive function in this tower.
+            // ALL THREE GLASS EFFECTS EAT THE SAME DISTANCE FIELD, so it is built
+            // once: the refraction displaces the backdrop through it, the
+            // translucency mask is cut by it and the highlights are drawn along
+            // it. `[BIN]` And that field is the GROUP's -- what is built here is
+            // this element's contribution to it.
             //
-            // WHY THE MASK IS GATED ON `glass` AND NOT ON THE GROUP ALONE, and
-            // it is `[INF]`. `translucency` is a field of `Icon.GlassMaterial`,
-            // and `[ART]` the document's `glass` bit is
-            // `Icon.Element.participatesInGlass` -- the format's own answer to
-            // "which elements does this material act on". `[OBS]` The laudo did
-            // not read the caller side of `0x0000FD28` far enough to say which
-            // elements the function runs for; its three callers were counted and
-            // not followed.
+            // WHICH ELEMENTS CONTRIBUTE IS READ NOW, and the `[INF]` this comment
+            // used to carry is closed. The SDF's sources are the elements whose
+            // `participatesInGlass` byte (`+0x19`) is set -- the filter loop of
+            // `0x180A4`-`0x181A8` -- and that byte is the document's `glass`
+            // bit. A group with none of them has an EMPTY SDF, and for an empty
+            // SDF the compositor opens neither the glass pass
+            // (`0x4A338`-`0x4A348`) nor the translucency clip (`0x4ACB4`).
+            // `[ART]` All 271 corpus groups carry a `translucency` key whether
+            // or not they contain glass, and this is why the key does not fade
+            // the ones that do not.
             //
-            // THE ALTERNATIVE, and it is not absurd: the parameter block calls
-            // the effect `glyphTranslucency`, and a reader could take "glyph" to
-            // mean the whole foreground. `[ART]` That reading loses on the
-            // corpus, though -- all 271 groups carry a `translucency` key
-            // whether or not they contain glass, so honouring it everywhere
-            // would fade layers whose author never asked for glass at all.
+            // WHAT THE BIT DOES NOT DO is keep the mask off an element. The clip
+            // is laid over the group's whole image (the composite below), so a
+            // plain element that shares its group with a glass one is faded
+            // wherever the group's field covers it.
             const bool wantsRefraction = isGlass && !glassRefractionIsIdentity(refraction);
             const bool wantsTranslucency = isGlass && groupWantsMask;
             // The highlight rides the SAME distance field as the other two, so
             // it joins the same gate rather than building a second one.
             const bool wantsHighlight = isGlass && wantsSpecular;
-            std::optional<SurfaceMask> mask;
-            std::optional<SurfaceField> specularField;
+            // The element's own field, kept past the block that builds it: it
+            // goes into the group's once the element's art exists.
+            std::optional<SurfaceField> field;
 
             if (wantsRefraction || wantsTranslucency || wantsHighlight) {
                 // THE RASTER TAKES THE SAME DOOR AS THE VECTOR, AS OF THIS FRONT.
@@ -1755,7 +2396,25 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                 const bool haveShape = svg.has_value();
                 std::string fieldGap;
 
-                std::optional<SurfaceField> field;
+                // IN A GROUP LIT AS ONE SHAPE the element gives its SILHOUETTE to
+                // the union instead of building a field of its own
+                // (`combinedField`, above the loop). `inSilhouette` says it
+                // joined; `leftOut` says the target's own quirk kept it out.
+                bool inSilhouette = false;
+                bool leftOut = false;
+                auto joinSilhouette = [&](const float* alpha, std::size_t stride) {
+                    const std::size_t texels = grid.texels();
+                    if (silhouette.empty()) silhouette.assign(texels, 0.0f);
+                    // Source-over of opaque black at this coverage: only the
+                    // alpha is kept, and that is all the field reads.
+                    for (std::size_t t = 0; t < texels; ++t) {
+                        const float a = std::clamp(alpha[t * stride], 0.0f, 1.0f);
+                        silhouette[t] = a + silhouette[t] * (1.0f - a);
+                    }
+                    ++silhouetteParts;
+                    inSilhouette = true;
+                };
+
                 if (haveShape) {
                     const GlassContours shape =
                         flattenSvgToContours(*svg, placeOnCanvas(svg->viewBox, lp, options.size),
@@ -1767,6 +2426,25 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                     } else if (shape.contours.empty()) {
                         fieldGap =
                             "vidro: a arte nao fecha nenhum contorno pintado (" + *imageName + ")";
+                    } else if (combinedField) {
+                        if (silhouetteClosed) {
+                            leftOut = true;
+                        } else {
+                            FieldOptions fo;
+                            fo.rule = shape.rule;
+                            fo.originX = grid.originX;
+                            fo.originY = grid.originY;
+                            std::vector<float> coverage;
+                            if (fieldCoverageFromContours(shape.contours, grid.width, grid.height,
+                                                          fo, kSilhouetteSamples, coverage) == 0) {
+                                fieldGap = "vidro: a arte fecha contornos mas nenhum ponto de amostra "
+                                           "cai dentro deles nesta resolucao (" + *imageName + ")";
+                            } else {
+                                joinSilhouette(coverage.data(), 1);
+                                hashInto(silhouetteKey, shape.contours);
+                                silhouetteKey.value(shape.rule);
+                            }
+                        }
                     } else {
                         // THE VECTOR TAKES THE RASTER'S DOOR TOO, AS OF THIS
                         // FRONT. It used to call `generateField`, which walks
@@ -1809,12 +2487,13 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                             std::max(std::fabs(static_cast<double>(groupMaskArgs.borderWidth)),
                                      1.0) + 1.0;
                         double accReach = 1.0;   // ninguem le: qualquer banda serve
+                        // O brilho interno le a profundidade ate o alcance do
+                        // campo, onde ela satura (`glowFragment`).
+                        if (wantsGlow) accReach = static_cast<double>(fieldReach) + 1.0;
                         if (wantsHighlight) {
-                            std::size_t n = 0;
-                            const HighlightSlot* slots = glyphHighlightSlots(n);
-                            for (std::size_t s = 0; s < n; ++s) {
+                            for (const HighlightSlot& slot : glyphHighlights) {
                                 const GlassHighlightSettings g =
-                                    resolveHighlight(slots[s], specularArgs);
+                                    resolveHighlight(slot, specularArgs);
                                 if (g.opacity <= 0.0 || g.height <= 0.0) continue;
                                 accReach = std::max(accReach, std::fabs(g.inset) + g.height + 2.0);
                             }
@@ -1825,6 +2504,19 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                             wantsRefraction
                                 ? 0.0f
                                 : bandOf(std::max(accReach, wantsTranslucency ? maskReach : 1.0));
+                        // E ATE ONDE O EMPILHAMENTO O LE. Num grupo com mais de um
+                        // elemento de vidro o campo de cima substitui o de baixo
+                        // onde `d < alcance + 1` (`stackFields`), no buffer INTEIRO
+                        // -- a mascara le o resultado tambem fora da estreita --,
+                        // entao as duas bandas tem de cobrir essa borda, ou a GPU
+                        // escolheria por um valor saturado.
+                        if (glassLayers > 1) {
+                            const float stackBand = bandOf(static_cast<double>(fieldReach) + 1.0);
+                            bands.art = std::max(bands.art, stackBand);
+                            if (!wantsRefraction) {
+                                bands.accumulator = std::max(bands.accumulator, stackBand);
+                            }
+                        }
                         auto fromShape = surface.contourField(options.cache, shape.contours,
                                                               grid.width, grid.height, fo,
                                                               kFieldSuperSample, bands);
@@ -1841,6 +2533,34 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                             field = std::move(*fromShape);
                             note(out.notes, kGlassVectorFieldNote);
                         }
+                    }
+                } else if (rasterPlaced && combinedField) {
+                    if (silhouetteClosed) {
+                        leftOut = true;
+                    } else {
+                        // The alpha of the art as `placeRaster` put it: on the
+                        // resident path that is the exact CPU placement of [UP3],
+                        // so both paths read the same floats.
+                        auto pixels = surface.artPixels(*rasterPlaced);
+                        if (!pixels) return std::unexpected(pixels.error());
+                        const std::vector<float>& rgba = **pixels;
+                        bool reaches = false;
+                        for (std::size_t i = 3; i < rgba.size() && !reaches; i += 4) {
+                            reaches = rgba[i] >= 0.5f;
+                        }
+                        if (!reaches) {
+                            fieldGap = "vidro sobre raster: nenhum texel da arte chega a alpha >= 0.5, "
+                                       "entao nao ha contorno para assinar (" + *imageName + ")";
+                        } else {
+                            joinSilhouette(rgba.data() + 3, 4);
+                            if (rasterPlaced->keyed) {
+                                silhouetteKey.value(rasterPlaced->key.a).value(rasterPlaced->key.b);
+                            } else {
+                                silhouetteKeyed = false;
+                            }
+                        }
+                        // Drawn or not, a raster is where the target's loop stops.
+                        silhouetteClosed = true;
                     }
                 } else if (rasterPlaced) {
                     // O raster ja foi COLOCADO no buffer por `placeRaster`, que
@@ -1872,7 +2592,11 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                                "vetor (" + *imageName + ")";
                 }
 
-                if (!field) {
+                if (leftOut) {
+                    // Not a gap of this renderer: the element is drawn, and the
+                    // target's own loop keeps it out of the field.
+                    silhouetteLeftOut = true;
+                } else if (!field && !inSilhouette) {
                     if (wantsRefraction) {
                         skip(fieldGap);
                         continue;
@@ -1885,137 +2609,15 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                     if (wantsHighlight) note(out.notes, specularDoesNotDrawNote());
                     // Translucency alone: draw opaque, and say so.
                     if (wantsTranslucency) note(out.notes, fieldGap);
-                } else {
-                    if (wantsHighlight) specularField = *field;
-                    if (wantsRefraction) {
-                        if (auto ok = surface.refract(*field, refraction); !ok) {
-                            return std::unexpected(ok.error());
-                        }
-                        note(out.notes, glassRulerNote(options.size));
-                        ++out.glassRefracted;
-                    }
-                    if (wantsTranslucency) {
-                        // The `bounds` of shader argument 6 -- the rect the
-                        // vertical ramp is measured in. `[OBS]` Which rect the
-                        // target reports there was not read; this is the art's
-                        // viewBox placed on the canvas, the SAME answer this
-                        // file already gives a gradient's placement rect, so the
-                        // two do not disagree about one unread thing.
-                        //
-                        // A RASTER'S BOX IS ITS PIXELS, and that is the only
-                        // difference the two art paths make here: a vector's
-                        // rect comes from its viewBox placed on the canvas, a
-                        // raster's from `placeRaster`'s own placement of its
-                        // pixel dimensions. Both are the box the art occupies,
-                        // which is what the ramp is measured against.
-                        OpacityMaskArguments args = groupMaskArgs;
-                        const PlacementRect r =
-                            svg ? artPlacementRect(svg->viewBox, lp, options.size)
-                                : rasterPlacementRect(rasterW, rasterH, lp, options.size);
-                        args.bounds[0] = static_cast<float>(r.x);
-                        args.bounds[1] = static_cast<float>(r.y);
-                        args.bounds[2] = static_cast<float>(r.width);
-                        args.bounds[3] = static_cast<float>(r.height);
-                        auto made = surface.opacityMask(*field, args);
-                        if (!made) return std::unexpected(made.error());
-                        mask = std::move(*made);
-                        note(out.notes, kTranslucencyBoundsNote);
-                    }
                 }
             }
 
-            // ---- THE SHADOW, UNDER THE ART ------------------------------
-            //
-            // `[BIN]` Until 2026-09-15 this renderer drew NO shadow at all:
-            // `GlassMaterial.h` transported `shadowStyle` and `shadowOpacity`
-            // and named them as fields with no known consumer, and the one
-            // `shadow` in this file was a comment about an SVG's own drop
-            // shadow. `Docs/Laudos/2026-09-15-sombra.md` read the alpha and the
-            // geometry end to end, so it now draws. `GlassShadow.h` carries the
-            // whole of it -- the three-factor alpha, the size-class inversion,
-            // the offset, the blur, and the two steps that are named instead of
-            // drawn.
-            //
-            // GATED ON `glass`, FOR THE SAME REASON THE MASK IS, and it is the
-            // same `[INF]`. The shadow is a field of `Icon.GlassMaterial` and
-            // `[ART]` the document's `glass` bit is
-            // `Icon.Element.participatesInGlass`. `[ART]` All 271 corpus groups
-            // carry a `shadow` key while only 113 contain glass, so honouring
-            // it everywhere would put a drop shadow under 158 groups whose
-            // author never asked for glass.
-            //
-            // CAST FROM THE ART AS IT WILL BE COMPOSITED -- after the
-            // translucency mask, if there is one. `[OBS]` Which image the target
-            // feeds its shadow (`[descriptor+0xB0]`, fetched through `0x85ED8`)
-            // was not traced, so the order of mask and shadow is unread; with
-            // an identity mask, which is every corpus group whose translucency
-            // is absent or switched off, the two readings are the same pixel.
-            //
-            // THE LAYER'S `opacity` GOES IN TWICE, and that is the transcription
-            // and not a slip. `[BIN]` The third factor of the shadow's alpha is
-            // `FinalizedIcon.Layer.opacity` (`GlassShadow.h` names the three
-            // readings), and the SAME field multiplies the element's own draw at
-            // `0x495F0` -- which is the `opacity` this loop has always handed to
-            // `blendOver` below. One field, two draws, one multiplication each.
-            // Num modo tingido a sombra e `neutral` (`[BIN]` 0x49F40); `none`
-            // continua `none`, porque a saida de `none` vem antes do portao.
-            const ShadowInputs shadowIn{
-                shadowEffectiveStyle(glassNumbers.shadowStyle, options.tint.has_value()),
-                glassNumbers.shadowOpacity, opacity, options.sizeClass};
-            const bool castsShadow = isGlass && shadowDraws(shadowIn);
-            // THE OVERDRAW PASS IS A SECOND COMPOSITE OF THE SAME IMAGE, so the
-            // image is kept between the two draws instead of being rebuilt: the
-            // blur behind it is the most expensive thing this loop does.
-            // `GlassShadow.h` carries the addresses for all of it.
-            std::optional<SurfaceShadow> shadowOverdraw;
-            auto castShadow = [&](SurfaceArt& artDrawn) -> Result<void> {
-                if (!castsShadow) return {};
-                // Na GPU a sombra e feita da arte residente, sem descer nada.
-                const ShadowGeometry geometry =
-                    shadowGeometry(options.size, options.sizeClass);
-                const double overdraw =
-                    kShadow.drawOverContent
-                        ? shadowOverdrawAlpha(groupTranslucency, shadowIn.style,
-                                              options.sizeClass)
-                        : 0.0;
-                auto made = surface.makeShadow(options.cache, artDrawn, shadowIn.style, geometry,
-                                               overdraw);
-                if (!made) return std::unexpected(made.error());
-                if (auto ok = surface.blendShadow(*made, false,
-                                                  static_cast<float>(shadowAlpha(shadowIn)),
-                                                  shadowBlendMode(shadowIn.style));
-                    !ok) {
-                    return ok;
-                }
-                if (made->hasOverdraw) shadowOverdraw = std::move(*made);
-                if (geometry.ringWidth) note(out.notes, kShadowRingNote);
-                ++out.glassShadowed;
-                return {};
-            };
-            // `[BIN]` AFTER THE CONTENT AND BEFORE THE HIGHLIGHTS, which is the
-            // order of `0x48B74`: `0x4A2D4` (the glass pass, where the main
-            // shadow lives) at `0x48BD4`, then `0x4AC84` at `0x48C08` -- whose
-            // body is the content draw (`0x4ADA4`) followed by this pass
-            // (`0x4ADBC`-`0x4AEB4`) -- then `0x491C0`, the highlights, at
-            // `0x48DB4`, on the path every branch merges into (`0x48DAC`). The
-            // per-element loop at `0x48E20` runs the same three in the same
-            // order (`0x48F30`, `0x48F5C`, `0x48EAC`).
-            auto castShadowOverdraw = [&]() -> Result<void> {
-                if (!shadowOverdraw) return {};
-                if (auto ok = surface.blendShadow(*shadowOverdraw, true,
-                                                  static_cast<float>(shadowAlpha(shadowIn)),
-                                                  kShadow.overdrawBlendMode);
-                    !ok) {
-                    return ok;
-                }
-                shadowOverdraw.reset();
-                note(out.notes, kShadowOverdrawNote);
-                ++out.glassShadowOverdrawn;
-                return {};
-            };
-
+            // ---- THE ELEMENT'S ART -------------------------------------
+            SurfaceArt drawnArt;
+            // Kept past the draw: the shadow's source may ask for the same art
+            // under another paint.
+            RenderOptions ro;
             if (svg) {
-                RenderOptions ro;
                 ro.width = grid.width;
                 ro.height = grid.height;
                 ro.originX = grid.originX;
@@ -2023,176 +2625,552 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
                 ro.projectionWidth = grid.size;
                 ro.projectionHeight = grid.size;
                 ro.subdivisions = options.subdivisions;
+                ro.untaggedColoursAreDisplayP3 = untaggedSvgIsDisplayP3;
                 ro.override = paint;
+                // `[BIN]` `recreateRadar153477135` (`SvgRenderer.h`): whether a
+                // fill reaches the shapes the art left unpainted.
+                ro.overrideForcesHiddenPaint = params.recreateRadar153477135;
                 auto drew = surface.drawSvg(options.cache, svgText, *svg,
                                             placeOnCanvas(svg->viewBox, lp, options.size), ro);
                 if (!drew) return std::unexpected(drew.error());
                 for (const auto& s : drew->skipped) {
                     out.shapeGaps.push_back(name + " / " + *imageName + ": " + s.why);
                 }
-                // THE TRANSLUCENCY, ON THE ART AND NOT ON THE COMPOSITE. The
-                // mask multiplies this layer's own alpha BEFORE the layer's
-                // `opacity` and blend mode are applied, because it is a property
-                // of the glyph and not of how the glyph meets what is under it.
-                // `[BIN]` The target agrees from the other side: the `alpha` of
-                // its `drawShape:fill:alpha:blendMode:` is the constant 1.0
-                // (`0x103F4`), so the translucency is already inside the pixel
-                // by the time the composite sees it.
-                if (mask) {
-                    // THE BLIND SPOT, MEASURED BEFORE THE MASK IS APPLIED.
-                    // Where the field says "outside", the shader's own
-                    // `mix(1.0, a, cov)` returns 1.0 and the pixel keeps its
-                    // opacity -- correct for a pixel that really is outside, and
-                    // a silent miss for one the art painted anyway. Counted
-                    // against the art's alpha so the sentence carries a number
-                    // instead of a worry.
-                    const std::size_t gapAt = out.shapeGaps.size();
-                    out.shapeGaps.push_back(kPendingEntry);
-                    std::vector<std::string>* gaps = &out.shapeGaps;
-                    const std::string prefix = name + " / " + *imageName + ": ";
-                    auto counted = surface.applyMask(
-                        *drew, *mask,
-                        [gaps, gapAt, prefix](std::size_t missed, std::size_t painted) {
-                            if (!(missed > 0 && painted > 0)) {
-                                (*gaps)[gapAt] = kDroppedEntry;
-                                return;
-                            }
-                            char buf[420];
-                            std::snprintf(
-                                buf, sizeof(buf),
-                                "translucidez aplicada com buraco: %zu de %zu pixels pintados "
-                                "(%.1f%%) caem FORA do campo de distancia e ficaram opacos -- "
-                                "flattenSvgToContours funde todo subcaminho pintado num conjunto "
-                                "so, assinado por uma regra so, entao subcaminhos sobrepostos de "
-                                "orientacao contraria se cancelam sob non-zero (a ressalva de "
-                                "DistanceField.h). O mesmo buraco vale para a refracao.",
-                                missed, painted,
-                                100.0 * static_cast<double>(missed) /
-                                    static_cast<double>(painted));
-                            (*gaps)[gapAt] = prefix + buf;
-                        });
-                    if (!counted) return std::unexpected(counted.error());
-                    ++out.glassTranslucent;
-                }
-                if (auto ok = castShadow(*drew); !ok) return std::unexpected(ok.error());
-                // THE HIGHLIGHT GOES ON AFTER THE SHADOW IS CAST, ON PURPOSE.
-                // `[BIN]` The target keeps them apart -- the highlight is its
-                // own clip + backdrop colour matrix inside a pass gated by
-                // `hasSpecular` at `0x00049200`, and the shadow is a different
-                // `drawShape:` in a different function.
-                if (auto ok = surface.blendArt(*drew, static_cast<float>(opacity), layerBlend,
-                                               options.clearMask);
-                    !ok) {
-                    return std::unexpected(ok.error());
-                }
-                if (auto ok = castShadowOverdraw(); !ok) return std::unexpected(ok.error());
-                // THE HIGHLIGHT FILTERS THE BACKDROP, SO IT GOES ON AFTER THE
-                // LAYER IS IN IT. `[BIN]` `beginLayerWithFlags:1` sets bit 0 of
-                // `RB::DisplayList::Layer::Flag`, and `Builder::null_style_draw`
-                // (`0x000CE028`) turns that layer's colour matrix into a
-                // `BackdropFilterItem` appended to the PARENT -- so the matrix
-                // reads the composite, not the layer's own buffer (GlassSpecular.cpp
-                // has the addresses). `layerOpacity` is now `opacity` because the
-                // highlight is a sibling of the layer again, as `[descriptor+0x38]`
-                // (`0x000495F0`) says it is in the target.
-                if (specularField) {
-                    SpecularArguments layerSpecular = specularArgs;
-                    layerSpecular.layerOpacity = opacity;
-                    std::size_t* specularCount = &out.glassSpecular;
-                    if (auto ok = surface.specular(*specularField, layerSpecular,
-                                                   [specularCount](std::size_t moved) {
-                                                       if (moved > 0) ++*specularCount;
-                                                   });
-                        !ok) {
-                        return std::unexpected(ok.error());
-                    }
-                    note(out.notes, specularDrawnNote());
-                }
-                ++out.drawn;
+                drawnArt = std::move(*drew);
             } else if (rasterPlaced) {
-                // THE RASTER NOW RUNS THE WHOLE GLASS, in the same order the
-                // vector branch above runs it: mask, then shadow, then
-                // highlight, then composite. The asymmetry this branch used to
-                // carry -- "a raster CAN cast a shadow, where it cannot carry a
-                // translucency mask" -- is gone, because the reason for it was
-                // our missing generator and not the format. `[BIN]`
-                // `DistanceField.h` carries the addresses.
+                // THE RASTER NOW RUNS THE WHOLE GLASS, exactly as the vector
+                // does: from here on the two are one element. The asymmetry
+                // this branch used to carry -- "a raster CAN cast a shadow,
+                // where it cannot carry a translucency mask" -- is gone,
+                // because the reason for it was our missing generator and not
+                // the format. `[BIN]` `DistanceField.h` carries the addresses.
                 //
                 // `[ART]` It is 45 of the corpus's 171 glass layers under the
                 // any-appearance reading of the `glass` key, across 31
                 // documents; 39 of 146 across 29 documents if only a
                 // specialization's BASE entry counts. Both counts were recounted
                 // for this front and both are in the laudo.
-                SurfaceArt& placed = *rasterPlaced;
-                if (mask) {
-                    const std::size_t gapAt = out.shapeGaps.size();
-                    out.shapeGaps.push_back(kPendingEntry);
-                    std::vector<std::string>* gaps = &out.shapeGaps;
-                    const std::string prefix = name + " / " + *imageName + ": ";
-                    auto counted = surface.applyMask(
-                        placed, *mask,
-                        [gaps, gapAt, prefix](std::size_t missed, std::size_t painted) {
-                            if (!(missed > 0 && painted > 0)) {
-                                (*gaps)[gapAt] = kDroppedEntry;
-                                return;
-                            }
-                            char buf[420];
-                            std::snprintf(
-                                buf, sizeof(buf),
-                                "translucidez aplicada com buraco: %zu de %zu pixels pintados "
-                                "(%.1f%%) caem FORA do campo de distancia e ficaram opacos -- "
-                                "num raster o campo e assinado pelo contorno alpha >= 0.5, entao "
-                                "todo pixel pintado com alpha ABAIXO do limiar fica de fora.",
-                                missed, painted,
-                                100.0 * static_cast<double>(missed) /
-                                    static_cast<double>(painted));
-                            (*gaps)[gapAt] = prefix + buf;
-                        });
-                    if (!counted) return std::unexpected(counted.error());
-                    ++out.glassTranslucent;
+                drawnArt = std::move(*rasterPlaced);
+            } else {
+                skip("arte com extensao que este leitor nao le: " + *imageName);
+                continue;
+            }
+
+            // ==== INTO THE GROUP ==========================================
+            //
+            // Everything above PREPARES the element: its art and its field.
+            // Nothing is put on the picture here. The element goes into the
+            // group's buffers, and the group is composited once, after the
+            // last one.
+            const SurfaceArtRef elementArt = std::make_shared<SurfaceArt>(std::move(drawnArt));
+            if (auto ok = surface.addToGroupImage(groupImage, elementArt, opacity,
+                                                  elements == 0 ? BlendMode::Normal : layerBlend);
+                !ok) {
+                return std::unexpected(ok.error());
+            }
+            if (elements == 0) {
+                soleLabel = name + " / " + *imageName;
+                soleIsVector = svg.has_value();
+            }
+            ++elements;
+
+            // THE SHADOW'S SOURCE takes the element when the target's list
+            // would: a glass element always, any element when there is no ring.
+            if (wantsShadow && (isGlass || !shadowFromGlassOnly)) {
+                // THE ART THE SHADOW IS CAST FROM, named apart from the art that
+                // is drawn because in the target they are two renders: with
+                // `Shadow.ignoreFillOpacity` the source list is drawn again with
+                // every fill's alpha rewritten to 1.0 (`0x1C260`,
+                // `0x1C3E8`-`0x1C430`). `[BIN]` So a translucent fill casts the
+                // shadow of an opaque one in generation 27; generation 26 clears
+                // the flag (`0x77ED0`) and casts from the art as drawn. The
+                // second render is the same SVG under `fillWithOpaqueAlpha` of
+                // the same paint -- a different key in the cache -- and only an
+                // element whose fill is translucent pays for it.
+                SurfaceArtRef shadowSourceArt = elementArt;
+                if (separateShadowSource && shadowParams.ignoreFillOpacity && svg &&
+                    fillIsTranslucent(paint)) {
+                    RenderOptions opaque = ro;
+                    opaque.override = fillWithOpaqueAlpha(paint);
+                    auto drew = surface.drawSvg(options.cache, svgText, *svg,
+                                                placeOnCanvas(svg->viewBox, lp, options.size),
+                                                opaque);
+                    if (!drew) return std::unexpected(drew.error());
+                    shadowSourceArt = std::make_shared<SurfaceArt>(std::move(*drew));
                 }
-                if (auto ok = castShadow(placed); !ok) return std::unexpected(ok.error());
-                if (auto ok = surface.blendArt(placed, static_cast<float>(opacity), layerBlend,
-                                               options.clearMask);
-                    !ok) {
-                    return std::unexpected(ok.error());
+                // More than one element at less than full opacity: the ring here
+                // is cut from the flattened source's own alpha, the target's from
+                // silhouettes at opacity 1 (`kShadowSourceNote`, second half).
+                if (shadowFromGlassOnly && glassLayers > 1 && opacity < 1.0) {
+                    shadowSourceDiffers = true;
                 }
-                if (auto ok = castShadowOverdraw(); !ok) return std::unexpected(ok.error());
-                if (specularField) {
-                    // The same backdrop reading as the vector branch above.
-                    SpecularArguments layerSpecular = specularArgs;
-                    layerSpecular.layerOpacity = opacity;
-                    std::size_t* specularCount = &out.glassSpecular;
-                    if (auto ok = surface.specular(*specularField, layerSpecular,
-                                                   [specularCount](std::size_t moved) {
-                                                       if (moved > 0) ++*specularCount;
-                                                   });
+                if (separateShadowSource) {
+                    if (auto ok = surface.addToGroupImage(
+                            shadowSource, shadowSourceArt, opacity,
+                            shadowElements == 0 ? BlendMode::Normal : layerBlend);
                         !ok) {
                         return std::unexpected(ok.error());
                     }
-                    note(out.notes, specularDrawnNote());
                 }
-                ++out.drawn;
+                ++shadowElements;
+            }
+
+            // THE FIELD, stacked on what the group has so far. `[BIN]` The upper
+            // element's field replaces the lower one's inside its own footprint
+            // dilated by the field's reach (`0x11480`; `DistanceField.h`, part
+            // four). The first glass element's field IS the group's until a
+            // second one arrives, so a group with one glass element keeps the
+            // field it always had.
+            if (field) {
+                if (!groupField) {
+                    groupField = std::move(*field);
+                } else {
+                    auto stacked =
+                        surface.stackField(*groupField, *field, fieldReach, advancedStacking);
+                    if (!stacked) return std::unexpected(stacked.error());
+                    groupField = std::move(*stacked);
+                    note(out.notes, kFieldStackNote);
+                }
+            }
+
+            // The element's box, for the group's `effectsFrame` when the pass
+            // over the documents above could not settle it (a raster's size is
+            // only known here). A RASTER'S BOX IS ITS PIXELS: `[OBS]` the box of
+            // a raster's non-transparent pixels is not computed, so a raster
+            // answers with `placeRaster`'s own placement of its pixel dimensions.
+            if (isGlass && wantsEffectsRect && !groupEffectsRect) {
+                const PlacementRect r =
+                    svg ? artContentRect(*svg, lp, options.size)
+                        : rasterPlacementRect(rasterW, rasterH, lp, options.size);
+                if (r.width > 0.0 && r.height > 0.0) {
+                    glassBox[0] = glassBoxAny ? std::min(glassBox[0], r.x) : r.x;
+                    glassBox[1] = glassBoxAny ? std::min(glassBox[1], r.y) : r.y;
+                    glassBox[2] =
+                        glassBoxAny ? std::max(glassBox[2], r.x + r.width) : r.x + r.width;
+                    glassBox[3] =
+                        glassBoxAny ? std::max(glassBox[3], r.y + r.height) : r.y + r.height;
+                    glassBoxAny = true;
+                }
+            }
+            ++out.drawn;
+        }
+
+        // ---- the field of a group lit as ONE shape --------------------------
+        //
+        // The union is complete only now, so its field is taken here: the
+        // exact Euclidean transform of the `alpha >= 0.5` contour of the joined
+        // silhouettes, through the same door a raster's field takes.
+        if (combinedField && silhouetteParts > 0) {
+            SurfaceArt united;
+            united.rgba.assign(grid.texels() * 4, 0.0f);
+            for (std::size_t t = 0; t < silhouette.size(); ++t) {
+                united.rgba[t * 4 + 3] = silhouette[t];
+            }
+            silhouette = std::vector<float>();
+            if (silhouetteKeyed) {
+                united.key = silhouetteKey.finish();
+                united.keyed = true;
+            }
+            FieldOptions fo;
+            fo.originX = grid.originX;
+            fo.originY = grid.originY;
+            auto made = surface.alphaField(options.cache, united, grid.width, grid.height, fo);
+            if (!made) return std::unexpected(made.error());
+            if (made->empty()) {
+                // The union never reaches half coverage anywhere -- hairlines,
+                // art smaller than a texel. No contour, so no field, and it is
+                // said the way a single element's missing field is.
+                if (wantsSpecular) note(out.notes, specularDoesNotDrawNote());
+                note(out.notes, "vidro: a silhueta unida dos elementos deste grupo nao chega a "
+                                "alpha >= 0.5 em nenhum texel, entao nao ha contorno para "
+                                "assinar (grupo " + std::to_string(gi) + ")");
             } else {
-                skip("arte com extensao que este leitor nao le: " + *imageName);
+                groupField = std::move(*made);
+                note(out.notes, kCombinedFieldNote);
+                if (silhouetteLeftOut) note(out.notes, kCombinedRasterNote);
             }
         }
 
-        // THE GROUP'S `blur-material` WOULD BE DRAWN HERE, AND IS NOT.
+        // ==== THE GROUP, ON THE PICTURE ===================================
         //
-        // This is the one point in the loop where the backdrop is what the
-        // target says it is: `[BIN]` `0x4A488` draws the group's content and
-        // only then `0x4A48C`-`0x4A5D0` opens the `needs-background` layer, so
-        // the background being blurred is everything beneath the group PLUS the
-        // group -- which is exactly `acc` at the end of the group's layer loop,
-        // before the `blendPremulOver` on the next line. Wall 3 of
-        // `BlurKernel.h` is answered, and the call would go on this line.
+        // `[BIN]` The order is `0x48B74`'s, which runs once per group and puts
+        // everything on the icon's own list: the glass pass `0x4A2D4` at
+        // `0x48BD4` -- the refraction of what is underneath, and the shadow --,
+        // the content `0x4AC84` at `0x48C08` -- the translucency clip, the
+        // group's image under its opacity and blend, the shadow's overdraw --,
+        // the glow (`0x48C4C`-`0x48DA8`), and the highlights `0x491C0` at
+        // `0x48DB4`, on the path every branch merges into (`0x48DAC`). The loop
+        // at `0x48E20` that an earlier note here took for a per-element one
+        // strides `0xC0`, the size of a `FinalizedIcon.Layer`: it walks GROUPS.
+        if (elements > 0) {
+            auto takenImage = surface.takeGroupImage(groupImage);
+            if (!takenImage) return std::unexpected(takenImage.error());
+            SurfaceArt& image = *takenImage->image;
+            // What the image is still to be drawn with: the GROUP's opacity and,
+            // in a group of one -- whose image is the element's own art -- the
+            // element's. In a group of several the elements' are already inside
+            // the image.
+            const double imageOpacity = takenImage->opacity * groupOpacity;
+
+            // ---- the refraction, before the group's own art -------------
+            //
+            // THE ORDERING, AND IT IS A DECISION. `[INF]` The accumulator as it
+            // stands IS the backdrop -- that is exactly what the target hands
+            // its glass as a texture (spec §4.3: `glassBackground_v1` receives
+            // the backdrop wrapped in an `RB::MultiLevelLayer`, and in an
+            // isolated icon the only possible content of that texture is the
+            // document's own stack so far). So: refract what is underneath
+            // through the group's shape, THEN draw the group's art over the
+            // result.
+            //
+            // THE ALTERNATIVE, which is not what this does: the shape refracts
+            // and the art is NOT painted -- the glass contributing only a lens.
+            // Both readings survive what was measured. `[OBS]` Spec §4.3 records
+            // the question as open, and nothing read settles it.
+            //
+            // Why this one. `Icon.Element.participatesInGlass` is a
+            // PARTICIPATION flag on an element that still carries `contents`
+            // and `fill` -- a lens-only element would not need either. And
+            // `[ART]` 138 of the corpus's 171 glass layers carry their own
+            // `fill`, which under the lens-only reading would be 138 authored
+            // values that nothing consumes. Painting the art is the reading
+            // that leaves no dead data.
+            //
+            // `[BIN]` ONE refraction per group, through the group's field
+            // (`0x4A5E4`-`0x4A7AC`): until 2026-10-01 each glass layer refracted
+            // on its own, so a second one bent the first one's art.
+            if (groupField && !glassRefractionIsIdentity(refraction)) {
+                if (auto ok = surface.refract(*groupField, refraction); !ok) {
+                    return std::unexpected(ok.error());
+                }
+                note(out.notes, glassRulerNote(options.size));
+                ++out.glassRefracted;
+            }
+
+            // ---- THE SHADOW, UNDER THE ART ------------------------------
+            //
+            // THE THIRD FACTOR IS THE GROUP'S OPACITY, and an element's own
+            // reaches the shadow by another door. `[BIN]` The third factor of
+            // the shadow's alpha is `FinalizedIcon.Layer.opacity` (`GlassShadow.h`
+            // names the three readings), which is the GROUP's. The element's
+            // `opacity` is inside the shadow's SOURCE instead: the finaliser
+            // draws that list with the element's real opacity (`0x1C0DC`,
+            // `w5 = 0`). Everything between the source and the composite is
+            // linear in the source's alpha, so where the source is one
+            // element's own art -- unscaled -- the element's opacity is
+            // multiplied in here.
+            //
+            // THE OVERDRAW PASS IS A SECOND COMPOSITE OF THE SAME IMAGE, so the
+            // image is kept between the two draws instead of being rebuilt: the
+            // blur behind it is the most expensive thing this loop does.
+            // `GlassShadow.h` carries the addresses for all of it.
+            std::optional<SurfaceShadow> shadow;
+            float shadowCompositeAlpha = 0.0f;
+            if (wantsShadow && shadowElements > 0) {
+                SurfaceGroupTaken source = *takenImage;
+                if (separateShadowSource) {
+                    auto takenSource = surface.takeGroupImage(shadowSource);
+                    if (!takenSource) return std::unexpected(takenSource.error());
+                    source = std::move(*takenSource);
+                }
+                const ShadowInputs shadowIn{shadowStyle, glassNumbers.shadowOpacity,
+                                            source.opacity * groupOpacity, sizeClass};
+                if (shadowDraws(shadowIn, shadowParams)) {
+                    // Na GPU a sombra e feita da fonte residente, sem descer nada.
+                    // BEFORE the mask below touches the image: the source is
+                    // read as it is now.
+                    auto made = surface.makeShadow(options.cache, *source.image, shadowIn.style,
+                                                   shadowGeom);
+                    if (!made) return std::unexpected(made.error());
+                    shadowCompositeAlpha =
+                        static_cast<float>(shadowAlpha(shadowIn, shadowParams));
+                    // `[BIN]` THE BLEND BYTE (`0x49F94`, `0x49FF4`-`0x4A008`):
+                    // `Shadow.blendMode`, except for a VIBRANT shadow in an icon
+                    // whose `iconBrightness` (`ctx+0x463`) is `dim`, which takes
+                    // `blendModeForVibrantOnDim`. Until 2026-10-01 the byte was
+                    // carried as unnamed and the second operand was always false.
+                    const BlendMode shadowMode = shadowBlendMode(
+                        shadowIn.style, iconBrightness == ChicletAppearance::Dim, shadowParams);
+                    if (auto ok = surface.blendShadow(*made, false, shadowCompositeAlpha,
+                                                      shadowMode);
+                        !ok) {
+                        return std::unexpected(ok.error());
+                    }
+                    shadow = std::move(*made);
+                    if (shadowGeom.ringWidth) note(out.notes, kShadowRingNote);
+                    if (shadowSourceDiffers) note(out.notes, kShadowSourceNote);
+                    ++out.glassShadowed;
+                }
+            }
+
+            // ---- THE TRANSLUCENCY, ON THE GROUP'S IMAGE -------------------
+            //
+            // `[BIN]` The content pass opens with it: when the material's
+            // `translucency` is positive and the SDF is not empty, `0x4ACB4`-
+            // `0x4AD88` does `beginLayer`, draws the mask (`0xFD28`, from the
+            // SDF and the `effectsFrame`) and closes with
+            // `clipLayerWithAlpha:1 mode:0` -- a CLIP, under which the image is
+            // then drawn. So the mask multiplies the alpha of the whole group
+            // image, before the group's opacity and blend meet it, and the
+            // `alpha` of the mask's own draw is the constant 1.0 (`0x103F4`).
+            // Until 2026-10-01 it multiplied each glass layer's art apart, with
+            // that layer's own field.
+            if (groupWantsMask && groupField) {
+                // The `bounds` of the shader's rect argument -- the rect the
+                // vertical ramp is measured in. `[BIN]` It is the box of what
+                // the group's glass elements DRAW, or the whole canvas when
+                // that box is empty: a nil `effectsFrame`, for which the callers
+                // of the mask pass `(0, 0, 1, 1)`.
+                OpacityMaskArguments args = groupMaskArgs;
+                const double whole = static_cast<double>(options.size);
+                const PlacementRect r =
+                    groupEffectsRect
+                        ? *groupEffectsRect
+                        : glassBoxAny ? PlacementRect{glassBox[0], glassBox[1],
+                                                      glassBox[2] - glassBox[0],
+                                                      glassBox[3] - glassBox[1]}
+                                      : PlacementRect{0.0, 0.0, whole, whole};
+                if (args.kind == OpacityMaskKind::Gradient) {
+                    // `[BIN]` THE GRADIENT'S RECT IS THE FRAME ON THE CANVAS
+                    // (`0x0000FE04`-`0x0000FE70`): each side of the normalised
+                    // frame times the canvas size, with no texture in it -- so
+                    // none of the growing below.
+                    args.bounds[0] = static_cast<float>(r.x);
+                    args.bounds[1] = static_cast<float>(r.y);
+                    args.bounds[2] = static_cast<float>(r.width);
+                    args.bounds[3] = static_cast<float>(r.height);
+                } else {
+                    // `[BIN]` The normalised frame is multiplied by the size of
+                    // the SDF TEXTURE, and that texture is the canvas plus one
+                    // pixel on every side (`adds x8, x28, #2` at `0x1D210`, the
+                    // content shifted by `translateByX:1 Y:1` at `0x1D7E8`). So
+                    // in the texture's own pixels the rect is `frame * (size +
+                    // 2)`, and the canvas pixel `y` is texel `y + 1` -- written
+                    // here back in canvas pixels.
+                    const double grow = (static_cast<double>(options.size) + 2.0) /
+                                        static_cast<double>(options.size);
+                    args.bounds[0] = static_cast<float>(r.x * grow - 1.0);
+                    args.bounds[1] = static_cast<float>(r.y * grow - 1.0);
+                    args.bounds[2] = static_cast<float>(r.width * grow);
+                    args.bounds[3] = static_cast<float>(r.height * grow);
+                }
+                auto mask = surface.opacityMask(*groupField, args);
+                if (!mask) return std::unexpected(mask.error());
+                note(out.notes, kTranslucencyBoundsNote);
+
+                // THE BLIND SPOT, MEASURED BEFORE THE MASK IS APPLIED. Where
+                // the field says "outside", the shader's own `mix(1.0, a, cov)`
+                // returns 1.0 and the pixel keeps its opacity -- correct for a
+                // pixel that really is outside, and a silent miss for one the
+                // art painted anyway. Counted against the image's alpha so the
+                // sentence carries a number instead of a worry.
+                //
+                // ONLY FOR A GROUP OF ONE ELEMENT, where image and field are the
+                // same art and a painted pixel outside the field can only be a
+                // miss of the generator. In a group of several it is the
+                // picture: a plain element beside a glass one is outside the
+                // field by construction, and where two glass elements stack
+                // the upper one's field says "outside" over a rim of the lower
+                // one's art (`kFieldStackNote`). Counting those would bury the
+                // sentence that means something.
+                const bool reportsHoles = elements == 1;
+                const std::size_t gapAt = out.shapeGaps.size();
+                out.shapeGaps.push_back(kPendingEntry);
+                std::vector<std::string>* gaps = &out.shapeGaps;
+                const std::string prefix = soleLabel + ": ";
+                // Why a painted pixel can fall outside the field depends on
+                // which generator made the field, so the sentence does too.
+                const char* const why =
+                    soleIsVector
+                        ? "flattenSvgToContours funde todo subcaminho pintado num conjunto "
+                          "so, assinado por uma regra so, entao subcaminhos sobrepostos de "
+                          "orientacao contraria se cancelam sob non-zero (a ressalva de "
+                          "DistanceField.h). O mesmo buraco vale para a refracao."
+                        : "num raster o campo e assinado pelo contorno alpha >= 0.5, entao "
+                          "todo pixel pintado com alpha ABAIXO do limiar fica de fora.";
+                auto counted = surface.applyMask(
+                    image, *mask,
+                    [gaps, gapAt, prefix, why, reportsHoles](std::size_t missed,
+                                                             std::size_t painted) {
+                        if (!reportsHoles || !(missed > 0 && painted > 0)) {
+                            (*gaps)[gapAt] = kDroppedEntry;
+                            return;
+                        }
+                        char buf[512];
+                        std::snprintf(
+                            buf, sizeof(buf),
+                            "translucidez aplicada com buraco: %zu de %zu pixels pintados "
+                            "(%.1f%%) caem FORA do campo de distancia e ficaram opacos -- %s",
+                            missed, painted,
+                            100.0 * static_cast<double>(missed) /
+                                static_cast<double>(painted),
+                            why);
+                        (*gaps)[gapAt] = prefix + buf;
+                    });
+                if (!counted) return std::unexpected(counted.error());
+                ++out.glassTranslucent;
+            }
+
+            // ---- THE CONTENT: the image, under the group's opacity and blend
+            //
+            // `[BIN]` `0x4AF20` -> `0x4B4EC`: `drawShape:(contentFrame)
+            // fill:(image) alpha:(float)[+0x38] blendMode:[+0x31]`
+            // (`0x4B518`-`0x4BA6C`). The group's opacity and the group's blend
+            // apply HERE, against everything already on the icon -- the
+            // background, the groups beneath, and this group's own shadow.
+            // Na mascara do Clear a imagem passa antes pela matriz do conteudo
+            // (`0x4AF20`): `clearContent`.
+            //
+            // `[BIN]` AND THIS IS THE ONE DRAW `shouldClampPlusLBlending` REACHES
+            // (`0x4B530`-`0x4B57C`, and the same lines inline at `0x44614`): when
+            // the blend byte is 8, plus-lighter, and the flag (`ctx+0x288`) is
+            // set, AND the byte at `ctx+0x528` is 1, the composite is handed to
+            // the `clampedPlusL` blend shader instead. The shadow (`0x49ED4`),
+            // the glow (`0xF534`) and the highlights (`0x491C0`, `0x475A0`) call
+            // `drawShape:...blendMode:` directly and are never clamped.
+            // `[OBS]` The second gate is not read -- `BlendFormula.h` says what
+            // was found of it --, so it is an option of the render, off unless
+            // the caller says otherwise, and the note names it when it bites.
+            const bool clampPlusLighter =
+                params.shouldClampPlusLBlending && options.drawingContextClampsPlusLighter;
+            if (groupBlendMode == BlendMode::PlusLighter && params.shouldClampPlusLBlending &&
+                !options.drawingContextClampsPlusLighter) {
+                note(out.notes, kPlusLighterClampNote);
+            }
+            if (auto ok = surface.blendArt(image, static_cast<float>(imageOpacity),
+                                           groupBlendMode, clearMask, clampPlusLighter);
+                !ok) {
+                return std::unexpected(ok.error());
+            }
+
+            // ---- the shadow again, OVER the content -----------------------
+            //
+            // `[BIN]` AFTER THE CONTENT AND BEFORE THE HIGHLIGHTS: the body of
+            // `0x4AC84` is the content draw (`0x4ADA4`) followed by this pass
+            // (`0x4ADBC`-`0x4AEB4`), still under the translucency clip.
+            //
+            // `[BIN]` ONLY FOR A GROUP THAT BLENDS NORMALLY, AND ONLY WHEN THE
+            // GENERATION DRAWS OVER THE CONTENT. `0x4ADBC`-`0x4ADCC` is one
+            // compare chained into another: `Shadow.drawOverContent`
+            // (`ctx+0x45B1`) must be 1 AND the byte at `[descriptor+0x31]` -- the
+            // group's blend mode (`GlassShadow.h`) -- must be zero. Generation 26
+            // clears the flag (`0x77ED0`), so it has no overdraw at all. Until
+            // 2026-10-01 the pass ran over every group.
+            //
+            // `[BIN]` AND ITS CLIP IS THE CONTENT DRAW ITSELF -- `0x4B4EC` again,
+            // inside the clip layer -- so it carries what that draw carries: the
+            // image's alpha after the mask, and the opacity it is drawn with.
+            if (shadow && shadowParams.drawOverContent && groupBlendMode == BlendMode::Normal) {
+                const double clip =
+                    shadowOverdrawAlpha(groupTranslucency, shadowStyle, sizeClass, shadowParams) *
+                    imageOpacity;
+                if (auto ok = surface.clipShadowOverdraw(*shadow, image, clip); !ok) {
+                    return std::unexpected(ok.error());
+                }
+                if (shadow->hasOverdraw) {
+                    if (auto ok = surface.blendShadow(*shadow, true, shadowCompositeAlpha,
+                                                      shadowParams.overdrawBlendMode);
+                        !ok) {
+                        return std::unexpected(ok.error());
+                    }
+                    note(out.notes, kShadowOverdrawNote);
+                    ++out.glassShadowOverdrawn;
+                }
+            }
+
+            // ---- THE GLOW, which only generation 26 has ---------------------
+            //
+            // `[BIN]` `0x48C20`-`0x48DA8`: after the content pass has returned
+            // -- the image and the shadow's overdraw -- and before the
+            // highlights, and outside the translucency clip. Gated on the
+            // Optional (`ctx+0x4500`; nil in generation 27), on the group's SDF
+            // not being empty and on its `effectsFrame` not being nil; clipped
+            // to that frame outset by one pixel; then `0xF534`: the `glow`
+            // shader over the group's field, white, at `innerOpacity x group
+            // opacity`, plus-lighter. `GlassGlow.h` carries the fragment and
+            // why the depth it sees saturates at the field's reach.
+            //
+            // `[OBS]` A glass group with no specular has a field with no reach,
+            // and what the target draws there was not read: nothing is drawn,
+            // and the note says so.
+            if (params.glow.has_value() && glassLayers > 0 && !wantsGlow) {
+                note(out.notes, kGlowNoReachNote);
+            }
+            if (wantsGlow && groupField) {
+                const bool frameIsNil = groupEffectsRect ? groupEffectsNil : !glassBoxAny;
+                if (!frameIsNil) {
+                    const PlacementRect r =
+                        groupEffectsRect ? *groupEffectsRect
+                                         : PlacementRect{glassBox[0], glassBox[1],
+                                                         glassBox[2] - glassBox[0],
+                                                         glassBox[3] - glassBox[1]};
+                    const double frame[4] = {r.x, r.y, r.width, r.height};
+                    const GlowArguments glowArgs = glowArguments(
+                        *params.glow, groupOpacity,
+                        static_cast<double>(options.size) / kCanvasPoints,
+                        static_cast<double>(fieldReach), frame);
+                    if (glowDraws(glowArgs)) {
+                        if (auto ok = surface.glow(*groupField, glowArgs); !ok) {
+                            return std::unexpected(ok.error());
+                        }
+                        note(out.notes, kGlowNote);
+                        ++out.glassGlowed;
+                    } else if (!(fieldReach > 0.0f)) {
+                        note(out.notes, kGlowNoReachNote);
+                    }
+                }
+            }
+
+            // ---- THE HIGHLIGHTS, over the group ---------------------------
+            //
+            // THEY FILTER THE BACKDROP, SO THEY GO ON AFTER THE GROUP IS IN IT.
+            // `[BIN]` `beginLayerWithFlags:1` sets bit 0 of
+            // `RB::DisplayList::Layer::Flag`, and `Builder::null_style_draw`
+            // (`0x000CE028`) turns that layer's colour matrix into a
+            // `BackdropFilterItem` appended to the PARENT -- so the matrix
+            // reads the composite, not the group's own image (GlassSpecular.cpp
+            // has the addresses). The pass is gated by `hasSpecular` at
+            // `0x00049200` and is NOT under the translucency clip.
+            //
+            // `[BIN]` ONE PASS PER GROUP, over the group's field: the only loop
+            // in `0x491C0` is over the highlight slots. And `layerOpacity` is
+            // the GROUP's opacity -- `[descriptor+0x38]` (`0x000495F0`) is
+            // `FinalizedIcon.Layer.opacity`; an element's own never reaches it.
+            if (wantsSpecular && groupField) {
+                SpecularArguments groupSpecular = specularArgs;
+                groupSpecular.layerOpacity = groupOpacity;
+                std::size_t* specularCount = &out.glassSpecular;
+                if (auto ok = surface.specular(*groupField, groupSpecular,
+                                               [specularCount](std::size_t moved) {
+                                                   if (moved > 0) ++*specularCount;
+                                               });
+                    !ok) {
+                    return std::unexpected(ok.error());
+                }
+                note(out.notes, specularDrawnNote(options.generation));
+            }
+        }
+
+        // THE GROUP'S `blur-material` IS NOT DRAWN.
+        //
+        // `[BIN]` WHERE IT WOULD GO was misread until 2026-10-01, here and in
+        // `BlurKernel.h`. `0x4A488` is `bl 0x49ED4` with `w1 = 0`, and `0x49ED4`
+        // is the SHADOW draw -- it loads `shadowStyle`, `shadowOpacity`,
+        // `[+0x38]` and `shadowImage` at `0x49F08`-`0x49F14` -- not the group's
+        // content, which is `0x4AC84` and only runs after `0x4A2D4` has returned
+        // (`0x48C08`). So the `needs-background` layer of `0x4A48C`-`0x4A5D0`
+        // blurs everything beneath the group PLUS the group's shadow, and NOT the
+        // group's own art; and `0x4A594` (`bl 0x1135C`) clips it to the inside
+        // of the group's SDF. In this loop that is between the shadow and the
+        // translucency above.
         //
         // IT IS NOT MADE, because the gabarito refused the only reading of the
-        // layer frame this front had. `drawBlurMaterial(acc, ..., blurSurface)`
-        // with the frame at the unit rect was rendered and measured: the mean
-        // channel error against `apple-512.png` goes from `8.95 / 10.03 / 9.89`
-        // to `15.58 / 20.09 / 22.49` and the alpha error from `4.95` to `7.09`,
+        // layer frame this front had -- and that measurement was taken with the
+        // old placement and the old clip, so it does not speak for the reading
+        // above. `drawBlurMaterial(acc, ..., blurSurface)` with the frame at the
+        // unit rect was rendered and measured: the mean channel error against
+        // `apple-512.png` goes from `8.95 / 10.03 / 9.89` to
+        // `15.58 / 20.09 / 22.49` and the alpha error from `4.95` to `7.09`,
         // with the four corners of the squircle the worst blocks in the frame.
         // The luma profile says the same thing in the shape the highlight front
         // taught: down the centre column the gabarito falls `157 -> 49` over
@@ -2215,12 +3193,96 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
         // thing `BlendFormula.h` does with `shouldClampPlusLBlending` and for
         // the same reason: turning it on without the reading would move pixels
         // on the measurer's authority instead of the target's.
-        if (blurSurface.draws) {
-            note(out.notes, blendTheGroup ? kBlurMaterialBlendedGroupNote
-                                          : kBlurMaterialFrameNote);
-        }
+        if (blurSurface.draws) note(out.notes, kBlurMaterialFrameNote);
+    }
 
-        if (auto ok = surface.endGroup(blendTheGroup ? groupMode : std::nullopt); !ok) {
+    // ==== THE CHICLET'S HIGHLIGHTS, OVER THE CONTENT ========================
+    //
+    // `[BIN]` THE ORDER OF THE ROOT PASS IS content, chiclet highlights,
+    // outline -- in BOTH generations. `IconRenderer.draw` (`0x42FBC`) branches
+    // on `useOS26Compositing` (`ctx+0x3CA`, `0x43140`) into two bodies:
+    //
+    //   generation 26 (`0x43150`): headroom and colour clamp, `beginLayer`, the
+    //     content (`0x469E8`, which reaches `0x435A0`) -- inside a saturation and
+    //     duotone layer when the mode is tinted and the appearance dark
+    //     (`0x43210`-`0x43334`) --, then `bl 0x475A0` at `0x43338`, then
+    //     `bl 0x47AE8` at `0x4333C`, then `drawLayer`.
+    //   generation 27 (`0x431B0` -> `0x46FC4` -> `0x47D2C`): the clamp or the
+    //     Clear's total matrix, `beginLayer`, `bl 0x435A0` at `0x48268`, then
+    //     `bl 0x475A0` at `0x48274` (inside the tint layer instead, at
+    //     `0x483E0`, when `darkTintHighlightsBlendWithContent`), `drawLayer`;
+    //     and back in `0x431B0`, `bl 0x47AE8` at `0x431C0`.
+    //
+    // `0x435A0` is the content: it opens with the background (`0x48524`) and
+    // runs the groups (`0x48E20`, `0x48B74`); `0x475A0` is the chiclet's
+    // highlights, and it is called from nowhere else. So the highlights go on
+    // AFTER every group, over whatever the groups drew along the pastille's
+    // rim. Until 2026-10-01 this renderer drew them straight after the
+    // background, UNDER the groups -- the place the front that added them chose
+    // (`Docs/Laudos/2026-09-15-chiclet-realces.md` §5: "logo depois de
+    // `clipToChiclet`"), and no reading of the order stood behind it.
+    //
+    // `[INF]` THE CLIP IS THE ALPHA THE PICTURE HAS HERE (`drawChicletHighlights`).
+    // The target clips the highlights to a layer drawn from the chiclet's own
+    // shape (`0xD904`, step 3 of `ChicletHighlights.h`), whatever is under it;
+    // while the pass ran before the groups the background's alpha WAS that
+    // coverage. It still is wherever the background is opaque -- the picture's
+    // alpha is then the coverage along the edge and one inside --, and where art
+    // overhangs the pastille's edge the alpha it adds inside the one-pixel
+    // antialiased band counts too.
+    //
+    // `[BIN]` THE OUTLINE (`0x47AE8`), third in both bodies, IS NOT DRAWN, and
+    // in an ordinary render the target does not draw it either. Its first gate
+    // is the byte at `ctx+0x22` (`0x47B48`: `cmp w8, #1; b.ne` past the whole
+    // pass) -- `[INF]` the mitigated export's flag: the same byte sends the
+    // content wrapper `0x469E8` down the branch that paints the mitigated
+    // chiclet (`0x46A28`; `Docs/Laudos/2026-09-30-tinted-export-localizacao.md`)
+    // -- followed by the effects byte, a rendering step and the `.color` mode
+    // (`0x47B54`-`0x47BB8`). This renderer has no mitigated export.
+    // `Outlines.useDynamicOpacity` -- `true` in 27, `false` in 26 (`0x77F54`) --
+    // is carried in the block for whoever writes one.
+    //
+    // `[BIN]` AND WHERE THE TINTED-DARK LAYER CLOSES DEPENDS ON THE GENERATION.
+    // The saturation filter and the duotone wrap a layer the content is drawn
+    // in. Generation 27 (`0x47D2C`) reads `darkTintHighlightsBlendWithContent`
+    // (`ctx+0xB0`, `0x483D4`): set -- its default -- the chiclet's highlights
+    // are drawn INSIDE that layer (`0x483E0`) and are recoloured with the
+    // content; clear, the layer is closed first (`0x48400`-`0x48418`).
+    // Generation 26's body (`0x43150`) has no such test: the layer is closed
+    // at `0x4332C` and `0x475A0` is called after it, at `0x43338` -- the
+    // highlights are never tinted.
+    //
+    // So when the highlights are inside, the recolouring commutes with
+    // everything this function draws and is left to whoever finishes the
+    // rendition, over the finished picture (`applyTintedDark`), as it always
+    // was. When they are outside it has to happen HERE, between the content and
+    // the highlights: the same arithmetic over the premultiplied target, which
+    // is linear with no offset. `RenderedIcon::tintApplied` says it was done.
+    const bool tintedDark = options.tint.has_value() && !options.clearMask;
+    const bool highlightsInsideTint =
+        !params.useOS26Compositing && params.darkTintHighlightsBlendWithContent;
+    if (tintedDark && !highlightsInsideTint) {
+        if (auto ok = surface.tint(*options.tint); !ok) return std::unexpected(ok.error());
+        out.tintApplied = true;
+    }
+    if (chicletPass) {
+        // A nota depende de quantos pixels mudaram: o lugar dela fica guardado
+        // ate a contagem chegar (na GPU, no `finish`).
+        const std::size_t noteAt = out.notes.size();
+        out.notes.push_back(kPendingEntry);
+        std::vector<std::string>* notes = &out.notes;
+        const DesignGeneration generation = options.generation;
+        const ChicletPass pass = *chicletPass;
+        if (auto ok = surface.chicletHighlights(
+                options.cache, pass.args, platform,
+                [notes, noteAt, generation, pass](std::size_t highlighted) {
+                    (*notes)[noteAt] =
+                        highlighted > 0
+                            ? chicletHighlightsNote(generation, pass.set, pass.appearance,
+                                                    pass.lum)
+                            : std::string(kDroppedEntry);
+                });
+            !ok) {
             return std::unexpected(ok.error());
         }
     }
@@ -2250,18 +3312,20 @@ Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& b
     return out;
 }
 
-void applyTintedDark(RenderedIcon& icon, const IconRenderOptions::TintRecolour& tint) {
+void tintDark(float* p, std::size_t n, const IconRenderOptions::TintRecolour& tint) {
     const float s = static_cast<float>(std::max(0.0, tint.saturation));
     const float tr = static_cast<float>(tint.r), tg = static_cast<float>(tint.g),
                 tb = static_cast<float>(tint.b);
-    float* p = icon.rgba.data();
-    const std::size_t n = icon.rgba.size() / 4;
     for (std::size_t i = 0; i < n; ++i, p += 4) {
         const float l = 0.2126f * p[0] + 0.7152f * p[1] + 0.0722f * p[2];
         p[0] = (l + s * (p[0] - l)) * tr;
         p[1] = (l + s * (p[1] - l)) * tg;
         p[2] = (l + s * (p[2] - l)) * tb;
     }
+}
+
+void applyTintedDark(RenderedIcon& icon, const IconRenderOptions::TintRecolour& tint) {
+    tintDark(icon.rgba.data(), icon.rgba.size() / 4, tint);
 }
 
 void applyClear(RenderedIcon& icon, const ClearBackdrop& backdrop, double squareX,

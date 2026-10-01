@@ -15,78 +15,6 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 
-HighlightSizeValue flat(double all, bool present = true) {
-    HighlightSizeValue v;
-    v.slots[0] = v.slots[1] = v.slots[2] = v.slots[3] = all;
-    v.present = present;
-    return v;
-}
-
-// `[BIN]` Um membro de `chicletDefault`, montado do jeito que
-// `0x00062AB8`-`0x00062EDC` monta: os quatro slots iguais, `outsetOpacity` e
-// `minInsetPixels` `nil`, `inset` e `minDistancePixels` zerados,
-// `blendModeOverride` ausente (o byte 18).
-HighlightSettings chicletMember(double brightness, double opacity, double distance, double spread,
-                                double bias) {
-    HighlightSettings s;
-    s.brightness = brightness;
-    s.opacity = flat(opacity);
-    s.outsetOpacity = flat(0.0, false);
-    s.distance = flat(distance);
-    s.minDistancePixels = flat(0.0);
-    s.inset = flat(0.0);
-    s.minInsetPixels = flat(0.0, false);
-    s.spread = flat(spread);
-    s.bias = bias;
-    s.hasBlendModeOverride = false;
-    return s;
-}
-
-const HighlightSlot* buildChicletSlots(std::size_t& count) {
-    static HighlightSlot slots[7];
-    static bool built = false;
-    if (!built) {
-        // `[BIN]` `Highlights+0x50` e `+0x70`, ambos `[0.75]x4`
-        // (`fmov v0.2d, #0.75` em `0x00062ABC`, gravado quatro vezes em
-        // `0x00062ADC`-`0x00062AE0`). O seletor do chiclet passa estes dois ao
-        // expansor em `0x00062788`-`0x0006278C`.
-        const HighlightSizeValue chicletCurvature = flat(0.75);
-        // `[BIN]` As duas posicoes DIFUSAS do expansor nao recebem a curvatura
-        // do parametro e sim o literal `[1,1,1,1]` -- `0x00030FD4` e
-        // `0x00031154`.
-        const HighlightSizeValue one = flat(1.0);
-
-        // `[BIN]` `0x00062BC8` -> chicletDefault+0x000
-        const HighlightSettings keySharp = chicletMember(1.1, 0.2, 10.0, 2.0 * kPi / 3.0, 0.5);
-        // `[BIN]` `0x00062C64` -> +0x108
-        const HighlightSettings keyDiffuse = chicletMember(1.1, 0.5, 40.0, kPi / 2.0, 0.08);
-        // `[BIN]` `0x00062D08` -> +0x210. Identico ao `keySharp`, inclusive no
-        // cone -- ao contrario do glifo, onde `fillSharp` estreita para pi/3.
-        const HighlightSettings fillSharp = chicletMember(1.1, 0.2, 10.0, 2.0 * kPi / 3.0, 0.5);
-        // `[BIN]` `0x00062DBC` -> +0x318. PRESENTE no chiclet; `nil` no glifo.
-        const HighlightSettings fillDiffuse = chicletMember(1.1, 0.25, 40.0, kPi / 2.0, 0.08);
-        // `[BIN]` `0x00062E58` -> +0x420. `brightness == 0` faz o modo de
-        // mescla cair em `PlusDarker` por `0x0004C0A0`, sem override.
-        const HighlightSettings dark = chicletMember(0.0, 0.2, 10.0, kPi / 3.0, 0.5);
-        // `[BIN]` `0x00062ED0` -> +0x528. PRESENTE, com `opacity == 0`: ele
-        // existe e nao pinta. `bias == 1.0` (`x27` reatribuido em `0x00062E68`).
-        const HighlightSettings rim = chicletMember(1.0, 0.0, 10.0, kPi, 1.0);
-
-        // `[BIN]` As sete posicoes de `0x00030E88`, na ordem em que ele as
-        // escreve (`x19+0x20 + i*0x138`).
-        slots[0] = HighlightSlot{keySharp, 0.0, chicletCurvature, false};
-        slots[1] = HighlightSlot{keyDiffuse, 0.0, one, false};
-        slots[2] = HighlightSlot{fillSharp, kPi, chicletCurvature, false};
-        slots[3] = HighlightSlot{fillDiffuse, kPi, one, false};
-        slots[4] = HighlightSlot{dark, kPi / 2.0, chicletCurvature, true};
-        slots[5] = HighlightSlot{dark, -kPi / 2.0, chicletCurvature, true};
-        slots[6] = HighlightSlot{rim, 0.0, chicletCurvature, false};
-        built = true;
-    }
-    count = 7;
-    return slots;
-}
-
 // O contorno da pastilha como um poligono fechado, na grade do campo.
 //
 // A mesma subdivisao por cubica que `chicletCoverage` usa, para que a cobertura
@@ -209,7 +137,68 @@ ChicletAppearance classifyChicletAppearance(const ChicletLuminance& l, bool simp
     return ChicletAppearance::Default;
 }
 
-const HighlightSlot* chicletHighlightSlots(std::size_t& count) { return buildChicletSlots(count); }
+const HighlightSlot* chicletHighlightSlots(std::size_t& count) {
+    // A tabela que este arquivo montava a mao (`chicletMember`, os quatro slots
+    // sempre iguais e nenhum override) saiu: a lista e a expansao do
+    // `chicletDefault` da geracao 27, montada uma vez em
+    // `RenderingParameters.cpp` -- os mesmos sete, na mesma ordem.
+    const std::vector<HighlightSlot>& slots = expandedHighlights(
+        DesignGeneration::G27, HighlightFamily::Chiclet, HighlightsSetKind::Default);
+    count = slots.size();
+    return slots.data();
+}
+
+HighlightsSetKind chicletHighlightsSetFor(ChicletHighlightsAppearanceMode mode,
+                                          bool appearanceIsDark, bool colourMode,
+                                          ChicletAppearance iconBrightness,
+                                          bool effectiveClearModeIsNil) {
+    // `[BIN]` `0x000625B4`-`0x000625BC`: `cmp w8, #1; b.ne` -- tudo que nao e
+    // `chicletLuminance` cai no ramo da aparencia.
+    if (mode != ChicletHighlightsAppearanceMode::ChicletLuminance) {
+        // `[BIN]` `0x00062698`-`0x000626AC` e `0x00062760`: `+0x61 == 1` e
+        // `chicletDim` (`+0xD78`), senao `chicletDefault` (`+0x118`).
+        return appearanceIsDark ? HighlightsSetKind::Dim : HighlightsSetKind::Default;
+    }
+    if (colourMode) {
+        // `[BIN]` `0x00062744`-`0x00062764`.
+        if (iconBrightness == ChicletAppearance::Default) return HighlightsSetKind::Default;
+        if (iconBrightness == ChicletAppearance::Bright) return HighlightsSetKind::Bright;
+        return HighlightsSetKind::Dim;
+    }
+    // `[BIN]` `0x00062684`-`0x00062740`: `x23` e `0x19D8` (`chicletScreened`) e
+    // `x22` e `0x13A8` (`chicletClear`).
+    return effectiveClearModeIsNil ? HighlightsSetKind::Screened : HighlightsSetKind::Clear;
+}
+
+ChicletCone chicletHighlightCone(double spread) {
+    ChicletCone out;
+    // `[BIN]` `0x0000DBA0`-`0x0000DBBC`, na ordem das instrucoes: metade, pela
+    // constante pi, menos meio, em modulo.
+    const double offPi = std::fabs(spread * 0.5 / kPi + -0.5);
+    out.alwaysLit = offPi < 1e-6;
+    // `[BIN]` `0x0000DB80`: o cosseno do cone, sem a sentinela do shader do
+    // glifo.
+    out.cone = std::cos(spread);
+    return out;
+}
+
+GlassHighlightSettings resolveChicletHighlight(const HighlightSlot& slot,
+                                               const SpecularArguments& args) {
+    GlassHighlightSettings g = resolveHighlight(slot, args);
+    // `[BIN]` `0x0000D904` nunca le `+0x38`. Zero nos dez conjuntos do chiclet
+    // das duas geracoes; escrito para que um conjunto que o tivesse nao
+    // deslocasse a banda.
+    g.inset = 0.0;
+    return g;
+}
+
+double chicletHighlightFragment(const GlassHighlightSettings& s, double sd, double nx,
+                                double ny) {
+    const ChicletCone c = chicletHighlightCone(s.spread);
+    // `fwidth(sd)` de um campo de inclinacao um por pixel, como em
+    // `drawSpecular`.
+    return highlightFragment(s, c.cone, c.alwaysLit, sd, nx, ny, 1.0);
+}
 
 std::size_t drawChicletHighlights(std::vector<float>& rgba, const PixelGrid& grid,
                                   const SpecularArguments& args, IconPlatform platform) {
@@ -246,13 +235,17 @@ std::size_t drawChicletHighlights(std::vector<float>& rgba, const PixelGrid& gri
     const FieldImage field = generateFieldFromContours(contours, grid.width, grid.height, fo);
     if (field.width == 0) return 0;
 
-    std::size_t count = 0;
-    const HighlightSlot* slots = chicletHighlightSlots(count);
+    // A lista da geracao e do conjunto que quem chama escolheu.
+    const std::vector<HighlightSlot>& list =
+        expandedHighlights(args.generation, HighlightFamily::Chiclet, args.set);
+    const std::size_t count = list.size();
+    const HighlightSlot* slots = list.data();
     std::vector<char> hit(n, 0);
 
     for (std::size_t s = 0; s < count; ++s) {
-        const GlassHighlightSettings g = resolveHighlight(slots[s], args);
-        // `rim` sai aqui: `opacity == 0` e o unico dos seis que nao pinta.
+        const GlassHighlightSettings g = resolveChicletHighlight(slots[s], args);
+        // O `rim` da geracao 27 sai aqui: `opacity == 0`, o unico dos sete que
+        // nao pinta.
         if (g.opacity <= 0.0 || g.height <= 0.0) continue;
 
         // Uma linha por worker, com junta antes do proximo realce: cada pixel
@@ -273,17 +266,20 @@ std::size_t drawChicletHighlights(std::vector<float>& rgba, const PixelGrid& gri
                 // (`fcmp s0, #0.0 ; b.le`) pula o desenho quando a opacidade
                 // resolvida nao passa de zero.
                 //
-                // `[INF]` O recorte aqui e o ALFA QUE O FUNDO JA TEM, e nao a
+                // `[INF]` O recorte aqui e o ALFA QUE A IMAGEM JA TEM, e nao a
                 // cobertura do contorno, por dois motivos que sao o mesmo: o
                 // alfa do fundo JA e a cobertura (`clipToChiclet` a multiplicou
                 // nele), e uma pastilha transparente -- o que `automatic` sob
                 // `tinted` produz, que e `IconColor.clear` -- nao tem superficie
                 // para acender. Ler a cobertura do campo em vez do alfa poria
-                // luz sobre o nada nesse caso.
+                // luz sobre o nada nesse caso. (Desde 01/10 a passada vem
+                // DEPOIS dos grupos, a ordem do alvo -- `IconRenderer.cpp` --,
+                // entao o alfa lido e o do fundo com o que os grupos puseram
+                // por cima; sobre um fundo opaco e o mesmo numero.)
                 const double clip = rgba[(static_cast<std::size_t>(y) * grid.width + x) * 4 + 3];
                 if (clip <= 0.0) continue;
 
-                const double f = glassHighlightFragment(g, sd, nx, ny, 1.0);
+                const double f = chicletHighlightFragment(g, sd, nx, ny);
                 if (f <= 0.0) continue;
 
                 const double alpha = f * g.opacity * clip;
@@ -317,15 +313,73 @@ std::size_t drawChicletHighlights(std::vector<float>& rgba, std::uint32_t size,
     return drawChicletHighlights(rgba, PixelGrid::full(size), args, platform);
 }
 
-std::string chicletHighlightsNote(ChicletAppearance appearance, const ChicletLuminance& l) {
-    const char* name = "chicletDefault";
-    if (appearance == ChicletAppearance::Bright) name = "chicletBright";
-    if (appearance == ChicletAppearance::Dim) name = "chicletDim";
+const char* const kChicletRasteriserNote =
+    "`[INF]` o alvo rasteriza os realces do chiclet com um gradiente conico numa camada recortada "
+    "(0x0000D904: beginLayer 0xE0F0, clipLayerWithAlpha 0xE134, setConicGradient 0xE448, "
+    "drawShape 0xE490) e nao com o shader glassHighlight -- aqui os mesmos ajustes resolvidos "
+    "por 0x4BD90 sao avaliados sobre o campo de distancia do contorno continuo. Do rasterizador "
+    "lido entram duas coisas: o cone de pi exato acende o contorno inteiro (0xDBA0-0xDC54) e o "
+    "inset nao e lido. `[OBS]` O resto fica como estava: o perfil radial (o modo de renderizacao "
+    "2 do RBShape e o clipLayerWithAlpha mode:1 nao foram lidos; aqui e o shade do shader do "
+    "glifo), o angulo do conico (aqui a normal do contorno, que diverge do angulo polar do "
+    "centro perto dos cantos), a uniao dos realces de uma passada numa rampa so (aqui um por "
+    "vez) e os pisos 1e-6 (aqui o 2^-10 do shader)";
+
+std::string chicletHighlightsNote(DesignGeneration generation, HighlightsSetKind set,
+                                  ChicletAppearance appearance, const ChicletLuminance& l) {
+    const char* const kSetNames[5] = {"chicletDefault", "chicletBright", "chicletDim",
+                                      "chicletClear", "chicletScreened"};
+    const int kind = static_cast<int>(set);
+    const char* name = kSetNames[kind < 0 ? 0 : (kind > 4 ? 4 : kind)];
+    const char* klass = "Default";
+    if (appearance == ChicletAppearance::Bright) klass = "Bright";
+    if (appearance == ChicletAppearance::Dim) klass = "Dim";
 
     char lum[96];
     std::snprintf(lum, sizeof(lum), "%.4f..%.4f", l.lo, l.hi);
 
     std::string out;
+    if (generation == DesignGeneration::G26) {
+        out += "realces do chiclet desenhados (geracao 26): `[BIN]` o conjunto `";
+        out += name;
+        out += "` que 0x76FC0 reescreve em ICRRenderingParameters.Highlights -- keySharp "
+               "(brightness 1.1, cone de 78 graus) e fillSharp (1.1, 65 graus, a pi de distancia "
+               "angular) e o rim (1.0, cone pi: o contorno inteiro), os tres com distance "
+               "22/22/30/39 pt e a opacidade por classe de tamanho, bias 0.5, curvatura 1 e "
+               "blendModeOverride == .normal: o realce COBRE em vez de somar. keyDiffuse e dark sao "
+               "nil. `[BIN]` O seletor 0x62588 esta no ramo systemAppearance "
+               "(chicletHighlightsAppearanceMode == 0, 0x77298): aparencia escura escolhe "
+               "chicletDim, senao chicletDefault, sem olhar o modo de renderizacao nem a classe de "
+               "luminancia (medida em ";
+        out += lum;
+        out += ", `";
+        out += klass;
+        out += "`, com iconBrightnessOnlyUsesMax ligado -- ela escolhe o conjunto do GLIFO). A luz "
+               "vem de defaultChicletLight.longitude = -pi/4 (0x771E0). `[OBS]` a aparencia escura "
+               "aqui e o contexto `dark` ou a rendicao Tinted Dark; o Clear Dark nao chega ao "
+               "render como aparencia; `[OBS]` o portao real e o byte ctx+0x21 (0x475C8), sem nome "
+               "no metadado -- aqui os realces saem sempre que ha pastilha; ";
+        out += kChicletRasteriserNote;
+        return out;
+    }
+    if (set == HighlightsSetKind::Clear || set == HighlightsSetKind::Screened) {
+        out += "realces do chiclet desenhados: `[BIN]` o conjunto `";
+        out += name;
+        out += "` de ICRRenderingParameters.Highlights, que o seletor 0x62588 escolhe FORA de "
+               ".color (0x62684-0x62740: chicletScreened quando o modo efetivo do Clear e nil -- o "
+               "Tinted Dark --, chicletClear quando nao e): keySharp (brightness 1.0, distance "
+               "10 pt, cone de 100 graus, bias 0.5) e keyDiffuse (44 pt, 45 graus), os dois fills "
+               "FillHighlights.matchKey -- os mesmos dois a pi de distancia angular --, o `dark` "
+               "duas vezes a +-pi/2 (cone de 65 graus, distance 9/8/8/9 pt) e o rim nil "
+               "(0x63624-0x63AEC); as opacidades sao 1.25 / 0.5 e [0.25, 0.1, 0.1, 0] no Clear e "
+               "[0.6, 0.7, 0.7, 0.7] / [0.25, 0.3, 0.3, 0.3] e [0.25, 0, 0, 0] no Screened. `[BIN]` "
+               "Sob a mascara do Clear os claros saem na cor (0.7, 0, 0) em plusLighter e os "
+               "escuros ficam para o sistema (0x478B4, 0x47874). `[OBS]` o portao real e o byte "
+               "ctx+0x21 (0x475C8), sem nome no metadado -- aqui os realces saem sempre que ha "
+               "pastilha; ";
+        out += kChicletRasteriserNote;
+        return out;
+    }
     out += "realces do chiclet desenhados: `[BIN]` SEIS realces vivos do conjunto `";
     out += name;
     out += "` de ICRRenderingParameters.Highlights -- keySharp e fillSharp (brightness 1.1, "
@@ -336,18 +390,13 @@ std::string chicletHighlightsNote(ChicletAppearance appearance, const ChicletLum
            "(0x1A920-0x1A97C sobre 0x1F10C: leveza HSL por parada, faixa ";
     out += lum;
     out += " contra maxDim 0.2 / minBright 0.99) e deu `";
-    out += name;
-    out += "`; `[BIN]` ela nao move pixel nesta versao porque 0x62A78-0x63608 monta "
+    out += klass;
+    out += "`; `[BIN]` ela nao move pixel nesta geracao porque 0x62A78-0x63608 monta "
            "chicletDefault, chicletBright e chicletDim dos MESMOS valores (a primeira constante "
            "nova do construtor so aparece em 0x63624, ja dentro de chicletClear). `[OBS]` o "
            "portao real e o byte ctx+0x21 (0x475C8), sem nome no metadado -- aqui os realces "
-           "saem sempre que ha pastilha; `[OBS]` chicletClear/chicletScreened (0x13A8/0x19D8) "
-           "nao estao transcritos e quem escolhe entre eles (0x40E60/0x6D6B0) nao foi seguido; "
-           "`[INF]` o alvo rasteriza isto com um gradiente conico numa camada recortada "
-           "(0x0000D904: beginLayer 0xE0F0, clipLayerWithAlpha 0xE134, setConicGradient 0xE448, "
-           "drawShape 0xE490) e nao com o shader glassHighlight -- aqui os mesmos ajustes "
-           "resolvidos por 0x4BD90 sao avaliados sobre o campo de distancia do contorno "
-           "continuo, o que pode divergir do alvo na queda ANGULAR perto dos cantos";
+           "saem sempre que ha pastilha; ";
+    out += kChicletRasteriserNote;
     return out;
 }
 

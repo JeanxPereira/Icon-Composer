@@ -869,17 +869,39 @@ TEST_CASE(specular_placement_is_a_request_that_two_renderer_conditions_can_refus
 //   3. Taking `bias` straight. `0.5` is the NEUTRAL value and `1/bias - 2` is
 //      what makes it so; a reader who passes `0.5` gets a denominator of `1.5`.
 //   4. Expanding the set into one highlight. It expands into seven candidates
-//      and five survivors, and two of the five are the same `dark` settings at
+//      and six survivors, and two of the six are the same `dark` settings at
 //      opposite angles.
-//   5. Calling `rim` and `fillDiffuse` present. They are `nil`, spelled in the
-//      SAME byte as `blendModeOverride` (19 and 20 against the mode's own 18).
+//   5. Reading the tag byte one off. `rim` is nil (19, against the override's
+//      own 18) and `fillDiffuse` is NOT: its byte is 20, which `0x00033F04`
+//      reads as `matchKey`, so the fourth slot is `keyDiffuse` again at `+pi`.
+//      This case asserted five survivors until 2026-10-01, on the reading that
+//      took 20 for nil.
 TEST_CASE(highlights_defaults_are_the_read_numbers_and_the_size_table_runs_backwards) {
     std::size_t count = 0;
     const rb::HighlightSlot* slots = rb::glyphHighlightSlots(count);
 
-    // `[BIN]` `0x00030E88` writes seven slots; `0x00033FA4` and `0x00033DE4`
-    // make two of them nil; `0x00031384` drops those two.
-    CHECK_EQ(count, static_cast<std::size_t>(5));
+    // `[BIN]` `0x00030E88` writes seven slots; `0x00033DE4` makes the rim nil
+    // (the byte `0x13`) and `0x00031384` drops it. `0x00033FA4` writes `0x14`
+    // into `fillDiffuse`, and `0x14` is `matchKey`: six survive.
+    REQUIRE(count == static_cast<std::size_t>(6));
+
+    // `[BIN]` The sixth, at index 3: an exact copy of `keyDiffuse` (`csel x1,
+    // x8, x20, eq` at `0x00031108` picks `sp+0xA08`, the key member), turned by
+    // `+pi`, with the literal curvature `[1, 1, 1, 1]` and not a darklight.
+    CHECK_EQ(slots[3].settings.brightness, slots[1].settings.brightness);
+    CHECK_EQ(slots[3].settings.bias, 0.08);
+    for (int k = 0; k < 4; ++k) {
+        CHECK_EQ(slots[3].settings.opacity.slots[k], slots[1].settings.opacity.slots[k]);
+        CHECK_EQ(slots[3].settings.distance.slots[k], slots[1].settings.distance.slots[k]);
+        CHECK_EQ(slots[3].settings.minDistancePixels.slots[k], 4.0);
+        CHECK_EQ(slots[3].settings.spread.slots[k], slots[1].settings.spread.slots[k]);
+        CHECK_EQ(slots[3].curvature.slots[k], 1.0);
+    }
+    CHECK(!slots[3].settings.outsetOpacity.present);
+    CHECK(!slots[3].settings.hasBlendModeOverride);
+    CHECK(!slots[3].isDarklight);
+    CHECK(std::abs(slots[3].angleFromKey - 3.14159265358979323846) < 1e-15);
+    CHECK_EQ(slots[1].angleFromKey, 0.0);
 
     // `[BIN]` `0x00064648`: keySharp, and its `distance` is the one place the
     // size classes disagree. `display` is the FIRST slot in memory and the LAST
@@ -901,13 +923,13 @@ TEST_CASE(highlights_defaults_are_the_read_numbers_and_the_size_table_runs_backw
     // `[BIN]` `0x00064888`: the dark one, twice, at opposite angles, and the
     // ONLY one of the six with an `outsetOpacity` -- which is exactly the
     // condition `0x000494F8` needs before `outside` is even considered.
-    CHECK_EQ(slots[3].settings.brightness, 0.0);
-    CHECK(slots[3].isDarklight);
+    CHECK_EQ(slots[4].settings.brightness, 0.0);
     CHECK(slots[4].isDarklight);
-    CHECK(slots[3].settings.outsetOpacity.present);
+    CHECK(slots[5].isDarklight);
+    CHECK(slots[4].settings.outsetOpacity.present);
     CHECK(!slots[0].settings.outsetOpacity.present);
-    CHECK(std::abs(slots[3].angleFromKey + slots[4].angleFromKey) < 1e-12);
-    CHECK(slots[3].angleFromKey > 0.0);
+    CHECK(std::abs(slots[4].angleFromKey + slots[5].angleFromKey) < 1e-12);
+    CHECK(slots[4].angleFromKey > 0.0);
 
     // `[BIN]` `0x0004C0A0`: the mode falls out of `brightness` alone, and the
     // two numbers it produces are this project's own enum values.
@@ -915,7 +937,7 @@ TEST_CASE(highlights_defaults_are_the_read_numbers_and_the_size_table_runs_backw
     args.sizeClass = rb::IconSizeClass::Display;
     args.pixelsPerPoint = 1.0;
     const rb::GlassHighlightSettings key = rb::resolveHighlight(slots[0], args);
-    const rb::GlassHighlightSettings dark = rb::resolveHighlight(slots[3], args);
+    const rb::GlassHighlightSettings dark = rb::resolveHighlight(slots[4], args);
     CHECK(key.blendMode == rb::BlendMode::PlusLighter);
     CHECK(dark.blendMode == rb::BlendMode::PlusDarker);
 
@@ -970,7 +992,7 @@ TEST_CASE(highlights_defaults_are_the_read_numbers_and_the_size_table_runs_backw
 TEST_CASE(the_three_assumed_identities_are_identities_and_one_of_them_for_any_parameters) {
     std::size_t count = 0;
     const rb::HighlightSlot* slots = rb::glyphHighlightSlots(count);
-    CHECK_EQ(count, static_cast<std::size_t>(5));
+    CHECK_EQ(count, static_cast<std::size_t>(6));
 
     rb::SpecularArguments args;
     args.sizeClass = rb::IconSizeClass::Display;

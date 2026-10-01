@@ -490,60 +490,79 @@ TEST_CASE(a_glass_layer_with_no_refractivity_leaves_the_backdrop_bit_identical) 
 // monotone function of x, so "the backdrop moved by this many pixels" is a
 // number this test computes rather than a difference it merely notices. A join
 // with the displacement zeroed passes neither half.
-// A GROUP WHOSE GLASS REFRACTS IS STILL REFUSED WHEN IT BLENDS, and this test
-// exists because the first attempt at lifting that refusal was WRONG and this
-// is what caught it.
+// A GROUP WHOSE GLASS REFRACTS USED TO BE REFUSED WHEN IT BLENDED, and this case
+// asserted the refusal and its reason until 2026-10-01. The refusal was honest:
+// a blended group was drawn into a target of its own, `glassOver` displaces the
+// buffer it is handed, a fresh target has nothing in it, and the group would
+// have drawn with its refraction silently gone.
 //
-// `[BIN]` The reading that motivated the attempt is sound (doc 03 §34.3):
-// Apple's `GlassDisplacementStyle::draw` builds a
-// `GenericFilter<GlassDisplacementEffect>` over the ITEM it is applied to and
-// never reaches `make_backdrop_item`, so its glass does not sample the
-// destination and a target of its own would starve nothing.
+// `[BIN]` It is lifted because the target of its own is gone, and it is gone
+// because the target never had one. `IconRendering` `0x48B74` runs once per group
+// and puts everything on the icon's own list: the glass pass `0x4A2D4` -- whose
+// refraction-only branch (`0x4A5E4`-`0x4A7AC`) is the clip, the displacement and
+// the `needs-background` layer -- then the content `0x4AC84`, then the
+// highlights. The ONE draw that takes the group's blend byte is the content's
+// `0x4B4EC`. So a blended group refracts what is under it exactly as a normal
+// one does, and only its flattened art meets the mode.
 //
-// OUR glass is not that. `glassOver` snapshots the accumulation buffer and
-// displaces it IN PLACE, so its source is whatever has already been drawn into
-// the target it is handed. A blended group is drawn into `groupAcc`, which is
-// fresh -- so the displacement runs over an empty buffer and moves nothing,
-// and the group would draw with the refraction silently gone.
-//
-// That is why this asserts the refusal and its REASON rather than a picture:
-// the picture of the wrong version looks like a render, which is exactly the
-// failure mode. Lifting this guard means changing what our glass reads, not
-// deleting the line.
-TEST_CASE(a_blended_group_whose_glass_refracts_is_refused_and_says_why) {
+// THE ORACLE IS ARITHMETIC ON THAT ORDER, not a picture. The lens is white at
+// 0.25 over a ramp `b`. Under `normal` the pixel is `0.25 + 0.75 * b`, so
+// refracting the backdrop by `db` moves it by `0.75 * db`; under `plus-lighter`
+// it is `b + 0.25`, so the same refraction moves it by `db` whole. The two
+// movements differ by exactly the factor 0.75 -- and by nothing else, which is
+// what "the refraction does not go through the blend" means in numbers.
+TEST_CASE(a_blended_group_whose_glass_refracts_draws_and_refracts_the_icon) {
     Device& d = gpu();
     if (!d.valid()) return;
     IconRenderOptions o;
     o.size = 1024;
 
-    const TempBundle lens(
-        rampAndGlass("square.svg", realRefractivity(kRealStrength), true, 0.25, "plus-lighter"));
-    auto a = icf::IconBundle::open(lens.path());
-    REQUIRE(a.has_value());
-    auto ga = renderIcon(d, *a, o);
-    REQUIRE(ga.has_value());
+    auto render = [&](bool glass, const char* blend) -> std::optional<RenderedIcon> {
+        const TempBundle tb(
+            rampAndGlass("square.svg", realRefractivity(kRealStrength), glass, 0.25, blend));
+        auto bundle = icf::IconBundle::open(tb.path());
+        if (!bundle) return std::nullopt;
+        auto icon = renderIcon(d, *bundle, o);
+        if (!icon) return std::nullopt;
+        return std::move(*icon);
+    };
+    auto lens = render(true, "plus-lighter");
+    auto flat = render(false, "plus-lighter");
+    auto lensNormal = render(true, "normal");
+    auto flatNormal = render(false, "normal");
+    REQUIRE(lens && flat && lensNormal && flatNormal);
 
-    // The glass layer is refused; the ramp behind it still draws.
-    CHECK_EQ(ga->glassRefracted, std::size_t{0});
-    REQUIRE(ga->skipped.size() == 1);
-    CHECK(ga->skipped[0].why.find("vidro refrata") != std::string::npos);
-    CHECK(ga->skipped[0].why.find("acumulacao") != std::string::npos);
+    // Nothing is refused any more: the lens draws, and it refracts.
+    CHECK_EQ(lens->drawn, std::size_t{2});
+    CHECK(lens->skipped.empty());
+    CHECK_EQ(lens->glassRefracted, std::size_t{1});
+
+    // The band pixel of `the_glass_displaces_the_backdrop_...`, 24 px in from
+    // the left edge. The ramp there is about 0.27, so `b + 0.25` is nowhere
+    // near the clamp of `plus-lighter` and the arithmetic above is exact.
+    const float moved = at(*lens, 280, 512)[0] - at(*flat, 280, 512)[0];
+    const float movedNormal = at(*lensNormal, 280, 512)[0] - at(*flatNormal, 280, 512)[0];
+    std::printf("  band pixel: plus-lighter moves %.5f, normal moves %.5f\n", moved, movedNormal);
+    CHECK(std::fabs(movedNormal) > 0.02f);
+    CHECK(std::fabs(moved * 0.75f - movedNormal) < 1e-3f);
+
+    // And outside the shape the refraction touches nothing, blend or no blend.
+    for (int k = 0; k < 4; ++k) CHECK_EQ(at(*lens, 100, 100)[k], at(*flat, 100, 100)[k]);
 }
 
-// A `normal` BLEND ON THE GROUP MUST NOT REACH THE REFUSAL AT ALL, and this
-// test exists because the mutation sweep of 2026-09-04 found the hole.
+// A `normal` BLEND ON THE GROUP IS NOT A BLEND, and this test exists because the
+// mutation sweep of 2026-09-04 found a hole around it.
 //
 // `normal` is spelled out on 5 corpus groups and means "do nothing", so the
 // reader drops it before `groupBlend` is ever set. Forcing it through instead --
-// `if (*s != "normal")` mutated to `if (true)` -- changes NO picture, because
-// compositing a group through its own buffer with source-over is associative
-// and lands on the same pixels. The whole suite stayed green, which is exactly
-// what a survivor looks like.
+// `if (*s != "normal")` mutated to `if (true)` -- changed NO picture, and the
+// whole suite stayed green: exactly what a survivor looks like. What the
+// mutation did change then was the refusal a blended group met when its glass
+// refracted, and this case killed it by observing that nothing was skipped.
 //
-// What the mutation DOES change is the refusal: a `normal` group carrying a
-// refracting glass layer would take `groupBlend != nullptr`, meet
-// `groupWouldRefract`, and be skipped. So this is the observation that kills it,
-// and it is not a picture -- it is the fact that nothing was skipped.
+// That refusal is gone (the case above), so what is left for this one to hold
+// is the plain fact it always asserted: a group that spells `normal` draws its
+// glass and refracts, with nothing skipped.
 TEST_CASE(a_normal_blend_on_the_group_does_not_refuse_its_refracting_glass) {
     Device& d = gpu();
     if (!d.valid()) return;

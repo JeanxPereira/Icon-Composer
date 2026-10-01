@@ -234,7 +234,7 @@ public:
         write(dir_ / "icon.json", document);
         // A ring: a filled outer circle with a circular hole, as two subpaths in
         // opposite winding. It is deliberately NOT a rectangle -- the distance
-        // field, the five specular highlights and the shadow's ring mask all key
+        // field, the six specular highlights and the shadow's ring mask all key
         // off a contour, and a square's field is degenerate enough that a
         // regression in any of the three could hide in it.
         write(dir_ / "Assets" / "ring.svg",
@@ -365,8 +365,8 @@ TEST_CASE(time_budget_no_glass_512) {
 }
 
 // `[INF]` 0.310 s, the worst of six whole-suite runs in Release. Four glass layers with the whole chain on
-// each: distance field, refraction gate, translucency mask, five specular
-// highlights, and the shadow.
+// each: distance field, refraction gate, translucency mask, six specular
+// highlights (five when the number was taken), and the shadow.
 TEST_CASE(time_budget_full_glass_chain_512) {
     TempBundle b("glass", glassDocument(kGlassLayers));
     auto bundle = icf::IconBundle::open(b.path());

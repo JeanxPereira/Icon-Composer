@@ -6,6 +6,7 @@
 
 #include "Source/RenderBox/Parallel.h"
 #include "Source/RenderBox/BlendFormula.h"
+#include "Source/RenderBox/RenderingParameters.h"
 
 namespace rb {
 namespace {
@@ -19,101 +20,6 @@ constexpr double kBandWidth = 0.8330078125;
 
 double sat(double v) { return v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v); }
 
-HighlightSizeValue sbv(double display, double large, double medium, double small,
-                       bool present = true) {
-    HighlightSizeValue v;
-    v.slots[0] = display;
-    v.slots[1] = large;
-    v.slots[2] = medium;
-    v.slots[3] = small;
-    v.present = present;
-    return v;
-}
-
-HighlightSizeValue flat(double all, bool present = true) {
-    return sbv(all, all, all, all, present);
-}
-
-// `[BIN]` The three `SizeBasedValue`s `0x00063AEC`-`0x00063B34` hands the glyph
-// factory `0x00064604`. All five `glyphs*` sets get these same three, so there
-// is one table here and not five.
-//
-//   A = {1.0, 1.0, 1.0, 0.3}   sp+0x120: (1.0,1.0) from sp+0xB0, (1.0,0.3) from 0x98540
-//   B = {1.0, 1.0, 0.2, 0.2}   sp+0x100: (1.0,1.0) from sp+0xB0, (0.2,0.2) from sp+0xD0
-//   C = {0.9, 0.9, 0.2, 0.2}   sp+0x0E0: (0.9,0.9) from sp+0xA0, (0.2,0.2) from sp+0xD0
-const HighlightSlot* buildGlyphSlots(std::size_t& count) {
-    static HighlightSlot slots[5];
-    static bool built = false;
-    if (!built) {
-        const HighlightSizeValue A = sbv(1.0, 1.0, 1.0, 0.3);
-        const HighlightSizeValue B = sbv(1.0, 1.0, 0.2, 0.2);
-        const HighlightSizeValue C = sbv(0.9, 0.9, 0.2, 0.2);
-        // `[BIN]` `Highlights+0x10` and `+0x30`: `fmov v0.2d, #0.75` stored four
-        // times over each (`0x00062AD0`-`0x00062AE0`). Highlight and darklight
-        // curvature are the same number in this version, so the `w22` select of
-        // `0x000311C4` cannot be seen in a pixel.
-        const HighlightSizeValue curvature = flat(0.75);
-        const HighlightSizeValue one = flat(1.0);
-        const HighlightSizeValue nil = flat(0.0, false);
-
-        // keySharp -- `0x00064648`-`0x000646F8`, written to set+0x000.
-        HighlightSettings keySharp;
-        keySharp.brightness = 1.0;
-        keySharp.opacity = A;
-        keySharp.outsetOpacity = nil;
-        keySharp.distance = sbv(4.0, 6.0, 6.0, 6.0);
-        keySharp.minDistancePixels = one;
-        keySharp.inset = flat(0.0);
-        keySharp.minInsetPixels = nil;
-        keySharp.spread = flat(kPi / 2.0);
-        keySharp.bias = 0.5;
-
-        // keyDiffuse -- `0x000646FC`-`0x00064788`, set+0x108.
-        HighlightSettings keyDiffuse;
-        keyDiffuse.brightness = 1.0;
-        keyDiffuse.opacity = one;
-        keyDiffuse.outsetOpacity = nil;
-        keyDiffuse.distance = sbv(16.0, 24.0, 24.0, 24.0);
-        keyDiffuse.minDistancePixels = flat(4.0);
-        keyDiffuse.inset = flat(0.0);
-        keyDiffuse.minInsetPixels = nil;
-        keyDiffuse.spread = flat(kPi / 3.0);
-        keyDiffuse.bias = 0.08;
-
-        // fillSharp -- `0x0006478C`-`0x00064854`, set+0x210. Same as keySharp
-        // except the cone, which is the narrower one.
-        HighlightSettings fillSharp = keySharp;
-        fillSharp.spread = flat(kPi / 3.0);
-
-        // dark -- `0x00064888`-`0x00064910`, set+0x420. The ONLY one of the six
-        // with an `outsetOpacity`, which is exactly the one that `0x000494F8`
-        // needs before it will consider drawing outside.
-        HighlightSettings dark;
-        dark.brightness = 0.0;
-        dark.opacity = B;
-        dark.outsetOpacity = C;
-        dark.distance = sbv(4.0, 6.0, 6.0, 6.0);
-        dark.minDistancePixels = one;
-        dark.inset = flat(0.0);
-        dark.minInsetPixels = nil;
-        dark.spread = sbv(kPi / 2.0, kPi / 2.0, kPi, kPi);
-        dark.bias = 0.2;
-
-        // `[BIN]` `fillDiffuse` is `FillHighlights? == nil` (`0x00033FA4` writes
-        // the byte 20) and `rim` is `HighlightSettings? == nil` (`0x00033DE4`
-        // writes 19), so slots 3 and 6 of `0x00030E88` are dropped by the filter
-        // at `0x00031384`. Five survive.
-        slots[0] = HighlightSlot{keySharp, 0.0, curvature, false};
-        slots[1] = HighlightSlot{keyDiffuse, 0.0, one, false};
-        slots[2] = HighlightSlot{fillSharp, kPi, curvature, false};
-        slots[3] = HighlightSlot{dark, kPi / 2.0, curvature, true};
-        slots[4] = HighlightSlot{dark, -kPi / 2.0, curvature, true};
-        built = true;
-    }
-    count = 5;
-    return slots;
-}
-
 }  // namespace
 
 double highlightSizeValue(const HighlightSizeValue& v, IconSizeClass sizeClass) {
@@ -124,7 +30,70 @@ double highlightSizeValue(const HighlightSizeValue& v, IconSizeClass sizeClass) 
     return v.slots[3 - (k < 0 ? 0 : (k > 3 ? 3 : k))];
 }
 
-const HighlightSlot* glyphHighlightSlots(std::size_t& count) { return buildGlyphSlots(count); }
+std::vector<HighlightSlot> expandHighlights(const HighlightsSet& set,
+                                            const HighlightSizeValue& highlightCurvature,
+                                            const HighlightSizeValue& darklightCurvature,
+                                            bool darkUsesHighlightCurvature) {
+    // `[BIN]` The literal the two DIFFUSE slots get instead of a parameter:
+    // `fmov v0.2d, #1.0` at `0x00030FD8` and `0x00031168`.
+    HighlightSizeValue one;
+    one.slots[0] = one.slots[1] = one.slots[2] = one.slots[3] = 1.0;
+
+    // `[BIN]` `0x00031010`-`0x0003106C` (and again at `0x000310D8`): nil first,
+    // then `matchKey` picks the key member over the payload, then the Optional
+    // of whichever was picked.
+    auto fill = [](const FillHighlights& f, const OptionalHighlight& key) {
+        if (f.kind == FillHighlightsKind::None) return OptionalHighlight{};
+        return f.kind == FillHighlightsKind::MatchKey ? key : f.custom;
+    };
+    const OptionalHighlight fillSharp = fill(set.fillSharp, set.keySharp);
+    const OptionalHighlight fillDiffuse = fill(set.fillDiffuse, set.keyDiffuse);
+    const HighlightSizeValue& dark =
+        darkUsesHighlightCurvature ? highlightCurvature : darklightCurvature;
+
+    std::vector<HighlightSlot> out;
+    out.reserve(7);
+    auto put = [&out](const OptionalHighlight& m, double angleFromKey,
+                      const HighlightSizeValue& curvature, bool isDarklight) {
+        // `[BIN]` `0x00031338`-`0x000313EC`: a slot whose member was nil is
+        // written empty and then left out of the array.
+        if (!m.present) return;
+        out.push_back(HighlightSlot{m.settings, angleFromKey, curvature, isDarklight});
+    };
+    put(set.keySharp, 0.0, highlightCurvature, false);
+    put(set.keyDiffuse, 0.0, one, false);
+    put(fillSharp, kPi, highlightCurvature, false);
+    put(fillDiffuse, kPi, one, false);
+    put(set.dark, kPi / 2.0, dark, true);
+    put(set.dark, -kPi / 2.0, dark, true);
+    put(set.rim, 0.0, highlightCurvature, false);
+    return out;
+}
+
+HighlightsSetKind glyphHighlightsSetFor(bool colourMode, ChicletAppearance iconBrightness,
+                                        bool effectiveClearModeIsNil) {
+    if (colourMode) {
+        // `[BIN]` `0x00062948`-`0x00062968`: `cbz` for 0, `cmp #1` for 1, and
+        // everything else is `glyphsDim`.
+        if (iconBrightness == ChicletAppearance::Default) return HighlightsSetKind::Default;
+        if (iconBrightness == ChicletAppearance::Bright) return HighlightsSetKind::Bright;
+        return HighlightsSetKind::Dim;
+    }
+    // `[BIN]` `0x000628A0`-`0x0006293C`. `x23` is `0x38C8` (`glyphsScreened`)
+    // and `x22` is `0x3298` (`glyphsClear`); the comparison is the effective
+    // clear mode against a freshly built nil one (`0x0004D0F0`).
+    return effectiveClearModeIsNil ? HighlightsSetKind::Screened : HighlightsSetKind::Clear;
+}
+
+const HighlightSlot* glyphHighlightSlots(std::size_t& count) {
+    // The table this function used to build by hand -- five slots, the fourth
+    // missing -- is gone: the list is the expansion of generation 27's
+    // `glyphsDefault`, six slots, built once in `RenderingParameters.cpp`.
+    const std::vector<HighlightSlot>& slots = expandedHighlights(
+        DesignGeneration::G27, HighlightFamily::Glyph, HighlightsSetKind::Default);
+    count = slots.size();
+    return slots.data();
+}
 
 GlassHighlightSettings resolveHighlight(const HighlightSlot& slot, const SpecularArguments& args) {
     const HighlightSettings& hs = slot.settings;
@@ -265,8 +234,25 @@ void spatialHighlight(GlassHighlightSettings& s, const SpatialHighlighting& p) {
     s.directionZ = 0.0;
 }
 
+double highlightCone(double spread, double bias) {
+    // `[BIN]` `fcvt s14, d0` at `0x0000EE24`: the cosine is narrowed to a float
+    // BEFORE it is compared with `-1.0f`, so a cone a hair short of pi -- whose
+    // double cosine is not yet `-1.0` -- takes this branch too. The value the
+    // band is lit with stays the double, as it always was here.
+    const double c = std::cos(spread);
+    const bool noCone = spread > kPi || (static_cast<float>(c) == -1.0f && bias == 1.0);
+    return noCone ? -1000.0 : c;
+}
+
 double glassHighlightFragment(const GlassHighlightSettings& s, double sd, double nx, double ny,
                               double fwidthSd) {
+    // `[BIN]` `0x0000EE1C`-`0x0000EF5C`: the cone reaches the shader as a
+    // COSINE, with `-1000` standing for "no cone at all".
+    return highlightFragment(s, highlightCone(s.spread, s.bias), false, sd, nx, ny, fwidthSd);
+}
+
+double highlightFragment(const GlassHighlightSettings& s, double cone, bool alwaysLit, double sd,
+                         double nx, double ny, double fwidthSd) {
     // `[BIN]` `glassHighlight_v1` line 48: the inset is subtracted from the
     // distance BEFORE the band, which is why `inset` is an anchor and not a
     // second thickness.
@@ -284,17 +270,17 @@ double glassHighlightFragment(const GlassHighlightSettings& s, double sd, double
     const double band = sat(d / w + 0.5) * sat((s.height - d) / w + 0.5);
     if (band <= 0.0) return 0.0;
 
+    // `[BIN]` `0x0000EF60`-`0x0000EF68`: `fcmp d13, #0.0` / `fcsel d1, 0, d12,
+    // mi` -- a band anchored outside the contour is handed a zero curvature.
+    const double curvature = s.inset < 0.0 ? 0.0 : s.curvature;
     const double k = sat((s.height - 1.0) * 0.5);
-    const double t = k * k * s.curvature * (3.0 - 2.0 * k);
+    const double t = k * k * curvature * (3.0 - 2.0 * k);
     const double shade = 1.0 + t * ((1.0 - sat(d / s.height)) - 1.0);
 
-    // `[BIN]` `0x0000EE3C`-`0x0000EF5C`: the cone reaches the shader as a
-    // COSINE, with `-1000` standing for "no cone at all".
-    const double cone = (s.spread > kPi) ? -1000.0 : std::cos(s.spread);
     // `[BIN]` `fneg s6`, `0x0000EF8C`: the y of the direction is negated on the
     // way in, so the light's `+y` is the image's `-y`.
     const double dot = s.directionX * nx + (-s.directionY) * ny;
-    const double lit = sat((dot - cone) / std::max(1.0 - cone, kEps));
+    const double lit = alwaysLit ? 1.0 : sat((dot - cone) / std::max(1.0 - cone, kEps));
 
     const double a = lit * shade;
     // `[BIN]` `bias' = 1/bias - 2`, `0x0000E9DC`-`0x0000E9EC`.
@@ -326,15 +312,13 @@ constexpr float kYcbcrToRgb709[4][5] = {
 }  // namespace
 
 const GlyphVCM& glyphHighlightVCM() {
-    // `[BIN]` `Highlights+0xB0`..`+0xD0`.
-    static const GlyphVCM v{0.2, 1.2, 1.25, 0.0, true};
-    return v;
+    // `[BIN]` `Highlights+0xB0`..`+0xD0`, the same in both generations.
+    return renderingParameters(DesignGeneration::G27).highlights.glyphHighlightVCM;
 }
 
 const GlyphVCM& glyphDarklightVCM() {
-    // `[BIN]` `Highlights+0xD8`..`+0xF8`.
-    static const GlyphVCM v{-0.15, 0.7, 1.25, 0.0, true};
-    return v;
+    // `[BIN]` `Highlights+0xD8`..`+0xF8`, the same in both generations.
+    return renderingParameters(DesignGeneration::G27).highlights.glyphDarklightVCM;
 }
 
 // THE LEG THAT WAS MISSING, READ -- `Docs/Laudos/2026-09-15-realce-vcm-fechado.md`
@@ -396,14 +380,19 @@ std::size_t drawSpecular(std::vector<float>& rgba, const FieldImage& field,
     const std::size_t n = static_cast<std::size_t>(field.width) * field.height;
     if (rgba.size() < n * 4) return 0;
 
-    std::size_t count = 0;
-    const HighlightSlot* slots = glyphHighlightSlots(count);
+    // The list of the generation and the set the caller selected, and the two
+    // matrices of that generation's block.
+    const std::vector<HighlightSlot>& list =
+        expandedHighlights(args.generation, HighlightFamily::Glyph, args.set);
+    const std::size_t count = list.size();
+    const HighlightSlot* slots = list.data();
+    const HighlightParameters& hp = renderingParameters(args.generation).highlights;
     // `[BIN]` The highlight draws are the ones the `shouldClampPlusLBlending`
     // gate covers -- see `SpecularArguments::clampPlusLighter`.
     BlendOptions blendOptions;
     blendOptions.clampPlusLighter = args.clampPlusLighter;
-    // Distinct pixels, not pixel-passes: five highlights over the same rim
-    // would otherwise report five times the area they cover.
+    // Distinct pixels, not pixel-passes: six highlights over the same rim
+    // would otherwise report six times the area they cover.
     std::vector<char> hit(n, 0);
 
     for (std::size_t s = 0; s < count; ++s) {
@@ -446,7 +435,8 @@ std::size_t drawSpecular(std::vector<float>& rgba, const FieldImage& field,
                     double straight[3];
                     for (int c = 0; c < 3; ++c) straight[c] = rgba[i + c] / a;
                     double lifted[3] = {straight[0], straight[1], straight[2]};
-                    applyGlyphVCM(slots[s].isDarklight ? glyphDarklightVCM() : glyphHighlightVCM(),
+                    applyGlyphVCM(slots[s].isDarklight ? hp.glyphDarklightVCM
+                                                       : hp.glyphHighlightVCM,
                                   lifted);
                     // `[INF]` `lerp(backdrop, VCM(backdrop), coverage)` with the
                     // backdrop's alpha kept. Where the backdrop is opaque this is
@@ -543,11 +533,32 @@ const char* specularDoesNotDrawNote() {
            "Docs/Laudos/2026-09-15-highlights.md); a nota de cada camada diz qual dos tres casos e";
 }
 
-const char* specularDrawnNote() {
-    return "especular desenhado: `[BIN]` CINCO realces do conjunto `glyphs*` de "
+const char* specularDrawnNote(DesignGeneration generation) {
+    if (generation == DesignGeneration::G26) {
+        return "especular desenhado (geracao 26): `[BIN]` DOIS realces do conjunto `glyphs*` que "
+               "0x76FC0 reescreve em ICRRenderingParameters.Highlights -- keySharp (brightness 1.0, "
+               "cone 3pi/5, bias 0.5) e o rim (cone 2pi, que a fronteira do shader le como `sem "
+               "cone`: um aro inteiro), os dois com a mesma distance e o mesmo inset por classe de "
+               "tamanho, e inset = max(inset, minInsetPixels x unidade de pixel) (0x4BF2C). "
+               "keyDiffuse e dark sao nil e os dois fills sao FillHighlights? == nil (o byte 0x15), "
+               "entao nao ha realce de preenchimento nem escuro. `[BIN]` O conjunto sai do seletor "
+               "0x627B4: em modo .color e iconBrightness que escolhe (Default, Bright, Dim -- e "
+               "glyphsBright NAO e glyphsDefault nesta geracao); fora dele, glyphsScreened, porque "
+               "clearMode e nil. `[BIN]` A COR E PINTADA, nao filtrada: glyphHighlightsUseVCM e "
+               "false (0x77820), e com clearMode nil o ramo de 0x491C0 e o simples (0x49570 -> "
+               "0xE834) -- sem camada, sem recorte e sem matriz de cor: a forma sai na cor do realce "
+               "a cobertura x opacidade, no modo de mescla do proprio realce (plusLighter, pela "
+               "tabela 0x978F4), sem grampo. A luz vem de defaultGlyphLight.longitude = -pi/4 "
+               "(0x771B8) e a curvatura do realce e [0.8, 0, 0, 0]: so a classe display curva. "
+               "`[OBS]` lightIntensity, a latitude e a pos-passagem espacial 0x12550 sao as da "
+               "geracao 27 (a nota dela diz por que sao identidades)";
+    }
+    return "especular desenhado: `[BIN]` SEIS realces do conjunto `glyphs*` de "
            "ICRRenderingParameters.Highlights (0x2008, 0x629 bytes, identico aos outros quatro "
-           "conjuntos de glifo nesta versao) -- keySharp (distance 4/6 pt, cone pi/2, bias 0.5), "
-           "keyDiffuse (16/24 pt, pi/3, 0.08), fillSharp a pi de distancia angular, e o `dark` "
+           "conjuntos de glifo nesta geracao) -- keySharp (distance 4/6 pt, cone pi/2, bias 0.5), "
+           "keyDiffuse (16/24 pt, pi/3, 0.08), fillSharp a pi de distancia angular, o keyDiffuse "
+           "de novo a pi (fillDiffuse e FillHighlights.matchKey, o byte 0x14 que 0x33FA4 escreve "
+           "e 0x33F04 le -- ate 01/10 lido como nil, e eram cinco), e o `dark` "
            "duas vezes a +-pi/2 com brightness 0 e portanto plusDarker. As tres identidades que "
            "este bloco tomava por fe foram MEDIDAS e as tres sao identidades de verdade: `[BIN]` "
            "ctx[0] (0x4C010) e GlobalConfiguration.lightIntensity, que vale 1.0; `[BIN]` a "
@@ -568,9 +579,9 @@ const char* specularDrawnNote() {
            "NOMEADOS pelo metadado AIR. So que os quatro sitios de troca (0x44654, 0x44908, "
            "0x4B57C, 0x4B7F4) vivem todos dentro de 0x435A0 e 0x4B4EC, e o desenho do especular "
            "do glifo (0x491C0-0x49DBC) nao chama nenhuma das duas: ele entrega o blendMode direto "
-           "ao drawShape:fill:alpha:blendMode: de 0x0000ED00. `[OBS]` Quais desenhos o grampo "
-           "cobre nao foi lido, entao ele esta transcrito em BlendFormula.h e DESLIGADO aqui -- "
-           "liga-lo sem saber move pixel por conta de quem mede, nao do alvo. "
+           "ao drawShape:fill:alpha:blendMode: de 0x0000ED00. `[BIN]` O desenho que o grampo "
+           "cobre e a imagem de um grupo de mescla plus-lighter (0x4B4EC), e so ele; o especular "
+           "soma sem grampo. "
            "`[BIN]` A COR E PINTADA COMO O ALVO PINTA: o realce NAO soma branco, ele FILTRA o "
            "que esta embaixo. Por realce o alvo faz save/beginLayer (0x4977C/0x49784), desenha o "
            "glassHighlight dentro da camada, fecha com clipLayerWithAlpha:1.0 mode:0 (0x497BC), "
@@ -579,7 +590,7 @@ const char* specularDrawnNote() {
            "BT.709 RGB->YCbCr de 0xE2960 (swift_once 0x6948, __const 0x938E0), os niveis "
            "Y <- (VCM[1]-VCM[0])*Y + VCM[0] (0x49A64), a croma Cb,Cr <- VCM[2]*c + (0.5-0.5*VCM[2]) "
            "(0x49B18) e a inversa de 0xE2910 (0x6988, 0x93920), com glyphHighlightVCM = "
-           "[0.2, 1.2, 1.25, 0.0, true] (Highlights+0xB0) nos tres claros e glyphDarklightVCM = "
+           "[0.2, 1.2, 1.25, 0.0, true] (Highlights+0xB0) nos quatro claros e glyphDarklightVCM = "
            "[-0.15, 0.7, 1.25, 0.0] (+0xD8) nos dois escuros; o ColorClamp do addStyle:9 e PULADO "
            "porque VCM[4] == 1. `[BIN]` E a matriz le o FUNDO: beginLayerWithFlags: (RenderBox "
            "0x3BCA0) passa o 1 intacto a Builder::begin_layer (0xC9A28), o Layer guarda-o em +0x44 "

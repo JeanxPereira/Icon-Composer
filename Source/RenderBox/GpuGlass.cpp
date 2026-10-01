@@ -5,6 +5,8 @@
 #include <cstring>
 
 #include "Source/RenderBox/BlurKernel.h"
+#include "Source/RenderBox/ChicletHighlights.h"
+#include "Source/RenderBox/RenderingParameters.h"
 
 namespace rb::gpu {
 namespace {
@@ -71,8 +73,10 @@ struct GlassMaskPush {
     float cb0, cb1;
     float boundsY, boundsH;
     float alphaFloor;
+    std::uint32_t kind;       // `OpacityMaskKind`: 1 e o gradiente da geracao 27
+    std::uint32_t segments;   // os segmentos da rampa dele
 };
-static_assert(sizeof(GlassMaskPush) == 48);
+static_assert(sizeof(GlassMaskPush) == 56);
 
 struct DisplacePush {
     float params[4];
@@ -92,6 +96,21 @@ struct RefractPush {
     float inv;
 };
 static_assert(sizeof(RefractPush) == 32);
+
+struct GlowPush {
+    double radius;
+    double biasAmount;
+    double alpha;
+    double maxDistance;
+    double edgeWidth;
+    double edgeWidthFlat;
+    double clip[4];
+    std::uint32_t w, h;
+    std::int32_t ox, oy;
+    std::uint32_t fw;
+    std::int32_t fx, fy;
+};
+static_assert(sizeof(GlowPush) == 112);
 
 struct HighlightPush {
     std::uint32_t w, h;
@@ -411,7 +430,8 @@ Result<void> blurLadderOn(Resident& r, const Slab& img, std::uint32_t width, std
 
 Result<ShadowBlur> shadowBlur(Resident& r, const Slab& art, std::uint32_t width,
                               std::uint32_t height, ShadowStyle style,
-                              const ShadowGeometry& geometry) {
+                              const ShadowGeometry& geometry,
+                              const ShadowParameters& parameters) {
     ShadowBlur out;
     const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * 16;
     const std::uint32_t gx = groups16(width), gy = groups16(height);
@@ -439,12 +459,13 @@ Result<ShadowBlur> shadowBlur(Resident& r, const Slab& art, std::uint32_t width,
     if (!img) return std::unexpected(img.error());
     ShadowPush p{};
     p.ringWidth = geometry.ringWidth ? *geometry.ringWidth : 0.0;
-    p.brightness = kShadow.vibrantBrightness;
+    p.brightness = parameters.vibrantBrightness;
     p.w = width;
     p.h = height;
     p.mode = 0;
     p.R = R;
-    p.colour = !shadowUsesVibrantTable(style) ? 0u : (kShadow.vibrantBrightness != 1.0 ? 1u : 2u);
+    p.colour =
+        !shadowUsesVibrantTable(style) ? 0u : (parameters.vibrantBrightness != 1.0 ? 1u : 2u);
     p.premultiply = out.blurred ? 1u : 0u;
     p.ow = width;
     p.oh = height;
@@ -491,26 +512,41 @@ Result<ResidentShadow> shadowPlace(Resident& r, const ShadowBlur& blur, const Sl
     }
     out.image = *made;
 
-    // `shadowOverdrawImage` devolve vazio quando `!(clipAlpha > 0)`.
-    if (overdrawAlpha > 0.0) {
-        auto od = r.acquire(bytes);
-        if (!od) return std::unexpected(od.error());
-        p.mode = 2;
-        p.k = static_cast<float>(overdrawAlpha);
-        if (auto ok = r.dispatch(r.shadow, {whole(*od), whole(*made), whole(art), whole(r.dummy())},
-                                 &p, gx, gy);
-            !ok) {
-            return std::unexpected(ok.error());
-        }
-        out.overdraw = *od;
-    }
+    auto od = shadowOverdraw(r, *made, art, width, height, overdrawAlpha, to);
+    if (!od) return std::unexpected(od.error());
+    out.overdraw = *od;
     return out;
+}
+
+Result<Slab> shadowOverdraw(Resident& r, const Slab& placed, const Slab& content,
+                            std::uint32_t width, std::uint32_t height, double overdrawAlpha,
+                            const ShadowOutput& to) {
+    // `shadowOverdrawImage` devolve vazio quando `!(clipAlpha > 0)`.
+    if (!(overdrawAlpha > 0.0)) return Slab{};
+    ShadowPush p{};
+    p.w = width;
+    p.h = height;
+    p.ow = to.width;
+    p.oh = to.height;
+    p.ox = to.x;
+    p.oy = to.y;
+    p.mode = 2;
+    p.k = static_cast<float>(overdrawAlpha);
+    auto od = r.acquire(static_cast<VkDeviceSize>(to.width) * to.height * 16);
+    if (!od) return std::unexpected(od.error());
+    if (auto ok = r.dispatch(r.shadow, {whole(*od), whole(placed), whole(content), whole(r.dummy())},
+                             &p, groups16(to.width), groups16(to.height));
+        !ok) {
+        return std::unexpected(ok.error());
+    }
+    return *od;
 }
 
 Result<ResidentShadow> shadow(Resident& r, const Slab& art, std::uint32_t width,
                               std::uint32_t height, ShadowStyle style,
-                              const ShadowGeometry& geometry, double overdrawAlpha) {
-    auto blur = shadowBlur(r, art, width, height, style, geometry);
+                              const ShadowGeometry& geometry, double overdrawAlpha,
+                              const ShadowParameters& parameters) {
+    auto blur = shadowBlur(r, art, width, height, style, geometry, parameters);
     if (!blur) return std::unexpected(blur.error());
     return shadowPlace(r, *blur, art, width, height, geometry, overdrawAlpha,
                        ShadowOutput{width, height, 0, 0});
@@ -537,7 +573,17 @@ Result<void> glassMask(Resident& r, const Slab& art, const Slab& field, std::uin
     p.boundsH = args.bounds[3];
     // O `alphaFloor` padrao de `opacityMaskMissedPixels`.
     p.alphaFloor = 0.5f;
-    return r.dispatch(r.glassMask, {whole(art), whole(field), whole(counters)}, &p,
+    p.kind = static_cast<std::uint32_t>(args.kind);
+    p.segments = args.rampSegments;
+    // A rampa do gradiente: os MESMOS floats que `gradientOpacityMask` le na
+    // CPU, um `vec4` de coeficientes por segmento. No ramo do shader nada a le.
+    Range ramp = whole(r.dummy());
+    if (args.kind == OpacityMaskKind::Gradient && args.rampSegments > 0) {
+        auto staged = r.stage(args.ramp, sizeof(float) * 4 * args.rampSegments);
+        if (!staged) return std::unexpected(staged.error());
+        ramp = *staged;
+    }
+    return r.dispatch(r.glassMask, {whole(art), whole(field), whole(counters), ramp}, &p,
                       groups16(width), groups16(height));
 }
 
@@ -587,23 +633,33 @@ bool highlightModeTranscribed(BlendMode m) {
 }
 
 bool resolveHighlights(const HighlightSlot* slots, std::size_t count,
-                       const SpecularArguments& args, std::vector<double>& records) {
+                       const SpecularArguments& args, std::vector<double>& records,
+                       bool chiclet) {
     records.clear();
     // `glassHighlightFragment` com `fwidth(sd) == 1`: a largura da banda.
     constexpr double kEps = 0.0009765625;
     constexpr double kBandWidth = 0.8330078125;
     const double band = std::min(std::max(1.0, kEps), 2.0) * kBandWidth;
-    constexpr double kPi = 3.14159265358979323846;
+    const HighlightParameters& hp = renderingParameters(args.generation).highlights;
     for (std::size_t s = 0; s < count; ++s) {
-        const GlassHighlightSettings g = resolveHighlight(slots[s], args);
+        const GlassHighlightSettings g =
+            chiclet ? resolveChicletHighlight(slots[s], args) : resolveHighlight(slots[s], args);
         if (g.opacity <= 0.0 || g.height <= 0.0) continue;
         if (!highlightModeTranscribed(g.blendMode)) return false;
-        const GlyphVCM& vcm = slots[s].isDarklight ? glyphDarklightVCM() : glyphHighlightVCM();
+        const GlyphVCM& vcm = slots[s].isDarklight ? hp.glyphDarklightVCM : hp.glyphHighlightVCM;
         double rec[kHighlightStride] = {};
         rec[0] = g.inset;
         rec[1] = g.height;
-        rec[2] = g.curvature;
-        rec[3] = (g.spread > kPi) ? -1000.0 : std::cos(g.spread);
+        // As duas reescritas da fronteira do shader, as de `glassHighlightFragment`:
+        // a curvatura zerada com `inset < 0` e o cone (`highlightCone`).
+        rec[2] = g.inset < 0.0 ? 0.0 : g.curvature;
+        rec[3] = highlightCone(g.spread, g.bias);
+        if (chiclet) {
+            // O termo angular do rasterizador da pastilha (`chicletHighlightFragment`).
+            const ChicletCone c = chicletHighlightCone(g.spread);
+            rec[3] = c.cone;
+            rec[16] = c.alwaysLit ? 1.0 : 0.0;
+        }
         rec[4] = g.directionX;
         rec[5] = g.directionY;
         rec[6] = 1.0 / g.bias - 2.0;
@@ -634,6 +690,29 @@ Result<void> highlights(Resident& r, const Slab& target, const Slab& field, std:
                     fieldView ? fieldView->x : 0, fieldView ? fieldView->y : 0};
     return r.dispatch(r.highlight, {whole(target), whole(field), whole(*staged), whole(counters)},
                       &p, groups16(width), groups16(height));
+}
+
+Result<void> glow(Resident& r, const Slab& target, const Slab& field, std::uint32_t width,
+                  std::uint32_t height, std::int32_t originX, std::int32_t originY,
+                  const GlowArguments& args, const SourceView* fieldView) {
+    static_assert(sizeof(GlowArguments) == 80, "a GlowArguments field is missing from the push");
+    GlowPush p{};
+    p.radius = args.radius;
+    p.biasAmount = args.biasAmount;
+    p.alpha = args.alpha;
+    p.maxDistance = args.maxDistance;
+    p.edgeWidth = args.edgeWidth;
+    p.edgeWidthFlat = args.edgeWidthFlat;
+    for (int k = 0; k < 4; ++k) p.clip[k] = args.clip[k];
+    p.w = width;
+    p.h = height;
+    p.ox = originX;
+    p.oy = originY;
+    p.fw = fieldView ? fieldView->width : width;
+    p.fx = fieldView ? fieldView->x : 0;
+    p.fy = fieldView ? fieldView->y : 0;
+    return r.dispatch(r.glow, {whole(target), whole(field)}, &p, groups16(width),
+                      groups16(height));
 }
 
 }  // namespace rb::gpu

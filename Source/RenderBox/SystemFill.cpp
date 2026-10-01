@@ -25,22 +25,24 @@ std::vector<RampStop> buildSystemRamp(double grey0, double grey1) {
 
 }  // namespace
 
-std::vector<RampStop> systemLightGradient() {
-    // `[BIN]` `0x5E8E8`, into `ICRRenderingParameters+0x80`. 255 and 245.
-    return buildSystemRamp(1.0, 0.9607843137254902);
+std::vector<RampStop> systemLightGradient(const SystemGradients& greys) {
+    // `[BIN]` `0x5E8E8`, into `ICRRenderingParameters+0x80`. 255 and 245 in
+    // generation 27 -- the default of `SystemGradients`.
+    return buildSystemRamp(greys.light[0], greys.light[1]);
 }
 
-std::vector<RampStop> systemDarkGradient() {
-    // `[BIN]` `0x5E908`, into `ICRRenderingParameters+0x88`. 31 and 15.
-    return buildSystemRamp(0.12156862745098039, 0.058823529411764705);
+std::vector<RampStop> systemDarkGradient(const SystemGradients& greys) {
+    // `[BIN]` `0x5E908`, into `ICRRenderingParameters+0x88`. 31 and 15 in
+    // generation 27.
+    return buildSystemRamp(greys.dark[0], greys.dark[1]);
 }
 
-std::vector<RampStop> systemGradient(SystemFill which) {
+std::vector<RampStop> systemGradient(SystemFill which, const SystemGradients& greys) {
     // `[BIN]` `0x3CF74`: the raw value is masked to a byte and compared with 1,
     // so the test is "is it dark", not "is it light". Written the same way
     // round, because a two-case enum tested the other way would silently take a
     // third value to the wrong arm.
-    return which == SystemFill::Dark ? systemDarkGradient() : systemLightGradient();
+    return which == SystemFill::Dark ? systemDarkGradient(greys) : systemLightGradient(greys);
 }
 
 std::vector<RampStop> rewriteStopOpacity(const std::vector<RampStop>& stops, double opacity) {
@@ -95,21 +97,22 @@ GradientAxis placeGradient(const std::optional<GradientPlacement>& placement,
     return axis;
 }
 
-std::optional<PlacementRect> systemFillRect(SystemFillRectSource source,
-                                            const PlacementRect& boundingRect) {
+PlacementRect systemFillRect(SystemFillRectSource source, const PlacementRect& boundingRect,
+                             const PlacementRect& canvas) {
     if (source == SystemFillRectSource::BoundingRect) return boundingRect;
-    // `[OBS]` The chiclet-aligned rect is origin (0,0) with a `CGSize` from the
-    // drawing context at `+0x48`, and which size that is was not read. There is
-    // no number to return, so none is returned.
-    return std::nullopt;
+    // `[BIN]` `0x1BAA0`-`0x1BAF4`: the origin is three zeroed registers, and
+    // the size is the context's -- the canvas (the header says how far that is
+    // read). The canvas's own origin is not consulted: the rect is `(0, 0)`.
+    return PlacementRect{0.0, 0.0, canvas.width, canvas.height};
 }
 
-ResolvedSystemFill resolveSystemFill(SystemFill which, double opacity) {
+ResolvedSystemFill resolveSystemFill(SystemFill which, double opacity,
+                                     const SystemGradients& greys) {
     // `[BIN]` `0x3CE80`, in the order the function performs it: pick the ramp
     // (`0x3CF7C`), rewrite the stops (`0x3CF98`), zero the placement region
     // (`0x3CFAC`), tag it (`0x3CFB8`).
     ResolvedSystemFill out;
-    out.stops = rewriteStopOpacity(systemGradient(which), opacity);
+    out.stops = rewriteStopOpacity(systemGradient(which, greys), opacity);
     out.placement = std::nullopt;
     return out;
 }

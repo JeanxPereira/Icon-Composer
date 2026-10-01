@@ -38,6 +38,7 @@ const char* kUsage =
     "  --no-validation     the Vulkan validation layer off (for timing)\n"
     "  --tile X,Y,W,H      a bundle rendered as that viewport of the canvas (deep-zoom timing)\n"
     "  --pan DX            with --tile and --repeat: render k moves the tile k*DX px right\n"
+    "  --generation 26|27  a bundle drawn with that design generation's parameters (default 27)\n"
     "\n"
     "Flat fills only. Whatever cannot be drawn is named on stderr.\n";
 
@@ -112,6 +113,7 @@ int main(int argc, char** argv) {
     int repeat = 1;
     rb::IconViewport viewport;
     int pan = 0;
+    rb::DesignGeneration generation = rb::DesignGeneration::G27;
     for (std::size_t i = 1; i < args.size(); ++i) {
         // As chaves sem valor.
         if (args[i] == "--gpu") {
@@ -152,6 +154,10 @@ int main(int argc, char** argv) {
                                         static_cast<std::uint32_t>(h)};
         } else if (key == "--pan") {
             pan = std::atoi(value.c_str());
+        } else if (key == "--generation") {
+            auto g = iccli::designGenerationFromString(value);
+            if (!g) return fail("--generation must be 26 or 27");
+            generation = *g;
         } else if (key == "--appearance") {
             auto a = icf::appearanceFromString(value);
             if (!a) return fail("unexpected value for --appearance: " + value);
@@ -191,7 +197,8 @@ int main(int argc, char** argv) {
         // no numero frio.
         if (warmup) {
             auto w = iccli::renderBundleIcon(*device, *bundle, options.width,
-                                             options.subdivisions, ctx, gpu, nullptr, viewport);
+                                             options.subdivisions, ctx, gpu, nullptr, viewport,
+                                             generation);
             if (!w) return fail(w.error());
         }
         rb::RenderCache cache;
@@ -209,7 +216,7 @@ int main(int argc, char** argv) {
             const Clock clock;
             icon = iccli::renderBundleIcon(*device, *bundle, options.width,
                                            options.subdivisions, ctx, gpu,
-                                           repeat > 1 ? &cache : nullptr, v);
+                                           repeat > 1 ? &cache : nullptr, v, generation);
             elapsed = clock.seconds();
             if (!icon) return fail(icon.error());
             if (repeat > 1) {
@@ -265,9 +272,6 @@ int main(int argc, char** argv) {
     for (const auto& s : image->skipped) {
         std::fprintf(stderr, "  shape %zu (%s): %s\n", s.index, s.element.c_str(),
                      s.why.c_str());
-    }
-    for (std::size_t i : image->unconvertedP3) {
-        std::fprintf(stderr, "  shape %zu: display-p3 desenhado SEM conversao de espaco\n", i);
     }
     for (const auto& e : doc->unsupported()) {
         std::fprintf(stderr, "  elemento nao desenhado: %s\n", e.c_str());

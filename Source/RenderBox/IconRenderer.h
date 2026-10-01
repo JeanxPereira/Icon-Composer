@@ -59,11 +59,13 @@
 // the target and therefore a different pixel, so the background's axis comes
 // from `resolveBackgroundFill`, which passes the nil as a literal.
 //
-// THREE THINGS DRAWN WITHOUT BEING READ, AND THEY SAY SO IN `notes`
-// ------------------------------------------------------------------
-// `kChicletRectNote`, `kGradientAxisDirectionNote` and `kBackgroundShapeNote`.
-// Each names a gap that changes the pixels; none of them is a reason to refuse
-// to draw, and none of them is allowed to be silent.
+// TWO THINGS DRAWN WITHOUT BEING READ, AND THEY SAY SO IN `notes`
+// ----------------------------------------------------------------
+// `kGradientAxisDirectionNote` and `kBackgroundShapeNote`. Each names a gap
+// that changes the pixels; neither is a reason to refuse to draw, and neither
+// is allowed to be silent. (There were three until 2026-10-01: the rect a
+// system fill is placed against was read, and `kChicletRectNote` went with the
+// gap it named -- `SystemFill.h`.)
 //
 // AND THE GLASS, SINCE 2026-09-02
 // -------------------------------
@@ -86,6 +88,23 @@
 // clips the shadow (present by default, and its geometry unread) and the second
 // overdraw composite. Unlike the translucency mask, this one runs on raster art
 // too -- it needs the art's alpha and not a contour.
+//
+// AND THE GROUP, SINCE 2026-10-01
+// -------------------------------
+// The two blocks above describe the glass as a LAYER's, which is how it was
+// first drawn. `[BIN]` In the target it is a GROUP's: `FinalizedIcon.Layer` -- a
+// document group -- carries ONE image, ONE SDF and ONE shadow image, and its
+// compositor has no element loop. So `renderIcon` now flattens a group's layers
+// into one image, each layer's opacity and blend meeting only the layers of its
+// own group; stacks the glass layers' fields into one; and then puts the group
+// on the picture once -- the refraction, the shadow (cast from the art BEFORE
+// the translucency), the mask over the whole image, the image under the group's
+// own `opacity` and `blend-mode`, the shadow's overdraw, the highlights. A
+// group's `hidden` and `opacity`, which nothing read, are read, and so is its
+// `lighting`: it picks whether the one field is the elements' fields stacked or
+// the field of their union. A group of one layer keeps the arithmetic it had
+// wherever the target's is the same. `IconRenderer.cpp` carries the addresses
+// step by step.
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -97,6 +116,7 @@
 #include "Source/RenderBox/GlassTranslucency.h"
 #include "Source/RenderBox/PixelGrid.h"
 #include "Source/RenderBox/RenderCache.h"
+#include "Source/RenderBox/RenderingParameters.h"
 #include "Source/RenderBox/SvgRenderer.h"
 #include "Source/RenderBox/SystemFill.h"
 
@@ -124,19 +144,30 @@ struct IconRenderOptions {
     icf::Context context;
     int subdivisions = 16;
 
-    // Which of `SizeBasedValue`'s four slots `glyphTranslucency.strength` is read
-    // from (`GlassTranslucency.h`).
+    // WHICH PARAMETER BLOCK THE ICON IS DRAWN WITH (`DesignGeneration.h`,
+    // `RenderingParameters.h`). 27 is the target's unmutated default and what
+    // this renderer has always drawn; 26 is the block Apple's own editor draws
+    // with. It is an option of the render and not a key of the document, which
+    // is where the target keeps it too.
+    DesignGeneration generation = DesignGeneration::G27;
+
+    // Which of a `SizeBasedValue`'s four slots every per-size parameter is read
+    // from: the highlights' opacity, distance and inset, the shadow's tables,
+    // `glyphTranslucency.strength`.
     //
-    // `[OBS]` It is an option because the origin of the byte the target switches
-    // on -- `self+0x469F`, read at `0x0000FDA0` -- was NOT located (laudo §7.2).
-    // What the byte means is read; who writes it is not, so this renderer does
-    // not invent a mapping from `size` onto it.
+    // `[BIN]` The byte the target switches on is `ctx+0x469F`, and its writer is
+    // read: `0x42D54`-`0x42DE4` classifies `min(width, height)` of the icon's
+    // rect IN POINTS against `ICRRenderingParameters.thresholds`
+    // (`sizeClassFor`, `RenderingParameters.h`). That rect is where the icon
+    // lands on screen, which a render asked for by pixel size does not know --
+    // so the class stays the caller's to give.
     //
-    // `[BIN]` It costs nothing today: the aggregate initialiser writes 1.0 into
-    // all four slots, so every choice gives the same pixel. It is here so that
-    // the inversion `slots[3 - sizeClass]` has something to be exercised with
-    // the day a parameter file differentiates the classes.
-    IconSizeClass sizeClass = IconSizeClass::Large;
+    // `[INF]` UNSET is `sizeClassFor(kReferenceIconSidePoints, thresholds)`:
+    // the 206 pt rect of the one reference picture this project has. That is
+    // `large` under generation 27 (256) -- the default this field had while it
+    // was a plain value -- and `display` under generation 26 (128).
+    // `effectiveSizeClass` is that rule.
+    std::optional<IconSizeClass> sizeClass;
 
     IconViewport viewport;
 
@@ -146,7 +177,9 @@ struct IconRenderOptions {
     // com alfa 1 e o alfa dela como `saturation`. O que ISTO muda no render e a
     // sombra: `[BIN]` 0x49F40 forca `neutral` em todo modo que nao e `.color`
     // (`shadowEffectiveStyle`). A recoloracao dos pixels e `applyTintedDark`,
-    // aplicada por quem pede o render sobre a imagem pronta.
+    // aplicada por quem pede o render sobre a imagem pronta -- na geracao 27; na
+    // 26 o proprio render a aplica, antes dos realces do chiclet, e avisa em
+    // `RenderedIcon::tintApplied`.
     struct TintRecolour {
         double r = 1.0, g = 1.0, b = 1.0;
         double saturation = 1.0;
@@ -157,7 +190,21 @@ struct IconRenderOptions {
     // A MASCARA do Clear em vez do icone: cada camada de conteudo entra pela
     // matriz do conteudo (`IconSurface::blendArt`); o resto (sombra, especular,
     // realces do chiclet) entra cru, como no alvo. `applyClear` le o resultado.
+    // `[BIN]` So numa geracao que TEM um modo Clear: na 26 `clearMode` e nil
+    // (`0x77064`) e o render sai o do icone -- `RenderedIcon::clearMask` diz
+    // qual dos dois veio.
     bool clearMask = false;
+
+    // `[OBS]` THE SECOND GATE OF THE PLUS-LIGHTER CLAMP, which is not read. The
+    // target hands a plus-lighter group's image to the `clampedPlusL` blend
+    // shader when `shouldClampPlusLBlending` is set AND the byte at `ctx+0x528`
+    // is 1 (`0x4B538`-`0x4B54C`). The flag is the generation's
+    // (`RenderingParameters.h`); the byte is a `Bool` of the drawing context
+    // whose writer was not found (`BlendFormula.h`). This is that byte. `false`
+    // keeps the composite the plain sum it has always been here; a caller that
+    // comes to know the target's value can say so without touching the
+    // renderer. It only matters under generation 27 -- 26 clears the flag.
+    bool drawingContextClampsPlusLighter = false;
 
     // What one render leaves for the next (`RenderCache.h`). Null is the
     // render with no memory, step for step the one before the cache existed;
@@ -165,6 +212,11 @@ struct IconRenderOptions {
     // `Tests/test_render_cache.cpp` holds it to that.
     RenderCache* cache = nullptr;
 };
+
+// The size class a render runs with: the caller's, or -- unset -- the class of
+// the reference rect under the generation's thresholds (see
+// `IconRenderOptions::sizeClass`).
+IconSizeClass effectiveSizeClass(const IconRenderOptions& options);
 
 // A layer that was not drawn, and why. Named, never dropped in silence.
 struct SkippedLayer {
@@ -211,12 +263,28 @@ struct RenderedIcon {
     // into those numbers would break that arithmetic and, worse, would make a
     // document with one layer and a background read as two layers.
     bool backgroundPainted = false;
+    // Whether `rgba` is the Clear MASK -- lightening in red, darkening in the
+    // complement of green, highlights in blue -- and not a picture. True when
+    // the options asked for the mask AND the generation has a clear mode;
+    // `finishMono` runs `applyClear` only over a mask.
+    bool clearMask = false;
+    // Whether the tinted-dark recolouring is ALREADY in `rgba`. It is when the
+    // generation draws the chiclet's highlights outside the tinted layer (26):
+    // the recolouring then ran inside the render, under the highlights, and
+    // `finishMono` must not run `applyTintedDark` over it again.
+    bool tintApplied = false;
     // Non-empty when the root `fill` is present and could not be turned into
     // paint. `[ART]` All 145 corpus documents carry a root `fill`, so an empty
     // `backgroundGap` with `backgroundPainted == false` means the document
     // named none -- which no corpus document does.
     std::string backgroundGap;
 
+    // THE FIVE GLASS COUNTERS BELOW COUNT GROUPS, since 2026-10-01: each effect
+    // runs once per group (`[BIN]` `IconRendering` `0x48B74`), so a group of
+    // three glass layers adds one to each and three to `drawn`. Their comments
+    // still say "layers", which is what they counted while every layer ran the
+    // effects on its own; read "groups".
+    //
     // Layers whose art was multiplied by the `simplifiedShapeAwareGradientMask`
     // that `translucency` opens. Counted apart from `drawn` for the same reason
     // `glassRefracted` is: a group whose `translucency` is absent, zero or
@@ -235,7 +303,7 @@ struct RenderedIcon {
     // apart from `drawn` for the fourth time and the fourth version of the same
     // reason: a layer can ask for a specular and get none, either because its
     // art is a raster with no contour to build a field from, or because every
-    // one of the five resolved highlights came out at zero opacity. "Asked and
+    // one of the resolved highlights came out at zero opacity. "Asked and
     // got nothing" must not read as "asked and got something".
     std::size_t glassSpecular = 0;
 
@@ -256,6 +324,12 @@ struct RenderedIcon {
     // with a shadow and no translucency draws one pass and not two, and that is
     // the document's answer rather than a missing renderer.
     std::size_t glassShadowOverdrawn = 0;
+
+    // Groups over which the inner glow of generation 26 was drawn
+    // (`GlassGlow.h`). Always zero in generation 27, whose `Glow` is nil; in 26,
+    // the groups with a specular -- the glow rides the field the highlights
+    // give a reach to.
+    std::size_t glassGlowed = 0;
 };
 
 // TINTED DARK, sobre a imagem pronta (straight RGBA). `[BIN]` O alvo desenha o
@@ -270,8 +344,12 @@ struct RenderedIcon {
 //      `hi = mix(branco, tint, tint.a)`. Com `f = darkTintDuotoneShadowBlendFactor
 //      = 0` e `tint.a = 1` (os padroes) isso e `lo = preto`, `hi = tint`.
 //
-// Os realces do chiclet entram na mesma camada (`darkTintHighlightsBlendWithContent
-// = true`), entao aplicar na imagem final e o mesmo que aplicar na camada. Com
+// Na geracao 27 os realces do chiclet entram na mesma camada
+// (`darkTintHighlightsBlendWithContent = true`, `0x483D4`-`0x483E0`), entao
+// aplicar na imagem final e o mesmo que aplicar na camada. Na geracao 26 NAO
+// entram -- o corpo dela fecha a camada antes de chamar `0x475A0` (`0x4332C`,
+// `0x43338`) --, e ai a recoloracao roda dentro do render, entre o conteudo e os
+// realces (`RenderedIcon::tintApplied`), e esta funcao nao e chamada. Com
 // `lo = preto` a operacao e linear e sem deslocamento: vale igual em cor
 // pre-multiplicada ou nao. `[OBS]` se o RenderBox aplica em espaco linear ou
 // codificado nao foi lido; aqui e no espaco da imagem. A composicao do alvo
@@ -367,6 +445,11 @@ PathGlobals placeOnCanvas(const icf::svg::ViewBox& box, const LayerPlacement& p,
 PlacementRect artPlacementRect(const icf::svg::ViewBox& box, const LayerPlacement& p,
                                std::uint32_t size);
 
+// A caixa do que a arte DESENHA, no canvas e recortada nele -- o retangulo em
+// que a rampa da translucidez e medida (a leitura esta em IconRenderer.cpp).
+PlacementRect artContentRect(const icf::svg::SvgDocument& svg, const LayerPlacement& p,
+                             std::uint32_t size);
+
 // O mesmo para arte RASTER: a caixa em que `placeRaster` larga a imagem, em
 // pixels do alvo. A aritmética é a de `artPlacementRect` com a largura e a
 // altura da imagem no lugar da extensão do `viewBox` -- ver a nota junto da
@@ -390,8 +473,14 @@ PlacementRect rasterPlacementRect(std::uint32_t imgW, std::uint32_t imgH, const 
 // Exposed so the whole corpus can be swept through it with no GPU: the
 // interesting failures of this function are arithmetic, and a sweep that needed
 // a device would not run in the places that most need it.
-FillOverride fillPaint(const ResolvedFill& fill, const PlacementRect& shapeRect,
-                       std::string& why);
+//
+// `params` is the generation's block: an `automatic-gradient` is derived with
+// its six constants and a `.system` fill takes its two ramps from it. The
+// default is generation 27, for the callers that sweep the corpus's fills
+// without a render.
+FillOverride fillPaint(
+    const ResolvedFill& fill, const PlacementRect& shapeRect, std::string& why,
+    const RenderingParameters& params = renderingParameters(DesignGeneration::G27));
 
 // ---- what is drawn without having been read ------------------------------
 //
@@ -399,16 +488,6 @@ FillOverride fillPaint(const ResolvedFill& fill, const PlacementRect& shapeRect,
 // `glassRulerNote` does. They are not skip reasons: the pixel IS drawn. They
 // exist because a gap that changes the picture and is not said out loud becomes
 // folklore the moment the picture looks plausible.
-
-// `[BIN]` `ICRRenderingParameters+0x360` --
-// `supportsChicletAlignmentForSystemFills`, written `1` by the default
-// initialiser -- makes a `.system` fill's rect origin `(0,0)` with a `CGSize`
-// from the drawing context instead of the shape's bounding rect.
-// `[OBS]` Whether that size is the canvas, the chiclet or the full-bleed frame
-// was NOT read, and `SystemFill::systemFillRect` answers `nullopt` for it on
-// purpose. So this renderer draws on the bounding rect -- the branch the target
-// takes when alignment is off -- and says so here.
-extern const char* const kChicletRectNote;
 
 // `[OBS]` The default axis is `(0,0)->(0,1)` and that is read. Which END of the
 // shape receives the first stop is not: the y-handedness of the RB display list
@@ -434,14 +513,18 @@ extern const char* const kBackgroundShapeNote;
 // guessed in either direction.
 extern const char* const kRasterFillNote;
 
-// `[OBS]` display-p3 components drawn without a conversion matrix, the same gap
-// `RenderedImage::unconvertedP3` reports for a shape's own paint.
-extern const char* const kBackgroundP3Note;
-
-// The two things the translucency mask is drawn WITHOUT having read, said out
-// loud every time it draws: the rect its vertical ramp is measured in, and which
-// end of that rect the ramp starts at.
+// What the translucency mask is, said out loud every time it draws: which of
+// the target's two branches each generation takes (both transcribed), and the
+// two things under it that are not read -- the rect its vertical ramp is
+// measured in, for a raster, and which end of that rect the ramp starts at.
 extern const char* const kTranslucencyBoundsNote;
+// A render asked for the Clear mask under a generation whose `clearMode` is nil
+// (26): what is drawn instead, and what of the target's rendition is not.
+extern const char* const kClearModeNilNote;
+// A group blended plus-lighter under a generation whose
+// `shouldClampPlusLBlending` is set, drawn WITHOUT the clamp because the second
+// gate (`IconRenderOptions::drawingContextClampsPlusLighter`) is not read.
+extern const char* const kPlusLighterClampNote;
 
 // A glass layer whose art is a RASTER, whose distance field was therefore built
 // from the art's own alpha rather than from a flattened contour.
@@ -462,6 +545,34 @@ extern const char* const kGlassRasterFieldNote;
 // distance and the continuous gradient direction. The laudo measures what that
 // costs in the picture.
 extern const char* const kGlassVectorFieldNote;
+
+// A group with MORE THAN ONE glass element lit one by one (`lighting`
+// `individual`, which is also what a missing key means): its field is the
+// elements' fields stacked back to front, the upper one replacing the lower
+// inside its own dilated footprint (`DistanceField.h`, part four). The stack's
+// parameters and both of its fragments are read; that the upper field REPLACES
+// the lower one is the inference under them, and the note says what it shows as.
+// It fires only when a stack is actually made.
+extern const char* const kFieldStackNote;
+
+// A group with more than one glass element lit as ONE shape (`lighting`
+// `combined`): its field is the field of the union of their silhouettes, so no
+// rim is drawn where two of them meet. The mode and its one-list construction
+// are read; the silhouette's COVERAGE is this project's (sampled on the CPU so
+// both render paths agree), and the note says so. It fires when the union's
+// field is actually built.
+extern const char* const kCombinedFieldNote;
+
+// `[BIN]` The same mode's quirk, said only when it bites: glass elements that
+// come after the first RASTER one are not drawn into the union. That is the
+// target's own short-circuit and it is reproduced, not corrected.
+extern const char* const kCombinedRasterNote;
+
+// `[OBS]` A glass layer at zero opacity, which this renderer drops whole and the
+// target does not: there it is left out of the group's image and still draws
+// its silhouette into the group's field. Said only for a document that has one
+// in a group whose field is used.
+extern const char* const kInvisibleGlassNote;
 
 Result<RenderedIcon> renderIcon(Device& device, const icf::IconBundle& bundle,
                                 IconRenderOptions options = IconRenderOptions{});

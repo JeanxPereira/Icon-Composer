@@ -37,22 +37,23 @@ std::int64_t alignDown(std::int64_t v, std::uint32_t a) { return v - (v % a); }
 }  // namespace
 
 DocumentReach documentReach(const icf::IconDocument& doc, const icf::Context& ctx,
-                            IconSizeClass sizeClass) {
+                            IconSizeClass sizeClass, const RenderingParameters& params) {
     DocumentReach r;
     // A pastilha primeiro, porque ela nao depende de grupo nenhum -- ela e
     // desenhada sempre que o fundo pinta, e o campo dela e lido ate
     // `inset + height`.
     r.localPoints = kChicletHighlightBandPoints;
-    const ShadowGeometry unit = shadowGeometry(static_cast<std::uint32_t>(kCanvasPoints), sizeClass);
+    const ShadowGeometry unit = shadowGeometry(static_cast<std::uint32_t>(kCanvasPoints),
+                                               sizeClass, params.shadow, params.glass);
     const std::vector<icf::Group> groups = doc.groups();
     for (const icf::Group& group : groups) {
         const std::optional<GlassMaterialDocument> m = readGlassMaterial(group, ctx);
         if (!m) continue;
-        const DenormalisedGlass g = denormaliseGlass(glassMaterialFrom(*m));
+        const DenormalisedGlass g = denormaliseGlass(glassMaterialFrom(*m), params.glass);
         // Conservador: `layerOpacity == 1` e todo grupo tratado como vidro. Uma
         // margem larga demais so custa area; uma curta custa o invariante.
         const ShadowInputs in{g.shadowStyle, g.shadowOpacity, 1.0, sizeClass};
-        if (shadowDraws(in)) {
+        if (shadowDraws(in, params.shadow)) {
             r.shadowSigmaPoints = std::max(r.shadowSigmaPoints,
                                            unit.blurRadius * kShadowBlurSigmaPerRadius);
             r.shadowShiftPoints = std::max(

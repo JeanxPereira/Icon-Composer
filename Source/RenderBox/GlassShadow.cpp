@@ -99,9 +99,11 @@ constexpr double kEdtInf = 1e20;
 }  // namespace
 
 const char* const kShadowRingNote =
-    "sombra: o anel de Shadow.ringWidth ([16,16,16,16], 0x5EC58) E aplicado -- a banda do "
-    "addAlphaThresholdFilter de 0x11D64 colapsa em clamp(profundidade / (ringWidth x escala)) "
-    "a partir da propria silhueta, com o maxDistance do SDF se cancelando. O que NAO foi lido e "
+    "sombra: o anel de Shadow.ringWidth ([16,16,16,16], 0x5EC58) E aplicado, e e um ANEL: a "
+    "banda do addAlphaThresholdFilter de 0x11D64 chega ao fragment alpha_effect com maxAlpha "
+    "finito, e essa variante (bits 9-11 do estado zerados, default_mod66.ll %46-%61) devolve "
+    "a - a*b -- um da silhueta ate ringWidth x escala para dentro, zero mais fundo e zero fora, "
+    "com o maxDistance do SDF se cancelando. O que NAO foi lido e "
     "o CAMPO DE DISTANCIA que essa banda amostra: o alvo le um SDF gerado por "
     "sdfTextureWithBufferAllocator: num TXRTexture, que nao esta nem no IconRendering nem no "
     "RenderBox deste dump. Aqui a distancia e uma transformada euclidiana exata sobre o contorno "
@@ -116,10 +118,25 @@ const char* const kShadowOverdrawNote =
     "desenha na camada de recorte com 0x4B4EC -- a mesma funcao que a passagem de conteudo "
     "termina chamando (0x4AF20 -> 0x4B3EC) -- fechada por clipLayerWithAlpha:mode:0 em "
     "0x45FF4/0x4AEA8 com alpha = clamp01(translucency/0.3) x max<Neutral|Vibrant>"
-    "OverdrawOpacity[3-c] (0x45F18-0x45F94). O que NAO foi lido e o PORTAO: 0x45F10 exige que o "
-    "byte [descritor+0x31] (FinalizedIcon.Layer.blendMode) seja ZERO, e 0x4B518 despacha esse "
-    "mesmo byte contra #8; aqui a passagem abre sempre que a aritmetica a abre, porque nenhuma "
-    "chave de documento escolhe esse byte.";
+    "OverdrawOpacity[3-c] (0x45F18-0x45F94). `[BIN]` O PORTAO foi lido e e aplicado: 0x45F10 e "
+    "0x4ADBC exigem que o byte [descritor+0x31] seja ZERO, e esse byte e "
+    "FinalizedIcon.Layer.blendMode -- a mescla do GRUPO, copiada em 0x19934-0x19940 --, entao a "
+    "passagem so abre num grupo de mescla normal; o recorte e o proprio desenho do conteudo e "
+    "por isso carrega a opacidade do elemento e a do grupo. O que NAO foi lido: `[INF]` que o "
+    "float do clipLayerWithAlpha: multiplica a COBERTURA, e `[OBS]` se a mascara de "
+    "translucidez, sob a qual a passagem roda (0x4ACB4-0x4AD88), alcanca a sombra uma vez -- "
+    "como aqui, pelo alfa do conteudo -- ou duas.";
+
+const char* const kShadowSourceNote =
+    "sombra: a FONTE nao e a do alvo neste grupo. `[BIN]` O alvo lanca a sombra de uma lista "
+    "propria (0x1C0DC): os elementos de vidro do grupo -- ou todos, quando Shadow.ringWidth e "
+    "nil (0x18338-0x18354) -- com a opacidade e a mescla de cada um. Uma coisa dela nao e "
+    "reproduzida aqui: o anel e recortado do SDF do grupo, cujas silhuetas saem com opacidade 1 "
+    "(0x1CB90), enquanto aqui ele sai do contorno alpha >= 0.5 da propria fonte -- o mesmo com "
+    "um elemento so, e outro quando a fonte e o achatado de varios e um deles e translucido. "
+    "(Shadow.ignoreFillOpacity, que reescreve para 1.0 o alfa de todo fill nessa lista -- "
+    "0x1C260, 0x1C3E8-0x1C430 --, e reproduzido: a arte de fill translucido e desenhada uma "
+    "segunda vez, opaca, so para a sombra.)";
 
 bool shadowUsesVibrantTable(ShadowStyle style) {
     // `automatic` and `vibrant` both fall into `w8 = 0` at `0x4A254`/`0x4A260`.
@@ -246,7 +263,20 @@ bool shadowRingEach(const std::vector<float>& art, std::uint32_t width, std::uin
             dist = std::min(dist, static_cast<double>(w - x));
             dist = std::min(dist, static_cast<double>(h - y));
             const double depth = dist - 0.5;   // centres to contour
-            put(t, static_cast<float>(std::clamp(depth / ringWidth, 0.0, 1.0)));
+            // THE BAND, AND IT COMES BACK DOWN. `[BIN]` The filter's fragment
+            // (`alpha_effect`, RenderBox `default_mod66.ll` %46-%61) computes
+            // `a = saturate(t / fwidth + 0.5)` and, in the variant whose state
+            // bits 9-11 are clear, `b = saturate((t - 1) / fwidth + 0.5)` and
+            // returns `a - a * b`: one for `0 <= t <= 1`, zero on BOTH sides,
+            // antialiased over a pixel. `t` is `depth / ringWidth`, so in pixels
+            // `a` is one on every texel this loop reaches and `b` rises across
+            // the pixel at `depth == ringWidth`. The single-step variant (bit 9)
+            // is chosen only when `maxAlpha` is +infinity (RenderBox `0x8952C`-
+            // `0x89548`), and `0x11D08`-`0x11D64` hands a finite one.
+            //
+            // `[OBS]` `fwidth` is `|ddx| + |ddy|`, which runs from 1 to sqrt(2)
+            // pixels with the direction of the outline; here it is 1.
+            put(t, static_cast<float>(1.0 - std::clamp(depth - ringWidth + 0.5, 0.0, 1.0)));
         }
     }
     });

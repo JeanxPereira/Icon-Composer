@@ -23,6 +23,9 @@ layout(push_constant) uniform Push {
     // (0, 0) do alvo cai nela.
     uint sw;
     int sx, sy;
+    // 1: com `mode == 8` (plus-lighter) o composite e o `clampedPlusL` no lugar
+    // da soma -- so a imagem de um grupo o pede (IconRenderer.cpp diz por que).
+    uint clampPlus;
 } p;
 
 #include "BlendFormula.glsl"
@@ -43,6 +46,10 @@ void main() {
         if (a <= 0.0) return;
         float inv = 1.0 - a;
         dst[i] = vec4(s.rgb * a + d.rgb * inv, a + d.a * inv);
+        return;
+    }
+    if (p.clampPlus != 0u && p.mode == 8u) {
+        dst[i] = rbClampedPlusL(vec4(s.rgb * a, a), d);
         return;
     }
     dst[i] = rbBlend(p.mode, vec4(s.rgb * a, a), d);

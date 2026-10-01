@@ -62,10 +62,11 @@ struct BlendColour {
 // leaving it false, and gets the unclamped number.
 //
 // `clampPlusLighter` is a THIRD case, and the difference matters: the flag it
-// carries IS read and IS `true`, but what it reaches is narrower than "every
-// plus-lighter composite". So it defaults to `false` here and the one caller
-// that can prove it is inside that set turns it on. `clampedPlusL()` below has
-// the formula AND the boundary.
+// carries IS read and IS `true` in generation 27, but what it reaches is
+// narrower than "every plus-lighter composite" -- one draw, the image of a group
+// -- and it has a second gate that is not read. So it defaults to `false` here
+// and the one caller inside that set passes it. `clampedPlusL()` below has the
+// formula AND the boundary.
 struct BlendOptions {
     bool extendedColor = false;
     bool clampPlusLighter = false;
@@ -138,14 +139,40 @@ bool blendIsTranscribed(BlendMode mode);
 // `+0x230` is the `thresholds` the shadow front read. Four consecutive fields
 // in declaration order, two of them read by other fronts on other days.
 //
-// WHICH COMPOSITES THIS REACHES -- AND WHY NOTHING HERE IS WIRED TO IT
-// ---------------------------------------------------------------------
-// `[OBS]` **THE CONSUMER SET IS NOT READ, AND THAT IS WHY THE DEFAULT ABOVE IS
-// `false`.** Both gates read the blend mode out of a DRAW DESCRIPTOR
-// (`ldrb w24, [x0, #0x31]`, `0x0004B518`), and the substitution happens in
-// exactly four places -- `0x00044654` and `0x00044908` inside `0x000435A0`, and
-// `0x0004B57C` and `0x0004B7F4` inside `0x0004B4EC`. Who builds a descriptor
-// that reaches them was not followed to the end.
+// WHICH COMPOSITES THIS REACHES -- AND THE GATE THAT KEEPS IT OFF
+// ----------------------------------------------------------------
+// `[BIN]` **THE CONSUMER SET IS READ, AS OF 2026-10-01, AND IT IS ONE DRAW.**
+// Both gates read the blend mode out of a draw descriptor (`ldrb w24, [x0,
+// #0x31]`, `0x0004B518`), and the substitution happens in exactly four places
+// -- `0x00044654` and `0x00044908` inside `0x000435A0`, and `0x0004B57C` and
+// `0x0004B7F4` inside `0x0004B4EC`. The descriptor is a `FinalizedIcon.Layer`
+// -- `+0x31` its `blendMode`, the document GROUP's (`GlassShadow.h`) -- and
+// `0x4B4EC` is the draw of that group's flattened image (`drawShape:fill:alpha:
+// blendMode:` with `[+0x38]` and `[+0x31]`); the two sites in `0x435A0` are the
+// same draw written inline. So the clamp reaches the image of a group whose
+// blend is plus-lighter, and nothing else: an ELEMENT's plus-lighter is applied
+// inside the group's image by the finaliser (`0x1AD9C`/`0x1B448`), on another
+// path, where no such gate was read.
+//
+// `[OBS]` **AND IT HAS A SECOND GATE, WHICH IS NOT READ.** Right after the flag,
+// both sites test one more byte:
+//
+//     ldrb w8, [x20, #0x528]    ; 0x4B544
+//     cmp  w8, #1
+//     b.ne <plain path>
+//
+// `ctx+0x520`..`+0x538` is the drawing context's tuple -- the display list at
+// `+0x520`, this `Bool` at `+0x528`, the fill and the shape at `+0x530` and
+// `+0x538` -- and the content wrappers copy the byte along when they build a
+// fresh tuple (`0x46AFC` -> `strb w21, [sp, #0x5b0]`). Its ORIGINAL writer was
+// not found: the three `strb wN, [xM, #0x528]` of the whole `__text`
+// (`0x4DB38`, `0x4E3C8`, `0x4F08C`) are value-witness copies of the context,
+// and the tuple's initialiser stores it some other way. With the byte unknown,
+// turning the clamp on would move every plus-lighter group of generation 27 on
+// a guess. It is therefore wired -- `IconRenderOptions::
+// drawingContextClampsPlusLighter` is that byte, `IconSurface::blendArt` takes
+// the conjunction -- and OFF by default, and `kPlusLighterClampNote` says so in
+// the report of every render it could have changed.
 //
 // `[BIN]` What IS settled is a NEGATIVE, and it is the one that matters for the
 // front that went looking: **the glyph specular highlights are not clamped.**
@@ -162,9 +189,8 @@ bool blendIsTranscribed(BlendMode mode);
 // transcribes), then `setHasSpecular:`. That does not settle the DRAW, which is
 // a different function and is where the gate lives.
 //
-// So this file transcribes the shader and reads the flag, and stops there.
-// Wiring it into a composite without knowing which composites the target wires
-// it into would be a change with an address on it and no measurement under it.
+// So this file transcribes the shader and reads the flag; the renderer wires it
+// to the one draw it reaches and leaves the unread gate to the caller.
 BlendColour clampedPlusL(const BlendColour& source, const BlendColour& dest);
 
 // `src` over `dst`, premultiplied, by `mode`.

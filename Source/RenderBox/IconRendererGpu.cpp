@@ -2,7 +2,7 @@
 //
 // O QUE E RESIDENTE (frente GPU, G1-G4 -- `Docs/Plans/2026-09-29-render-gpu.md`)
 // ----------------------------------------------------------------------------
-// O acumulador, o alvo de um grupo isolado e a arte de cada camada sao buffers da
+// O acumulador, a imagem de cada grupo e a arte de cada camada sao buffers da
 // GPU do comeco ao fim. Na GPU, sem nada subir ou descer:
 //   - o fundo (cor ou rampa) e o recorte a pastilha (`icon_paint`, `icon_chiclet`);
 //   - a cobertura de cada caminho do SVG (a mesma `CoveragePass`) e o resolve
@@ -11,13 +11,17 @@
 //     (`icon_svg`) --, sem o readback por forma do caminho de CPU;
 //   - a colocacao bilinear da arte raster (`icon_raster`), quando o vidro nao
 //     tira o campo do alfa dela (ver [UP3]);
-//   - a composicao com os modos transcritos, grupo isolado incluido (`icon_blend`);
-//   - o vidro (GpuGlass.cpp): o campo de um vetor (`icon_field`, G2), a sombra
+//   - a composicao com os modos transcritos (`icon_blend`), e a imagem de um grupo
+//     de mais de um elemento -- cada elemento mesclado contra os anteriores do
+//     MESMO grupo, e o resultado des-multiplicado (`icon_group`);
+//   - o vidro (GpuGlass.cpp): o campo de um vetor (`icon_field`, G2), o de um
+//     grupo empilhado dos campos dos elementos (`icon_field_stack`), a sombra
 //     e o overdraw (`icon_ring`, `icon_shadow`, `icon_blur`, G3), a mascara de
 //     translucidez (`icon_glass_mask`), a refracao (`icon_displace`,
-//     `icon_refract`), o especular e os realces da pastilha (`icon_highlight`, G4)
-//     -- o campo, a sombra e os realces bit a bit os da CPU, a mascara e a
-//     refracao a um ulp;
+//     `icon_refract`), o especular e os realces da pastilha (`icon_highlight`, G4),
+//     o brilho interno da geracao 26 (`icon_glow`)
+//     -- o campo, a sombra, os realces e o brilho bit a bit os da CPU, a mascara
+//     e a refracao a um ulp;
 //   - o recorte e a des-multiplicacao do fim (`icon_finish`), e UM readback, que
 //     traz junto as contagens que decidem notas e lacunas (IconSurface.h).
 //
@@ -96,8 +100,9 @@ struct BlendPush {
     float alpha;
     std::uint32_t sw;
     std::int32_t sx, sy;
+    std::uint32_t clampPlus;   // `clampedPlusL` no lugar da soma do plus-lighter
 };
-static_assert(sizeof(BlendPush) == 32);
+static_assert(sizeof(BlendPush) == 36);
 
 struct SvgPush {
     float colour[4];
@@ -114,6 +119,13 @@ struct SvgPush {
     std::uint32_t hasClip;
 };
 static_assert(sizeof(SvgPush) == 100);
+
+struct TintPush {
+    std::uint32_t w, h;
+    float s;
+    float tr, tg, tb;
+};
+static_assert(sizeof(TintPush) == 24);
 
 struct FinishPush {
     std::uint32_t vw, vh;
@@ -136,6 +148,21 @@ struct RasterPush {
     std::uint32_t iw, ih;
 };
 static_assert(sizeof(RasterPush) == 16);
+
+struct GroupPush {
+    std::uint32_t w, h;
+    std::uint32_t mode;
+    std::uint32_t blend;
+    float alpha;
+};
+static_assert(sizeof(GroupPush) == 20);
+
+struct FieldStackPush {
+    std::uint32_t w, h;
+    float edge;
+    std::uint32_t advanced;
+};
+static_assert(sizeof(FieldStackPush) == 16);
 
 // As paradas no formato do `RampStop` dos shaders: localizacao em x, e a cor.
 Result<Range> stageStops(Resident& r, const std::vector<RampPoint>& stops) {
@@ -168,10 +195,14 @@ Slab fieldSlab(const SurfaceField& f) { return std::static_pointer_cast<Buffer>(
 //     (`SurfaceArt::shared`): a mascara, a unica que escreve na arte, copia antes;
 //   - o campo de um vetor: os contornos (a chave de `fieldFromContoursCached`);
 //     o de um raster: a chave da arte; o da pastilha: a grade e a plataforma;
-//   - a sombra DESFOCADA (antes da translacao e do overdraw): a chave da arte
-//     COMO ELA ESTA -- a do render encadeada com a do campo e os argumentos da
-//     mascara, quando houve uma. A translacao e o overdraw sao refeitos a cada
-//     render, na grade estreita.
+//   - a sombra DESFOCADA (antes da translacao e do overdraw): a chave da FONTE
+//     dela, que e a arte do elemento num grupo de um, ou a imagem do grupo --
+//     as chaves dos elementos encadeadas com a opacidade e a mescla de cada um
+//     (`gpu-group-image`). A sombra sai da fonte ANTES da mascara, entao a
+//     chave da mascara (`gpu-masked`) nao entra nela. A translacao e o overdraw
+//     sao refeitos a cada render, na grade estreita.
+// O campo de um grupo (`gpu-field-stack`) leva a chave dos campos dos elementos
+// encadeada, e o buffer dele nao e guardado: `stackField` diz por que.
 // Um passo cujo insumo nao mudou nao roda. O que roda todo quadro e o que le o
 // acumulador (refracao, especular, realces da pastilha) e as mesclas.
 //
@@ -236,10 +267,25 @@ void hashRender(KeyHasher& h, const PathGlobals& g, const RenderOptions& o) {
     static_assert(sizeof(RenderOptions) == 136, "a RenderOptions field is missing from the key");
     h.value(o.width).value(o.height).value(o.originX).value(o.originY);
     h.value(o.projectionWidth).value(o.projectionHeight).value(o.subdivisions);
+    // `overrideForcesHiddenPaint` mora no enchimento depois deste booleano (o
+    // tamanho acima nao andou) e decide quais formas pintam: entra na chave.
+    h.value(o.untaggedColoursAreDisplayP3).value(o.overrideForcesHiddenPaint);
     hashPaint(h, o.override);
 }
 
 void hashKey(KeyHasher& h, const CacheKey& k) { h.value(k.a).value(k.b); }
+
+void hashShadow(KeyHasher& h, const ShadowParameters& p) {
+    static_assert(sizeof(ShadowParameters) == 248,
+                  "a ShadowParameters field is missing from the key");
+    h.value(p.offsetX).value(p.offsetY).value(p.ringWidth.has_value());
+    if (p.ringWidth) h.span(p.ringWidth->slots, 4);
+    h.span(p.radius.slots, 4).span(p.vibrantOpacity.slots, 4).span(p.neutralOpacity.slots, 4);
+    h.value(p.blendMode).value(p.blendModeForVibrantOnDim).value(p.overdrawBlendMode);
+    h.value(p.vibrantBrightness).value(p.ignoreFillOpacity).value(p.drawOverContent);
+    h.value(p.translucencyForMaxOverdraw);
+    h.span(p.maxNeutralOverdrawOpacity.slots, 4).span(p.maxVibrantOverdrawOpacity.slots, 4);
+}
 
 void hashField(KeyHasher& h, const std::vector<FieldContour>& contours, std::uint32_t width,
                std::uint32_t height, const FieldOptions& o, std::uint32_t ss) {
@@ -274,7 +320,7 @@ bool svgNeedsCpu(const icf::svg::SvgDocument& doc) {
     return false;
 }
 
-// A cobertura de um caminho no alvo `R16G16` e copiada para o buffer de
+// A cobertura de um caminho no alvo `kCoverageFormat` e copiada para o buffer de
 // cobertura, gravadas no lote -- o `pass->draw` + `readBack` do caminho de CPU,
 // sem a espera e sem a descida.
 Result<void> drawCoverage(Resident& r, PathBuffer path, const PathGlobals& globals,
@@ -385,16 +431,18 @@ Result<RenderedImage> svgResident(Resident& r, Device& device, const icf::svg::S
         const icf::svg::Shape& shape = doc.shapes[i];
         const bool strokePaints = shape.stroke.kind != icf::svg::PaintKind::None &&
                                   shape.strokeWidth > 0.0;
-        if (shape.fill.kind == icf::svg::PaintKind::None &&
-            options.override.kind == FillOverride::Kind::None && !strokePaints) {
-            continue;
-        }
+        // As duas regras de `renderSvgPlaced` sob um fill de camada
+        // (`svgFillPaints`, `svgShapeOpacity`).
+        const bool fillPaints = svgFillPaints(shape, options);
+        if (!fillPaints && !strokePaints) continue;
+        const float shapeOpacity = static_cast<float>(svgShapeOpacity(shape, options));
         ResolvedGradient ramp;
         const bool overridden = options.override.kind != FillOverride::Kind::None;
         if (!overridden && shape.fill.kind == icf::svg::PaintKind::Reference) {
             double bx0, by0, bx1, by1;
             svgPathBounds(shape.path, bx0, by0, bx1, by1);
-            ramp = resolveGradient(doc, shape.fill.reference, bx0, by0, bx1, by1, shape.ctm);
+            ramp = resolveGradient(doc, shape.fill.reference, bx0, by0, bx1, by1, shape.ctm,
+                                   options.untaggedColoursAreDisplayP3);
             if (!ramp.ok) {
                 out.skipped.push_back({i, shape.element, ramp.why});
                 continue;
@@ -427,25 +475,19 @@ Result<RenderedImage> svgResident(Resident& r, Device& device, const icf::svg::S
             return std::unexpected(ok.error());
         }
 
-        if (!overridden && shape.fill.color.displayP3) out.unconvertedP3.push_back(i);
         SvgPush p = basePush();
-        p.colour[0] = static_cast<float>(shape.fill.color.r);
-        p.colour[1] = static_cast<float>(shape.fill.color.g);
-        p.colour[2] = static_cast<float>(shape.fill.color.b);
-        p.colour[3] = static_cast<float>(shape.fill.color.a);
+        svgColourToWorking(shape.fill.color, options.untaggedColoursAreDisplayP3, p.colour);
         if (options.override.kind == FillOverride::Kind::Solid) {
             for (int k = 0; k < 4; ++k) p.colour[k] = options.override.colour[k];
         }
         p.state = stateFor(shape.fillRule);
-        p.opacity = static_cast<float>(shape.opacity);
+        p.opacity = shapeOpacity;
         p.hasClip = clip ? 1u : 0u;
         p.invSx = globals.m0[0] != 0.0f ? static_cast<float>(1.0 / globals.m0[0]) : 0.0f;
         p.invSy = globals.m1[1] != 0.0f ? static_cast<float>(1.0 / globals.m1[1]) : 0.0f;
         p.m2x = globals.m2[0];
         p.m2y = globals.m2[1];
 
-        const bool fillPaints = shape.fill.kind != icf::svg::PaintKind::None ||
-                                options.override.kind != FillOverride::Kind::None;
         if (fillPaints) {
             const std::vector<RampPoint>* stops = nullptr;
             if (options.override.kind == FillOverride::Kind::Ramp) {
@@ -534,15 +576,12 @@ Result<RenderedImage> svgResident(Resident& r, Device& device, const icf::svg::S
                     }
                 }
                 if (drawn) {
-                    if (shape.stroke.color.displayP3) out.unconvertedP3.push_back(i);
                     const Range* staged = &covRange;
                     SvgPush sp2 = basePush();
                     sp2.mode = 1;
-                    sp2.colour[0] = static_cast<float>(shape.stroke.color.r);
-                    sp2.colour[1] = static_cast<float>(shape.stroke.color.g);
-                    sp2.colour[2] = static_cast<float>(shape.stroke.color.b);
-                    sp2.colour[3] = static_cast<float>(shape.stroke.color.a);
-                    sp2.opacity = static_cast<float>(shape.opacity);
+                    svgColourToWorking(shape.stroke.color, options.untaggedColoursAreDisplayP3,
+                                       sp2.colour);
+                    sp2.opacity = shapeOpacity;
                     sp2.hasClip = clip ? 1u : 0u;
                     if (auto ok = r.dispatch(r.svg,
                                              {whole(acc), whole(covBuf), dummy, clipRange, *staged},
@@ -574,8 +613,10 @@ public:
 
     std::uint32_t bufferLattice() const override { return kTileLattice; }
 
-    Result<void> begin(const PixelGrid& grid, const PixelGrid& narrow) override {
+    Result<void> begin(const PixelGrid& grid, const PixelGrid& narrow,
+                       const RenderingParameters& params) override {
         grid_ = grid;
+        params_ = &params;
         // A GRADE ESTREITA so vale com o vidro na GPU: as quedas de CPU (aparelho
         // sem double) levam o alvo e o campo juntos, na mesma grade.
         narrow_ = r_.float64() ? narrow : grid;
@@ -645,10 +686,11 @@ public:
     // guardado no cache pela grade e pela plataforma, e `icon_highlight`.
     Result<void> chicletHighlights(RenderCache* cache, const SpecularArguments& args,
                                    IconPlatform platform, CountSink sink) override {
-        std::size_t count = 0;
-        const HighlightSlot* slots = chicletHighlightSlots(count);
+        const std::vector<HighlightSlot>& list =
+            expandedHighlights(args.generation, HighlightFamily::Chiclet, args.set);
         std::vector<double> records;
-        const bool transcribed = gpu::resolveHighlights(slots, count, args, records);
+        const bool transcribed =
+            gpu::resolveHighlights(list.data(), list.size(), args, records, true);
         if (!r_.float64() || !transcribed) {
             // A ida e volta de antes: o alvo desce, `drawChicletHighlights`, sobe.
             // Com a grade estreita o alvo entra num buffer da grade larga (zerado
@@ -735,24 +777,85 @@ public:
         return {};
     }
 
-    Result<void> beginGroup(bool isolated) override {
-        group_.reset();
-        if (!isolated) return {};
-        auto g = r_.acquire(bytes());
-        if (!g) return std::unexpected(g.error());
-        group_ = *g;
-        r_.fill(group_, 0);
+    // A imagem de um grupo. O alvo mora na grade LARGA -- a imagem alimenta a
+    // sombra e a mascara, que moram nela --, entao nao e o acumulador de grupo de
+    // antes, que era da estreita. O primeiro elemento so e guardado: um grupo de
+    // um elemento nao aloca nada.
+    Result<void> addToGroupImage(SurfaceGroupImage& g, const SurfaceArtRef& art, double opacity,
+                                 BlendMode mode) override {
+        g.keyed = g.keyed && art->keyed;
+        g.parts.push_back({art->key, static_cast<float>(opacity), mode});
+        if (g.count == 0) {
+            g.first = art;
+            g.firstOpacity = opacity;
+            g.count = 1;
+            return {};
+        }
+        if (g.count == 1) {
+            auto made = r_.acquire(wideBytes());
+            if (!made) return std::unexpected(made.error());
+            r_.fill(*made, 0);
+            g.resident = *made;
+            if (auto ok = blendIntoGroup(*made, artSlab(*g.first),
+                                         static_cast<float>(g.firstOpacity), BlendMode::Normal);
+                !ok) {
+                return ok;
+            }
+            g.first.reset();
+        }
+        if (auto ok = blendIntoGroup(std::static_pointer_cast<Buffer>(g.resident), artSlab(*art),
+                                     static_cast<float>(opacity), mode);
+            !ok) {
+            return ok;
+        }
+        ++g.count;
         return {};
     }
 
-    Result<void> endGroup(std::optional<BlendMode> blend) override {
-        Slab g = std::move(group_);
-        group_.reset();
-        if (!g || !blend) return {};
-        BlendPush p{narrow_.width, narrow_.height, static_cast<std::uint32_t>(*blend), 1u, 1.0f,
-                    narrow_.width, 0, 0};
-        return r_.dispatch(r_.blend, {whole(acc_), whole(g)}, &p, groups16(narrow_.width),
-                           groups16(narrow_.height));
+    // Com cache a imagem pronta leva uma chave -- a de cada elemento encadeada com
+    // a opacidade e a mescla dele --, e e por ela que a mascara e a sombra do grupo
+    // se guardam. A imagem em si e refeita a cada render: sao passadas de mescla.
+    Result<SurfaceGroupTaken> takeGroupImage(SurfaceGroupImage& g) override {
+        SurfaceGroupTaken taken;
+        if (g.count <= 1) {
+            taken.image = std::move(g.first);
+            taken.opacity = g.firstOpacity;
+            return taken;
+        }
+        auto out = r_.acquire(wideBytes());
+        if (!out) return std::unexpected(out.error());
+        const Slab target = std::static_pointer_cast<Buffer>(g.resident);
+        if (r_.float64()) {
+            GroupPush p{grid_.width, grid_.height, 1u, 0u, 1.0f};
+            if (auto ok = r_.dispatch(r_.group, {whole(*out), whole(target)}, &p,
+                                      groups16(grid_.width), groups16(grid_.height));
+                !ok) {
+                return std::unexpected(ok.error());
+            }
+        } else {
+            // Sem double: a des-multiplicacao de `icon_finish`, com a divisao float.
+            FinishPush f{grid_.width, grid_.height, grid_.width, 0, 0};
+            if (auto ok = r_.dispatch(r_.finish, {whole(target), whole(*out)}, &f,
+                                      groups16(grid_.width), groups16(grid_.height));
+                !ok) {
+                return std::unexpected(ok.error());
+            }
+        }
+        g.resident.reset();
+        auto image = std::make_shared<SurfaceArt>();
+        image->resident = *out;
+        if (g.keyed) {
+            KeyHasher h("gpu-group-image");
+            h.value(g.parts.size());
+            for (const SurfaceGroupImage::Part& part : g.parts) {
+                hashKey(h, part.key);
+                h.value(part.alpha).value(part.mode);
+            }
+            image->key = h.finish();
+            image->keyed = true;
+        }
+        taken.image = std::move(image);
+        return taken;
     }
 
     // Com cache, a arte fica guardada na GPU pela chave de `svgRenderCached` (o
@@ -825,6 +928,10 @@ public:
             placed->shared = true;
         }
         return placed;
+    }
+
+    Result<const std::vector<float>*> artPixels(SurfaceArt& art) override {
+        return artOnCpu(art);
     }
 
     Result<SurfaceArt> placeRasterUncached(const icf::DecodedPng& png, const LayerPlacement& lp,
@@ -987,6 +1094,45 @@ public:
         return f;
     }
 
+    // O campo de um grupo: uma escolha por texel entre dois campos da mesma grade
+    // (`icon_field_stack`). A chave e a dos dois encadeada com a borda e o modo --
+    // as de CONTEUDO, como em `contourField`, entao o buffer empilhado nao e
+    // guardado: ele depende do retangulo de perto de cada campo, e a chave nao.
+    Result<SurfaceField> stackField(const SurfaceField& lower, const SurfaceField& upper,
+                                    float reach, bool advanced) override {
+        if (!r_.float64()) {
+            // Sem double os campos sao de CPU (`cpuField`), e o empilhamento tambem.
+            return cpuField(std::make_shared<const FieldImage>(
+                stackFields(*lower.cpu, *upper.cpu, reach, advanced)));
+        }
+        if (lower.empty()) return upper;
+        if (upper.empty()) return lower;
+        auto out = r_.acquire(static_cast<VkDeviceSize>(lower.width) * lower.height * 16);
+        if (!out) return std::unexpected(out.error());
+        const FieldStackPush p{lower.width, lower.height, reach + 1.0f, advanced ? 1u : 0u};
+        if (auto ok = r_.dispatch(r_.fieldStack,
+                                  {whole(*out), whole(fieldSlab(lower)), whole(fieldSlab(upper))},
+                                  &p, groups16(lower.width), groups16(lower.height));
+            !ok) {
+            return std::unexpected(ok.error());
+        }
+        SurfaceField f;
+        f.resident = *out;
+        f.width = lower.width;
+        f.height = lower.height;
+        f.originX = lower.originX;
+        f.originY = lower.originY;
+        if (lower.keyed && upper.keyed) {
+            KeyHasher h("gpu-field-stack");
+            hashKey(h, lower.key);
+            hashKey(h, upper.key);
+            h.value(p.edge).value(advanced);
+            f.key = h.finish();
+            f.keyed = true;
+        }
+        return f;
+    }
+
     // A refracao (G4, era [RT2]): `icon_displace` e `icon_refract`, float como a CPU.
     Result<void> refract(const SurfaceField& field, const GlassRefraction& refraction) override {
         if (!r_.float64()) {
@@ -1043,9 +1189,13 @@ public:
             KeyHasher h("gpu-masked");
             hashKey(h, art.key);
             hashKey(h, mask.field.key);
-            static_assert(sizeof(OpacityMaskArguments) == 36, "a mask argument is missing");
+            static_assert(sizeof(OpacityMaskArguments) == 300, "a mask argument is missing");
             h.value(mask.args.borderWidth).span(mask.args.opacityBounds, 2);
             h.span(mask.args.contourOpacityBounds, 2).span(mask.args.bounds, 4);
+            // O ramo e a rampa dele (os coeficientes saem do perfil da geracao e
+            // da translucidez do grupo).
+            h.value(mask.args.kind).value(mask.args.rampSegments);
+            h.span(&mask.args.ramp[0][0], 4 * kOpacityMaskRampSegments);
             h.value(mask.field.originY);
             art.key = h.finish();
         } else {
@@ -1059,10 +1209,10 @@ public:
     // O especular (G4, era [RT3]): `icon_highlight` sobre o alvo.
     Result<void> specular(const SurfaceField& field, const SpecularArguments& args,
                           CountSink sink) override {
-        std::size_t count = 0;
-        const HighlightSlot* slots = glyphHighlightSlots(count);
+        const std::vector<HighlightSlot>& list =
+            expandedHighlights(args.generation, HighlightFamily::Glyph, args.set);
         std::vector<double> records;
-        const bool transcribed = gpu::resolveHighlights(slots, count, args, records);
+        const bool transcribed = gpu::resolveHighlights(list.data(), list.size(), args, records);
         if (!r_.float64() || !transcribed) {
             SurfaceField copy = field;
             auto onCpu = fieldOnCpu(copy);
@@ -1104,6 +1254,33 @@ public:
         return {};
     }
 
+    // O brilho interno da geracao 26: `icon_glow` sobre o alvo.
+    Result<void> glow(const SurfaceField& field, const GlowArguments& args) override {
+        if (!r_.float64()) {
+            SurfaceField copy = field;
+            auto onCpu = fieldOnCpu(copy);
+            if (!onCpu) return std::unexpected(onCpu.error());
+            // Como no especular: o campo e da grade larga, o alvo da estreita.
+            std::shared_ptr<const FieldImage> fieldHere = *onCpu;
+            if (!sameGrids()) {
+                FieldImage part;
+                part.width = narrow_.width;
+                part.height = narrow_.height;
+                part.originX = narrow_.originX;
+                part.originY = narrow_.originY;
+                part.rgba.assign(narrow_.texels() * 4, 0.0f);
+                const gpu::SourceView v = viewOf(copy);
+                copyRows((*onCpu)->rgba, v.width, v.x, v.y, part.rgba, narrow_.width, 0, 0,
+                         narrow_.width, narrow_.height);
+                fieldHere = std::make_shared<const FieldImage>(std::move(part));
+            }
+            return onTarget([&](std::vector<float>& t) { drawGlow(t, *fieldHere, args); });
+        }
+        const gpu::SourceView view = viewOf(field);
+        return gpu::glow(r_, target(), fieldSlab(field), narrow_.width, narrow_.height,
+                         narrow_.originX, narrow_.originY, args, &view);
+    }
+
     // [RT7] o campo desce -- so para a queda de CPU acima.
     Result<std::shared_ptr<const FieldImage>> fieldOnCpu(SurfaceField& field) {
         if (field.cpu) return field.cpu;
@@ -1122,32 +1299,27 @@ public:
     }
 
     Result<void> blendArt(const SurfaceArt& art, float alpha, BlendMode mode,
-                          bool clearContent) override {
-        return blendRange(whole(artSlab(art)), alpha, mode, wideView(), clearContent ? 2u : 0u);
+                          bool clearContent, bool clampPlusLighter) override {
+        return blendRange(whole(artSlab(art)), alpha, mode, wideView(), clearContent ? 2u : 0u,
+                          clampPlusLighter);
     }
 
-    // A sombra da arte residente (G3): `icon_ring`, `icon_shadow`, `icon_blur`,
+    // A sombra da fonte residente (G3): `icon_ring`, `icon_shadow`, `icon_blur`,
     // sem descer a arte e sem subir a sombra.
     Result<SurfaceShadow> makeShadow(RenderCache* cache, SurfaceArt& art, ShadowStyle style,
-                                     const ShadowGeometry& geometry,
-                                     double overdrawAlpha) override {
+                                     const ShadowGeometry& geometry) override {
         SurfaceShadow s;
         if (!r_.float64()) {
             // Sem double na GPU a sombra e a de CPU: a arte desce, a sombra sobe.
             auto onCpu = artOnCpu(art);
             if (!onCpu) return std::unexpected(onCpu.error());
             s.image = shadowImageCached(cache, **onCpu, grid_.width, grid_.height, style,
-                                        geometry);
-            if (overdrawAlpha > 0.0) {
-                s.overdraw = shadowOverdrawImage(*s.image, **onCpu, grid_.width, grid_.height,
-                                                 overdrawAlpha);
-            }
-            s.hasOverdraw = !s.overdraw.empty();
+                                        geometry, params_->shadow);
             return s;
         }
         // Com cache, a sombra DESFOCADA (a parte cara, na grade larga) fica na GPU
-        // pela chave da arte como ela esta agora (a do render, encadeada com a da
-        // mascara quando houve uma). A translacao e o overdraw sao refeitos a cada
+        // pela chave da fonte como ela esta agora -- a do render, ou a da imagem do
+        // grupo. A translacao e o overdraw sao refeitos a cada
         // render, na grade estreita -- sao duas passadas por pixel, e a estreita
         // muda a cada pan.
         CacheKey key;
@@ -1160,6 +1332,8 @@ public:
             h.value(geometry.offsetX).value(geometry.offsetY).value(geometry.blurRadius);
             h.value(geometry.ringWidth.has_value());
             if (geometry.ringWidth) h.value(*geometry.ringWidth);
+            // O `Shadow` da geracao, campo a campo (o mesmo de `shadow-image`).
+            hashShadow(h, params_->shadow);
             key = h.finish();
         }
         std::optional<gpu::ShadowBlur> blur;
@@ -1167,19 +1341,45 @@ public:
             if (auto hit = cache->find<GpuCachedShadow>(key)) blur = gpu::ShadowBlur{hit->image, hit->blurred};
         }
         if (!blur) {
-            auto made = gpu::shadowBlur(r_, artSlab(art), grid_.width, grid_.height, style, geometry);
+            auto made = gpu::shadowBlur(r_, artSlab(art), grid_.width, grid_.height, style,
+                                        geometry, params_->shadow);
             if (!made) return std::unexpected(made.error());
             blur = *made;
             if (keyed) cache->store(key, GpuCachedShadow{blur->image, blur->blurred}, blur->image->size());
         }
         auto made = gpu::shadowPlace(r_, *blur, artSlab(art), grid_.width, grid_.height, geometry,
-                                     overdrawAlpha,
+                                     0.0,
                                      gpu::ShadowOutput{narrow_.width, narrow_.height, dx(), dy()});
         if (!made) return std::unexpected(made.error());
         s.residentImage = made->image;
-        s.residentOverdraw = made->overdraw;
-        s.hasOverdraw = made->overdraw != nullptr;
         return s;
+    }
+
+    // O overdraw: a sombra ja posta (na estreita) com o alfa vezes o do conteudo,
+    // que mora na larga e a esta altura ja passou pela mascara.
+    Result<void> clipShadowOverdraw(SurfaceShadow& shadow, SurfaceArt& content,
+                                    double clipAlpha) override {
+        shadow.overdraw.clear();
+        shadow.residentOverdraw.reset();
+        shadow.hasOverdraw = false;
+        if (!r_.float64()) {
+            auto onCpu = artOnCpu(content);
+            if (!onCpu) return std::unexpected(onCpu.error());
+            if (clipAlpha > 0.0) {
+                shadow.overdraw = shadowOverdrawImage(*shadow.image, **onCpu, grid_.width,
+                                                      grid_.height, clipAlpha);
+            }
+            shadow.hasOverdraw = !shadow.overdraw.empty();
+            return {};
+        }
+        auto made = gpu::shadowOverdraw(
+            r_, std::static_pointer_cast<Buffer>(shadow.residentImage), artSlab(content),
+            grid_.width, grid_.height, clipAlpha,
+            gpu::ShadowOutput{narrow_.width, narrow_.height, dx(), dy()});
+        if (!made) return std::unexpected(made.error());
+        shadow.residentOverdraw = *made;
+        shadow.hasOverdraw = *made != nullptr;
+        return {};
     }
 
     Result<void> blendShadow(const SurfaceShadow& shadow, bool overdraw, float alpha,
@@ -1194,6 +1394,17 @@ public:
         auto staged = r_.stage(img.data(), img.size() * sizeof(float));
         if (!staged) return std::unexpected(staged.error());
         return blendRange(*staged, alpha, mode, wideView());
+    }
+
+    // A recoloracao do Tinted Dark sobre o alvo: `icon_tint`, a conta de
+    // `tintDark` em float, na mesma ordem.
+    Result<void> tint(const IconRenderOptions::TintRecolour& tint) override {
+        const TintPush p{narrow_.width, narrow_.height,
+                         static_cast<float>(std::max(0.0, tint.saturation)),
+                         static_cast<float>(tint.r), static_cast<float>(tint.g),
+                         static_cast<float>(tint.b)};
+        return r_.dispatch(r_.tint, {whole(target())}, &p, groups16(narrow_.width),
+                           groups16(narrow_.height));
     }
 
     Result<std::vector<float>> finish(std::int32_t cropX, std::int32_t cropY, std::uint32_t viewW,
@@ -1294,7 +1505,7 @@ private:
         return f;
     }
 
-    // O acumulador e o alvo de grupo moram na grade estreita; a arte, o campo e a
+    // O acumulador mora na grade estreita; a arte, a imagem do grupo, o campo e a
     // sombra na larga.
     VkDeviceSize bytes() const { return static_cast<VkDeviceSize>(narrow_.texels()) * 16; }
     VkDeviceSize wideBytes() const { return static_cast<VkDeviceSize>(grid_.texels()) * 16; }
@@ -1333,13 +1544,28 @@ private:
             std::copy(from.begin() + s, from.begin() + s + w * 4, to.begin() + d);
         }
     }
-    const Slab& target() const { return group_ ? group_ : acc_; }
+    const Slab& target() const { return acc_; }
+
+    // Um elemento no alvo do grupo, na grade larga: `icon_group`, e sem double o
+    // `icon_blend` (a mesma conta, sem o `precise`).
+    Result<void> blendIntoGroup(const Slab& group, const Slab& art, float alpha, BlendMode mode) {
+        if (r_.float64()) {
+            GroupPush p{grid_.width, grid_.height, 0u, static_cast<std::uint32_t>(mode), alpha};
+            return r_.dispatch(r_.group, {whole(group), whole(art)}, &p, groups16(grid_.width),
+                               groups16(grid_.height));
+        }
+        BlendPush p{grid_.width, grid_.height, static_cast<std::uint32_t>(mode), 0u, alpha,
+                    grid_.width, 0, 0, 0u};
+        return r_.dispatch(r_.blend, {whole(group), whole(art)}, &p, groups16(grid_.width),
+                           groups16(grid_.height));
+    }
 
     // `source`: 0 a arte reta, 2 a arte reta pela matriz do conteudo do Clear.
+    // `clampPlusLighter`: so a imagem de um grupo o pede (`blendArt`).
     Result<void> blendRange(Range src, float alpha, BlendMode mode, const gpu::SourceView& sv,
-                            std::uint32_t source = 0u) {
+                            std::uint32_t source = 0u, bool clampPlusLighter = false) {
         BlendPush p{narrow_.width, narrow_.height, static_cast<std::uint32_t>(mode), source, alpha,
-                    sv.width, sv.x, sv.y};
+                    sv.width, sv.x, sv.y, clampPlusLighter ? 1u : 0u};
         return r_.dispatch(r_.blend, {whole(target()), src}, &p, groups16(narrow_.width),
                            groups16(narrow_.height));
     }
@@ -1348,8 +1574,9 @@ private:
     Resident& r_;
     PixelGrid grid_;     // o buffer do render (a grade larga)
     PixelGrid narrow_;   // a estreita: o recorte mais o alcance encadeado
+    // O bloco da geracao deste render (`begin`): a sombra le o `Shadow` dele.
+    const RenderingParameters* params_ = nullptr;
     Slab acc_;
-    Slab group_;
     Slab counters_;
     std::uint32_t nextCounter_ = 0;
     std::vector<std::uint32_t> counts_;
@@ -1390,12 +1617,13 @@ public:
     }
 
     std::uint32_t bufferLattice() const override { return in_.bufferLattice(); }
-    Result<void> begin(const PixelGrid& g, const PixelGrid& n) override {
+    Result<void> begin(const PixelGrid& g, const PixelGrid& n,
+                       const RenderingParameters& rp) override {
         std::fprintf(stderr, "[perfil] buffer %ux%u origem (%d,%d) canvas %u\n", g.width,
                      g.height, g.originX, g.originY, g.size);
         std::fprintf(stderr, "[perfil] estreita %ux%u origem (%d,%d)\n", n.width, n.height,
                      n.originX, n.originY);
-        return time("begin", [&] { return in_.begin(g, n); });
+        return time("begin", [&] { return in_.begin(g, n, rp); });
     }
     Result<void> paintBackground(const FillOverride& p) override {
         return time("paintBackground", [&] { return in_.paintBackground(p); });
@@ -1407,11 +1635,12 @@ public:
                                    CountSink s) override {
         return time("chicletHighlights", [&] { return in_.chicletHighlights(c, a, p, s); });
     }
-    Result<void> beginGroup(bool i) override {
-        return time("beginGroup", [&] { return in_.beginGroup(i); });
+    Result<void> addToGroupImage(SurfaceGroupImage& g, const SurfaceArtRef& a, double o,
+                                 BlendMode m) override {
+        return time("addToGroupImage", [&] { return in_.addToGroupImage(g, a, o, m); });
     }
-    Result<void> endGroup(std::optional<BlendMode> b) override {
-        return time("endGroup", [&] { return in_.endGroup(b); });
+    Result<SurfaceGroupTaken> takeGroupImage(SurfaceGroupImage& g) override {
+        return time("takeGroupImage", [&] { return in_.takeGroupImage(g); });
     }
     Result<SurfaceArt> drawSvg(RenderCache* c, const std::string& t,
                                const icf::svg::SvgDocument& s, const PathGlobals& p,
@@ -1422,6 +1651,9 @@ public:
                                    const LayerPlacement& lp, bool f) override {
         return time("placeRaster", [&] { return in_.placeRaster(c, png, lp, f); });
     }
+    Result<const std::vector<float>*> artPixels(SurfaceArt& a) override {
+        return time("artPixels", [&] { return in_.artPixels(a); });
+    }
     Result<SurfaceField> contourField(RenderCache* c, const std::vector<FieldContour>& k,
                                       std::uint32_t w, std::uint32_t h, const FieldOptions& o,
                                       std::uint32_t ss, const FieldBands& b) override {
@@ -1430,6 +1662,10 @@ public:
     Result<SurfaceField> alphaField(RenderCache* c, SurfaceArt& a, std::uint32_t w,
                                     std::uint32_t h, const FieldOptions& o) override {
         return time("alphaField", [&] { return in_.alphaField(c, a, w, h, o); });
+    }
+    Result<SurfaceField> stackField(const SurfaceField& l, const SurfaceField& u, float r,
+                                    bool a) override {
+        return time("stackField", [&] { return in_.stackField(l, u, r, a); });
     }
     Result<void> refract(const SurfaceField& f, const GlassRefraction& g) override {
         return time("refract", [&] { return in_.refract(f, g); });
@@ -1444,15 +1680,25 @@ public:
                           CountSink s) override {
         return time("specular", [&] { return in_.specular(f, a, s); });
     }
-    Result<void> blendArt(const SurfaceArt& a, float al, BlendMode m, bool cc) override {
-        return time("blendArt", [&] { return in_.blendArt(a, al, m, cc); });
+    Result<void> glow(const SurfaceField& f, const GlowArguments& a) override {
+        return time("glow", [&] { return in_.glow(f, a); });
+    }
+    Result<void> blendArt(const SurfaceArt& a, float al, BlendMode m, bool cc,
+                          bool cp) override {
+        return time("blendArt", [&] { return in_.blendArt(a, al, m, cc, cp); });
     }
     Result<SurfaceShadow> makeShadow(RenderCache* c, SurfaceArt& a, ShadowStyle s,
-                                     const ShadowGeometry& g, double o) override {
-        return time("makeShadow", [&] { return in_.makeShadow(c, a, s, g, o); });
+                                     const ShadowGeometry& g) override {
+        return time("makeShadow", [&] { return in_.makeShadow(c, a, s, g); });
+    }
+    Result<void> clipShadowOverdraw(SurfaceShadow& s, SurfaceArt& a, double k) override {
+        return time("clipShadowOverdraw", [&] { return in_.clipShadowOverdraw(s, a, k); });
     }
     Result<void> blendShadow(const SurfaceShadow& s, bool o, float a, BlendMode m) override {
         return time("blendShadow", [&] { return in_.blendShadow(s, o, a, m); });
+    }
+    Result<void> tint(const IconRenderOptions::TintRecolour& t) override {
+        return time("tint", [&] { return in_.tint(t); });
     }
     Result<std::vector<float>> finish(std::int32_t x, std::int32_t y, std::uint32_t w,
                                       std::uint32_t h) override {

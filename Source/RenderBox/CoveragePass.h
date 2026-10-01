@@ -35,7 +35,7 @@ static_assert(sizeof(CoveragePush) == 60, "52 do alvo mais dois inteiros");
 
 class CoveragePass {
 public:
-    static Result<CoveragePass> create(Device& device, VkFormat format = VK_FORMAT_R16G16_SFLOAT);
+    static Result<CoveragePass> create(Device& device, VkFormat format = kCoverageFormat);
 
     CoveragePass() = default;
     ~CoveragePass();

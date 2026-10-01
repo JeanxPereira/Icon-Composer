@@ -9,11 +9,18 @@
 // `x + (y - x) * t` por uma fma, e as duas divisoes corretamente arredondadas
 // (float -> double -> float): a divisao float da GPU nao e, e a mascara saia a um
 // ulp da CPU (icon_displace.comp conta onde isso deixou de ser um ulp).
+//
+// OS DOIS RAMOS DO ALVO (`OpacityMaskKind`, GlassTranslucency.h). `kind == 0` e o
+// shader sobre o campo, o da geracao 26. `kind == 1` e o gradiente da geracao 27
+// (`gradientOpacityMask`): sem campo e sem cobertura, a mesma rampa cubica em
+// toda a linha, com os coeficientes que a CPU calculou -- um `vec4` por segmento
+// --, de modo que as duas avaliam os mesmos floats na mesma ordem.
 layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(std430, binding = 0) buffer Art { vec4 art[]; };
 layout(std430, binding = 1) readonly buffer Field { vec4 field[]; };
 layout(std430, binding = 2) buffer Counters { uint counters[]; };
+layout(std430, binding = 3) readonly buffer Ramp { vec4 ramp[]; };
 
 layout(push_constant) uniform Push {
     uint w, h;
@@ -24,6 +31,8 @@ layout(push_constant) uniform Push {
     float cb0, cb1;       // contourOpacityBounds
     float boundsY, boundsH;
     float alphaFloor;
+    uint kind;            // 0 o shader; 1 o gradiente
+    uint segments;        // do gradiente
 } p;
 
 shared uint groupPainted;
@@ -46,21 +55,43 @@ void main() {
     uvec2 g = gl_GlobalInvocationID.xy;
     if (g.x < p.w && g.y < p.h) {
         uint i = g.y * p.w + g.x;
-        // `simplifiedShapeAwareGradientMask`, termo a termo.
         float py = float(int(g.y) + p.originY) + 0.5;
-        float sd = -field[i].x;
         float v = p.boundsH != 0.0 ? saturatef(divExact(py - p.boundsY, p.boundsH)) : 0.0;
-        float body = mixf(p.ob1, p.ob0, v);
-        float contour = mixf(p.cb1, p.cb0, v);
-        float a = body;
-        if (p.borderWidth != 0.0) {
-            float u = saturatef(divExact(sd, p.borderWidth));
-            a = mixf(contour, body, u);
+        float m;
+        float cov;
+        if (p.kind != 0u) {
+            // `gradientOpacityMask`, termo a termo: o segmento, a fracao e o
+            // Horner da cubica dele. Sem cobertura: a forma do alvo e infinita.
+            m = 1.0;
+            if (p.segments > 0u) {
+                precise float scaled = v * float(p.segments);
+                uint seg = min(uint(scaled), p.segments - 1u);
+                precise float fr = scaled - float(seg);
+                vec4 c = ramp[seg];
+                precise float h3 = fr * c.w;
+                precise float h2 = c.z + h3;
+                precise float h2f = fr * h2;
+                precise float h1 = c.y + h2f;
+                precise float h1f = fr * h1;
+                precise float h0 = c.x + h1f;
+                m = h0;
+            }
+            cov = 1.0;
+        } else {
+            // `simplifiedShapeAwareGradientMask`, termo a termo.
+            float sd = -field[i].x;
+            float body = mixf(p.ob1, p.ob0, v);
+            float contour = mixf(p.cb1, p.cb0, v);
+            float a = body;
+            if (p.borderWidth != 0.0) {
+                float u = saturatef(divExact(sd, p.borderWidth));
+                a = mixf(contour, body, u);
+            }
+            a = saturatef(a);
+            precise float sm = a * a * (3.0 - 2.0 * a);
+            cov = saturatef(sd + 1.0);
+            m = mixf(1.0, sm, cov);
         }
-        a = saturatef(a);
-        precise float sm = a * a * (3.0 - 2.0 * a);
-        float cov = saturatef(sd + 1.0);
-        float m = mixf(1.0, sm, cov);
 
         float alpha = art[i].a;
         if (alpha > p.alphaFloor) {

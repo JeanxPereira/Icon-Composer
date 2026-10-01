@@ -38,7 +38,7 @@ FidelityStats compareIcons(const rb::RenderedIcon& a, const rb::RenderedIcon& b)
     }
     if (a.glassTranslucent != b.glassTranslucent || a.glassRefracted != b.glassRefracted ||
         a.glassSpecular != b.glassSpecular || a.glassShadowed != b.glassShadowed ||
-        a.glassShadowOverdrawn != b.glassShadowOverdrawn) {
+        a.glassShadowOverdrawn != b.glassShadowOverdrawn || a.glassGlowed != b.glassGlowed) {
         differ("contadores de vidro");
     }
 
@@ -62,10 +62,11 @@ FidelityStats compareIcons(const rb::RenderedIcon& a, const rb::RenderedIcon& b)
 }
 
 rb::Result<FidelityStats> fidelityOf(rb::Device& device, const icf::IconBundle& bundle,
-                                     std::uint32_t size, icf::Context context) {
-    auto cpu = renderBundleIcon(device, bundle, size, 16, context, false);
+                                     std::uint32_t size, icf::Context context,
+                                     rb::DesignGeneration generation) {
+    auto cpu = renderBundleIcon(device, bundle, size, 16, context, false, nullptr, {}, generation);
     if (!cpu) return std::unexpected("cpu: " + cpu.error());
-    auto gpu = renderBundleIcon(device, bundle, size, 16, context, true);
+    auto gpu = renderBundleIcon(device, bundle, size, 16, context, true, nullptr, {}, generation);
     if (!gpu) return std::unexpected("gpu: " + gpu.error());
     return compareIcons(*cpu, *gpu);
 }

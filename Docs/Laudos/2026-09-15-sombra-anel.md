@@ -23,6 +23,34 @@ Endereços do slice `References/2.0-125/out/slices/IconRendering.arm64`
 
 ---
 
+> **ERRATA — 2026-10-01. As §0 e §3 estão ERRADAS na conclusão, e o resto do
+> laudo se mantém.** A leitura de `0x893A4` (uma escala e um viés) está certa;
+> o que se tirou dela — "monótona, logo não é coroa" — não. A escala e o viés
+> são só o `t`. O que o *fragment* faz com `t` não tinha sido lido, e é
+> (`alpha_effect`, `default_mod66.ll` %46–%61 do RenderBox):
+>
+> ```
+> a   = saturate(t / fwidth + 0.5)
+> b   = saturate((t − 1) / fwidth + 0.5)
+> out = cor × (a − a·b)            ; bits 9–11 do estado zerados
+> ```
+>
+> um para `0 ≤ t ≤ 1`, zero **dos dois lados**. A variante de um degrau só
+> (`out = cor × a`, bit 9) é escolhida apenas quando `maxAlpha = +inf`
+> (`0x8952C`–`0x89548`), e `0x11D08`–`0x11D64` passa um `maxAlpha` finito.
+> **O anel é um anel:** a fonte da sombra é a faixa de `ringWidth` para dentro
+> do contorno, e o miolo da camada não projeta sombra. A hipótese da coroa, que
+> a §0 dá como derrubada, era a certa.
+>
+> No código: `shadowRingMask` e `icon_shadow.comp` passaram a
+> `1 − clamp(profundidade − ringWidth + 0,5, 0, 1)`; o caso de teste da barra
+> 41×41 da §8 agora checa a banda (`glass_shadow_ring_is_a_band_inside_the_outline`).
+> A tabela de pixels da §9 descreve a leitura antiga. `[OBS]` `fwidth` é
+> `|ddx| + |ddy|`, de 1 a √2 pixels conforme a direção do contorno; o código
+> usa 1.
+
+---
+
 ## 0. O resultado, em uma linha
 
 `[BIN]` O "anel" **não é um anel**. É uma rampa linear de máscara, monótona na

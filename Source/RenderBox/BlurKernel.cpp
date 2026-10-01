@@ -10,9 +10,12 @@ const char* const kBlurMaterialFrameNote =
     "blur-material desenhado como desfoque de FUNDO: 0x4A2D4 ramifica so em blurStrength "
     "(descritor+0x18) e refractionStrength (+0x28), e com refracao zero -- o default de 0x93B30, "
     "e nenhum dos 145 documentos do corpus, do gabarito ou do icone do usuario traz chave de "
-    "refracao -- o ramo e o de 0x4A5B4: conteudo desenhado (0x4A488), depois clipShape, "
+    "refracao -- o ramo e o de 0x4A5B4: a SOMBRA do grupo desenhada (0x4A488 e bl 0x49ED4 com "
+    "w1 = 0, o desenho da sombra, e nao o do conteudo como esta nota dizia ate 01/10), depois "
+    "clipShape, o recorte ao interior do SDF (0x4A594), "
     "addBlurFilterWithRadius:, beginLayerWithFlags:1 (needs-background, 0xE9F48) e um "
-    "drawLayerWithAlpha:1 blendMode:0 imediato, sem nada dentro. O recorte e aritmetica lida "
+    "drawLayerWithAlpha:1 blendMode:0 imediato, sem nada dentro -- o fundo desfocado e o que "
+    "esta sob o grupo mais a sombra dele, sem a arte dele. O recorte e aritmetica lida "
     "(0x4A4A4-0x4A56C, seis stubs de CGRect resolvidos pela tabela de simbolos indiretos): frame "
     "x canvas, com canvas = (0,0,1024,1024) em 0x4291C-0x42968, afastado por -[ctx+0x46A8] = "
     "(1/escala)/contentsScale = UM pixel. `[BIN]` o FRAME tem nome: o descritor de 0xC0 bytes e "
@@ -23,7 +26,7 @@ const char* const kBlurMaterialFrameNote =
     "que 0x4A31C carrega e a TAG do opcional, e ela e o PORTAO: 0x4A344 faz ccmp w25,#1 e "
     "0x4A348 so entra em 0x4A3F0 -- onde os quatro doubles viram d12/d11/d10/d9 do recorte, e "
     "abaixo de onde a ramificacao de blurStrength/refractionStrength mora -- quando "
-    "effectsFrame != nil; com nil o alvo cai em 0x4A3AC, desenha o conteudo por 0x49ED4 e "
+    "effectsFrame != nil; com nil o alvo cai em 0x4A3AC, desenha a sombra por 0x49ED4 e "
     "retorna SEM camada nenhuma. `[OBS]` quem CALCULA effectsFrame nao foi lido e nao e chave de "
     "documento (`[ART]` zero ocorrencias nos 146 bundles do corpus), entao o retangulo continua "
     "indeterminado -- mas o default honesto deixou de ser 'o canvas inteiro' e passou a ser 'nao "
@@ -36,11 +39,6 @@ const char* const kBlurMaterialFrameNote =
     "Entao a superficie esta transcrita em BlurKernel.h "
     "(blurMaterialSurface/drawBlurMaterial) e DESLIGADA aqui, como o grampo de "
     "plusLighter em BlendFormula.h: o grupo sai sem o desfoque.";
-
-const char* const kBlurMaterialBlendedGroupNote =
-    "blur-material NAO desenhado num grupo com blend-mode nao-normal: o alvo desfoca o fundo "
-    "(needs-background, flag 1 em 0x4A5C0) e aqui um grupo mesclado desenha num alvo proprio, "
-    "que chega vazio -- desfocar esse alvo seria desenhar silenciosamente errado.";
 
 int blurKernelHalfWidth(double sigma) {
     if (!(sigma > 0.0)) return 0;

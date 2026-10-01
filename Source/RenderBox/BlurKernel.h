@@ -303,9 +303,10 @@ void blurPremultipliedRgbaInPlace(std::vector<float>& img, std::uint32_t width,
 //     0x4A404  fcmp d13, #0.0 ; b.le 0x4A5DC      ; blur <= 0 ?
 //     0x4A40C  fcmp d1,  #0.0 ; b.ne 0x4A82C      ; refraction != 0 ?
 //
-//   blur > 0, refraction == 0  -> `0x4A418`: the group's content is drawn
-//        (`bl 0x49ED4` at `0x4A488`), then `save`, `clipShape:alpha:mode:`
-//        (`0x4A580`), `addBlurFilterWithRadius:opaque:` (`0x4A5B4`),
+//   blur > 0, refraction == 0  -> `0x4A418`: the group's SHADOW is drawn
+//        (`bl 0x49ED4` at `0x4A488` -- see the correction below), then `save`,
+//        `clipShape:alpha:mode:` (`0x4A580`), the SDF clip of `0x4A594`
+//        (`bl 0x1135C`), `addBlurFilterWithRadius:opaque:` (`0x4A5B4`),
 //        `beginLayerWithFlags:` **1** (`0x4A5C0`), an IMMEDIATE
 //        `drawLayerWithAlpha:1.0 blendMode:0` (`0x4A5D0`), `restore`. Nothing
 //        is drawn inside the layer.
@@ -333,10 +334,18 @@ void blurPremultipliedRgbaInPlace(std::vector<float>& img, std::uint32_t width,
 // renderer will be handed takes the FIRST branch. Wall 1 is down, and the answer
 // is the pure backdrop blur.
 //
-// `[BIN]` One consequence of the ORDER, and it is the shape of the whole effect:
-// the content is drawn BEFORE the layer (`0x4A488` precedes `0x4A48C`), so the
-// background the layer needs INCLUDES the group's own art. The group is blurred
-// together with everything beneath it, not merely over it.
+// `[BIN]` One consequence of the ORDER, and it is the shape of the whole effect
+// -- CORRECTED ON 2026-10-01, because this paragraph said the opposite. It read
+// `0x4A488` as "the content is drawn BEFORE the layer" and concluded that the
+// background the layer needs includes the group's own art. `0x4A488` is
+// `bl 0x49ED4` with `w1 = 0`, and `0x49ED4` is the SHADOW draw: it loads
+// `shadowStyle` (`[x0+1]`), `shadowOpacity` (`[x0+8]`), `[x0+0x38]` and
+// `shadowImage` (`[x0+0xb0]`) at `0x49F08`-`0x49F14`. The group's content is a
+// different function, `0x4AC84`, called at `0x48C08` only after `0x4A2D4` has
+// returned. So the background being blurred is everything beneath the group plus
+// the group's SHADOW, and NOT the group's art -- the blur sits under the art,
+// like the refraction. And it is clipped twice: by the frame (wall 2) and, at
+// `0x4A594` (`bl 0x1135C`), to the inside of the group's SDF.
 //
 // -------------------------------------------------------------------------
 // WALL 2, THE CLIP: six CGRect calls, and `[ctx+0x46A8]` is exactly ONE PIXEL
@@ -434,8 +443,9 @@ void blurPremultipliedRgbaInPlace(std::vector<float>& img, std::uint32_t width,
 // `CGRectGetMinX/MinY/Width/Height`. The `blurStrength`/`refractionStrength`
 // ramification at `0x4A404`/`0x4A40C` sits BELOW that branch. So the entire
 // blur-material block is reachable only when `effectsFrame != nil`; when it is
-// nil the function falls through to `0x4A3AC`, draws the group's content through
-// `0x49ED4` and returns **without any layer at all**.
+// nil the function falls through to `0x4A3AC`, draws the group's shadow through
+// `0x49ED4` (the same correction as above: that function is the shadow draw, not
+// the content) and returns **without any layer at all**.
 //
 // `[OBS]` **Who COMPUTES `effectsFrame` is still not read**, and it is not a
 // document key: `[ART]` a scan of the 146 corpus bundles finds zero
@@ -545,19 +555,20 @@ void blurPremultipliedRgbaInPlace(std::vector<float>& img, std::uint32_t width,
 // -------------------------------------------------------------------------
 //
 // This one was never a reading of the target; it is a question about OUR group
-// loop, and the loop already had the answer. `IconRenderer.cpp` composites
-// groups back-to-front into a single premultiplied accumulator `acc`, so at the
-// END of a group's layer loop `acc` holds precisely "everything beneath this
-// group, plus this group" -- which, by the order read above, is precisely the
-// background the target's layer needs. The call goes there.
+// loop. `IconRenderer.cpp` composites groups back-to-front into a single
+// premultiplied accumulator `acc` and, since 2026-10-01, puts each group on it
+// in the target's own order: the refraction, the shadow, then the group's
+// image. By the order read above (and corrected above) the background the
+// target's layer needs is "everything beneath this group, plus this group's
+// shadow", which is `acc` right after the shadow is blended and before the
+// group's image is. The call goes there.
 //
-// The one case where that does NOT hold is a group with a non-normal
-// `blend-mode`: it draws into a target of its own and the accumulator is not
-// underneath it. Blurring an empty group target would be the silent-wrong this
-// file refuses, so that case is REFUSED by name -- the same shape of refusal
-// `groupWouldRefract` already uses, and for the same reason. It is a refusal
-// that would survive the frame being read, which is why it is written down now
-// rather than when the rest of it turns on.
+// The answer written here until 2026-10-01 was "at the END of the group's layer
+// loop", which followed from the misreading of `0x4A488` and put the group's
+// own art into the blur. It also carried a refusal for a group with a
+// non-normal `blend-mode`, which then drew into a target of its own; that
+// target is gone (a blended group is flattened into an image and only the image
+// meets the mode), so the refusal and its note went with it.
 //
 // -------------------------------------------------------------------------
 
@@ -598,10 +609,5 @@ std::size_t drawBlurMaterial(std::vector<float>& acc, std::uint32_t width, std::
 
 // Said once per document that asks, because the frame above is still `[OBS]`.
 extern const char* const kBlurMaterialFrameNote;
-
-// A group carrying both a non-normal `blend-mode` and a positive
-// `blur-material`: the backdrop this renderer would hand the blur is the group's
-// own empty target and not the canvas, so the blur is refused by name.
-extern const char* const kBlurMaterialBlendedGroupNote;
 
 }  // namespace rb

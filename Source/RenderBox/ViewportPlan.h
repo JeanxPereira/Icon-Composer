@@ -35,16 +35,18 @@ inline constexpr double kLocalFieldBandPoints = 32.0;
 
 // A banda que os realces da PASTILHA leem do campo, em pontos. Ela nao sai de
 // grupo nenhum: a pastilha e desenhada sempre que o fundo pinta, entao ela
-// entra na margem por fora do laco dos grupos. `[BIN]` `chicletMember` de
-// `ChicletHighlights.cpp` da `inset = 0` nos sete slots e `distance` no maximo
-// 40 pontos (os dois difusos, `0x00062C64` e `0x00062DBC`), e
-// `resolveHighlight` faz `height = distance x pixelsPerPoint`, de modo que a
-// banda vale 40 pontos em qualquer `size`.
+// entra na margem por fora do laco dos grupos. `[BIN]` Os conjuntos `chiclet*`
+// (`RenderingParameters.cpp`) tem `inset = 0` em todo membro e `distance` no
+// maximo 44 pontos na geracao 27 (o `keyDiffuse` de `chicletClear` e de
+// `chicletScreened`, que o render desenha fora de `.color`; 40 nos dois difusos
+// de `chicletDefault`, `0x00062C64` e `0x00062DBC`) e 39 na 26 (a classe
+// `small`), e `resolveHighlight` faz `height = distance x pixelsPerPoint`, de
+// modo que a banda vale 44 pontos em qualquer `size`.
 //
 // `[ART]` MEDIDO em 18/09: sem esta linha o gate de um documento SO com fundo
 // acusa 5356 pixels e `max |d| = 0,198` a exatamente 4 px da borda interna --
 // que era a margem inteira que um documento sem grupos recebia.
-inline constexpr double kChicletHighlightBandPoints = 40.0;
+inline constexpr double kChicletHighlightBandPoints = 44.0;
 
 struct DocumentReach {
     double localPoints = 0.0;         // maior banda local que nao e sombra
@@ -53,8 +55,13 @@ struct DocumentReach {
     double chainedPoints = 0.0;       // SOMA dos alcances de refracao
 };
 
-DocumentReach documentReach(const icf::IconDocument& doc, const icf::Context& ctx,
-                            IconSizeClass sizeClass);
+// `params` e o bloco da geracao do render (`RenderingParameters.h`): o alcance
+// da sombra sai do `Shadow` dele -- na geracao 26 o deslocamento e (16, 16), o
+// desfoque e mais largo e nao ha anel -- e o da refracao do `refractionStrengthMax`
+// dele, que na 26 e zero.
+DocumentReach documentReach(
+    const icf::IconDocument& doc, const icf::Context& ctx, IconSizeClass sizeClass,
+    const RenderingParameters& params = renderingParameters(DesignGeneration::G27));
 
 // O produto dos fatores de reducao que `blurLadder` vai usar para este sigma,
 // nivel a nivel. A origem do buffer tem que ser multipla dele.

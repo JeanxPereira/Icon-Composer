@@ -42,6 +42,7 @@
 #include "Source/RenderBox/BlendMode.h"
 #include "Source/RenderBox/ChicletShape.h"
 #include "Source/RenderBox/DistanceField.h"
+#include "Source/RenderBox/GlassGlow.h"
 #include "Source/RenderBox/GlassLayer.h"
 #include "Source/RenderBox/GlassShadow.h"
 #include "Source/RenderBox/GlassSpecular.h"
@@ -71,7 +72,48 @@ struct SurfaceArt {
     bool shared = false;
 };
 
-// O campo de distancia de UMA camada de vidro, onde a superficie o guarda. Na CPU
+// A arte anda por referencia entre a passada dos elementos e a imagem do grupo:
+// a de um grupo de UM elemento e a propria arte dele (o alias), e copia-la so
+// para trocar de dono custaria o buffer inteiro.
+using SurfaceArtRef = std::shared_ptr<SurfaceArt>;
+
+// A IMAGEM DE UM GRUPO, em construcao. `[BIN]` O alvo desenha todos os elementos
+// de um grupo num display list so e o rasteriza SOZINHO (IconRendering 0x1A9D0,
+// 0x13590): a opacidade e a mescla de cada elemento entram ali, contra os
+// elementos ANTERIORES do mesmo grupo sobre o transparente.
+//
+// Os elementos chegam um a um (`addToGroupImage`), de tras para a frente. O
+// primeiro so e GUARDADO: um grupo de um elemento nunca aloca um alvo, e a imagem
+// dele e a arte do elemento, com a opacidade ainda por aplicar -- e isso que
+// mantem a aritmetica dos grupos de uma camada onde ela estava. O alvo
+// (pre-multiplicado, zerado, na grade do buffer) nasce com o segundo.
+struct SurfaceGroupImage {
+    std::size_t count = 0;
+    SurfaceArtRef first;
+    double firstOpacity = 1.0;
+    // Na CPU, o alvo; na GPU, o buffer dele (na grade LARGA: a imagem alimenta a
+    // sombra e a mascara, que moram nela).
+    std::vector<float> target;
+    std::shared_ptr<void> resident;
+    // A GPU com cache: o que entrou, para a chave da imagem pronta.
+    struct Part {
+        CacheKey key;
+        float alpha = 1.0f;
+        BlendMode mode = BlendMode::Normal;
+    };
+    std::vector<Part> parts;
+    bool keyed = true;
+};
+
+// A imagem pronta e a opacidade que ainda falta nela: a do unico elemento, no
+// alias; 1 quando ha um alvo (as opacidades ja estao dentro dele).
+struct SurfaceGroupTaken {
+    SurfaceArtRef image;
+    double opacity = 1.0;
+};
+
+// O campo de distancia de UM elemento de vidro -- ou o do grupo, que e o
+// empilhamento deles --, onde a superficie o guarda. Na CPU
 // e o `FieldImage`; na GPU e um buffer (`cpu` so e preenchido por `fieldOnCpu`).
 // `width == 0` e o campo vazio -- o `FieldImage` vazio de sempre, que vira nota.
 struct SurfaceField {
@@ -87,7 +129,7 @@ struct SurfaceField {
     bool empty() const { return width == 0; }
 };
 
-// A mascara de translucidez de UMA camada: na CPU, `glassOpacityMask`; na GPU, o
+// A mascara de translucidez de UM grupo: na CPU, `glassOpacityMask`; na GPU, o
 // campo e os argumentos (a mascara e feita na passada que a aplica).
 struct SurfaceMask {
     std::shared_ptr<const OpacityMask> cpu;
@@ -109,8 +151,9 @@ struct FieldBands {
 using CountSink = std::function<void(std::size_t)>;
 using MaskSink = std::function<void(std::size_t missed, std::size_t painted)>;
 
-// A sombra de UMA camada e o seu overdraw, feitos da arte ja mascarada. Na CPU
-// sao as imagens de `shadowImageCached`/`shadowOverdrawImage`; na GPU, buffers.
+// A sombra de UM grupo e o seu overdraw. A sombra sai da FONTE (antes da
+// mascara); o overdraw, dela e do conteudo ja mascarado. Na CPU sao as imagens de
+// `shadowImageCached`/`shadowOverdrawImage`; na GPU, buffers.
 struct SurfaceShadow {
     std::shared_ptr<const std::vector<float>> image;
     std::vector<float> overdraw;
@@ -131,7 +174,13 @@ public:
     // le e a propria sombra precisam dele; o acumulador nao. A CPU ignora (o
     // acumulador dela e o buffer inteiro, o gabarito). A GPU guarda o acumulador
     // na estreita: no zoom profundo a margem da sombra e ~9x a area do recorte.
-    virtual Result<void> begin(const PixelGrid& grid, const PixelGrid& narrow) = 0;
+    //
+    // `params` e o bloco da geracao deste render (`RenderingParameters.h`), que
+    // vive mais que a superficie: os passos cujo parametro nao chega por
+    // argumento (a imagem da sombra le dele o `Shadow` da geracao) o leem
+    // dali.
+    virtual Result<void> begin(const PixelGrid& grid, const PixelGrid& narrow,
+                               const RenderingParameters& params) = 0;
 
     // A grade em que as bordas do buffer de um ladrilho caem (`planViewport`,
     // `lattice`). 0: o plano de sempre -- a CPU.
@@ -148,11 +197,15 @@ public:
     virtual Result<void> chicletHighlights(RenderCache* cache, const SpecularArguments& args,
                                            IconPlatform platform, CountSink sink) = 0;
 
-    // Um grupo cuja mescla nao e `normal` desenha num alvo proprio e so no fim
-    // entra no acumulador, com `blendPremulOver`. `endGroup` recebe o modo
-    // quando o grupo foi isolado e nullopt quando nao.
-    virtual Result<void> beginGroup(bool isolated) = 0;
-    virtual Result<void> endGroup(std::optional<BlendMode> blend) = 0;
+    // A imagem de um grupo (`SurfaceGroupImage`). `addToGroupImage` e `blendOver`
+    // de IconRenderer.cpp no alvo do GRUPO, com a opacidade e a mescla do
+    // elemento; quem chama passa `Normal` para o primeiro, que nao encontra nada.
+    // `takeGroupImage` devolve a arte do unico elemento ou o alvo des-multiplicado
+    // (`rgb = a > 0 ? c / a : 0`, a conta do `finish`) como uma arte RETA, que e
+    // o que a mascara, a sombra e `blendArt` leem. Na GPU: `icon_group.comp`.
+    virtual Result<void> addToGroupImage(SurfaceGroupImage& group, const SurfaceArtRef& art,
+                                         double opacity, BlendMode mode) = 0;
+    virtual Result<SurfaceGroupTaken> takeGroupImage(SurfaceGroupImage& group) = 0;
 
     // A arte de uma camada. `drawSvg` e `svgRenderCached` (o texto e a chave de
     // cache); `placeRaster` e a colocacao bilinear de IconRenderer.cpp.
@@ -167,6 +220,12 @@ public:
     virtual Result<SurfaceArt> placeRaster(RenderCache* cache, const icf::DecodedPng& png,
                                            const LayerPlacement& placement,
                                            bool feedsField) = 0;
+    // Os pixels de uma arte na CPU (RGBA reto, a grade do buffer), para quem os le
+    // FORA da superficie: a silhueta de um grupo de iluminacao combinada, que
+    // `renderIconOn` monta na CPU nos dois caminhos. Na CPU e a propria arte; na
+    // GPU, a copia de [UP3] de um raster colocado com `feedsField` -- ou um
+    // readback, se ela nao veio.
+    virtual Result<const std::vector<float>*> artPixels(SurfaceArt& art) = 0;
 
     // O campo de uma camada de vidro. `contourField` e `fieldFromContoursCached`
     // (os contornos de `flattenSvgToContours`); `alphaField` e
@@ -184,6 +243,13 @@ public:
     virtual Result<SurfaceField> alphaField(RenderCache* cache, SurfaceArt& art,
                                             std::uint32_t width, std::uint32_t height,
                                             const FieldOptions& options) = 0;
+    // O campo de um GRUPO que ilumina elemento por elemento: `stackFields`
+    // (DistanceField.h) do campo de cima sobre o de baixo, texel a texel. Na GPU
+    // e `icon_field_stack.comp` -- uma escolha, sem conta, entao o resultado e
+    // um dos dois de entrada bit a bit.
+    virtual Result<SurfaceField> stackField(const SurfaceField& lower,
+                                            const SurfaceField& upper, float reach,
+                                            bool advanced) = 0;
     // A refracao do alvo corrente pelo campo:
     // `glassOver(alvo, grade, glassDisplacementMap(campo, r), r)`.
     virtual Result<void> refract(const SurfaceField& field, const GlassRefraction& refraction) = 0;
@@ -198,21 +264,39 @@ public:
     virtual Result<void> specular(const SurfaceField& field, const SpecularArguments& args,
                                   CountSink sink) = 0;
 
+    // O brilho interno da geracao 26 sobre o alvo corrente: `drawGlow`
+    // (GlassGlow.h), pelo campo do grupo. Quem chama ja conferiu `glowDraws`.
+    // Na GPU: `icon_glow`, a mesma conta em double.
+    virtual Result<void> glow(const SurfaceField& field, const GlowArguments& args) = 0;
+
     // `blendOver` no alvo corrente, da arte de uma camada. `clearContent`: a
     // arte passa antes pela matriz do CONTEUDO do Clear (IconRendering 0x4AF20):
-    // `(0.85 R, 1, 0, A)` sobre a cor reta.
+    // `(0.85 R, 1, 0, A)` sobre a cor reta. `clampPlusLighter`: com `mode ==
+    // PlusLighter`, o composite e o `clampedPlusL` (BlendFormula.h) no lugar da
+    // soma -- so este desenho o alvo grampeia (0x4B530), nunca a sombra, o brilho
+    // ou os realces.
     virtual Result<void> blendArt(const SurfaceArt& art, float alpha, BlendMode mode,
-                                  bool clearContent) = 0;
+                                  bool clearContent, bool clampPlusLighter) = 0;
 
-    // A sombra de `art` (`shadowImageCached`) e, com `overdrawAlpha > 0`, o
-    // overdraw dela (`shadowOverdrawImage`), feitos de uma vez porque os dois
-    // leem a arte como ela e AGORA. `blendShadow` compoe uma das duas no alvo
-    // corrente com `blendOver`. Na GPU: `icon_ring`, `icon_shadow`, `icon_blur`.
-    virtual Result<SurfaceShadow> makeShadow(RenderCache* cache, SurfaceArt& art,
-                                             ShadowStyle style, const ShadowGeometry& geometry,
-                                             double overdrawAlpha) = 0;
+    // A sombra de `source` (`shadowImageCached`), como a fonte e AGORA -- antes
+    // da mascara de translucidez, que nao entra nela. `clipShadowOverdraw` faz o
+    // overdraw dela (`shadowOverdrawImage`) contra `content`, a imagem do grupo
+    // JA mascarada: duas chamadas porque as duas leituras caem de lados opostos
+    // da mascara. `blendShadow` compoe uma das duas no alvo corrente com
+    // `blendOver`. Na GPU: `icon_ring`, `icon_shadow`, `icon_blur`.
+    virtual Result<SurfaceShadow> makeShadow(RenderCache* cache, SurfaceArt& source,
+                                             ShadowStyle style,
+                                             const ShadowGeometry& geometry) = 0;
+    virtual Result<void> clipShadowOverdraw(SurfaceShadow& shadow, SurfaceArt& content,
+                                            double clipAlpha) = 0;
     virtual Result<void> blendShadow(const SurfaceShadow& shadow, bool overdraw, float alpha,
                                      BlendMode mode) = 0;
+
+    // A recoloracao do Tinted Dark sobre o alvo corrente, pre-multiplicado:
+    // `tintDark` de IconRenderer.cpp (a conta de `applyTintedDark`, que e linear
+    // e sem deslocamento). So a geracao 26 a pede DENTRO do render -- la os
+    // realces da pastilha ficam fora da camada tingida. Na GPU: `icon_tint`.
+    virtual Result<void> tint(const IconRenderOptions::TintRecolour& tint) = 0;
 
     // O recorte pedido, des-multiplicado: o `RenderedIcon::rgba`.
     virtual Result<std::vector<float>> finish(std::int32_t cropX, std::int32_t cropY,
@@ -222,7 +306,8 @@ public:
 // Os campos e a sombra com o `RenderCache` de IconRenderer.cpp (nulo = sem cache).
 std::shared_ptr<const std::vector<float>> shadowImageCached(
     RenderCache* cache, const std::vector<float>& art, std::uint32_t width,
-    std::uint32_t height, ShadowStyle style, const ShadowGeometry& geometry);
+    std::uint32_t height, ShadowStyle style, const ShadowGeometry& geometry,
+    const ShadowParameters& parameters);
 std::shared_ptr<const FieldImage> fieldFromContoursCached(
     RenderCache* cache, const std::vector<FieldContour>& contours, std::uint32_t width,
     std::uint32_t height, const FieldOptions& fo, std::uint32_t superSample);
@@ -234,6 +319,10 @@ std::shared_ptr<const FieldImage> fieldFromAlphaCached(RenderCache* cache,
 // `placeRaster` de IconRenderer.cpp, a colocacao de CPU, para a superficie da GPU.
 std::vector<float> placeRasterOnCpu(const icf::DecodedPng& png, const LayerPlacement& placement,
                                     const PixelGrid& grid);
+
+// A recoloracao do Tinted Dark sobre `count` pixels RGBA, no lugar
+// (`applyTintedDark`, e a superficie de CPU).
+void tintDark(float* rgba, std::size_t count, const IconRenderOptions::TintRecolour& tint);
 
 // As decisoes de `renderIcon`, desenhadas em `surface`.
 Result<RenderedIcon> renderIconOn(IconSurface& surface, const icf::IconBundle& bundle,

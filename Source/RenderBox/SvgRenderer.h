@@ -29,13 +29,15 @@
 // work this does not need in order to make a picture, and the differential that
 // would guard it already exists.
 //
-// COLOUR SPACE IS NOT CONVERTED, AND THAT IS REPORTED
-// ----------------------------------------------------
-// `color(display-p3 ...)` occurs about a dozen times in the corpus. Converting
-// it to sRGB needs a matrix that has not been measured from the target, and
-// drawing its components as though they were sRGB would shift every one of them
-// silently. So such a shape IS drawn -- dropping it would be worse -- and its
-// index is reported in `unconvertedP3`.
+// COLOUR SPACE IS CONVERTED AT THE PAINT
+// --------------------------------------
+// `color(display-p3 ...)` occurs about a dozen times in the corpus, and a
+// document can declare every UNTAGGED colour of its SVGs to be Display P3
+// (`color-space-for-untagged-svg-colors`, `RenderOptions::
+// untaggedColoursAreDisplayP3`). Either way the components are taken to the
+// working space by `svgColourToWorking` when a paint becomes floats -- the
+// matrix and the curve are RenderBox's own, read in `ColorSpace.h`. Until
+// 2026-10-01 such a shape was drawn unconverted and reported.
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -93,7 +95,63 @@ struct RenderOptions {
     // `BuildOptions`: the target carries the count in the buffer, so the RULE
     // that picks it lives on its CPU side and was not in the shader to read.
     int subdivisions = 16;
+
+    // `[BIN]` `IconComposition.assumedSVGColorSpace` (the root key
+    // `color-space-for-untagged-svg-colors`, whose one case is `display-p3`):
+    // Foundation `0xF324` hands CoreSVG `{"preferredColorSpace": 1}`, and
+    // `CGSVGDocumentGetColorOfPaint` (`CoreSVG 0x21028`) gives that space to
+    // every colour that carries no tag of its own. `[INF]` Absent is sRGB.
+    bool untaggedColoursAreDisplayP3 = false;
+
+    // WHAT A FILL OVERRIDE DOES TO A SHAPE THE ART LEFT UNPAINTED.
+    //
+    // `[BIN]` The target does not repaint the art: it clones the layer's SVG
+    // into a white silhouette, uses that as the MASK of the layer's fill, and
+    // the closure that whitens each node is `IconRendering 0x8654` (called per
+    // node from `0x8174`). For a shape node (`CGSVGNodeGetType == 2`):
+    //
+    //     opacity (attr 0x29)       set to the silhouette's, UNLESS it parses,
+    //                               is <= 0 and the flag is clear     0x86B4-0x86FC
+    //     fill (0x12)               set to the silhouette's when
+    //                               `CGSVGPaintIsVisible`, or when the
+    //                               flag is set                       0x8700-0x8730
+    //     fill-opacity (0x13)       as `opacity`                      0x8734-0x8784
+    //     stroke, stroke-opacity    no flag on either                 0x8788-0x8824
+    //
+    // The flag is `ICRRenderingParameters.recreateRadar153477135` (`+0x361`):
+    // clear in generation 27, set in generation 26 (`0x7707C`). So in 27 a
+    // shape with `fill="none"`, a fill of zero alpha or `opacity="0"` stays
+    // out of the mask, and in 26 all three are forced in -- the shape becomes
+    // solid.
+    //
+    // This is that flag. It only speaks when `override` is set. Until
+    // 2026-10-01 this renderer painted an unpainted shape under an override
+    // unconditionally, which is the flag's SET behaviour for the fill and
+    // neither generation's for the opacity. `svgFillPaints` and
+    // `svgShapeOpacity` are the two rules.
+    //
+    // `[OBS]` WHAT IS NOT REPRODUCED, in either generation: the closure also
+    // sets every opacity that is ABOVE zero to the silhouette's, on shape and
+    // group nodes alike, so under a fill the art's own `opacity="0.5"` does not
+    // dim the mask. Here `Shape::opacity` still multiplies. And `Shape::opacity`
+    // is the product down the ancestors, so a GROUP at zero cannot be told from
+    // a shape at zero: with the flag set both are forced, where the target
+    // forces only the shape's own.
+    bool overrideForcesHiddenPaint = false;
 };
+
+// Whether a shape's FILL is painted under `options`. With no override it is the
+// art's own answer (`fill` is not `none`). With one, a visible fill always
+// paints and an invisible one -- `none`, or a colour whose alpha (which carries
+// `fill-opacity`) is not above zero -- paints only under
+// `overrideForcesHiddenPaint`. `[INF]` That `CGSVGPaintIsVisible` is exactly
+// "not none and alpha above zero": the function is CoreSVG's and was not read.
+bool svgFillPaints(const icf::svg::Shape& shape, const RenderOptions& options);
+
+// The opacity a shape is composited with under `options`: its own, except that
+// an override with `overrideForcesHiddenPaint` lifts a shape at or below zero
+// to one.
+double svgShapeOpacity(const icf::svg::Shape& shape, const RenderOptions& options);
 
 // A shape that was not drawn, and why. `why` is meant to be shown to a person.
 struct SkippedShape {
@@ -115,9 +173,6 @@ struct RenderedImage {
     // and a single number could not say whether the stroke front is running.
     std::size_t strokesDrawn = 0;
     std::vector<SkippedShape> skipped;
-    // Drawn, but with components that were never converted out of display-p3.
-    std::vector<std::size_t> unconvertedP3;
-
     // Said in words when a FILTER drew something whose provenance is short of a
     // measurement. The blur is the one that speaks today: its routing into
     // `CIGaussianBlur`'s `inputRadius` is measured and the kernel CoreImage
@@ -171,8 +226,14 @@ struct ResolvedGradient {
 // needs and `userSpaceOnUse` ignores.
 // `ctm` is the referencing shape's `Shape::ctm`: a `userSpaceOnUse` gradient is
 // measured in that shape's own user space.
+// One SVG paint colour as the four floats the compositor uses: converted out
+// of Display P3 when the colour is tagged so, or is untagged in a document that
+// declares its untagged colours to be Display P3.
+void svgColourToWorking(const icf::svg::SvgColor& c, bool untaggedIsDisplayP3, float (&rgba)[4]);
+
 ResolvedGradient resolveGradient(const icf::svg::SvgDocument& doc, const std::string& id,
                                  double bx0, double by0, double bx1, double by1,
-                                 const icf::svg::Transform& ctm = icf::svg::Transform{});
+                                 const icf::svg::Transform& ctm = icf::svg::Transform{},
+                                 bool untaggedIsDisplayP3 = false);
 
 }  // namespace rb

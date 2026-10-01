@@ -1,5 +1,7 @@
 #include "Source/RenderBox/AutomaticGradient.h"
 
+#include "Source/RenderBox/ColorSpace.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -86,6 +88,36 @@ std::vector<RampStop> automaticGradient(const icf::Color& base,
                      [](const RampStop& x, const RampStop& y) {
                          return x.location < y.location;
                      });
+    return stops;
+}
+
+std::vector<RampStop> automaticGradientInWorkingSpace(const icf::Color& base,
+                                                      const AutomaticGradientParameters& p) {
+    // What `IconColor` holds: four components, gamma-encoded Display P3. A
+    // Display P3 or a grey base is already those numbers, and is handed over as
+    // the document's own doubles; only an sRGB base has to be converted, and the
+    // conversion is a `float` one. The alpha is never a component of it.
+    const bool grey = base.count < 3;
+    icf::Color inP3;
+    inP3.space = icf::ColorSpace::DisplayP3;
+    inP3.count = 4;
+    inP3.components[0] = base.components[0];
+    inP3.components[1] = grey ? base.components[0] : base.components[1];
+    inP3.components[2] = grey ? base.components[0] : base.components[2];
+    inP3.components[3] = grey ? base.components[1] : base.components[3];
+    if (base.space == icf::ColorSpace::SRGB || base.space == icf::ColorSpace::ExtendedSRGB) {
+        float held[4];
+        toDisplayP3(base, held);
+        for (int k = 0; k < 3; ++k) inP3.components[k] = static_cast<double>(held[k]);
+    }
+
+    std::vector<RampStop> stops = automaticGradient(inP3, p);
+    for (RampStop& s : stops) {
+        float rgba[4];
+        for (int k = 0; k < 4; ++k) rgba[k] = static_cast<float>(s.rgba[k]);
+        displayP3ToSrgb(rgba);
+        for (int k = 0; k < 3; ++k) s.rgba[k] = static_cast<double>(rgba[k]);
+    }
     return stops;
 }
 

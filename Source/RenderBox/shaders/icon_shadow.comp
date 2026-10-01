@@ -84,8 +84,10 @@ void main() {
                 dist = min(dist, double(p.w - g.x));
                 dist = min(dist, double(p.h - g.y));
                 precise double depth = dist - 0.5lf;
-                double r = depth / p.ringWidth;
-                m = float(r < 0.0lf ? 0.0lf : (r > 1.0lf ? 1.0lf : r));
+                // A banda, como em `shadowRingEach`: um ate `ringWidth` para
+                // dentro, caindo a zero no pixel seguinte.
+                double r = depth - p.ringWidth + 0.5lf;
+                m = float(1.0lf - (r < 0.0lf ? 0.0lf : (r > 1.0lf ? 1.0lf : r)));
             }
             v.a = v.a * m;
         }

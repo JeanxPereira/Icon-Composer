@@ -527,4 +527,131 @@ std::size_t fieldInsideMask(const std::vector<FieldContour>& contours, std::uint
                             std::uint32_t height, const FieldOptions& options,
                             std::uint32_t superSample, std::vector<char>& inside);
 
+// The COVERAGE of a contour set, one float per pixel in `[0, 1]`: the same
+// inside/outside test as `fieldInsideMask` (`rasteriseContours`, the same
+// half-open crossing rule and fill rule), run on a grid `samples` times finer on
+// each axis and box-averaged back. `samples * samples` sample points per pixel,
+// evenly spaced; `samples == 1` is the mask itself as 0 and 1.
+//
+// OURS, like everything in part two. It exists for the one caller that needs a
+// SILHOUETTE rather than a field: a group lit as ONE shape (part four) draws
+// its glass elements' silhouettes into one image and takes the field of that
+// image's alpha (`generateFieldFromAlpha`), and the alpha of a vector has to
+// come from somewhere both render paths compute identically -- which the
+// art's own antialiased alpha is not, between the CPU and the GPU. The
+// sub-texel seed of `generateFieldFromAlpha` then has a fraction to work with
+// along the contour instead of a hard step.
+//
+// Returns the number of sample points inside, and leaves `coverage` empty when
+// that is zero -- a contour set that covers no sample point.
+std::size_t fieldCoverageFromContours(const std::vector<FieldContour>& contours,
+                                      std::uint32_t width, std::uint32_t height,
+                                      const FieldOptions& options, std::uint32_t samples,
+                                      std::vector<float>& coverage);
+
+// ===========================================================================
+// PART FOUR -- ONE field for a GROUP of glass elements
+// ===========================================================================
+//
+// `[BIN]` The target keeps one SDF per GROUP (`FinalizedIcon.Layer.sdf`), not
+// one per element, and builds it in `IconRendering` `0x1CB90`. When the group
+// lights its elements one by one (`performsLightingByElement`, the branch at
+// `0x1CDD8`) every glass element gets a source list and a `DistanceFilter` of
+// its own (`0x1CE98`-`0x1D084`) and the results are STACKED by `0x11480`,
+// back to front. Element 0 is drawn as it is (`0x11514`-`0x11528`). For each
+// later one (the loop at `0x115F0`-`0x118CC`):
+//
+//   1. with `SDFGeneration.useAdvancedStacking` -- AND a `RBProjectVersion`
+//      gate, `0x11B00`, whose answer was not read -- the element's field is
+//      first drawn over everything with blend code `0x3F9` (`0x11664`-`0x11678`),
+//      which is RenderBox's mode 51, `sdf_maximum`;
+//   2. a clip layer is opened and the element's field is drawn into it through
+//      `addStyle:1`, a GradientMap of two stops (`0x1168C`-`0x1182C`), and closed
+//      with `clipLayerWithAlpha:1 mode:0` (`0x11874`);
+//   3. the element's field is drawn inside that clip, blend 0 (`0x1189C`).
+//
+// `[BIN]` THE TWO STOPS ARE A STEP. The first sits at
+// `0.5 - (maxDistance + 1) / (2 * range)` (`0x11580`-`0x11598`, `range` being
+// the encoding range of the SDF texture, `0.2 * min(w, h)`) and the second at
+// the NEXT REPRESENTABLE HALF after it (`0x1159C`-`0x115D0`); the colours are
+// the two lazily-built globals at `0xCF4A8` and `0xCDE98`, the second of which
+// is the opaque black `GlassShadow.h` already reads. The texture encodes
+// `u = 0.5 - d / (2 * range)` (inside is above one half), so the step sits at
+// `d = maxDistance + 1` and the clip is the element's footprint DILATED by
+// `maxDistance + 1` pixels.
+//
+// `[BIN]` THE TWO FRAGMENTS ARE READ, out of the RenderBox metallib
+// (`default_mod66.ll`):
+//
+//   * GradientMap is the branch of `alpha_effect_fragment_impl` taken when bits
+//     9-11 of the state are 2 (`%60`-`%61`): one channel of the texel -- chosen
+//     by bits 6-8, or its Rec.709 luma (`%49`-`%57`) -- goes through an affine
+//     `t = v * scale + bias` (`%59`) and `t` indexes the gradient
+//     (`Gradient::color`, `%96`). `0x117EC`-`0x1181C` hands it the pair
+//     `(0.0f, 1.0f)` beside the stops.
+//   * `sdf_maximum` is case 51 of `RB::Shader::blend` (`%582`-`%586`):
+//     `out = src.r > dst.r ? src : dst`. The WHOLE texel of whichever side is
+//     further inside, with no arithmetic -- a union that carries the normal of
+//     the winner along with its distance.
+//
+// `[INF]` Three things join those readings to the function below, and none of
+// them was read. That the pair `(0.0f, 1.0f)` leaves the channel as it is
+// (which of the two is the scale was not followed into RenderBox's
+// `render_(GradientMap...)`); that the first stop's colour is transparent (its
+// initialiser, `0x3DB0C`, was not opened -- a step from black to black would
+// clip nothing); and that an element's field, drawn with blend 0 at alpha 1,
+// REPLACES what is under it, i.e. that the field's layer is opaque over its
+// whole rect.
+//
+// `[OBS]` THE LAST ONE IS THE WEAKEST, and the filter's own fragment does not
+// settle it. `filter_distance` (`default_mod74.ll`) resolves the distance as
+// `u = saturate(d * scale + bias)` (%86-%95) and writes it in one of two
+// shapes: mode 5 puts `u` in ALL FOUR channels, alpha included (%96-%99), and
+// mode 6 writes `(u - bias, u, 0, 0)` (%100-%105). Under neither is a plain
+// source-over a replacement. Which mode a source layer takes, and whether
+// `SDF.SourceLayer.isOpaque` (`0xA3104`) is what makes its layer opaque, was not
+// followed. Replacement is kept because it is the only reading under which the
+// stack means anything: composited as premultiplied alpha, two encoded
+// distances add up to a contour that belongs to neither element.
+//
+// WHAT THE REPLACEMENT COSTS, said because it shows: in a band `maxDistance + 1`
+// wide around every upper element the group's field says "outside" even where
+// a lower element paints, so there the translucency mask leaves the lower art
+// opaque and the lower element's highlight is cut. `kFieldStackNote`
+// (`IconRenderer.h`) says so whenever a group stacks.
+//
+// SO, PER TEXEL, with `d` this tower's signed distance (negative inside):
+//
+//     upper.d < maxDistance + 1   ->  the upper element's texel
+//     otherwise, step 1 on        ->  whichever of the two has the smaller d
+//     otherwise                   ->  the lower texel
+//
+// Strictly less: at `u` equal to the first stop the gradient still answers
+// with the first stop's colour. `[OBS]` Our `d` is a float and the target's `u`
+// is a half or an 8-bit texel, so which side of the step a texel within one
+// encoding step of it falls on is not reproduced.
+//
+// `maxDistance` (`0x1C6B8`) is the reach of the widest enabled highlight, in
+// pixels, and zero for a group with no specular; the caller resolves it.
+//
+// STEP 1 CHANGES NO PIXEL OF THIS RENDERER, and that is arithmetic and not a
+// measurement: it only speaks where `upper.d >= maxDistance + 1`, and there it
+// hands back a texel whose `d` is at least that -- further out than any
+// highlight reaches, and more than a pixel outside for the translucency's
+// `saturate(sd + 1)`. It is transcribed because it is read, and so that a
+// consumer which looks further out (the generation-26 glow) finds it there.
+inline bool fieldStackTakesUpper(float upperDistance, float lowerDistance, float edge,
+                                 bool advanced) {
+    if (upperDistance < edge) return true;
+    return advanced && upperDistance < lowerDistance;
+}
+
+// The stack of two fields on the same grid. `reach` is `maxDistance`; the edge
+// it is compared against is `reach + 1`, computed once, in float, so that the
+// resident path (`icon_field_stack.comp`) compares against the same number.
+// An EMPTY `lower` answers `upper` and the other way round; two fields on
+// different grids answer the empty field, which is a caller's mistake.
+FieldImage stackFields(const FieldImage& lower, const FieldImage& upper, float reach,
+                       bool advanced);
+
 }  // namespace rb

@@ -14,7 +14,10 @@
 // ARMSX2, NotchMyProblem, harnss, swmpc), mescla de grupo isolado
 // (AssetCatalogTinkerer), SVG com filtro e mask que cai para a CPU (PDF-Archiver,
 // PiStats, Delta), traco (quick-push), o de maior media (macai) e o Apollo, que
-// tem clip-path, override de camada e sombra.
+// tem clip-path, override de camada e sombra. E, desde que o render compoe por
+// grupo (01/10), dois grupos que misturam camada de vidro e camada simples
+// (GlowGetter, chromium): neles a fonte da sombra e um buffer a parte da imagem
+// do grupo, e o campo e o empilhamento de mais de um elemento.
 #include "check.h"
 #include "Source/IconComposerFoundation/IconBundle.h"
 #include "Source/RenderBox/BlendFormula.h"
@@ -28,6 +31,7 @@
 #include "Source/RenderBox/GpuGlass.h"
 #include "Source/RenderBox/IconRenderer.h"
 #include "Source/RenderBox/RenderCache.h"
+#include "Source/RenderBox/RenderingParameters.h"
 #include "Source/cli/Fidelity.h"
 
 #include <algorithm>
@@ -76,6 +80,8 @@ const char* const kDocuments[] = {
     "rileytestut__Delta__MicrochipIcon",
     "Code-with-Beto__quick-push__QuickPushIcon",
     "Renset__macai__AppIcon",
+    "Aeastr__GlowGetter__icon",
+    "chromium__chromium__AppIcon",
 };
 
 }  // namespace
@@ -115,6 +121,33 @@ TEST_CASE(gpu_fidelity_within_ceiling_under_other_contexts) {
         auto s = iccli::fidelityOf(device, *bundle, 512, ctx);
         REQUIRE(s.has_value());
         CHECK(s->withinCeiling());
+    }
+}
+
+// O mesmo teto sob a GERACAO 26: outra lista de realces (pintados, sem a matriz
+// de cor, com `inset` e aro), outros fills, outra mascara de translucidez -- os
+// dois caminhos tem de concordar nela como concordam na 27. Um documento de vidro
+// vetorial, um de vidro sobre raster, um com fundo de sistema e um com gradiente
+// automatico.
+TEST_CASE(gpu_fidelity_within_ceiling_under_generation_26) {
+    Device& device = gpuDevice();
+    REQUIRE(device.valid());
+    REQUIRE(std::getenv("IC_CORPUS_DIR") != nullptr);
+    for (const char* name :
+         {"Apollo-Reborn__Apollo-Reborn__AppIcon", "Aeastr__NotchMyProblem__icon",
+          "insidegui__AssetCatalogTinkerer__AppIcon", "Aeastr__GlowGetter__icon"}) {
+        auto bundle = icf::IconBundle::open(corpus(name));
+        REQUIRE(bundle.has_value());
+        auto s = iccli::fidelityOf(device, *bundle, 512, {}, DesignGeneration::G26);
+        REQUIRE(s.has_value());
+        if (!s->withinCeiling()) {
+            std::printf("  %s (geracao 26): media %.4f pior %d em (%u,%u) canal %d%s%s\n", name,
+                        s->mean, s->max, s->worstX, s->worstY, s->worstChannel,
+                        s->sameShape ? "" : " -- decisoes divergem: ", s->shapeWhy.c_str());
+        }
+        CHECK(s->sameShape);
+        CHECK(s->mean <= iccli::kFidelityMeanCeiling);
+        CHECK(s->max <= iccli::kFidelityMaxCeiling);
     }
 }
 
@@ -289,9 +322,13 @@ TEST_CASE(gpu_resident_cache_survives_an_edit) {
         dark.context.appearance = icf::Appearance::Dark;
         IconRenderOptions small = light;
         small.sizeClass = IconSizeClass::Small;
+        // A geracao de design troca a lista de realces, a mascara e os fills com
+        // o MESMO documento e a MESMA grade: so a chave separa.
+        IconRenderOptions g26 = light;
+        g26.generation = DesignGeneration::G26;
 
         RenderCache cache;
-        for (const IconRenderOptions& o : {light, dark, small, light, dark}) {
+        for (const IconRenderOptions& o : {light, dark, small, g26, light, dark, g26}) {
             auto plain = renderIconGpu(device, *bundle, o);
             IconRenderOptions cached = o;
             cached.cache = &cache;
@@ -573,22 +610,52 @@ TEST_CASE(gpu_glass_steps_are_the_cpu_steps) {
         const char* name;
         bool chiclet, vcm;
         std::uint32_t slot;
+        DesignGeneration generation = DesignGeneration::G27;
+        HighlightsSetKind set = HighlightsSetKind::Default;
+        IconSizeClass sizeClass = IconSizeClass::Large;
     };
-    for (const Case c : {Case{"especular VCM", false, true, 0}, Case{"especular mescla", false, false, 1},
-                         Case{"pastilha", true, false, 2}}) {
+    // A geracao 26 entra com os conjuntos dela: o do glifo pinta SEM a matriz
+    // (`glyphHighlightsUseVCM` falso), com o aro de cone 2 pi (a sentinela) e o
+    // `inset` com piso em pixels -- na classe `display`, a unica que curva, e na
+    // `large` do conjunto `Bright`, que tem as quatro tabelas proprias.
+    const DesignGeneration g26 = DesignGeneration::G26;
+    for (const Case c :
+         {Case{"especular VCM", false, true, 0}, Case{"especular mescla", false, false, 1},
+          Case{"pastilha", true, false, 2},
+          Case{"especular 26 display", false, false, 6, g26, HighlightsSetKind::Default,
+               IconSizeClass::Display},
+          Case{"especular 26 bright", false, false, 7, g26, HighlightsSetKind::Bright,
+               IconSizeClass::Large},
+          Case{"especular 26 screened small", false, false, 8, g26, HighlightsSetKind::Screened,
+               IconSizeClass::Small},
+          // A pastilha da 26: tres realces com `blendModeOverride == .normal`, a
+          // opacidade por classe, e o aro de cone pi -- que o rasterizador da
+          // pastilha acende em toda a volta (o ultimo double do registro).
+          Case{"pastilha 26", true, false, 9, g26, HighlightsSetKind::Default,
+               IconSizeClass::Large},
+          Case{"pastilha 26 dim display", true, false, 10, g26, HighlightsSetKind::Dim,
+               IconSizeClass::Display}}) {
         SpecularArguments a = args;
         a.useVCM = c.vcm;
+        a.generation = c.generation;
+        a.set = c.set;
+        a.sizeClass = c.sizeClass;
+        const HighlightParameters& hp = renderingParameters(c.generation).highlights;
+        a.lightLongitude =
+            c.chiclet ? hp.defaultChicletLightLongitude : hp.defaultGlyphLightLongitude;
         std::vector<float> want = acc;
         std::size_t wantCount = 0;
-        std::size_t n = 0;
-        const HighlightSlot* slots = c.chiclet ? chicletHighlightSlots(n) : glyphHighlightSlots(n);
+        const std::vector<HighlightSlot>& list = expandedHighlights(
+            c.generation, c.chiclet ? HighlightFamily::Chiclet : HighlightFamily::Glyph, c.set);
+        const std::size_t n = list.size();
+        const HighlightSlot* slots = list.data();
         if (c.chiclet) {
             // `drawChicletHighlights` faz o proprio campo da pastilha: aqui o campo
             // e o da estrela, entao a referencia e o laco dele sobre ESTE campo.
             wantCount = 0;
             std::vector<char> hit(grid.texels(), 0);
             for (std::size_t s = 0; s < n; ++s) {
-                const GlassHighlightSettings g = resolveHighlight(slots[s], a);
+                const GlassHighlightSettings g = resolveChicletHighlight(slots[s], a);
                 if (g.opacity <= 0.0 || g.height <= 0.0) continue;
                 for (std::size_t t = 0; t < grid.texels(); ++t) {
                     const float* p = &field.rgba[t * 4];
@@ -597,7 +664,7 @@ TEST_CASE(gpu_glass_steps_are_the_cpu_steps) {
                     if (p[1] == 0.0f && p[2] == 0.0f) continue;
                     const double clip = want[t * 4 + 3];
                     if (clip <= 0.0) continue;
-                    const double f = glassHighlightFragment(g, sd, p[1], p[2], 1.0);
+                    const double f = chicletHighlightFragment(g, sd, p[1], p[2]);
                     if (f <= 0.0) continue;
                     const double alpha = f * g.opacity * clip;
                     BlendColour src;
@@ -618,7 +685,7 @@ TEST_CASE(gpu_glass_steps_are_the_cpu_steps) {
             wantCount = drawSpecular(want, field, a);
         }
         std::vector<double> records;
-        REQUIRE(gpu::resolveHighlights(slots, n, a, records));
+        REQUIRE(gpu::resolveHighlights(slots, n, a, records, c.chiclet));
         const gpu::Slab target = upload(acc);
         REQUIRE(gpu::highlights(r, target, fieldSlab, grid.width, grid.height, records, c.chiclet,
                                 a.useVCM, a.clampPlusLighter, *counters, c.slot)
@@ -666,6 +733,45 @@ TEST_CASE(gpu_glass_steps_are_the_cpu_steps) {
         CHECK_EQ(static_cast<std::size_t>(counts[5]), missed);
     }
 
+    // -- a mascara da geracao 27: o gradiente ----------------------------------
+    // O outro ramo (`OpacityMaskKind::Gradient`): sem campo e sem cobertura, a
+    // rampa cubica de 16 segmentos, com os coeficientes que a CPU calcula e a
+    // GPU so le. Os dois caminhos avaliam os mesmos floats na mesma ordem, entao
+    // aqui nao ha teto: cada float tem de ser igual, e nenhum pixel e "perdido".
+    for (const bool smoothed : {true, false}) {
+        TranslucencyEffect effect = renderingParameters(DesignGeneration::G27).glyphTranslucency;
+        effect.replicateBadSmoothing = smoothed;
+        OpacityMaskArguments ma = opacityMaskArguments(effect, IconSizeClass::Large, 0.7, 0.5);
+        REQUIRE(ma.kind == OpacityMaskKind::Gradient);
+        ma.bounds[0] = 40.0f;
+        ma.bounds[1] = 30.0f;
+        ma.bounds[2] = 400.0f;
+        ma.bounds[3] = 420.0f;
+        std::vector<float> want = acc;
+        const OpacityMask mask = glassOpacityMask(field, ma);
+        std::size_t painted = 0;
+        const std::size_t missed = opacityMaskMissedPixels(want, mask, painted);
+        applyOpacityMask(want, mask);
+        const gpu::Slab art = upload(acc);
+        const std::uint32_t slot = smoothed ? 12u : 14u;
+        REQUIRE(gpu::glassMask(r, art, fieldSlab, grid.width, grid.height, field.originY, ma,
+                               *counters, slot)
+                    .has_value());
+        const std::vector<float> got = down(art, acc.size());
+        std::uint32_t counts[16] = {};
+        REQUIRE(r.download(*counters, counts, sizeof counts).has_value());
+        float worst = 0.0f;
+        const std::size_t d = differ(got, want, worst);
+        if (d) {
+            std::printf("  mascara de gradiente (%s): %zu floats diferem, pior %g\n",
+                        smoothed ? "17 paradas" : "2 paradas", d, static_cast<double>(worst));
+        }
+        CHECK_EQ(d, std::size_t{0});
+        CHECK_EQ(missed, std::size_t{0});
+        CHECK_EQ(static_cast<std::size_t>(counts[slot]), painted);
+        CHECK_EQ(static_cast<std::size_t>(counts[slot + 1]), std::size_t{0});
+    }
+
     // -- a refracao ------------------------------------------------------------
     for (std::uint32_t variant : {0u, 2u, 3u}) {
         GlassRefraction g;
@@ -693,4 +799,245 @@ TEST_CASE(gpu_glass_steps_are_the_cpu_steps) {
         }
         CHECK(worst <= 1e-5f);
     }
+}
+
+// O GRUPO NA GPU, BIT A BIT. Desde 01/10 o render compoe por GRUPO: os elementos
+// de um grupo entram numa imagem propria (`icon_group`) e os campos dos elementos
+// de vidro sao empilhados num campo so (`icon_field_stack`). As duas contas
+// alimentam limiares -- o anel da sombra e o campo de um raster cortam o alfa em
+// 0.5, o empilhamento escolhe por `d < alcance + 1` --, entao aqui nao ha teto:
+// cada float tem de ser o da CPU.
+//
+// O empilhamento se cobra contra `stackFields`. A imagem se cobra contra a conta
+// do `over` de IconRenderer.cpp escrita por extenso (float, um produto e uma
+// soma de cada vez, sem fma) e contra a divisao float do `takeGroupImage` da CPU,
+// que a GPU so acerta porque divide em double.
+TEST_CASE(gpu_group_image_and_field_stack_are_the_cpu_steps) {
+    Device& device = gpuDevice();
+    REQUIRE(device.valid());
+    if (!device.float64()) {
+        std::printf("  (sem shaderFloat64 neste aparelho: a imagem do grupo usa icon_blend)\n");
+        return;
+    }
+    auto resident = gpu::Resident::of(device);
+    REQUIRE(resident.has_value());
+    gpu::Resident& r = **resident;
+
+    const std::uint32_t w = 96, h = 80;
+    const std::size_t texels = static_cast<std::size_t>(w) * h;
+    std::uint32_t seed = 2026;
+    auto unit = [&] {
+        seed = seed * 1664525u + 1013904223u;
+        return static_cast<float>((seed >> 8) & 0xFFFFu) / 65535.0f;
+    };
+
+    auto upload = [&](const std::vector<float>& v) -> gpu::Slab {
+        auto s = r.acquire(v.size() * sizeof(float));
+        CHECK(s.has_value());
+        if (!s) return nullptr;
+        CHECK(r.upload(*s, v.data(), v.size() * sizeof(float)).has_value());
+        return *s;
+    };
+    auto differ = [](const std::vector<float>& a, const std::vector<float>& b) {
+        std::size_t n = 0;
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            if (std::memcmp(&a[i], &b[i], sizeof(float)) != 0) ++n;
+        }
+        return n;
+    };
+
+    std::lock_guard<std::mutex> lock(r.mutex());
+
+    // -- o empilhamento -----------------------------------------------------
+    // Distancias em volta da borda (alcance 6, borda em 7), com muitas EXATAMENTE
+    // nela e empates entre os dois campos: os dois casos que um `<=` no lugar de
+    // um `<` erraria.
+    FieldImage lower, upper;
+    lower.width = upper.width = w;
+    lower.height = upper.height = h;
+    lower.rgba.resize(texels * 4);
+    upper.rgba.resize(texels * 4);
+    for (std::size_t t = 0; t < texels; ++t) {
+        const float quantised = std::floor(unit() * 40.0f) * 0.5f - 6.0f;   // -6 .. 13.5
+        upper.rgba[t * 4 + 0] = (t % 7 == 0) ? 7.0f : quantised;
+        lower.rgba[t * 4 + 0] = (t % 5 == 0) ? upper.rgba[t * 4 + 0] : unit() * 30.0f - 10.0f;
+        for (int k = 1; k < 4; ++k) {
+            upper.rgba[t * 4 + k] = unit();
+            lower.rgba[t * 4 + k] = unit();
+        }
+    }
+    const gpu::Slab lowerSlab = upload(lower.rgba);
+    const gpu::Slab upperSlab = upload(upper.rgba);
+    REQUIRE(lowerSlab != nullptr && upperSlab != nullptr);
+    for (const bool advanced : {false, true}) {
+        const float reach = 6.0f;
+        const FieldImage want = stackFields(lower, upper, reach, advanced);
+        REQUIRE(want.width == w);
+        struct {
+            std::uint32_t w, h;
+            float edge;
+            std::uint32_t advanced;
+        } push{w, h, reach + 1.0f, advanced ? 1u : 0u};
+        auto out = r.acquire(texels * 16);
+        REQUIRE(out.has_value());
+        REQUIRE(r.dispatch(r.fieldStack,
+                           {gpu::whole(*out), gpu::whole(lowerSlab), gpu::whole(upperSlab)}, &push,
+                           gpu::groups16(w), gpu::groups16(h))
+                    .has_value());
+        std::vector<float> got(texels * 4);
+        REQUIRE(r.download(*out, got.data(), got.size() * sizeof(float)).has_value());
+        const std::size_t d = differ(got, want.rgba);
+        if (d) std::printf("  empilhamento (avancado %d): %zu floats diferem\n", advanced, d);
+        CHECK_EQ(d, std::size_t{0});
+        // E o caso tem de exercitar os dois lados, ou mediria uma copia.
+        std::size_t fromUpper = 0;
+        for (std::size_t t = 0; t < texels; ++t) {
+            if (want.rgba[t * 4 + 1] == upper.rgba[t * 4 + 1]) ++fromUpper;
+        }
+        CHECK(fromUpper > texels / 8);
+        CHECK(fromUpper < texels - texels / 8);
+    }
+
+    // -- a imagem do grupo ----------------------------------------------------
+    struct GroupPush {
+        std::uint32_t w, h;
+        std::uint32_t mode;
+        std::uint32_t blend;
+        float alpha;
+    };
+    std::vector<float> target(texels * 4), art(texels * 4);
+    for (std::size_t t = 0; t < texels; ++t) {
+        const float a = (t % 11 == 0) ? 0.0f : unit();
+        target[t * 4 + 3] = a;
+        for (int k = 0; k < 3; ++k) target[t * 4 + k] = a * unit();
+        art[t * 4 + 3] = (t % 13 == 0) ? 0.0f : unit();
+        for (int k = 0; k < 3; ++k) art[t * 4 + k] = unit();
+    }
+    const float alpha = 0.37f;
+    // `over` de IconRenderer.cpp: `volatile` em cada produto para que o compilador
+    // do TESTE tambem nao funda nada.
+    std::vector<float> wantOver = target;
+    for (std::size_t i = 0; i < wantOver.size(); i += 4) {
+        const float a = art[i + 3] * alpha;
+        if (a <= 0.0f) continue;
+        const float inv = 1.0f - a;
+        for (int k = 0; k < 3; ++k) {
+            volatile float left = art[i + k] * a;
+            volatile float right = wantOver[i + k] * inv;
+            wantOver[i + k] = left + right;
+        }
+        volatile float tail = wantOver[i + 3] * inv;
+        wantOver[i + 3] = a + tail;
+    }
+    const gpu::Slab targetSlab = upload(target);
+    const gpu::Slab artSlab = upload(art);
+    REQUIRE(targetSlab != nullptr && artSlab != nullptr);
+    {
+        const GroupPush push{w, h, 0u, 0u, alpha};
+        REQUIRE(r.dispatch(r.group, {gpu::whole(targetSlab), gpu::whole(artSlab)}, &push,
+                           gpu::groups16(w), gpu::groups16(h))
+                    .has_value());
+        std::vector<float> got(texels * 4);
+        REQUIRE(r.download(targetSlab, got.data(), got.size() * sizeof(float)).has_value());
+        const std::size_t d = differ(got, wantOver);
+        if (d) std::printf("  imagem do grupo (over): %zu floats diferem\n", d);
+        CHECK_EQ(d, std::size_t{0});
+    }
+    // A des-multiplicacao, sobre o alvo que o passo acima deixou.
+    std::vector<float> wantStraight = wantOver;
+    for (std::size_t i = 0; i < wantStraight.size(); i += 4) {
+        const float a = wantStraight[i + 3];
+        for (int k = 0; k < 3; ++k) {
+            wantStraight[i + k] = a > 0.0f ? wantStraight[i + k] / a : 0.0f;
+        }
+    }
+    {
+        auto out = r.acquire(texels * 16);
+        REQUIRE(out.has_value());
+        const GroupPush push{w, h, 1u, 0u, 1.0f};
+        REQUIRE(r.dispatch(r.group, {gpu::whole(*out), gpu::whole(targetSlab)}, &push,
+                           gpu::groups16(w), gpu::groups16(h))
+                    .has_value());
+        std::vector<float> got(texels * 4);
+        REQUIRE(r.download(*out, got.data(), got.size() * sizeof(float)).has_value());
+        const std::size_t d = differ(got, wantStraight);
+        if (d) std::printf("  imagem do grupo (reta): %zu floats diferem\n", d);
+        CHECK_EQ(d, std::size_t{0});
+    }
+}
+
+// A IMAGEM DE UM GRUPO LEVA CHAVE, e a sombra dele se guarda por ela. A sombra
+// desfocada e a etapa mais cara do render e fica no cache pela chave da FONTE
+// (`gpu-shadow`); num grupo de mais de um elemento a fonte e a imagem do grupo, que
+// nao sai de um render de SVG e sim de uma mescla -- se ela nao levasse chave
+// (`gpu-group-image`), a sombra deixaria de ser PROCURADA, sem erro e sem pixel
+// diferente: so mais lenta a cada quadro.
+//
+// Entao o que se mede e a procura. Um grupo de duas camadas de vidro, com e sem
+// sombra, cada um num cache vazio: o render com sombra tem de perder UMA procura
+// a mais que o sem (a da sombra do grupo), e o segundo render do mesmo documento
+// nao pode perder nenhuma.
+TEST_CASE(gpu_group_image_carries_the_key_its_shadow_is_cached_by) {
+    Device& device = gpuDevice();
+    REQUIRE(device.valid());
+    if (!device.float64()) {
+        std::printf("  (sem shaderFloat64 neste aparelho: a sombra fica na CPU)\n");
+        return;
+    }
+
+    const fs::path dir = fs::temp_directory_path() / "ic-gpu-group-keys";
+    auto write = [](const fs::path& p, const std::string& text) {
+        std::FILE* f = std::fopen(p.string().c_str(), "wb");
+        if (!f) return;
+        std::fwrite(text.data(), 1, text.size(), f);
+        std::fclose(f);
+    };
+    auto missesOf = [&](const char* shadowKind, std::size_t& secondRender) -> std::size_t {
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir / "Assets", ec);
+        write(dir / "Assets" / "square.svg",
+              "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\">"
+              "<path d=\"M0 0 L512 0 L512 512 L0 512 Z\" fill=\"#ffffff\"/></svg>");
+        write(dir / "icon.json",
+              std::string("{\n  \"groups\" : [\n    {\n"
+                          "      \"shadow\" : { \"kind\" : \"") + shadowKind +
+                  "\", \"opacity\" : 1.0 },\n"
+                  "      \"specular\" : true,\n"
+                  "      \"translucency\" : { \"enabled\" : true, \"value\" : 0.5 },\n"
+                  "      \"layers\" : [\n"
+                  "        { \"image-name\" : \"square.svg\", \"name\" : \"a\",\n"
+                  "          \"position\" : { \"scale\" : 0.8, \"translation-in-points\" : [120, 80] } },\n"
+                  "        { \"image-name\" : \"square.svg\", \"name\" : \"b\",\n"
+                  "          \"position\" : { \"scale\" : 0.8, \"translation-in-points\" : [-120, -80] } }\n"
+                  "      ]\n    }\n  ]\n}\n");
+        std::size_t misses = static_cast<std::size_t>(-1);
+        secondRender = static_cast<std::size_t>(-1);
+        {
+            auto bundle = icf::IconBundle::open(dir);
+            if (!bundle) return misses;
+            RenderCache cache;
+            IconRenderOptions o;
+            o.size = 256;
+            o.cache = &cache;
+            auto cold = renderIconGpu(device, *bundle, o);
+            if (!cold || cold->drawn != 2) return misses;
+            misses = cache.stats().misses;
+            auto warm = renderIconGpu(device, *bundle, o);
+            if (!warm || warm->rgba != cold->rgba) return static_cast<std::size_t>(-1);
+            secondRender = cache.stats().misses - misses;
+        }
+        fs::remove_all(dir, ec);
+        return misses;
+    };
+
+    std::size_t againWith = 0, againWithout = 0;
+    const std::size_t with = missesOf("neutral", againWith);
+    const std::size_t without = missesOf("none", againWithout);
+    REQUIRE(with != static_cast<std::size_t>(-1));
+    REQUIRE(without != static_cast<std::size_t>(-1));
+    std::printf("  procuras perdidas no frio: %zu com sombra, %zu sem\n", with, without);
+    CHECK_EQ(with, without + 1);
+    CHECK_EQ(againWith, std::size_t{0});
+    CHECK_EQ(againWithout, std::size_t{0});
 }

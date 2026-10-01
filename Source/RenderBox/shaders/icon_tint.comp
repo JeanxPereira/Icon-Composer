@@ -1,0 +1,43 @@
+#version 450
+// A RECOLORACAO DO TINTED DARK SOBRE O ALVO, na GPU: `tintDark` de
+// IconRenderer.cpp -- a saturacao Rec.709 e o duotom de `lo = preto`,
+// `hi = tint` (IconRenderer.h, `applyTintedDark`) -- pixel a pixel, em float
+// como a CPU e na mesma ordem (`precise`, sem fma).
+//
+// Roda DENTRO do render so na geracao 26, entre os grupos e os realces da
+// pastilha: la os realces ficam FORA da camada tingida (IconRendering 0x43338).
+// A conta e linear e sem deslocamento, entao vale sobre a cor pre-multiplicada.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) buffer Acc { vec4 acc[]; };
+
+layout(push_constant) uniform Push {
+    uint w, h;
+    float s;             // a saturacao, ja presa em >= 0
+    float tr, tg, tb;    // o tint
+} p;
+
+void main() {
+    uvec2 g = gl_GlobalInvocationID.xy;
+    if (g.x >= p.w || g.y >= p.h) return;
+    uint i = g.y * p.w + g.x;
+    vec4 px = acc[i];
+    precise float l0 = 0.2126 * px.r;
+    precise float l1 = 0.7152 * px.g;
+    precise float l2 = 0.0722 * px.b;
+    precise float l01 = l0 + l1;
+    precise float l = l01 + l2;
+    precise float dr = px.r - l;
+    precise float dg = px.g - l;
+    precise float db = px.b - l;
+    precise float sr = p.s * dr;
+    precise float sg = p.s * dg;
+    precise float sb = p.s * db;
+    precise float ar = l + sr;
+    precise float ag = l + sg;
+    precise float ab = l + sb;
+    precise float r = ar * p.tr;
+    precise float gg = ag * p.tg;
+    precise float b = ab * p.tb;
+    acc[i] = vec4(r, gg, b, px.a);
+}

@@ -269,6 +269,19 @@ TEST_CASE(render_cache_follows_every_edit_on_a_vector_glass_document) {
                  io.context = icf::Context{};
                  io.subdivisions = 16;
              }},
+            // A GERACAO DE DESIGN: o mesmo documento e as mesmas opcoes com outro
+            // bloco de parametros -- outra lista de realces da pastilha, outro
+            // fill, outra mascara. Se a chave de um passo guardado esquecer um
+            // parametro que a geracao troca, a 26 recebe a imagem da 27 (ou a
+            // volta recebe a da 26).
+            {"geracao de design 26",
+             [](icf::IconBundle&, IconRenderOptions& io) {
+                 io.generation = DesignGeneration::G26;
+             }},
+            {"de volta a geracao 27",
+             [](icf::IconBundle&, IconRenderOptions& io) {
+                 io.generation = DesignGeneration::G27;
+             }},
         });
 }
 

@@ -1,4 +1,5 @@
 #include "Source/RenderBox/SvgRenderer.h"
+#include "Source/RenderBox/ColorSpace.h"
 
 #include "Source/RenderBox/StrokeRender.h"
 
@@ -147,6 +148,27 @@ Result<RenderedImage> renderSvg(Device& device, const icf::svg::SvgDocument& doc
         fitViewBox(doc.viewBox, projectionWidthOf(options), projectionHeightOf(options)), options);
 }
 
+bool svgFillPaints(const icf::svg::Shape& shape, const RenderOptions& options) {
+    using icf::svg::PaintKind;
+    if (options.override.kind == FillOverride::Kind::None) {
+        return shape.fill.kind != PaintKind::None;
+    }
+    // `[BIN]` `0x8700`-`0x8730`: `CGSVGPaintIsVisible`, or the flag.
+    const bool visible = shape.fill.kind != PaintKind::None &&
+                         !(shape.fill.kind == PaintKind::Color && !(shape.fill.color.a > 0.0));
+    return visible || options.overrideForcesHiddenPaint;
+}
+
+double svgShapeOpacity(const icf::svg::Shape& shape, const RenderOptions& options) {
+    // `[BIN]` `0x86E4`-`0x86F0`: `fcmp d0, #0.0; b.gt` then `tbz w23, #0` -- an
+    // opacity that is not above zero is left alone unless the flag is set.
+    if (options.override.kind != FillOverride::Kind::None && options.overrideForcesHiddenPaint &&
+        !(shape.opacity > 0.0)) {
+        return 1.0;
+    }
+    return shape.opacity;
+}
+
 Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocument& doc,
                                       const PathGlobals& placement, RenderOptions options) {
     if (options.width == 0 || options.height == 0) {
@@ -275,6 +297,7 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
         subOptions.projectionWidth = options.projectionWidth;
         subOptions.projectionHeight = options.projectionHeight;
         subOptions.subdivisions = options.subdivisions;
+        subOptions.untaggedColoursAreDisplayP3 = options.untaggedColoursAreDisplayP3;
         auto drawn = renderSvgPlaced(device, sub, placement, subOptions);
         if (!drawn) { clipFailed = true; clipError = drawn.error(); return nullptr; }
 
@@ -405,7 +428,9 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
             subOptions.projectionWidth = options.projectionWidth;
             subOptions.projectionHeight = options.projectionHeight;
             subOptions.subdivisions = options.subdivisions;
+            subOptions.untaggedColoursAreDisplayP3 = options.untaggedColoursAreDisplayP3;
             subOptions.override = options.override;
+            subOptions.overrideForcesHiddenPaint = options.overrideForcesHiddenPaint;
             auto drawn = renderSvgPlaced(device, sub, placement, subOptions);
             if (!drawn) return std::unexpected(drawn.error());
 
@@ -425,7 +450,6 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
             for (const auto& sk : drawn->skipped) {
                 out.skipped.push_back({i + sk.index, sk.element, sk.why});
             }
-            for (std::size_t idx : drawn->unconvertedP3) out.unconvertedP3.push_back(i + idx);
 
             // Straight in, premultiplied over the accumulator.
             for (std::size_t t = 0; t < texels; ++t) {
@@ -452,10 +476,11 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
         // end-to-end test came back with a blank canvas and `drawn == 1`.
         const bool strokePaints = shape.stroke.kind != icf::svg::PaintKind::None &&
                                   shape.strokeWidth > 0.0;
-        if (shape.fill.kind == icf::svg::PaintKind::None &&
-            options.override.kind == FillOverride::Kind::None && !strokePaints) {
-            continue;
-        }
+        // Under a fill override the question is the override's (`svgFillPaints`,
+        // SvgRenderer.h): a shape the art left unpainted is drawn only where the
+        // generation forces it.
+        const bool fillPaints = svgFillPaints(shape, options);
+        if (!fillPaints && !strokePaints) continue;
         ResolvedGradient ramp;
         ResolvedPattern pattern;
         const bool overridden = options.override.kind != FillOverride::Kind::None;
@@ -482,7 +507,8 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
                     continue;
                 }
             } else {
-                ramp = resolveGradient(doc, shape.fill.reference, bx0, by0, bx1, by1, shape.ctm);
+                ramp = resolveGradient(doc, shape.fill.reference, bx0, by0, bx1, by1, shape.ctm,
+                                       options.untaggedColoursAreDisplayP3);
                 if (!ramp.ok) {
                     out.skipped.push_back({i, shape.element, ramp.why});
                     continue;
@@ -559,10 +585,8 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
             return std::unexpected("the coverage read back is not the target's size");
         }
 
-        if (!overridden && shape.fill.color.displayP3) out.unconvertedP3.push_back(i);
-        float colour[4] = {
-            static_cast<float>(shape.fill.color.r), static_cast<float>(shape.fill.color.g),
-            static_cast<float>(shape.fill.color.b), static_cast<float>(shape.fill.color.a)};
+        float colour[4];
+        svgColourToWorking(shape.fill.color, options.untaggedColoursAreDisplayP3, colour);
         if (options.override.kind == FillOverride::Kind::Solid) {
             for (int k = 0; k < 4; ++k) colour[k] = options.override.colour[k];
         }
@@ -575,8 +599,7 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
         const double sx = globals.m0[0] != 0.0f ? 1.0 / globals.m0[0] : 0.0;
         const double sy = globals.m1[1] != 0.0f ? 1.0 / globals.m1[1] : 0.0;
 
-        const bool fillPaints = shape.fill.kind != icf::svg::PaintKind::None ||
-                                options.override.kind != FillOverride::Kind::None;
+        const float shapeOpacity = static_cast<float>(svgShapeOpacity(shape, options));
         for (std::size_t t = 0; fillPaints && t < texels; ++t) {
             // `[BIN]` The signed area the edges accumulate lands in the SECOND
             // channel of the half2 target; the first carries the other half of
@@ -647,7 +670,7 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
             // alpha. It is a SEPARATE multiplier from the paint's own alpha and
             // from `fill-opacity`, and all three apply -- SVG 1.1 §14.5 stacks
             // them rather than choosing one.
-            const float srcA = c.coverage[0] * static_cast<float>(shape.opacity) * clipAt(t);
+            const float srcA = c.coverage[0] * shapeOpacity * clipAt(t);
             const float inv = 1.0f - srcA;
             float* dst = &acc[t * 4];
             for (int k = 0; k < 3; ++k) dst[k] = colour[k] * srcA + dst[k] * inv;
@@ -695,13 +718,11 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
                                     options.subdivisions, params, options.originX,
                                     options.originY);
                 if (!cov.empty()) {
-                    const float sr = static_cast<float>(shape.stroke.color.r);
-                    const float sg = static_cast<float>(shape.stroke.color.g);
-                    const float sb = static_cast<float>(shape.stroke.color.b);
-                    const float sa = static_cast<float>(shape.stroke.color.a);
-                    if (shape.stroke.color.displayP3) out.unconvertedP3.push_back(i);
+                    float sc[4];
+                    svgColourToWorking(shape.stroke.color, options.untaggedColoursAreDisplayP3, sc);
+                    const float sr = sc[0], sg = sc[1], sb = sc[2], sa = sc[3];
                     for (std::size_t t = 0; t < texels; ++t) {
-                        const float a = cov[t] * sa * static_cast<float>(shape.opacity) * clipAt(t);
+                        const float a = cov[t] * sa * shapeOpacity * clipAt(t);
                         if (a <= 0.0f) continue;
                         const float inv2 = 1.0f - a;
                         float* d2 = &acc[t * 4];
@@ -730,9 +751,17 @@ Result<RenderedImage> renderSvgPlaced(Device& device, const icf::svg::SvgDocumen
 }
 
 
+void svgColourToWorking(const icf::svg::SvgColor& c, bool untaggedIsDisplayP3, float (&rgba)[4]) {
+    rgba[0] = static_cast<float>(c.r);
+    rgba[1] = static_cast<float>(c.g);
+    rgba[2] = static_cast<float>(c.b);
+    rgba[3] = static_cast<float>(c.a);
+    if (c.displayP3 || untaggedIsDisplayP3) displayP3ToSrgb(rgba);
+}
+
 ResolvedGradient resolveGradient(const icf::svg::SvgDocument& doc, const std::string& id,
                                  double bx0, double by0, double bx1, double by1,
-                                 const icf::svg::Transform& ctm) {
+                                 const icf::svg::Transform& ctm, bool untaggedIsDisplayP3) {
     ResolvedGradient out;
     const auto it = doc.gradients.find(id);
     if (it == doc.gradients.end()) {
@@ -748,10 +777,7 @@ ResolvedGradient resolveGradient(const icf::svg::SvgDocument& doc, const std::st
     for (const icf::svg::GradientStop& st : g.stops) {
         RampPoint p;
         p.location = static_cast<float>(st.offset);
-        p.rgba[0] = static_cast<float>(st.color.r);
-        p.rgba[1] = static_cast<float>(st.color.g);
-        p.rgba[2] = static_cast<float>(st.color.b);
-        p.rgba[3] = static_cast<float>(st.color.a);
+        svgColourToWorking(st.color, untaggedIsDisplayP3, p.rgba);
         out.stops.push_back(p);
     }
     std::stable_sort(out.stops.begin(), out.stops.end(),

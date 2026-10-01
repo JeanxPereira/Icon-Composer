@@ -11,7 +11,8 @@
 //                  mascara do Clear (e a recoloracao identidade, que so liga o
 //                  portao da sombra neutra, 0x49F40);
 //   finishMono  -- depois: a recoloracao dos pixels, o vidro simulado sob o
-//                  icone e o Clear (ou o icone sobre o vidro, no Tinted Dark).
+//                  icone e o Clear (ou o icone sobre o vidro, no Tinted Dark --
+//                  e em toda rendicao da geracao 26, que nao tem modo Clear).
 //
 // O `icserver` e o editor chamam as mesmas duas, e e isso que garante que o
 // canvas do ImGui e o do Tauri desenham o mesmo Mono.

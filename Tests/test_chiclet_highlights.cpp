@@ -34,13 +34,16 @@ RampPoint stop(float r, float g, float b) {
 // ERRO 1: tomar os numeros do glifo. Os dois conjuntos sao DIFERENTES, e uma
 // transcricao que reaproveitasse `glyphHighlightSlots` daria um brilho com a
 // distancia errada (6 pt em vez de 10), o cone errado (pi/2 em vez de 2pi/3) e
-// dois realces a menos.
+// um realce a menos.
 TEST_CASE(chiclet_slots_are_not_the_glyph_slots) {
     std::size_t chiclet = 0, glyph = 0;
     const HighlightSlot* c = chicletHighlightSlots(chiclet);
     const HighlightSlot* g = glyphHighlightSlots(glyph);
     CHECK_EQ(chiclet, std::size_t(7));  // seis membros + o `dark` espelhado
-    CHECK_EQ(glyph, std::size_t(5));    // `fillDiffuse` e `rim` sao nil no glifo
+    // `[BIN]` No glifo so o `rim` e nil (o byte 0x13 de `0x00033DE4`);
+    // `fillDiffuse` e `matchKey` (o 0x14 de `0x00033FA4`, lido por
+    // `0x00033F04`) e vira o `keyDiffuse` a +pi. Seis, nao cinco.
+    CHECK_EQ(glyph, std::size_t(6));
 
     // `[BIN]` `0x00062BC8`: keySharp do chiclet.
     CHECK(near(c[0].settings.brightness, 1.1));

@@ -1463,4 +1463,70 @@ FieldImage generateFieldFromContours(const std::vector<FieldContour>& contours,
     return made;
 }
 
+std::size_t fieldCoverageFromContours(const std::vector<FieldContour>& contours,
+                                      std::uint32_t width, std::uint32_t height,
+                                      const FieldOptions& options, std::uint32_t samples,
+                                      std::vector<float>& coverage) {
+    coverage.clear();
+    if (width == 0 || height == 0) return 0;
+    const int ss = samples < 1 ? 1 : static_cast<int>(samples);
+    const int W = static_cast<int>(width);
+    const int H = static_cast<int>(height);
+    const int mw = W * ss;
+    const int mh = H * ss;
+    // The same call `fieldInsideMask` makes: the origin enters already
+    // multiplied, because the mask IS the fine grid, and the sampled lines stay
+    // absolute -- a viewport's coverage is the full render's, pixel for pixel.
+    std::vector<char> fine;
+    std::size_t insideCount = 0;
+    rasteriseContours(contours, options.originX * ss, options.originY * ss, mw, mh, options.rule,
+                      static_cast<double>(ss), fine, insideCount);
+    if (insideCount == 0) return 0;
+
+    coverage.assign(static_cast<std::size_t>(W) * H, 0.0f);
+    const float each = 1.0f / static_cast<float>(ss * ss);
+    parallelRanges(static_cast<std::size_t>(H), static_cast<std::size_t>(mw) * mh,
+                   [&](std::size_t y0, std::size_t y1) {
+        for (int y = static_cast<int>(y0); y < static_cast<int>(y1); ++y) {
+            for (int x = 0; x < W; ++x) {
+                int inside = 0;
+                for (int j = 0; j < ss; ++j) {
+                    const char* row = &fine[static_cast<std::size_t>(y * ss + j) * mw +
+                                            static_cast<std::size_t>(x) * ss];
+                    for (int i = 0; i < ss; ++i) inside += row[i];
+                }
+                // An integer count times one constant: the same float on every
+                // machine, and exactly 1 when every sample is inside.
+                coverage[static_cast<std::size_t>(y) * W + x] =
+                    inside == ss * ss ? 1.0f : static_cast<float>(inside) * each;
+            }
+        }
+    });
+    return insideCount;
+}
+
+FieldImage stackFields(const FieldImage& lower, const FieldImage& upper, float reach,
+                       bool advanced) {
+    if (lower.width == 0) return upper;
+    if (upper.width == 0) return lower;
+    if (lower.width != upper.width || lower.height != upper.height ||
+        lower.originX != upper.originX || lower.originY != upper.originY) {
+        return FieldImage{};
+    }
+    FieldImage out = lower;
+    const float edge = reach + 1.0f;
+    const std::size_t texels = static_cast<std::size_t>(out.width) * out.height;
+    // A select per texel and nothing else: no float is computed, so the result
+    // is one of the two inputs bit for bit.
+    parallelRanges(out.height, texels * 4, [&](std::size_t y0, std::size_t y1) {
+        for (std::size_t t = y0 * out.width; t < y1 * out.width; ++t) {
+            const float* u = &upper.rgba[t * 4];
+            float* o = &out.rgba[t * 4];
+            if (!fieldStackTakesUpper(u[0], o[0], edge, advanced)) continue;
+            for (int k = 0; k < 4; ++k) o[k] = u[k];
+        }
+    });
+    return out;
+}
+
 }  // namespace rb

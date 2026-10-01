@@ -46,9 +46,12 @@
 //      that function exists at all rather than being an array index at the call
 //      site.
 //   2. `borderWidth` DEFAULTS TO ZERO, so `contourOpacityBounds` is never
-//      distinguishable from `opacityBounds` with the defaults of this version.
-//      The contour path is transcribed because the AIR was read, not because
-//      anything uses it; `kGlyphTranslucency` says so where it sets the field.
+//      distinguishable from `opacityBounds` with the defaults of generation 27.
+//      The contour path was transcribed because the AIR was read, before
+//      anything used it. GENERATION 26 USES IT: `0x76FC0` writes a border of
+//      25.8 points and a contour pair of its own (`RenderingParameters.h`), and
+//      it is that generation, not 27, that takes the shader this file
+//      transcribes -- see `TranslucencyEffect::useSimpleMask`.
 //   3. THERE IS A SECOND CONSUMER OF `translucency`, inside the SHADOW
 //      (`t = clamp01(translucency / Shadow.translucencyForMaxOverdraw)`,
 //      `Docs/Laudos/2026-09-15-sombra.md`). It is NOT this one, it is not
@@ -105,14 +108,22 @@ struct TranslucencyEffect {
     // `[BIN]` `str xzr, [x19, #0x2b8]`. ZERO, and it is load-bearing: at zero the
     // `fcsel` at `0x0000FF5C`-`0x0000FF70` makes `contourOpacityBounds` a COPY of
     // `opacityBounds`, which is how "no border" is expressed without a boolean.
+    // In CANVAS POINTS: the shader is handed it converted to texels of the SDF
+    // (`opacityMaskArguments`). Generation 26: `25.8` (`0x77F18`).
     double borderWidth = 0.0;
 
-    // `[BIN]` `strh w25` with `w25 == 0x101`: both true. Neither is read by
-    // anything in this file -- they select branches in `0x0000FD28` that live
-    // above the mask (`useSimpleMask` at `0x0000FE00` picks a 16-step gradient
-    // ramp instead of the shader; `replicateBadSmoothing` at `0x0000FE74` forks
-    // inside that). They are carried because the struct has them and a reader
-    // who finds only six fields would think the layout was mismeasured.
+    // `[BIN]` `strh w25` with `w25 == 0x101`: both true in generation 27. They
+    // select branches in `0x0000FD28` that live above the mask: `useSimpleMask`
+    // (`self+0x329`, `cbz w8` at `0x0000FE00`) picks an axial GRADIENT on an
+    // infinite shape instead of the shader, and `replicateBadSmoothing`
+    // (`0x0000FE74`) forks inside that between 17 smoothed stops and 2.
+    //
+    // `[BIN]` SO THE SHADER BELOW IS GENERATION 26's MASK, where `useSimpleMask`
+    // is `false` (`0x77F20`), and generation 27's is the gradient
+    // (`gradientOpacityMask`). Until 2026-10-01 this renderer drew 27 with the
+    // shader at `borderWidth == 0`, which has the gradient's vertical profile
+    // and adds the shape's coverage to it; the target's 27 mask has no SDF term
+    // at all. `opacityMaskArguments` picks the branch off this field.
     bool replicateBadSmoothing = true;
     bool useSimpleMask = true;
 
@@ -126,8 +137,24 @@ struct TranslucencyEffect {
     double upperContourOpacity = 1.0;
 };
 
-// The block as this version's binary initialises it.
+// The block as generation 27 initialises it. The renderer takes the
+// generation's own from `RenderingParameters::glyphTranslucency`.
 inline constexpr TranslucencyEffect kGlyphTranslucency{};
+
+// `[BIN]` WHETHER THE MASK IS BUILT AT ALL, as the group's content pass decides
+// it before calling `0x0000FD28` (`0x4ACB4`-`0x4AD88`): effects enabled, a
+// non-empty SDF, and
+//
+//     0x4AD08  ldr  d0, [sp, #0x10]      ; material.translucency, RAW
+//     0x4AD0C  fcmp d0, #0.0
+//     0x4AD10  b.le 0x4AD8C              ; not above zero: no layer, no clip
+//
+// The test is on the document's number and not on the profile it would open.
+// Until 2026-10-01 this renderer asked `opacityMaskIsIdentity` instead, which
+// agrees with it while every bound at `f == 0` is 1.0 -- generation 27 -- and
+// does not in generation 26, whose `lowerContourOpacity` is `0.61` RAW: there a
+// group with no translucency at all would have been given a rim.
+bool translucencyDrawsMask(double materialTranslucency);
 
 // `[BIN]` `f = strength[sizeClass] * material.translucency` -- `fmul d12, d1, d2`
 // at `0x0000FDE4`, and nothing else happens to either operand first.
@@ -149,7 +176,20 @@ double effectiveOpacity(double x, double f);
 // and it is over `d11` == `upperContourOpacity`). With the defaults that is
 // invisible -- `eff(1.0) == 1.0` and the contour pair is a copy -- and with a
 // loaded parameter file it is not.
+// `[BIN]` The two branches of `0x0000FD28`, picked by `useSimpleMask`
+// (`cbz w8, #0xfea8` at `0x0000FE00`).
+enum class OpacityMaskKind : std::uint8_t {
+    // `simplifiedShapeAwareGradientMask`, over the SDF. Generation 26.
+    Shader = 0,
+    // An axial gradient on an infinite shape: no SDF. Generation 27.
+    Gradient = 1,
+};
+
+// The most segments the gradient's ramp has: sixteen, between seventeen stops.
+inline constexpr std::uint32_t kOpacityMaskRampSegments = 16;
+
 struct OpacityMaskArguments {
+    // In TEXELS of the distance field -- pixels of the render.
     float borderWidth = 0.0f;
 
     // index 1 of the shader: `(lower_eff, upper)`.
@@ -168,13 +208,77 @@ struct OpacityMaskArguments {
     // and the renderer answers it the same way, with the art's viewBox placed on
     // the canvas, so that the two do not disagree about the same unread thing.
     float bounds[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+
+    // WHICH BRANCH. With `Gradient` the two contour bounds and the border are
+    // not read, `bounds` is the frame on the CANVAS -- no texture-size term and
+    // no one-texel shift, `0x0000FE04`-`0x0000FE70` -- and the profile is
+    // `ramp`: one cubic per segment, `c0 + f (c1 + f (c2 + f c3))`, the
+    // coefficients computed once (`opacityMaskArguments`) so that the CPU and
+    // the GPU evaluate the same sixteen floats times four.
+    OpacityMaskKind kind = OpacityMaskKind::Shader;
+    std::uint32_t rampSegments = 0;
+    float ramp[kOpacityMaskRampSegments][4] = {};
 };
 
 // `[BIN]` The material's `translucency` (`Icon.GlassMaterial+0x10`, `ldr d2,
 // [x1, #0x10]` at `0x0000FDE0`) turned into the arguments above.
+//
+// `[BIN]` `texelsPerPoint` is what `borderWidth` is converted with,
+// `0x00010048`-`0x00010054`:
+//
+//     scvtf d0, x25            ; n = the SDF texture's width - 2
+//     fdiv  d0, d0, d9         ; / self[0x568], the canvas width
+//     fmul  d0, d8, d0         ; x borderWidth (the DOUBLE, in canvas points)
+//     fcvt  s0, d0             ; and only then a float
+//
+// -- `n / canvasWidth`, which on a square render is `size / 1024`. The test
+// that makes the contour pair a copy of the body pair (`fcmp d8, #0.0`,
+// `0x0000FF5C`) is on the UNCONVERTED double. Until 2026-10-01 the width went
+// to the shader in points, which no pixel showed while it was zero. The
+// default of 1 is one texel per point: a 1024 px render.
 OpacityMaskArguments opacityMaskArguments(const TranslucencyEffect& effect,
                                           IconSizeClass sizeClass,
-                                          double materialTranslucency);
+                                          double materialTranslucency,
+                                          double texelsPerPoint = 1.0);
+
+// `[BIN]` THE GRADIENT BRANCH, `0x0000FE04`-`0x0001064C`, one pixel. Generation
+// 27's mask:
+//
+//   * The rect is `effectsFrame x canvas`, in canvas points: four `CGRectGet*`
+//     each multiplied by `self[0x568]` or `self[0x570]` (`0x0000FE1C`-
+//     `0x0000FE70`). No `(n - 2) / canvas` scale and no `-1`.
+//   * `replicateBadSmoothing` (`cbz w24`, `0x0000FE74`) picks the stops. Set:
+//     `0xD28C(0, 1, 0.0625, upper, lowerEff)` strides `x` from 0 through 1 by a
+//     sixteenth -- SEVENTEEN stops -- each black with
+//
+//         alpha = S(upper + (lowerEff - upper) x) ,  S(a) = (a a)(3 - (a + a))
+//
+//     (`0xD3A4`-`0xD3B8`, no clamp). Clear: two stops, `upper` at 0 and
+//     `lowerEff` at 1, raw (`0x00010484`-`0x000104A8`).
+//   * The shape is made INFINITE (`setInfinite`, `0x00010524`) and filled with
+//     `setAxialGradientStartPoint:(midX, minY) endPoint:(midX, maxY)
+//     stopCount: colors: colorSpace:0 locations: flags:0x400` (`0x0001062C`),
+//     then `drawShape:fill:alpha:1 blendMode:0` (`0x0001064C`).
+//
+// `flags 0x400` is interpolation code 4, the monotone cubic of
+// `GradientOracle.h` (`smoothColorCoefficients`), over evenly spaced stops. So
+//
+//     mask = cubicRamp(saturate((y - minY) / height))
+//
+// at every pixel of the group's image: there is no distance, no coverage and
+// no border in it. Where a stop sits (`v = k/16`) the ramp IS the stop, which
+// is the shader's own `a a (3 - 2a)` of the body ramp -- "replicate bad
+// smoothing" -- and between stops it is the cubic through them.
+//
+// `[INF]`/`[OBS]` under it, the same as for every document gradient: the
+// target stores the coefficients as `half` and runs the spline on premultiplied
+// colour (`GradientOracle.h`); here they are `float`, and the colour is black,
+// so only the alpha channel exists. And WHICH end of the rect is `minY` depends
+// on the y-handedness of the RB display list, the gap
+// `kGradientAxisDirectionNote` names.
+//
+// `py` is the pixel centre, `y + 0.5`, on the grid `bounds` is on.
+float gradientOpacityMask(const OpacityMaskArguments& args, float py);
 
 // True when the mask is 1.0 at every pixel, so applying it is a no-op.
 //
@@ -247,6 +351,10 @@ struct OpacityMask {
 // `sd = -field.distance`, and `py` is the PIXEL CENTRE `y + 0.5` -- the point
 // `generateField` sampled the field at, so the mask and the field are measured
 // at the same place.
+//
+// With `args.kind == Gradient` the field gives only the grid: every texel of a
+// row gets `gradientOpacityMask`, and `coverage` is 1 everywhere -- that mask
+// has no "outside", so it has no blind spot to count either.
 OpacityMask glassOpacityMask(const FieldImage& field, const OpacityMaskArguments& args);
 
 // The mask applied to one layer's art: `rgba` is STRAIGHT colour with its alpha

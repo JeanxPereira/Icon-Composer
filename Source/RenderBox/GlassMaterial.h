@@ -167,11 +167,18 @@ struct GlassMaterialDocument {
 
     std::optional<icf::Refractivity> refractivity;
 
-    // `[INF]` `lighting` maps to `Icon.Layer.performsLightingByElement`, which
-    // lives on the LAYER struct and not inside `GlassMaterial`. It is read here
-    // because it is one of the six material-family group keys, and it is
-    // deliberately not a field of `GlassMaterial`. `[INF]` individual -> true is
-    // by name; no arithmetic or branch on it was read.
+    // `lighting` maps to `Icon.Layer.performsLightingByElement`, which lives on
+    // the LAYER struct and not inside `GlassMaterial`. It is read here because
+    // it is one of the six material-family group keys, and it is deliberately
+    // not a field of `GlassMaterial`.
+    //
+    // `[BIN]` The mapping was `[INF]`, by name, until 2026-10-01; it is read
+    // now. The converter (`IconComposerKit` `0x10CA38`-`0x10CB08`) passes
+    // `cmp w19, #0; cset w3, eq` on the resolved case, and case 0 is
+    // `individual`: so `individual` -- and a MISSING key, whose default is 0
+    // (`IconComposerFoundation` `0x90978`) -- is `true`, and `combined` is
+    // `false`. `IconRenderer.cpp` consumes it straight from here: it decides
+    // how a group's one distance field is built (`0x1CB90`, at `0x1CDD8`).
     std::optional<icf::Lighting> lighting;
 };
 

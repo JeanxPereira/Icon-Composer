@@ -6,6 +6,9 @@
 // mudou. Desde a G5 o quadro sai de `rb::renderIconGpu` (a cadeia residente;
 // `icfidelity` a mede contra `rb::renderIcon`, o gabarito, no corpus inteiro).
 // `icserver --cpu` volta ao caminho de CPU. A UI nao desenha nada, so mostra.
+// `icserver --generation 26|27` escolhe a geracao de design com que os quadros
+// saem (`rb::DesignGeneration`; o padrao e a 27), e o comando `generation` a
+// troca com o processo vivo.
 //
 // Protocolo: uma linha de comando no stdin, uma resposta no stdout.
 //
@@ -55,6 +58,9 @@
 //       o retangulo de cada camada em pontos do canvas (0..1024), para o
 //       destaque da selecao e o clique no canvas
 //       -> "json <n>\n" + [{g, l, x0, y0, x1, y1, hidden}, ...]
+//   generation <26|27>
+//       a geracao de design dos proximos `render` -- no alvo e estado da vista
+//       (`EffectsRenderMode`), nao do documento -> "ok\n" | "err <motivo>\n"
 //   save          -> "ok\n" | "err <motivo>\n"   (grava no .icon aberto)
 //   quit
 //
@@ -73,6 +79,7 @@
 #include "Source/RenderBox/GpuResident.h"
 #include "Source/RenderBox/Parallel.h"
 #include "Source/RenderBox/RenderCache.h"
+#include "Source/cli/RenderBundle.h"
 #include "Source/RenderBox/Mono.h"
 #include "Source/RenderBox/SimulatedGlass.h"
 #include "Source/RenderBox/ChicletShape.h"
@@ -293,8 +300,17 @@ std::string layerRects(const icf::IconBundle& b, BoxCache& boxes, icf::Context c
 
 int main(int argc, char** argv) {
     bool gpu = true;
+    rb::DesignGeneration generation = rb::DesignGeneration::G27;
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--cpu") gpu = false;
+        if (std::string(argv[i]) == "--generation" && i + 1 < argc) {
+            auto g = iccli::designGenerationFromString(argv[++i]);
+            if (!g) {
+                fail("--generation e 26 ou 27");
+                return 2;
+            }
+            generation = *g;
+        }
     }
 #ifdef _WIN32
     _setmode(_fileno(stdout), _O_BINARY);
@@ -556,6 +572,19 @@ int main(int argc, char** argv) {
             continue;
         }
 
+        if (cmd == "generation") {
+            std::string which;
+            in >> which;
+            auto g = iccli::designGenerationFromString(which);
+            if (!g) {
+                fail("geracao desconhecida: " + which);
+                continue;
+            }
+            generation = *g;
+            reply("ok");
+            continue;
+        }
+
         if (cmd == "get") {
             if (!bundle) {
                 fail("get antes de open");
@@ -625,6 +654,7 @@ int main(int argc, char** argv) {
             io.cache = &cache;
             io.viewport = rb::IconViewport{x, y, w, h};
             io.subdivisions = subdivisions;
+            io.generation = generation;
             // O MONO pela RenderBox (Mono.h), o mesmo caminho do editor: o tint e
             // o Tinted Dark (com o quadrado, sobre o vidro), o clear e o Clear
             // Light ou Dark -- o Tinted Light chega aqui como Clear Light.

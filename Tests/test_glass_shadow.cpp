@@ -137,6 +137,9 @@ TEST_CASE(glass_shadow_neutral_blackens_and_vibrant_dims_the_glyph_colour) {
     rb::ShadowParameters p;
     p.offsetX = p.offsetY = 0.0;
     p.radius = rb::SizeBasedValue{{0.0, 0.0, 0.0, 0.0}};
+    // And no ring: at this size the band is a thirty-second of a pixel wide,
+    // and what it leaves of the alpha is the ring's business, not the colour's.
+    p.ringWidth.reset();
     const rb::ShadowGeometry g = rb::shadowGeometry(2, IconSizeClass::Large, p);
     CHECK(near(g.blurRadius, 0.0));
 
@@ -158,18 +161,17 @@ TEST_CASE(glass_shadow_neutral_blackens_and_vibrant_dims_the_glyph_colour) {
     CHECK(near(vibrant[3], 1.0, 1e-6));
 }
 
-// THE RING IS A RAMP AND NOT A CROWN, which is the whole of what `0x11C40` says
-// and the one thing a plausible-looking transcription would get wrong.
-//
-// `[BIN]` The band `[minAlpha, maxAlpha]` goes into ONE scale and ONE bias
-// (`0x89400`-`0x89424`), so the mask is MONOTONE in depth: it cannot come back
-// down. A crown -- opaque between the outline and the outline inset by
-// `ringWidth`, transparent on both sides -- is the reading this rules out, and
-// it is the reading the shape of the parameter invites.
+// THE RING IS A CROWN. The band `[minAlpha, maxAlpha]` goes into one scale and
+// one bias (`0x89400`-`0x89424`), and for a while that was read as "monotone,
+// so it cannot come back down". The scale and the bias are only `t`; what the
+// fragment does with `t` is `a - a * b` (`alpha_effect`, `default_mod66.ll`
+// %46-%61), with `b` the same step one unit further in. So the mask is opaque
+// between the outline and the outline inset by `ringWidth`, and transparent on
+// both sides.
 //
 // A 41-wide horizontal bar in a 41x41 field, ring width 8: the centre column
 // runs from the top edge to the bottom edge of the bar.
-TEST_CASE(glass_shadow_ring_ramps_inward_and_never_comes_back_down) {
+TEST_CASE(glass_shadow_ring_is_a_band_inside_the_outline) {
     const int n = 41;
     std::vector<float> art(static_cast<std::size_t>(n) * n * 4, 0.0f);
     for (int y = 4; y <= 36; ++y) {
@@ -182,18 +184,14 @@ TEST_CASE(glass_shadow_ring_ramps_inward_and_never_comes_back_down) {
     const int x = n / 2;
     // Outside the bar: nothing.
     CHECK(mask[static_cast<std::size_t>(3) * n + x] == 0.0f);
-    // The first row inside sits half a pixel in, over a ring of eight.
-    CHECK(near(mask[static_cast<std::size_t>(4) * n + x], 0.5 / 8.0, 1e-6));
-    // Eight rows further in it has saturated, and it STAYS saturated all the way
-    // to the middle -- a crown would have fallen back to zero by row 20.
-    CHECK(near(mask[static_cast<std::size_t>(12) * n + x], 1.0, 1e-6));
-    CHECK(near(mask[static_cast<std::size_t>(20) * n + x], 1.0, 1e-6));
-    // Monotone down the half-section, which is what one scale and one bias means.
-    for (int y = 4; y < 20; ++y) {
-        CHECK(mask[static_cast<std::size_t>(y) * n + x] <=
-              mask[static_cast<std::size_t>(y + 1) * n + x]);
-    }
-    // And symmetric: the bar's far edge feathers the same way.
+    // The first row inside is in the band, and so is the eighth (7.5 deep).
+    CHECK(near(mask[static_cast<std::size_t>(4) * n + x], 1.0, 1e-6));
+    CHECK(near(mask[static_cast<std::size_t>(11) * n + x], 1.0, 1e-6));
+    // The ninth is 8.5 deep, a full pixel past the ring: nothing, and nothing
+    // from there to the middle.
+    CHECK(near(mask[static_cast<std::size_t>(12) * n + x], 0.0, 1e-6));
+    CHECK(near(mask[static_cast<std::size_t>(20) * n + x], 0.0, 1e-6));
+    // And symmetric: the bar's far edge carries the same band.
     CHECK(near(mask[static_cast<std::size_t>(36) * n + x],
                mask[static_cast<std::size_t>(4) * n + x], 1e-6));
 }
@@ -212,10 +210,10 @@ TEST_CASE(glass_shadow_ring_feathers_at_the_canvas_edge) {
 
     const std::vector<float> mask = rb::shadowRingMask(art, n, n, 4.0);
     REQUIRE(mask.size() == static_cast<std::size_t>(n) * n);
-    // The corner is one step from two virtual outside rows: distance 1, depth .5.
-    CHECK(near(mask[0], 0.5 / 4.0, 1e-6));
-    // The middle is four rows in and saturated.
-    CHECK(near(mask[static_cast<std::size_t>(8) * n + 8], 1.0, 1e-6));
+    // The corner is one step from two virtual outside rows: in the band.
+    CHECK(near(mask[0], 1.0, 1e-6));
+    // The middle is eight rows in, past a ring of four: nothing.
+    CHECK(near(mask[static_cast<std::size_t>(8) * n + 8], 0.0, 1e-6));
 }
 
 // A width of zero is the DEGENERATE band, not an empty mask: `maxAlpha` meets

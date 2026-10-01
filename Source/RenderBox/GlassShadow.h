@@ -80,6 +80,20 @@
 // bytes after reading the field the metadata calls the opacity. Two fields, one
 // table, no arithmetic in between.
 //
+// WHOSE OPACITY IT IS, CORRECTED ON 2026-10-01. Everything above stands: the
+// field is `FinalizedIcon.Layer.opacity`, copied verbatim from
+// `Icon.Layer.opacity`. What this header then got wrong was the DOCUMENT side of
+// that name. `[BIN]` In the target's model an `Icon.Layer` is a document GROUP,
+// and a document layer is an `Icon.Element`: the converter (`IconComposerKit`
+// `0x10C494`) builds one `Icon.Layer` per group and hands the value of
+// `Group.opacity.getter` (`0x10C91C`) to its init (`0x10CB08`). So the third
+// factor is the GROUP's `opacity`, and `0x495F0`, quoted above as "the element's
+// own draw", is the highlight pass multiplying by that same group field. The
+// document LAYER's `opacity` is `Icon.Element.opacity`, and it is applied inside
+// the group's image (`0x1AD9C`/`0x1B448`) and inside the shadow's own source list
+// (`0x1C0DC`, drawn with the element's real opacity) -- which is how it still
+// reaches the shadow, by a door that is not this factor.
+//
 // `[BIN]` **AND THE LAUDO'S COUNTER-INDICATION DISSOLVES.** It hesitated because
 // `Shadow.ignoreFillOpacity` is `true` by default and is never consulted at
 // `0x49ED4`. It need not be: `ignoreFillOpacity` belongs to
@@ -127,8 +141,8 @@
 //      front, see below;
 //   5. `drawDisplayList:` (`0x20CF4`).
 //
-// THE RING, WHICH IS NOT A RING
-// ------------------------------
+// THE RING, WHICH IS A RING AFTER ALL
+// -----------------------------------
 // The laudo (§8, open item 5) left the clip's GEOMETRY untranscribed: it had the
 // width read, scaled and negated at `0x20C8C` and handed to `0x11C40`, and
 // stopped there. `0x11C40` is 1604 bytes and it is read out here.
@@ -151,10 +165,10 @@
 //      a white-on-transparent premultiplied ramp into a pure alpha mask, which
 //      is what `clipLayerWithAlpha:mode:` at `0x20CE8` then consumes.
 //
-// So the "shape" is not a shape. `[BIN]` The mask is the LAYER'S OWN SIGNED
+// So the "shape" is not a path. `[BIN]` The mask is the LAYER'S OWN SIGNED
 // DISTANCE FIELD -- `FinalizedIcon.Layer.sdf` (`IconRendering.SDF`, the
 // `{texture, maxDistance: Double}` pair the reflection lists at `0xA2FF4`,
-// occupying `Layer+0x98..0xB0`) -- run through a LINEAR REMAP of its alpha. The
+// occupying `Layer+0x98..0xB0`) -- run through a BAND PASS of its alpha. The
 // band is computed at `0x11CF8`-`0x11D3C`:
 //
 //     u        = -(ringWidth[3-c] * s) * (sdfTexelsW - 2) / rectW   // texels
@@ -164,18 +178,29 @@
 // with `u <= 0`, so `minAlpha = 0.5` and `maxAlpha = 0.5 + w/(2*maxDistance)`,
 // `w` being the ring width in SDF texels.
 //
-// `[BIN]` **AND THE FILTER IS A CLAMPED LINEAR REMAP, NOT A BAND PASS.** That is
-// read out of `RenderBox.arm64`, which unlike `IconRendering` KEEPS its symbols:
+// `[BIN]` **AND THE FILTER IS A BAND PASS.** That is read out of
+// `RenderBox.arm64`, which unlike `IconRendering` KEEPS its symbols:
 // `RB::_GLOBAL__N_1::render_(AlphaThresholdEffect const&, ...)` at `0x893A4`
 // computes, into the shader globals at `+0x44`/`+0x48`,
 //
 //     scale = 1 / (maxAlpha - minAlpha)        (`0x89400`-`0x89410`)
 //     bias  = -minAlpha * scale                (`0x89414`-`0x89424`)
 //
-// i.e. `t = (alpha - minAlpha) / (maxAlpha - minAlpha)`, and the output is the
-// filter's colour times `t`. One scale and one bias is a MONOTONE function of
-// the distance: it cannot be non-zero inside a band and zero on both sides of
-// it, so whatever else the clip is, **it is not a crown between two contours.**
+// i.e. `t = (alpha - minAlpha) / (maxAlpha - minAlpha)`. Until 2026-10-01 this
+// header stopped there and concluded "one scale and one bias is monotone, so it
+// is not a crown". The scale and the bias are only `t`; what the FRAGMENT does
+// with `t` was not read, and it is this (`alpha_effect`, `default_mod66.ll`
+// %46-%61):
+//
+//     a = saturate(t / fwidth(t) + 0.5)
+//     b = saturate((t - 1) / fwidth(t) + 0.5)
+//     out = colour * (a - a * b)               state bits 9-11 clear
+//
+// one for `0 <= t <= 1` and zero on BOTH sides, antialiased over a pixel. The
+// single-step variant (`out = colour * a`, bit 9) is selected only when
+// `maxAlpha` is +infinity (`0x8952C`-`0x89548`) -- the one-argument
+// `addAlphaThresholdFilterWithAlpha:` -- and `0x11D08`-`0x11D64` hands a finite
+// one. **It is a crown between two contours.**
 //
 // `[BIN]` THE SIGN, which decides inward from outward, comes from the same
 // binary. `-[RBDisplayList addDistanceFilterWithMaxDistance:scale:flags:]`
@@ -192,11 +217,12 @@
 //
 // THE WHOLE THING COLLAPSES, AND `maxDistance` CANCELS:
 //
-//     mask(p) = clamp( depthInside(p) / (ringWidth[3-c] * s), 0, 1 )
+//     t(p)    = depthInside(p) / (ringWidth[3-c] * s)
+//     mask(p) = 1 for 0 <= t <= 1, 0 elsewhere
 //
-// zero ON the layer's own outline, rising linearly to one at `ringWidth` points
-// inside it, one everywhere deeper. It is a one-sided INWARD FEATHER of the
-// silhouette, not a coroa. `shadowRingMask` is that line.
+// one from the layer's own outline to `ringWidth` points inside it, zero deeper
+// and zero outside, each edge antialiased over a pixel. The shadow source is
+// the RIM of the silhouette, not its body. `shadowRingMask` is that line.
 //
 // `[BIN]` Two guards precede it, and the laudo named only one of them: the clip
 // is skipped when `Shadow.ringWidth` is `nil` (`ldrb w8,[x27,#0x30]; cmp #1` at
@@ -318,12 +344,18 @@ struct ShadowParameters {
 
     // `[BIN]` both `true`, from the `strh w25` at `0x5ECA4` with `w25 == 0x0101`.
     //
-    // `[OBS]` `ignoreFillOpacity` is consulted NOWHERE in `0x49ED4`. The laudo
-    // held that against the reading of `[descriptor+0x38]`; it should not have,
-    // and the header says why -- this field belongs to a parameters struct and
-    // that one is a `FinalizedIcon.Layer`'s own opacity. So the open question
-    // this field raises is smaller than it looked and it is still open: what
-    // DOES read it. Carried, not consumed.
+    // `ignoreFillOpacity` is consulted NOWHERE in `0x49ED4`. The laudo held that
+    // against the reading of `[descriptor+0x38]`; it should not have, and the
+    // header says why -- this field belongs to a parameters struct and that one
+    // is a `FinalizedIcon.Layer`'s own opacity.
+    //
+    // `[BIN]` WHAT DOES READ IT was found on 2026-10-01, and it is the FINALISER,
+    // not the compositor: building the shadow's source list (`0x1C0DC`), it
+    // rewrites every fill's alpha to 1.0 when this is set (`0x1C260`,
+    // `0x1C3E8`-`0x1C430`). So it is about the element's FILL, not about any
+    // opacity, and it asks for a second render of the art -- which
+    // `IconRenderer.cpp` makes, for an element whose fill is translucent, and
+    // casts the shadow from. Generation 26 clears it (`0x77ED0`).
     bool ignoreFillOpacity = true;
     bool drawOverContent = true;
 
@@ -342,7 +374,11 @@ struct ShadowParameters {
     SizeBasedValue maxVibrantOverdrawOpacity{{0.5, 0.5, 0.5, 0.5}};
 };
 
-// The block as this version's binary initialises it.
+// The block as this version's binary initialises it: GENERATION 27's. The icon
+// renderer does not draw with it -- every step it runs takes the `shadow` of the
+// generation's block (`RenderingParameters.h`), and generation 26 rewrites
+// twelve of the fifteen fields (`0x77E80`-`0x77ED0`). This is the default of the
+// functions below for a caller that has no block: the tests of one formula.
 inline constexpr ShadowParameters kShadow{};
 
 // `[BIN]` `0x4A248`: `none` returns, `neutral` takes the neutral table, and
@@ -378,19 +414,21 @@ struct ShadowInputs {
     // field-offset vector at `0xBD3F0`, and written at `0x17038` from
     // `Icon.Layer.opacity`. See the header for all three.
     //
-    // THE SAME NUMBER MULTIPLIES THE ELEMENT'S OWN DRAW (`0x495F0`), so it is
-    // applied TWICE per layer and not once: once here, on the shadow, and once
-    // on the art. `IconRenderer.cpp` already passed `opacity` to `blendOver` for
-    // the art before this file existed; feeding it here as well is what makes
-    // the two agree, and halving it in either place would be a compensation for
-    // an arithmetic the binary does not perform.
+    // IT IS THE GROUP'S OPACITY -- an `Icon.Layer` is a document group; the
+    // header says how that was settled on 2026-10-01. The same number multiplies
+    // the group's content draw (`0x4B4EC`) and every highlight (`0x495F0`), so it
+    // is applied once per pass and not once per group, and halving it in any of
+    // them would be a compensation for an arithmetic the binary does not
+    // perform. Where the shadow's source is one element's own art,
+    // `IconRenderer.cpp` multiplies that element's opacity in here as well: the
+    // target has it inside the source, and the chain between the two is linear.
     //
     // `[OBS]` The DEFAULT was not found. `Icon.Layer.opacity` is copied verbatim
     // and its initialiser is not materialised in this slice -- a sweep of all
     // 117 `fmov dN, #1.0` sites in `__text` finds no store into a `Layer`, and
     // there is no `Icon.Layer.<anon>.CodingKeys` to carry a `?? 1.0`. `1.0` is
     // the multiplicative identity and is what this renderer uses when a document
-    // layer names no `opacity`, but that is the DOCUMENT's rule (`numberOr(...,
+    // group names no `opacity`, but that is the DOCUMENT's rule (`numberOr(...,
     // 1.0)`), not a value read out of the binary.
     double layerOpacity = 1.0;
 
@@ -423,11 +461,18 @@ bool shadowDraws(const ShadowInputs& in, const ShadowParameters& p = kShadow);
 
 // `[BIN]` §4(d). `base = (recolouringDim ? blendModeForVibrantOnDim : blendMode)`
 // on the vibrant branch, `blendMode` otherwise; the overdraw pass substitutes
-// `overdrawBlendMode`, and that pass is not implemented here.
+// `overdrawBlendMode` (`tst w1, #1` at `0x49F94` / `0x4A004`), which
+// `IconRenderer.cpp` passes itself when it composites that pass.
 //
-// `[OBS]` `recolouringDim` is `ctx+0x463 == 2`, one of the unnamed gate bytes.
-// This renderer is always in the identity state, so it always reads `blendMode`
-// -- `multiply`. Parameterised for the same reason `shadowEffectiveStyle` is.
+// `[BIN]` `recolouringDim` is `ctx+0x463 == 2` (`0x49FF4`-`0x4A000`), and the
+// byte has a name since 2026-10-01: the configuration the two highlight
+// selectors are handed is `ctx+0x408` (`0x475D8`, `0x492D0`) and they read
+// `iconBrightness` at its `+0x5B` -- the same byte. `2` is `dim`. So the VIBRANT
+// shadow of an icon whose chiclet classified as dim takes
+// `blendModeForVibrantOnDim`: `normal` in generation 27, where every other
+// shadow is `multiply`; `plusDarker` like the rest in generation 26. The
+// neutral branch (`0x49F94`) never reads the byte. `IconRenderer.cpp` passes
+// the class the chiclet's fill resolved to.
 BlendMode shadowBlendMode(ShadowStyle style, bool recolouringDim = false,
                           const ShadowParameters& p = kShadow);
 
@@ -455,7 +500,7 @@ struct ShadowGeometry {
     // tested at `0x20C48`), as `s * ringWidth[3-c]`; the binary NEGATES it at
     // `0x20C8C` because the threshold band it feeds is expressed against a
     // distance that grows OUTWARD. In this struct it is the positive depth, in
-    // the same target pixels as `blurRadius`: the ramp runs from the silhouette
+    // the same target pixels as `blurRadius`: the band runs from the silhouette
     // to `ringWidth` pixels inside it. See the header.
     std::optional<double> ringWidth;
 };
@@ -482,9 +527,10 @@ inline constexpr double kShadowBlurSigmaPerRadius = 1.0;
 
 // STEP 4, as one scalar per texel in `[0, 1]`, to multiply into the art's alpha.
 //
-// `mask = clamp(depthInside / ringWidth, 0, 1)`, `depthInside` measured from the
-// art's own silhouette -- the header reads that line out of `0x11C40`,
-// `0x893A4` and `0x3F354`, and shows why `SDF.maxDistance` cancels out of it.
+// `mask = 1 - clamp(depthInside - ringWidth + 0.5, 0, 1)` inside the silhouette,
+// zero outside it, `depthInside` measured from the art's own silhouette -- the
+// header reads that band out of `0x11C40`, `0x893A4`, the `alpha_effect`
+// fragment and `0x3F354`, and shows why `SDF.maxDistance` cancels out of it.
 //
 // THE SILHOUETTE IS THE `alpha >= 0.5` CONTOUR of `art`, and the distance is an
 // exact Euclidean transform over pixel centres (Felzenszwalb-Huttenlocher),
@@ -503,8 +549,8 @@ inline constexpr double kShadowBlurSigmaPerRadius = 1.0;
 // `RenderBox.arm64`. Two consequences, both named by `kShadowRingNote`: the
 // field's resolution is unknown, so this transform is computed at the target's
 // own resolution instead; and if `ringWidth` in texels ever exceeded that
-// field's `maxDistance` the band would run off the encodable range and the ramp
-// would truncate, which is a saturation this cannot see.
+// field's `maxDistance` the band would run off the encodable range and its
+// inner edge would truncate, which is a saturation this cannot see.
 std::vector<float> shadowRingMask(const std::vector<float>& art, std::uint32_t width,
                                   std::uint32_t height, double ringWidth);
 
@@ -558,18 +604,46 @@ extern const char* const kShadowRingNote;
 // keeps closed gaps is a list readers stop reading.
 
 // The overdraw pass IS NOW DRAWN, and this note no longer says it is missing.
-// What it says is the one gate under it that is still unread: the byte at
-// `[descriptor+0x31]`, which `0x45F10` (`ldrb w8, [x24, #0xf1]`, descriptor base
-// `x24+0xC0`) requires to be ZERO before the pass opens at all, and which
-// `0x4B4EC` itself switches on at `0x4B518` (`cmp w24, #8`). It is a kind tag
-// with at least nine values and no name in the reflection metadata. This
-// renderer has no way to compute it, so it draws the pass unconditionally when
-// the arithmetic opens it -- which is the reading that matches every corpus
-// document, since `[ART]` nothing in a `.icon` selects it.
+//
+// `[BIN]` ITS GATE IS READ TOO, and the paragraph that stood here until
+// 2026-10-01 was wrong about it. The byte at `[descriptor+0x31]`, which
+// `0x45F10` (`ldrb w8, [x24, #0xf1]`, descriptor base `x24+0xC0`) and `0x4ADBC`
+// require to be ZERO before the pass opens, is not "a kind tag with no name":
+// the header above already places `FinalizedIcon.Layer.blendMode` at `+0x31`,
+// and that is the GROUP's `blend-mode`, copied verbatim by the finaliser
+// (`0x19934`-`0x19940`). Zero is `normal`. So the pass runs only over a group
+// that blends normally, and `0x4B518` (`cmp w24, #8`) is the content draw
+// dispatching on the same mode. `[ART]` A `.icon` DOES select it: 18 corpus
+// groups carry a non-normal blend beside glass. `IconRenderer.cpp` applies the
+// gate.
+//
+// What the note still carries is what is left open under the pass: that the
+// clip's float multiplies coverage (the `[INF]` below), and whether the
+// translucency clip the pass sits under reaches the shadow once or twice.
 //
 // It fires only when the pass actually runs, for the same reason
 // `kShadowRingNote` does.
 extern const char* const kShadowOverdrawNote;
+
+// WHAT THE SHADOW IS CAST FROM, where this renderer's source is not the
+// target's. `[BIN]` The source is a display list of its own (`0x1C0DC`): the
+// group's glass elements -- or all of them when `Shadow.ringWidth` is nil
+// (`0x18338`-`0x18354`) -- drawn with their real opacity and blend. One thing
+// about it is not reproduced, and the note fires only for a group where it
+// bites:
+//
+//   * the ring is cut from the group's SDF, whose silhouettes are drawn at
+//     opacity 1 (`0x1CB90`). Here it is cut from the `alpha >= 0.5` contour of
+//     the source itself, which is the same thing for one element and is not for
+//     a source flattened from several when one of them is translucent.
+//
+// The other thing this note named until 2026-10-01 IS reproduced now:
+// `Shadow.ignoreFillOpacity` rewrites every fill's alpha to 1.0 in that list
+// (`0x1C260`, `0x1C3E8`-`0x1C430`), so a translucent fill casts the shadow of
+// an opaque one, and `IconRenderer.cpp` draws that second render of the art.
+// `[OBS]` A fill does not reach raster art in this renderer at all
+// (`kRasterFillNote`), so there is nothing to rewrite on one.
+extern const char* const kShadowSourceNote;
 
 // `[BIN]` The overdraw clip's alpha: `t = clamp01(translucency /
 // translucencyForMaxOverdraw)`, `alpha = t * max<...>OverdrawOpacity[3-c]`,

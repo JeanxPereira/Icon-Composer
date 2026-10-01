@@ -60,4 +60,29 @@ std::vector<RampStop> automaticGradient(const icf::Color& base,
                                         const AutomaticGradientParameters& p =
                                             AutomaticGradientParameters{});
 
+// The same derivation, where the target runs it and delivered where the
+// compositor wants it.
+//
+// `[BIN]` The `[OBS]` above is answered in `ColorSpace.h`: the components the
+// rule sees are those of an `IconColor`, and `IconColor.init(_: CGColor)`
+// (`IconRendering 0x3D770`) fills it through `RBColorFromCGColor2(color, 3)` --
+// GAMMA-ENCODED DISPLAY P3, whatever space the document named. So the
+// luminance, the band, the boost and the clamp all happen on Display P3
+// numbers, and the clamp is a clamp to the P3 gamut.
+//
+// This therefore takes the base into Display P3 (`toDisplayP3`), runs
+// `automaticGradient` on it UNCHANGED, and converts the two stops it returns
+// into the working space (`displayP3ToSrgb`). For a `display-p3:` base the
+// first step is nothing. For an `srgb:` base it is not: the P3 numbers of a
+// saturated sRGB colour are not its sRGB numbers, so the luminance, and with
+// it possibly the band, and the boosted stop all come out different.
+//
+// `[INF]` The untouched base stop of an `srgb:` colour goes sRGB -> P3 -> sRGB
+// here, as it does in the target, and comes back within 1e-4 of where it
+// started rather than exactly on it. A Display P3 or a grey base is handed to
+// the rule as the document's own doubles, and the alpha never moves.
+std::vector<RampStop> automaticGradientInWorkingSpace(
+    const icf::Color& base,
+    const AutomaticGradientParameters& p = AutomaticGradientParameters{});
+
 }  // namespace rb

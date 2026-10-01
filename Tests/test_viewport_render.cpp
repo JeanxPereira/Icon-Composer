@@ -340,6 +340,34 @@ const char* const kShadowDocument = R"({
   ]
 })";
 
+// UM GRUPO DE VARIOS ELEMENTOS, com tudo o que o grupo faz de uma vez so desde
+// 01/10: a imagem do grupo (quatro elementos, um deles com mescla e opacidade
+// proprias), o campo empilhado de tres elementos de vidro -- dois vetores e um
+// raster --, a sombra lancada da fonte so dos de vidro (o quarto elemento, o
+// tracado, nao entra nela, entao a fonte e um buffer A PARTE da imagem), a mascara
+// sobre a imagem inteira, a refracao e o especular do grupo. A refracao e a
+// modesta de `kSpreadGlassDocument`, pela mesma razao: sobra origem nao-nula nos
+// buffers.
+const char* const kGroupDocument = R"({
+  "fill" : { "linear-gradient" : [ "display-p3:0.9,0.2,0.3,1", "display-p3:0.1,0.3,0.9,1" ] },
+  "groups" : [
+    { "layers" : [
+        { "image-name" : "disc.svg", "name" : "upper", "opacity" : 0.8,
+          "blend-mode" : "multiply",
+          "position" : { "scale" : 0.9, "translation-in-points" : [ 140, 90 ] } },
+        { "glass" : false, "image-name" : "marks.svg", "name" : "plain" },
+        { "image-name" : "dot.png", "name" : "dot",
+          "position" : { "scale" : 6, "translation-in-points" : [ -200, 150 ] } },
+        { "image-name" : "disc.svg", "name" : "lower",
+          "position" : { "scale" : 1.2, "translation-in-points" : [ -60, -40 ] } }
+      ],
+      "refractivity" : { "depth" : 0.25, "enabled" : true, "strength" : -0.10 },
+      "shadow" : { "kind" : "neutral", "opacity" : 0.8 },
+      "specular" : true,
+      "translucency" : { "enabled" : true, "value" : 0.5 } }
+  ]
+})";
+
 // A recusa do filtro, procurada por nome no relatorio.
 bool namesTheFilterRefusal(const std::vector<std::string>& gaps) {
     for (const std::string& g : gaps) {
@@ -718,11 +746,11 @@ TEST_CASE(viewport_shadow_matches_including_the_blur_ladder) {
                     v.originX, v.originY, v.width, v.height, b.originX, b.originY, b.width,
                     b.height, part->glassShadowed);
         // `glassShadowed` conta o PASSO rodando no buffer (`++out.glassShadowed`
-        // em `IconRenderer.cpp`, uma vez por grupo cujo `castShadow` executa),
+        // em `IconRenderer.cpp`, uma vez por grupo que lanca sombra),
         // nao pixels que a sombra de fato moveu -- mais fraco que o
         // `glassSpecular` do caso de vidro acima, que so conta o que o efeito
         // alterou. Ainda assim prova o que este caso precisa: que a escada
-        // (`blurLadder`, dentro de `castShadow`) rodou neste buffer e nao foi
+        // (`blurLadder`, dentro de `makeShadow`) rodou neste buffer e nao foi
         // pulada por vacuidade.
         CHECK(part->glassShadowed > 0);
     }
@@ -771,4 +799,82 @@ TEST_CASE(viewport_corpus_documents_match_at_2048) {
             CHECK_EQ(plan->marginPixels, 222u);
         }
     }
+}
+
+// O GRUPO INTEIRO NUM BUFFER PARCIAL. Tudo o que passou a ser do grupo em 01/10
+// -- a imagem, o campo empilhado, a fonte da sombra a parte, a mascara sobre a
+// imagem -- e por texel ou herda a margem do passo que ja existia, entao o
+// invariante tem de fechar em zero aqui como fecha nos casos de uma camada. Os
+// contadores dizem que cada passo rodou UMA vez, e a nota do empilhamento diz que
+// o campo saiu de mais de um elemento: sem eles o caso julgaria quatro camadas
+// soltas.
+TEST_CASE(viewport_group_image_stacked_field_and_group_effects_match) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    TempBundle tb("group", kGroupDocument);
+    auto bundle = icf::IconBundle::open(tb.path());
+    REQUIRE(bundle.has_value());
+    RenderedIcon full;
+    CHECK_EQ(compareViewports(*bundle, 512, gateViewports(512), &full), 0);
+    CHECK_EQ(full.drawn, 4u);
+    CHECK_EQ(full.skipped.size(), 0u);
+    CHECK_EQ(full.glassShadowed, 1u);
+    CHECK_EQ(full.glassTranslucent, 1u);
+    CHECK_EQ(full.glassRefracted, 1u);
+    CHECK_EQ(full.glassSpecular, 1u);
+    bool stacked = false;
+    for (const std::string& n : full.notes) {
+        if (n == kFieldStackNote) stacked = true;
+    }
+    CHECK(stacked);
+
+    // E a origem do buffer tem de estar em jogo, como no caso do vidro espalhado.
+    int nonZero = 0;
+    for (const IconViewport& v : gateViewports(512)) {
+        IconRenderOptions vo;
+        vo.size = 512;
+        vo.viewport = v;
+        auto part = renderIcon(d, *bundle, vo);
+        REQUIRE(part.has_value());
+        if (part->buffer.originX != 0 || part->buffer.originY != 0) ++nonZero;
+    }
+    CHECK(nonZero >= 2);
+}
+
+// O MESMO GRUPO, ILUMINADO COMO UMA FORMA SO (`lighting` `combined`). O campo
+// deixa de ser o empilhamento e passa a ser o da UNIAO das silhuetas, montada na
+// CPU -- a cobertura dos contornos de cada vetor, o alfa do raster -- e levada a
+// `generateFieldFromAlpha`. A cobertura amostra em coordenada absoluta e a
+// transformada e a que o raster de vidro ja usa num buffer parcial, entao o
+// invariante tem de fechar em zero pelo mesmo caminho.
+//
+// O disco `upper` vem DEPOIS do raster na ordem de tras para a frente, entao o
+// caso tambem passa pela regra do alvo que o deixa fora da silhueta
+// (`kCombinedRasterNote`).
+TEST_CASE(viewport_combined_lighting_field_matches) {
+    Device& d = gpu();
+    if (!d.valid()) return;
+    std::string doc = kGroupDocument;
+    const std::size_t at = doc.find("\"refractivity\"");
+    REQUIRE(at != std::string::npos);
+    doc.insert(at, "\"lighting\" : \"combined\",\n      ");
+    TempBundle tb("group-combined", doc);
+    auto bundle = icf::IconBundle::open(tb.path());
+    REQUIRE(bundle.has_value());
+    RenderedIcon full;
+    CHECK_EQ(compareViewports(*bundle, 512, gateViewports(512), &full), 0);
+    CHECK_EQ(full.drawn, 4u);
+    CHECK_EQ(full.skipped.size(), 0u);
+    CHECK_EQ(full.glassTranslucent, 1u);
+    CHECK_EQ(full.glassRefracted, 1u);
+    CHECK_EQ(full.glassSpecular, 1u);
+    bool united = false, stacked = false, leftOut = false;
+    for (const std::string& n : full.notes) {
+        if (n == kCombinedFieldNote) united = true;
+        if (n == kFieldStackNote) stacked = true;
+        if (n == kCombinedRasterNote) leftOut = true;
+    }
+    CHECK(united);
+    CHECK(!stacked);
+    CHECK(leftOut);
 }

@@ -155,11 +155,12 @@ Result<std::vector<Texel>> readBack(Device& device, const Image& image) {
     if (image.handle() == VK_NULL_HANDLE) {
         return std::unexpected(std::string("readBack of an image that was never created"));
     }
-    if (image.format() != VK_FORMAT_R16G16_SFLOAT) {
-        return std::unexpected(std::string("readBack only decodes R16G16_SFLOAT"));
+    const bool wide = image.format() == VK_FORMAT_R32G32_SFLOAT;
+    if (!wide && image.format() != VK_FORMAT_R16G16_SFLOAT) {
+        return std::unexpected(std::string("readBack only decodes R16G16_SFLOAT and R32G32_SFLOAT"));
     }
     const std::size_t texels = static_cast<std::size_t>(image.width()) * image.height();
-    const VkDeviceSize bytes = texels * 2 * sizeof(std::uint16_t);
+    const VkDeviceSize bytes = texels * 2 * (wide ? sizeof(float) : sizeof(std::uint16_t));
 
     // CACHED FIRST, and it is the whole cost of this function. Memory that is
     // visible and coherent but NOT cached is write-combined: the CPU reads it
@@ -210,8 +211,12 @@ Result<std::vector<Texel>> readBack(Device& device, const Image& image) {
 
     std::vector<Texel> out(texels);
     static_assert(sizeof(Texel) == 2 * sizeof(float), "Texel is read as a flat float pair");
-    halvesToFloats(static_cast<const std::uint16_t*>(stage->mapped()),
-                   reinterpret_cast<float*>(out.data()), texels * 2);
+    if (wide) {
+        std::memcpy(out.data(), stage->mapped(), static_cast<std::size_t>(bytes));
+    } else {
+        halvesToFloats(static_cast<const std::uint16_t*>(stage->mapped()),
+                       reinterpret_cast<float*>(out.data()), texels * 2);
+    }
     return out;
 }
 

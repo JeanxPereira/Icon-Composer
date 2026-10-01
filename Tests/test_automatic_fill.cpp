@@ -315,7 +315,6 @@ TEST_CASE(an_automatic_background_paints_the_chiclet_ramp_of_its_appearance) {
     CHECK(endsAre(at(*dark, n / 2, kRampInset).r, at(*dark, n / 2, n - 1 - kRampInset).r,
                   kDark0, kDark1));
     CHECK(hasNote(*dark, kGradientAxisDirectionNote));
-    CHECK(hasNote(*dark, kChicletRectNote));
     CHECK(hasNote(*dark, kBackgroundShapeNote));
 
     // A ramp, not a flat: the two ends differ by the whole of 31 -> 15.
@@ -666,35 +665,68 @@ TEST_CASE(a_layer_linear_gradient_without_an_orientation_draws_on_the_default_ax
 // The gaps that are NAMED rather than filled
 // ---------------------------------------------------------------------------
 
-// `[OBS]` `supportsChicletAlignmentForSystemFills` is true by default, and when
-// it fires the rect stops being the shape's bounding box and becomes origin
-// (0,0) with a `CGSize` from the drawing context -- and WHICH size that is was
-// not read. `systemFillRect` answers `nullopt` for that branch on purpose, and
-// its header forbids falling back to the bounding rect there. So the renderer
-// draws on the bounding rect and SAYS SO, which is the only honest thing left
-// to do with a branch that has no number.
-TEST_CASE(a_system_fill_is_drawn_on_the_bounding_rect_and_names_the_rect_it_could_not_read) {
+// `[BIN]` `supportsChicletAlignmentForSystemFills` (`ICRRenderingParameters
+// +0x360`): set, a `.system` fill's rect is origin (0,0) with the canvas's size
+// (`0x1BA98`-`0x1BAF4`) instead of the shape's bounding box; clear, it is the
+// box. Generation 27 sets it and generation 26 clears it (`0x7707C`).
+//
+// Until 2026-10-01 this case pinned the OPPOSITE for generation 27 -- "drawn on
+// the bounding rect, and says so" -- because the size the aligned branch takes
+// had not been read and `systemFillRect` refused to answer. It is read; the
+// note that named the gap is gone with it.
+//
+// The fixture is a layer at half scale, so its box is the middle half of the
+// canvas (rows 16..47 of 64). Aligned, the layer shows the MIDDLE half of a
+// ramp that spans the canvas: neither end grey, and half the ramp's span from
+// its top row to its bottom row. Unaligned, the whole ramp fits the box: both
+// end greys, the generation's own.
+TEST_CASE(a_layer_system_fill_spans_the_canvas_in_27_and_its_own_box_in_26) {
     Device& d = gpu();
     if (!d.valid()) return;
-    const TempBundle b(backgroundOnly("\"system-dark\""));
-    auto icon = render(d, b.path(), icf::Appearance::Light, 16);
-    REQUIRE(icon.has_value());
-    CHECK(icon->backgroundPainted);
-    CHECK(hasNote(*icon, kChicletRectNote));
+    const std::uint32_t n = 64;
+    const TempBundle b(oneLayer(
+        "\"position\" : { \"scale\" : 0.5, \"translation-in-points\" : [0, 0] },\n"
+        "          \"fill\" : \"system-dark\""));
+    auto bundle = icf::IconBundle::open(b.path());
+    REQUIRE(bundle.has_value());
+    auto draw = [&](DesignGeneration g) {
+        IconRenderOptions o;
+        o.size = n;
+        o.context.appearance = icf::Appearance::Light;
+        o.generation = g;
+        return renderIcon(d, *bundle, o);
+    };
+    const std::uint32_t topRow = 17, bottomRow = 46, x = n / 2;
 
-    // The refusal it rests on is still a refusal: nothing here may have taught
-    // `systemFillRect` to answer for the aligned branch.
-    const PlacementRect box{0, 0, 100, 100};
-    CHECK(!systemFillRect(SystemFillRectSource::ChicletAligned, box).has_value());
-    CHECK(systemFillRect(SystemFillRectSource::BoundingRect, box).has_value());
-    CHECK(kSupportsChicletAlignmentForSystemFills);
+    auto g27 = draw(DesignGeneration::G27);
+    REQUIRE(g27.has_value());
+    CHECK_EQ(g27->drawn, std::size_t{1});
+    CHECK(near(at(*g27, x, topRow).a, 1.0f));
+    CHECK(at(*g27, x, 8).a == 0.0f);              // above the layer: nothing
+    const float t27 = at(*g27, x, topRow).r, b27 = at(*g27, x, bottomRow).r;
+    // Strictly inside the ramp at both rows...
+    CHECK(std::min(t27, b27) > kDark1 + 0.008f);
+    CHECK(std::max(t27, b27) < kDark0 - 0.008f);
+    // ...and about half of its span between them (31 -> 15 over the canvas,
+    // the layer covering rows 17..46 of 64).
+    const float span27 = kDark0 - kDark1;
+    CHECK(std::fabs(t27 - b27) > 0.3f * span27);
+    CHECK(std::fabs(t27 - b27) < 0.7f * span27);
+    CHECK(hasNote(*g27, kGradientAxisDirectionNote));
 
-    // A solid background provokes no ramp and therefore neither gap sentence.
+    auto g26 = draw(DesignGeneration::G26);
+    REQUIRE(g26.has_value());
+    CHECK_EQ(g26->drawn, std::size_t{1});
+    const float t26 = at(*g26, x, topRow).r, b26 = at(*g26, x, bottomRow).r;
+    // Generation 26's dark ramp, 49 -> 20, end to end across the layer's box.
+    CHECK(endsAre(t26, b26, 49.0f / 255.0f, 20.0f / 255.0f));
+
+    // The background is the canvas either way, and it never carried a gap of
+    // its own: a solid one provokes no ramp and no gap sentence at all.
     const TempBundle flat(backgroundOnly(
         "{ \"solid\" : \"srgb:0.50000,0.50000,0.50000,1.00000\" }"));
     auto plain = render(d, flat.path(), icf::Appearance::Light, 16);
     REQUIRE(plain.has_value());
-    CHECK(!hasNote(*plain, kChicletRectNote));
     CHECK(!hasNote(*plain, kGradientAxisDirectionNote));
     CHECK(hasNote(*plain, kBackgroundShapeNote));   // the chiclet's shape, always
 }
