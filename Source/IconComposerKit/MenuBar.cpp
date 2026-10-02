@@ -48,6 +48,7 @@
 #include <cstdio>
 #include <initializer_list>
 #include <optional>
+#include <string>
 #include <string_view>
 
 namespace ick {
@@ -115,6 +116,11 @@ bool booleanUnderBase(const icf::json::Value& node, std::string_view prop) {
 
 }  // namespace
 
+SystemState& systemState() {
+    static SystemState state;
+    return state;
+}
+
 MenuStats drawMenuBar(Session& s, MenuActions& a) {
     if (!ImGui::BeginMenuBar()) return MenuStats{};
     MenuStats st = drawMenus(s, a);
@@ -148,6 +154,16 @@ MenuStats drawMenus(Session& s, MenuActions& a) {
             // depois que o modal some -- que é o ponto. O que não pode é ele
             // ficar ao lado do progresso do lote SEGUINTE.
             if (!s.exportSheet.busy) s.exportSheet.status.clear();
+        }
+        // O "Abrir com Icon Composer" do Explorer, nas pastas `.icon`. So onde o
+        // sistema tem isso (`SystemState`); quem escreve o registro e o app.
+        if (systemState().contextMenuAvailable) {
+            ImGui::Separator();
+            if (b.item("Explorer Context Menu", nullptr, true,
+                       "Adds \"Open with Icon Composer\" to the right-click menu of `.icon` folders in "
+                       "Explorer, for this user. The label follows the system language.",
+                       systemState().contextMenuEnabled))
+                a.toggleContextMenu = true;
         }
         ImGui::Separator();
         if (b.item("Close", "Ctrl+W")) a.close = true;
@@ -224,6 +240,45 @@ MenuStats drawMenus(Session& s, MenuActions& a) {
             }
             ui::endMenu();
         }
+        // A grade e o fundo do palco, os gemeos das duas capsulas da barra
+        // (`stageBar`, PanelCanvas.cpp): numa coluna estreita a capsula sai e o
+        // menu fica.
+        if (b.item("Show Grid", "Ctrl+'", true, nullptr, s.view.grid)) s.view.grid = !s.view.grid;
+        if (ui::beginMenu("Grid Style")) {
+            if (b.item("Light", nullptr, true, nullptr, s.view.gridLight)) {
+                s.view.gridLight = true;
+                s.view.grid = true;
+            }
+            if (b.item("Dark", nullptr, true, nullptr, !s.view.gridLight)) {
+                s.view.gridLight = false;
+                s.view.grid = true;
+            }
+            ui::endMenu();
+        }
+        if (ui::beginMenu("Background")) {
+            StageBackground& bg = s.view.background;
+            const bool solid = bg.kind == StageBackground::Kind::Solid;
+            if (b.item("Solid Color", nullptr, true, nullptr, solid)) {
+                bg.kind = StageBackground::Kind::Solid;
+                bg.r = s.view.lastSolid[0];
+                bg.g = s.view.lastSolid[1];
+                bg.b = s.view.lastSolid[2];
+            }
+            if (StageSource* stage = stageSource()) {
+                if (stage->backgrounds() > 0) ImGui::Separator();
+                for (int i = 0; i < stage->backgrounds(); ++i) {
+                    const std::string name = stage->backgroundName(i) + "##bg" + std::to_string(i);
+                    if (b.item(name.c_str(), nullptr, true, nullptr, !solid && bg.image == i)) {
+                        bg.kind = StageBackground::Kind::Image;
+                        bg.image = s.view.lastImage = i;
+                    }
+                }
+            }
+            ImGui::Separator();
+            if (b.item("Add Background...", nullptr)) a.addBackground = true;
+            ui::endMenu();
+        }
+        ImGui::Separator();
         if (ui::beginMenu("Preview Size")) {
             if (b.item("512", nullptr, true, nullptr, s.view.size == 512)) s.view.size = 512;
             if (b.item("1024", nullptr, true, nullptr, s.view.size == 1024)) s.view.size = 1024;
@@ -305,6 +360,7 @@ MenuStats drawMenus(Session& s, MenuActions& a) {
     if (chord(ImGuiMod_Ctrl | ImGuiKey_S) && s.isDirty()) a.save = true;
     if (chord(ImGuiMod_Ctrl | ImGuiKey_W)) a.close = true;
     if (chord(ImGuiMod_Ctrl | ImGuiKey_Q)) a.quit = true;
+    if (chord(ImGuiMod_Ctrl | ImGuiKey_Apostrophe)) s.view.grid = !s.view.grid;
     if (chord(ImGuiMod_Ctrl | ImGuiKey_Z)) s.undo();
     // Both calls run every frame, never short-circuited: `Shortcut` REGISTERS the
     // route as well as reading it, and a route that is registered only on the

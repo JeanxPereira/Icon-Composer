@@ -34,6 +34,8 @@ private:
         TileRect tile;
         // O Mono (Renditions.h, `lookOf`): duas rendicoes da mesma fatia.
         std::optional<rb::MonoLook> mono;
+        // O fundo do palco, so num Mono (Ports.h, `RenderRequest::background`).
+        StageBackground background;
         rb::DesignGeneration generation = rb::DesignGeneration::G27;
         bool effects = true;
         bool operator==(const Key&) const = default;

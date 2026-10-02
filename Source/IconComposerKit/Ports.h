@@ -7,12 +7,14 @@
 // makes the whole UI exercisable on a machine with no device.
 #include "Source/IconComposerFoundation/IconBundle.h"
 #include "Source/IconComposerFoundation/IconDocument.h"
+#include "Source/IconComposerKit/Stage.h"
 #include "Source/IconComposerKit/Tile.h"
 #include "Source/RenderBox/DesignGeneration.h"
 #include "Source/RenderBox/Mono.h"
 #include "imgui.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -22,10 +24,16 @@ namespace ick {
 // O FUNDO ATRAS DO ICONE, para o Mono (o vidro simulado e o Clear leem o que
 // esta atras): uma cor chapada do tamanho do palco, em `pixelsPerPoint` --
 // o canvas do editor e solido (Theme.h, `kCanvas`), e o app o monta assim.
+//
+// DESDE 02/10 O PALCO PODE SER UMA IMAGEM (Stage.h): com `image` presente o
+// app a estende sobre o palco como o canvas a desenha (`stageCover`), e a cor
+// so vale sem ela. O ponteiro e compartilhado e imutavel, entao o job o le na
+// thread de trabalho sem que a lista de fundos do app precise de tranca.
 struct MonoBackdrop {
     std::uint32_t width = 0, height = 0;
     double pixelsPerPoint = 0.5;
     float r = 0.0f, g = 0.0f, b = 0.0f;
+    std::shared_ptr<const StagePixels> image;
     bool operator==(const MonoBackdrop&) const = default;
 };
 
@@ -55,14 +63,30 @@ struct RenderRequest {
     // O Mono, quando a rendicao e uma das quatro (Renditions.h, `lookOf`).
     std::optional<rb::MonoLook> mono;
     MonoBackdrop backdrop;
+    // QUAL fundo `backdrop` e, para o eco: so preenchido num pedido Mono, que e
+    // o unico render que le o fundo. Nos outros fica o padrao, e trocar o fundo
+    // nao refaz um render que nao depende dele.
+    StageBackground background;
     rb::DesignGeneration generation = rb::DesignGeneration::G27;
     bool effects = true;
+    // O MONO SEM O VIDRO (02/10): o job devolve o icone como o render o deixa
+    // -- a mascara do Clear, ou o icone ja tingido -- e NAO roda o vidro
+    // simulado nem o Clear. Quem os faz e a `StageSource` do app, na GPU da
+    // tela e por quadro (Widgets.h, `composeMono`); `backdrop` e o quadrado do
+    // `mono` nao sao lidos.
+    bool monoRaw = false;
 };
 
 struct RenderResult {
     std::uint64_t version = 0;
     // O eco do Mono pedido: parte da chave, como o contexto.
     std::optional<rb::MonoLook> mono;
+    // E o do fundo do palco que o Mono leu.
+    StageBackground background;
+    // Os pixels sao o Mono SEM o vidro (`RenderRequest::monoRaw`), e se eles
+    // sao a mascara do Clear (as passadas L/D/H nos canais) ou o icone pronto
+    // para ir sobre o vidro.
+    bool monoRaw = false, monoClear = false;
     // E o da geracao de design e dos efeitos.
     rb::DesignGeneration generation = rb::DesignGeneration::G27;
     bool effects = true;

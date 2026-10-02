@@ -9,3 +9,65 @@
 // render per size -- 16, 20, 24, 32, 40, 48, 64, 128 and 256 -- rather than one image
 // scaled down.
 APP_ICON ICON "Source/app/Resources/AppIcon.ico"
+
+// O ROTULO DO MENU DE CONTEXTO DO EXPLORER (ShellIntegration.h), string 101: uma
+// tabela por idioma, e o Windows escolhe a do idioma de exibicao do sistema. O
+// registro aponta para ca (`MUIVerb = @<exe>,-101`), entao o rotulo acompanha o
+// sistema sem o app precisar estar aberto. Sem idioma que sirva, vale o ingles.
+//
+// `LANGUAGE` em numeros (idioma, sub-idioma) para nao depender de `winnt.h` no
+// windres, e os caracteres fora do ASCII em `\x` de quatro digitos, para o
+// arquivo nao depender da pagina de codigo de quem compila.
+LANGUAGE 0x09, 0x01   // en-US
+STRINGTABLE
+BEGIN
+    101 "Open with Icon Composer"
+END
+
+LANGUAGE 0x16, 0x01   // pt-BR
+STRINGTABLE
+BEGIN
+    101 "Abrir com o Icon Composer"
+END
+
+LANGUAGE 0x16, 0x02   // pt-PT
+STRINGTABLE
+BEGIN
+    101 "Abrir com o Icon Composer"
+END
+
+LANGUAGE 0x0A, 0x03   // es-ES
+STRINGTABLE
+BEGIN
+    101 "Abrir con Icon Composer"
+END
+
+LANGUAGE 0x0C, 0x01   // fr-FR
+STRINGTABLE
+BEGIN
+    101 "Ouvrir avec Icon Composer"
+END
+
+LANGUAGE 0x07, 0x01   // de-DE
+STRINGTABLE
+BEGIN
+    101 L"Mit Icon Composer \x00f6ffnen"
+END
+
+LANGUAGE 0x10, 0x01   // it-IT
+STRINGTABLE
+BEGIN
+    101 "Apri con Icon Composer"
+END
+
+LANGUAGE 0x11, 0x01   // ja-JP
+STRINGTABLE
+BEGIN
+    101 L"Icon Composer \x3067\x958b\x304f"
+END
+
+LANGUAGE 0x04, 0x02   // zh-CN
+STRINGTABLE
+BEGIN
+    101 L"\x7528 Icon Composer \x6253\x5f00"
+END

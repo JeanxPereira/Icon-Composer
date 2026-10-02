@@ -12,7 +12,11 @@ namespace ick {
 namespace {
 SymbolSource* g_symbols = nullptr;
 ArtSource* g_art = nullptr;
+StageSource* g_stage = nullptr;
 }
+
+void setStageSource(StageSource* source) { g_stage = source; }
+StageSource* stageSource() { return g_stage; }
 
 void setArtSource(ArtSource* source) { g_art = source; }
 ArtSource* artSource() { return g_art; }
@@ -172,6 +176,72 @@ bool capText(const char* id, const char* label, float width, const char* tooltip
     }
     if (tooltip) ImGui::SetItemTooltip("%s", tooltip);
     nextInCapsule(a, b);
+    return clicked;
+}
+
+bool capChevron(const char* id, const char* tooltip) {
+    const float k = dpi();
+    const bool clicked = ImGui::InvisibleButton(id, ImVec2(22.0f * k, 28.0f * k));
+    const bool hovered = ImGui::IsItemHovered();
+    const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (hovered) dl->AddRectFilled(a, b, theme::u32(theme::kBox), 14.0f * k);
+    const ImVec2 c((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+    if (!symbol("chevron.down", c, 9.0f * k, theme::u32(theme::kText2))) {
+        dl->AddTriangleFilled(ImVec2(c.x - 3 * k, c.y - 1.5f * k), ImVec2(c.x + 3 * k, c.y - 1.5f * k),
+                              ImVec2(c.x, c.y + 2 * k), theme::u32(theme::kText2));
+    }
+    if (tooltip) ImGui::SetItemTooltip("%s", tooltip);
+    nextInCapsule(a, b);
+    return clicked;
+}
+
+namespace {
+
+// O miolo de uma amostra em [a, b]: a imagem cortada em `cover`, ou a cor; o
+// fio escuro de meio pt por dentro e, escolhida, o anel de destaque por fora
+// (`box-shadow: 0 0 0 2px var(--accent), inset 0 0 0 0.5px rgba(0,0,0,.2)`).
+void swatchBody(ImDrawList* dl, ImVec2 a, ImVec2 b, float rounding, ImU32 colour, const ArtThumb& image,
+                bool on) {
+    const float k = dpi();
+    if (image.texture != ImTextureID_Invalid && image.texture != 0) {
+        const StageCover c = stageCover(b.x - a.x, b.y - a.y, image.width, image.height);
+        dl->AddImageRounded(image.texture, a, b, ImVec2(c.u0, c.v0), ImVec2(c.u1, c.v1), IM_COL32_WHITE, rounding);
+    } else if (colour != 0) {
+        dl->AddRectFilled(a, b, colour, rounding);
+    }
+    dl->AddRect(a, b, IM_COL32(0, 0, 0, 51), rounding, 0, std::max(1.0f, 0.5f * k));
+    // Um fio claro tambem: uma amostra quase preta sobre a capsula escura some.
+    dl->AddRect(a, b, IM_COL32(255, 255, 255, 28), rounding, 0, 1.0f);
+    if (on) {
+        const float o = 1.0f * k;
+        dl->AddRect(ImVec2(a.x - o, a.y - o), ImVec2(b.x + o, b.y + o), theme::u32(theme::kAccent), rounding + o, 0,
+                    2.0f * k);
+    }
+}
+
+}  // namespace
+
+bool capSwatch(const char* id, ImU32 colour, const ArtThumb& image, bool on, const char* tooltip) {
+    const float k = dpi();
+    // 37 pt de vao para 36 de amostra: o `gap: 2px` do `.bg-chooser`, meio de
+    // cada lado.
+    const bool clicked = ImGui::InvisibleButton(id, ImVec2(37.0f * k, 28.0f * k));
+    const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+    swatchBody(ImGui::GetWindowDrawList(), ImVec2(a.x + 0.5f * k, a.y + 1.0f * k),
+               ImVec2(b.x - 0.5f * k, b.y - 1.0f * k), 13.0f * k, colour, image, on);
+    if (tooltip) ImGui::SetItemTooltip("%s", tooltip);
+    nextInCapsule(a, b);
+    return clicked;
+}
+
+bool swatch(const char* id, ImVec2 size, float rounding, ImU32 colour, const ArtThumb& image, bool on,
+            const char* tooltip) {
+    const float k = dpi();
+    const bool clicked = ImGui::InvisibleButton(id, ImVec2(size.x * k, size.y * k));
+    swatchBody(ImGui::GetWindowDrawList(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), rounding * k, colour,
+               image, on);
+    if (tooltip) ImGui::SetItemTooltip("%s", tooltip);
     return clicked;
 }
 

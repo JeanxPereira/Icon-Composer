@@ -26,11 +26,15 @@ constexpr double kRelativeRefractionStrength = 0.28;
 constexpr double kRelativeRefractionHeight = 0.11;
 constexpr std::uint32_t kRefractionSupersampling = 2;
 
-// A pastilha na grade: o campo (d, gx, gy, cobertura) e o lado dela. So depende
-// do tamanho e da plataforma, entao fica guardado entre renders.
+// A pastilha na grade: o campo (d, gx, gy, cobertura), o lado dela e o mapa de
+// deslocamento da lente. So dependem do tamanho e da plataforma, entao ficam
+// guardados entre renders -- o mapa tambem (02/10): a refracao e so funcao do
+// campo e de `chiclet.side`, e era refeita a cada passo de um pan.
 struct Chiclet {
     FieldImage field;
     double side = 0.0;
+    GlassRefraction refraction;
+    DisplacementImage displacement;
 };
 
 const Chiclet& chicletFor(std::uint32_t size, IconPlatform platform) {
@@ -52,6 +56,13 @@ const Chiclet& chicletFor(std::uint32_t size, IconPlatform platform) {
         }
         slot->side = std::max(0.0, std::min(x1 - x0, y1 - y0));
         slot->field = generateFieldFromContours(contours, size, size);
+        GlassRefraction& r = slot->refraction;
+        r.heightPixels = static_cast<float>(kRelativeRefractionHeight * slot->side);
+        // `displacementMap_v1`'s argumento e a forca NEGADA (0x805F4).
+        r.scalePixels = static_cast<float>(-kRelativeRefractionStrength * slot->side);
+        r.curvature = 1.0f;
+        r.variant = kRefractionSupersampling;
+        slot->displacement = glassDisplacementMap(slot->field, r);
     }
     return *slot;
 }
@@ -131,7 +142,8 @@ SimulatedGlass simulatedGlass(const ClearBackdrop& backdrop, double squareX, dou
     const std::uint32_t margin = static_cast<std::uint32_t>(std::ceil(3.0 * sigma)) + 2;
     const std::uint32_t W = size + 2 * margin;
     std::vector<float> rgb(static_cast<std::size_t>(W) * W * 3);
-    for (std::uint32_t y = 0; y < W; ++y) {
+    parallelRanges(W, static_cast<std::size_t>(W) * W * 40, [&](std::size_t ya, std::size_t yb) {
+    for (std::uint32_t y = static_cast<std::uint32_t>(ya); y < yb; ++y) {
         for (std::uint32_t x = 0; x < W; ++x) {
             double c[3];
             sampleBackdrop(backdrop, squareX + (x - static_cast<double>(margin) + 0.5) / gridPerCss,
@@ -140,6 +152,7 @@ SimulatedGlass simulatedGlass(const ClearBackdrop& backdrop, double squareX, dou
             for (int k = 0; k < 3; ++k) d[k] = static_cast<float>(c[k]);
         }
     }
+    });
     gaussianBlur(rgb, W, W, sigma);
 
     // O fundo desfocado como acumulador pre-multiplicado opaco, e a lente.
@@ -154,26 +167,46 @@ SimulatedGlass simulatedGlass(const ClearBackdrop& backdrop, double squareX, dou
             d[3] = 1.0f;
         }
     }
-    GlassRefraction r;
-    r.heightPixels = static_cast<float>(kRelativeRefractionHeight * chiclet.side);
-    // `displacementMap_v1`'s argumento e a forca NEGADA (0x805F4).
-    r.scalePixels = static_cast<float>(-kRelativeRefractionStrength * chiclet.side);
-    r.curvature = 1.0f;
-    r.variant = kRefractionSupersampling;
-    glassOver(acc, PixelGrid::full(size), glassDisplacementMap(chiclet.field, r), r);
+    glassOver(acc, PixelGrid::full(size), chiclet.displacement, chiclet.refraction);
 
     // A matriz de cor e o recorte (a cobertura do campo).
+    const MonoColourMatrices m = monoColourMatrices();
+    const double* g = dark ? m.glassDark : m.glassLight;
     GlyphVCM vcm;
-    vcm.lumaFloor = dark ? 0.05 : 0.12;
-    vcm.lumaCeiling = dark ? 0.3 : 1.0;
-    vcm.saturation = dark ? 0.8 : 1.2;
+    vcm.lumaFloor = g[0];
+    vcm.lumaCeiling = g[1];
+    vcm.saturation = g[2];
     out.size = size;
     out.rgba.resize(acc.size());
-    for (std::size_t i = 0; i < static_cast<std::size_t>(size) * size; ++i) {
+    const std::size_t texels = static_cast<std::size_t>(size) * size;
+    parallelRanges(texels, texels * 30, [&](std::size_t ia, std::size_t ib) {
+    for (std::size_t i = ia; i < ib; ++i) {
         double c[3] = {acc[i * 4], acc[i * 4 + 1], acc[i * 4 + 2]};
         applyGlyphVCM(vcm, c);
         for (int k = 0; k < 3; ++k) out.rgba[i * 4 + k] = static_cast<float>(std::clamp(c[k], 0.0, 1.0));
         out.rgba[i * 4 + 3] = std::clamp(chiclet.field.rgba[i * 4 + 3], 0.0f, 1.0f);
+    }
+    });
+    return out;
+}
+
+SimulatedGlassLens simulatedGlassLens(IconPlatform platform, std::uint32_t size) {
+    SimulatedGlassLens out;
+    if (size == 0) return out;
+    const Chiclet& chiclet = chicletFor(size, platform);
+    out.size = size;
+    out.scalePixels = chiclet.refraction.scalePixels;
+    out.side = chiclet.side;
+    out.relativeBlur = kRelativeBackdropBlurRadius;
+    out.absoluteBlur = kResultBlurRadius;
+    out.variant = chiclet.refraction.variant;
+    const std::size_t texels = static_cast<std::size_t>(size) * size;
+    out.rgba.resize(texels * 4);
+    for (std::size_t i = 0; i < texels; ++i) {
+        out.rgba[i * 4 + 0] = chiclet.displacement.rgba[i * 4 + 0];
+        out.rgba[i * 4 + 1] = chiclet.displacement.rgba[i * 4 + 1];
+        out.rgba[i * 4 + 2] = std::clamp(chiclet.field.rgba[i * 4 + 3], 0.0f, 1.0f);
+        out.rgba[i * 4 + 3] = chiclet.displacement.rgba[i * 4 + 3];
     }
     return out;
 }

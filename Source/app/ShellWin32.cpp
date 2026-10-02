@@ -515,6 +515,7 @@ bool Shell::Impl::init(const std::string& title, std::string* why) {
     rpi.subpassCount = 1;
     rpi.pSubpasses = &sub;
     checkVk(vkCreateRenderPass(gpu_.device, &rpi, nullptr, &pass));
+    gpu_.renderPass = pass;
     VkCommandPoolCreateInfo cpi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     cpi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     cpi.queueFamilyIndex = gpu_.queueFamily;

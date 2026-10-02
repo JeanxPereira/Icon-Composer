@@ -28,6 +28,9 @@ struct Gpu {
     VkDevice device = VK_NULL_HANDLE;
     VkQueue queue = VK_NULL_HANDLE;
     std::uint32_t queueFamily = 0;
+    // O passe em que o ImGui desenha a janela. Quem desenha DENTRO dele por um
+    // callback da draw list (StageCompositor.h) monta o pipeline contra este.
+    VkRenderPass renderPass = VK_NULL_HANDLE;
 };
 
 class Shell {

@@ -183,6 +183,17 @@ MonoBackdrop backdropOf(const Session& s, const RenderLook& look, bool canvas, s
     b.r = theme::kCanvas.x;
     b.g = theme::kCanvas.y;
     b.b = theme::kCanvas.z;
+    // O canvas le o fundo que a pessoa escolheu (Stage.h); a miniatura fica no
+    // do tema, que e onde a barra de renditions esta desenhada.
+    if (canvas) {
+        const StageBackground& bg = s.view.background;
+        b.r = bg.r;
+        b.g = bg.g;
+        b.b = bg.b;
+        if (bg.kind == StageBackground::Kind::Image) {
+            if (StageSource* stage = stageSource()) b.image = stage->pixels(bg.image);
+        }
+    }
     return b;
 }
 
@@ -411,7 +422,7 @@ void RenditionThumbnails::tick(Session& s, const std::vector<RenderLook>& want) 
         RenditionThumb* t = mut(c);
         if (!t || t->version == s.version()) continue;
         RenderRequest r{s.version(), s.bundle().clone(), c.context, size_, TileRect{}, size_, c.mono,
-                        backdropOf(s, c, false, size_), c.generation, c.effects};
+                        backdropOf(s, c, false, size_), StageBackground{}, c.generation, c.effects};
         scheduler_.request(std::move(r));
         inFlight_ = true;
         flightVersion_ = s.version();

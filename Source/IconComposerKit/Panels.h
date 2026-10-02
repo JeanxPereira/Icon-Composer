@@ -126,6 +126,12 @@ struct RenderView {
     std::uint32_t tileWidth = 0, tileHeight = 0, tileGrid = 0;
     std::int32_t tileX = 0, tileY = 0;
     std::uint64_t tileVersion = 0;
+    // O MONO SEM O VIDRO (Ports.h, `monoRaw`): a textura nao e o que vai para a
+    // tela, e a entrada do compositor do palco (`StageSource::composeMono`).
+    // Um par por camada, porque a base e o ladrilho chegam em renders
+    // diferentes.
+    bool monoRaw = false, monoClear = false, monoDark = false;
+    bool tileMonoRaw = false, tileMonoClear = false, tileMonoDark = false;
     bool pending = false;   // a newer render is on its way
     std::size_t drawn = 0, total = 0;
     std::vector<std::string> skipped, shapeGaps, notes;
@@ -171,11 +177,28 @@ struct ExportPlan {
     std::vector<icf::Context> contexts;
 };
 
+// O QUE O SISTEMA OFERECE, E COMO ESTA -- escrito pelo app, lido pelo menu. O
+// Kit nao sabe o que e um registro do Windows; sabe que ha um item a mostrar e
+// se ele esta marcado. Nos testes fica tudo falso e o item nao existe.
+struct SystemState {
+    // O sistema tem um menu de contexto de pasta em que da para entrar.
+    bool contextMenuAvailable = false;
+    // O "Abrir com Icon Composer" das pastas `.icon` esta ligado, e para ESTE
+    // executavel.
+    bool contextMenuEnabled = false;
+};
+SystemState& systemState();
+
 struct MenuActions {
     bool newDocument = false, open = false, save = false, saveAs = false, close = false, quit = false;
     // View > Diagnostics: o painel nao faz parte do layout (30/09); o app o
     // mostra e esconde.
     bool toggleDiagnostics = false;
+    // "Add Background...": o app pergunta o arquivo, acrescenta a imagem a
+    // `StageSource` e a poe de fundo.
+    bool addBackground = false;
+    // Liga ou desliga o "Abrir com Icon Composer" do Explorer (`SystemState`).
+    bool toggleContextMenu = false;
 
     // ---- exportar a imagem (T2) -------------------------------------------
     // O pedido carrega o plano CONSIGO, pela mesma razão que `importInto`
@@ -387,6 +410,13 @@ struct CanvasStats {
     std::size_t contextControls = 0;   // appearance, idiom, size, zoom
     std::size_t zoomControls = 0;      // -, +, 1:1, Fit
     std::size_t effectsControls = 0;   // efeitos desligados, geracao 26, geracao 27
+    std::size_t stageControls = 0;     // fundo solido, fundo de imagem, grade, estilo da grade
+    // A grade e a imagem de fundo foram para a tela neste quadro (as duas
+    // dependem da `StageSource`, que nos testes nao existe).
+    bool gridDrawn = false, backgroundImage = false;
+    // O Mono foi composto pela `StageSource` neste quadro (a GPU da tela), e
+    // nao desenhado de uma textura ja pronta.
+    bool composed = false;
     MenuStats menu;
     std::vector<CanvasChip> chips;
 

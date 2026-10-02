@@ -7,6 +7,7 @@
 // there is a window at all.
 #include "Source/IconComposerKit/Ports.h"
 #include "Source/RenderBox/Device.h"
+#include "Source/RenderBox/IconRenderer.h"
 #include "Source/RenderBox/RenderCache.h"
 
 #include "Source/app/Dialogs.h"
@@ -18,6 +19,8 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
+#include <vector>
 
 namespace icapp {
 
@@ -36,6 +39,35 @@ public:
 
 private:
     TexturePool pool_;
+};
+
+// O ICONE DE ANTES DO VIDRO, guardado entre renders (02/10).
+//
+// Num Mono o render tem duas metades: o icone (`renderIconGpu`, a GPU, que so
+// depende do documento e do look) e o vidro simulado com o Clear
+// (`rb::finishMono`, que le o fundo SOB o icone e por isso depende de onde o
+// icone esta no palco). Mover ou dar zoom so muda a segunda, e ate aqui cada
+// passo do gesto refazia as duas. Com a primeira guardada, um pedido que so
+// difere no quadrado ou no fundo refaz so o vidro.
+//
+// Um lugar so: o canvas pede um render de cada vez, e as miniaturas so pedem
+// quando o documento ou o look mudam -- nao durante um gesto.
+struct MonoBase {
+    bool valid = false;
+    // O documento pelo TEXTO, e nao pela versao: a versao recomeca em cada
+    // `Session`, e um arquivo reaberto com a mesma versao e outro conteudo
+    // acertaria a chave.
+    std::string document;
+    icf::Context context;
+    std::uint32_t size = 0, fallbackSize = 0;
+    ick::TileRect tile;
+    rb::MonoLook look;   // com o quadrado zerado
+    rb::DesignGeneration generation = rb::DesignGeneration::G27;
+    bool effects = true;
+
+    rb::RenderedIcon icon;
+    bool refined = true;
+    std::vector<std::string> notes;
 };
 
 // One lane, one device -- and the lane is NOT the whole of the exclusion
@@ -84,6 +116,7 @@ private:
     // What one render leaves for the next. Only the job in flight touches it,
     // and there is never more than one (`running_`).
     rb::RenderCache cache_;
+    MonoBase monoBase_;
 };
 
 // Renders on the calling thread. The selftest's scheduler.
@@ -104,7 +137,7 @@ void warmUp(rb::Device& device);
 
 // The one function both schedulers call.
 ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
-                            rb::RenderCache* cache = nullptr);
+                            rb::RenderCache* cache = nullptr, MonoBase* monoBase = nullptr);
 
 // Asks for a `.icon` to open. Empty when the user cancels.
 //

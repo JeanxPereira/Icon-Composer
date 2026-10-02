@@ -13,6 +13,8 @@
 #include "Source/app/JobQueue.h"
 #include "Source/app/NativeWindow.h"
 #include "Source/app/Shell.h"
+#include "Source/app/ShellIntegration.h"
+#include "Source/app/Stage.h"
 #include "Source/app/Symbols.h"
 #include "Source/app/TrafficLights.h"
 
@@ -91,6 +93,19 @@ struct State {
     ick::MenuActions actions;
     bool quit = false;
     bool showDiagnostics = false;
+    // A grade e o fundo do palco (Stage.h). A `StageSource` e do `run()`; aqui
+    // fica o ponteiro, para o "Add Background...", e a escolha de quem esta
+    // olhando, que atravessa a troca de documento: `ViewContext` nasce de novo
+    // com cada `Session`, e um fundo que voltasse ao padrao a cada arquivo
+    // aberto teria de ser escolhido outra vez a cada icone testado.
+    AppStage* stage = nullptr;
+    struct StageChoice {
+        bool grid = false, gridLight = false;
+        ick::StageBackground background;
+        float lastSolid[3] = {0, 0, 0};
+        int lastImage = 0;
+    };
+    std::optional<StageChoice> stageChoice;
     // WHY A DROP IS QUEUED AND NOT ACTED ON. The shell delivers it from inside
     // its message pump (Shell.h, `onDrop`), and `adopt()` destroys the session the
     // panels after it are about to draw -- the same reason `act()` runs LAST,
@@ -263,7 +278,20 @@ struct State {
         exportQueue.clear();
         exportTotal = exportDone = exportFailures = 0;
         exportAnnounced = false;
+        if (session) {
+            const ick::ViewContext& v = session->view;
+            stageChoice = StageChoice{v.grid, v.gridLight, v.background,
+                                      {v.lastSolid[0], v.lastSolid[1], v.lastSolid[2]}, v.lastImage};
+        }
         session = std::move(s);
+        if (session && stageChoice) {
+            ick::ViewContext& v = session->view;
+            v.grid = stageChoice->grid;
+            v.gridLight = stageChoice->gridLight;
+            v.background = stageChoice->background;
+            for (int i = 0; i < 3; ++i) v.lastSolid[i] = stageChoice->lastSolid[i];
+            v.lastImage = stageChoice->lastImage;
+        }
         if (session) {
             coordinator = std::make_unique<ick::RenderCoordinator>(mux->canvasLane(), *sink);
             thumbs = std::make_unique<ick::RenditionThumbnails>(mux->thumbnailLane(), *sink);
@@ -414,6 +442,24 @@ struct State {
                 }
             }
         }
+        if (a.addBackground && session && stage) {
+            // O que o WIC le; o "All Files" que `openFileDialog` acrescenta
+            // cobre o resto, e um arquivo que nao abre fica dito no stderr.
+            const fs::path picked = openFileDialog({{"Images (jpeg, png)", {"jpg", "jpeg", "png"}}});
+            if (!picked.empty()) {
+                const int index = stage->add(picked);
+                session->view.background.kind = ick::StageBackground::Kind::Image;
+                session->view.background.image = session->view.lastImage = index;
+            }
+        }
+        if (a.toggleContextMenu) {
+            // O estado e RELIDO do registro depois de escrever, e nao suposto:
+            // o item marcado tem de dizer o que o Explorer vai mostrar.
+            const std::string why = setContextMenu(!ick::systemState().contextMenuEnabled);
+            ick::systemState().contextMenuEnabled = contextMenuRegistered();
+            if (why.empty()) trouble.clear();
+            else fail("context menu: " + why);
+        }
         if (a.toggleDiagnostics) showDiagnostics = !showDiagnostics;
         if (a.close) close();
         if (a.quit) quit = true;
@@ -546,6 +592,9 @@ void drawCanvasPanel(State& st) {
             ick::ui::pushMenuStyle();
             if (ImGui::MenuItem("New...", "Ctrl+N")) st.actions.newDocument = true;
             if (ImGui::MenuItem("Open...", "Ctrl+O")) st.actions.open = true;
+            if (ick::systemState().contextMenuAvailable &&
+                ImGui::MenuItem("Explorer Context Menu", nullptr, ick::systemState().contextMenuEnabled))
+                st.actions.toggleContextMenu = true;
             if (ImGui::MenuItem("Quit", "Ctrl+Q")) st.actions.quit = true;
             ick::ui::popMenuStyle();
             ImGui::EndMenu();
@@ -808,7 +857,16 @@ int run(const fs::path& initial, rb::DesignGeneration generation) {
     // A arte das camadas na sidebar, pela mesma fila.
     AppArt art(jobs, *device, lightsSink->pool());
     ick::setArtSource(&art);
+    // A grade e os fundos do palco, tambem pela fila -- mas so quando pedidos.
+    AppStage stage(jobs, *device, lightsSink->pool(), shell->gpu());
+    stage.schedule(appleAssetsDir());
+    ick::setStageSource(&stage);
     State state;
+    state.stage = &stage;
+    // O item "Explorer Context Menu" do menu File: o que o sistema oferece e
+    // como o registro esta agora.
+    ick::systemState().contextMenuAvailable = contextMenuSupported();
+    ick::systemState().contextMenuEnabled = contextMenuRegistered();
     state.shell = shell.get();
     // O dispositivo da exportacao e o mesmo do agendador -- ver `State::device`.
     state.device = &*device;
@@ -826,7 +884,6 @@ int run(const fs::path& initial, rb::DesignGeneration generation) {
 
     if (!initial.empty()) state.open(initial);
     if (state.session) state.session->view.generation = generation;
-
     shell->run([&] {
         // Os `done` dos renders rodam aqui, na thread principal, antes de
         // qualquer painel perguntar pelo resultado.
@@ -872,6 +929,7 @@ int run(const fs::path& initial, rb::DesignGeneration generation) {
     state.close();
     ick::setSymbolSource(nullptr);
     ick::setArtSource(nullptr);
+    ick::setStageSource(nullptr);
     return 0;
 }
 

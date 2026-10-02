@@ -3328,24 +3328,45 @@ void applyTintedDark(RenderedIcon& icon, const IconRenderOptions::TintRecolour& 
     tintDark(icon.rgba.data(), icon.rgba.size() / 4, tint);
 }
 
+// AS MATRIZES DO MONO, num lugar so: a CPU (`simulatedGlass`, `applyClear`) e
+// o shader da tela (Source/app/shaders/stage.frag) leem os mesmos numeros.
+//
+// `[BIN]` O vidro: VCM claro [0.12, 1.0, 1.2] ou escuro [0.05, 0.3, 0.8]
+// (SimulatedGlass.h). O ClearMode (laudo de 20/09 §2): total L/D/H 1.0 / 0.3 /
+// 1.0; lighteningVCM [0.9, 2.5, 2.0], highlightsVCM [0.2, 1.35, 1.4], os dois
+// com headroom 1.2. `inputClamp = headroom`: cada canal do VCM preso em
+// [-0.75, h^(1/2.2)] (AquaKit VibrantColor.h); a tela prende em [0, 1] no fim.
+MonoColourMatrices monoColourMatrices() {
+    MonoColourMatrices m{};
+    const double light[3] = {0.12, 1.0, 1.2}, dark[3] = {0.05, 0.3, 0.8};
+    const double lighten[3] = {0.9, 2.5, 2.0}, highlight[3] = {0.2, 1.35, 1.4};
+    for (int i = 0; i < 3; ++i) {
+        m.glassLight[i] = light[i];
+        m.glassDark[i] = dark[i];
+        m.clearLighten[i] = lighten[i];
+        m.clearHighlight[i] = highlight[i];
+    }
+    m.clearDarkening = 0.3;
+    m.vcmMin = -0.75;
+    m.vcmMax = std::pow(1.2, 1.0 / 2.2);
+    return m;
+}
+
 void applyClear(RenderedIcon& icon, const ClearBackdrop& backdrop, double squareX,
                 double squareY, double squareSide, std::uint32_t canvasSize,
                 const SimulatedGlass* glass) {
-    // `[BIN]` O ClearMode (laudo de 20/09 §2): total L/D/H 1.0 / 0.3 / 1.0;
-    // lighteningVCM [0.9, 2.5, 2.0], highlightsVCM [0.2, 1.35, 1.4], os dois
-    // com headroom 1.2.
-    constexpr double kTotalLightening = 1.0, kTotalDarkening = 0.3, kTotalHighlights = 1.0;
-    // `inputClamp = headroom`: cada canal do VCM preso em [-0.75, h^(1/2.2)]
-    // (AquaKit VibrantColor.h); a tela prende em [0, 1] no fim.
-    const double kVcmMax = std::pow(1.2, 1.0 / 2.2);
+    const MonoColourMatrices m = monoColourMatrices();
+    constexpr double kTotalLightening = 1.0, kTotalHighlights = 1.0;
+    const double kTotalDarkening = m.clearDarkening;
+    const double kVcmMax = m.vcmMax;
     GlyphVCM lighten;
-    lighten.lumaFloor = 0.9;
-    lighten.lumaCeiling = 2.5;
-    lighten.saturation = 2.0;
+    lighten.lumaFloor = m.clearLighten[0];
+    lighten.lumaCeiling = m.clearLighten[1];
+    lighten.saturation = m.clearLighten[2];
     GlyphVCM highlight;
-    highlight.lumaFloor = 0.2;
-    highlight.lumaCeiling = 1.35;
-    highlight.saturation = 1.4;
+    highlight.lumaFloor = m.clearHighlight[0];
+    highlight.lumaCeiling = m.clearHighlight[1];
+    highlight.saturation = m.clearHighlight[2];
     if (backdrop.width == 0 || backdrop.height == 0 || canvasSize == 0) return;
     parallelRanges(icon.height, static_cast<std::size_t>(icon.width) * icon.height * 80,
                    [&](std::size_t y0, std::size_t y1) {

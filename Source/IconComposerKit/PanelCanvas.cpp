@@ -334,7 +334,11 @@ bool popupBelow(const char* id, bool clicked) {
 // AS CAPSULAS DA BARRA, e a ordem em que cedem numa barra estreita. Todas tem
 // um gemeo no menu View, entao a que some nao leva nada embora. A primeira a
 // sair e a de menos falta: os botoes de zoom, o zoom, o tamanho, o idioma, a
-// aparencia e, por ultimo, a geracao.
+// aparencia, a grade, o fundo e, por ultimo, a geracao.
+//
+// A GRADE E O FUNDO (02/10) ficam onde o Tauri os tem, logo depois da geracao,
+// e saem DEPOIS das de contexto: sao a bancada de quem esta testando o icone,
+// e numa janela de 1440 pt uma ordem que as tirasse primeiro as tiraria sempre.
 enum Capsule : unsigned {
     kCapEffects = 1u << 0,
     kCapAppearance = 1u << 1,
@@ -342,16 +346,25 @@ enum Capsule : unsigned {
     kCapSize = 1u << 3,
     kCapZoom = 1u << 4,
     kCapZoomButtons = 1u << 5,
-    kCapAll = (1u << 6) - 1,
+    kCapBackground = 1u << 6,
+    kCapGrid = 1u << 7,
+    kCapAll = (1u << 8) - 1,
 };
 struct CapsuleSlot {
     unsigned bit;
     float width;   // em pt, como `beginCapsule` a recebe
 };
+constexpr float kBackgroundCapW = 2 * 37.0f + 6.0f;
+constexpr float kGridCapW = 32.0f + 22.0f + 6.0f;
 // Na ordem em que sao desenhadas, da esquerda para a direita.
 constexpr CapsuleSlot kCapsules[] = {
-    {kCapEffects, 3 * 32.0f + 6.0f}, {kCapAppearance, 84.0f}, {kCapIdiom, 84.0f},
-    {kCapSize, 72.0f},               {kCapZoom, 70.0f},       {kCapZoomButtons, 4 * 26.0f + 6.0f},
+    {kCapEffects, 3 * 32.0f + 6.0f}, {kCapBackground, kBackgroundCapW}, {kCapGrid, kGridCapW},
+    {kCapAppearance, 84.0f},         {kCapIdiom, 84.0f},                {kCapSize, 72.0f},
+    {kCapZoom, 70.0f},               {kCapZoomButtons, 4 * 26.0f + 6.0f},
+};
+// E na ordem em que cedem, a primeira a sair primeiro.
+constexpr unsigned kDropOrder[] = {
+    kCapZoomButtons, kCapZoom, kCapSize, kCapIdiom, kCapAppearance, kCapGrid, kCapBackground, kCapEffects,
 };
 constexpr float kCapsuleGap = 8.0f;
 
@@ -366,14 +379,194 @@ float capsulesWidth(unsigned shown) {
     return n > 0 ? w + kCapsuleGap * static_cast<float>(n - 1) : 0.0f;
 }
 
-// As capsulas que cabem em `avail` pt: da direita para a esquerda elas saem,
+// As capsulas que cabem em `avail` pt: elas saem na ordem de `kDropOrder`,
 // uma de cada vez, ate o resto caber.
 unsigned capsulesThatFit(float avail) {
     unsigned shown = kCapAll;
-    for (int i = static_cast<int>(std::size(kCapsules)) - 1; i >= 0 && capsulesWidth(shown) > avail; --i) {
-        shown &= ~kCapsules[i].bit;
+    for (const unsigned bit : kDropOrder) {
+        if (capsulesWidth(shown) <= avail) break;
+        shown &= ~bit;
     }
     return shown;
+}
+
+// UM POPOVER (`.popover` do App.css): 10 pt de margem, 8 entre as pecas, o
+// canto de 10. Abre embaixo do item que acabou de ser desenhado, como
+// `popupBelow`; verdadeiro com ele aberto, e entao `endPopover()`.
+void popPopoverStyle() {
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(3);
+}
+bool popoverBelow(const char* id, bool open) {
+    const float k = ui::dpi();
+    if (open) ImGui::OpenPopup(id);
+    ImGui::SetNextWindowPos(ImVec2(ImGui::GetItemRectMin().x, ImGui::GetItemRectMax().y + 9.0f * k));
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, theme::kPopupRadius * k);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f * k, 10.0f * k));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f * k, 8.0f * k));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, theme::kPopover);
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1, 1, 1, 0.12f));
+    const bool shown = ImGui::BeginPopup(id);
+    if (!shown) popPopoverStyle();
+    return shown;
+}
+void endPopover() {
+    ImGui::EndPopup();
+    popPopoverStyle();
+}
+
+// `SOLID_COLORS` do Canvas.tsx, na ordem dele. A sexta e o `kCanvas` do tema.
+constexpr float kSolidColours[][3] = {
+    {0xff / 255.0f, 0xff / 255.0f, 0xff / 255.0f}, {0xf2 / 255.0f, 0xf2 / 255.0f, 0xf4 / 255.0f},
+    {0xc7 / 255.0f, 0xc7 / 255.0f, 0xcc / 255.0f}, {0x8e / 255.0f, 0x8e / 255.0f, 0x93 / 255.0f},
+    {0x48 / 255.0f, 0x48 / 255.0f, 0x4a / 255.0f}, {0x1e / 255.0f, 0x1e / 255.0f, 0x20 / 255.0f},
+    {0x00 / 255.0f, 0x00 / 255.0f, 0x00 / 255.0f},
+};
+
+ImU32 solidU32(const float c[3]) { return ImGui::ColorConvertFloat4ToU32(ImVec4(c[0], c[1], c[2], 1.0f)); }
+
+void pickSolid(ViewContext& v, const float c[3]) {
+    const float r = c[0], g = c[1], b = c[2];   // `c` pode ser o proprio `lastSolid`
+    v.background.kind = StageBackground::Kind::Solid;
+    v.background.r = v.lastSolid[0] = r;
+    v.background.g = v.lastSolid[1] = g;
+    v.background.b = v.lastSolid[2] = b;
+}
+
+void pickImage(ViewContext& v, int index) {
+    v.background.kind = StageBackground::Kind::Image;
+    v.background.image = v.lastImage = index;
+}
+
+// O FUNDO E A GRADE (`.bg-chooser` e a capsula da grade do Canvas.tsx).
+//
+// O `BackgroundKindPickerButton` do alvo: duas amostras, a cor chapada e a
+// imagem. O clique numa amostra que NAO e a escolhida troca para o ultimo fundo
+// daquele tipo; na que ja e, abre as opcoes dele. Escrevem `Session::view`, como
+// as outras capsulas -- o fundo do palco nao e do documento.
+std::size_t stageBar(Session& s, unsigned shown, MenuActions& actions) {
+    std::size_t n = 0;
+    const float k = ui::dpi();
+    ViewContext& v = s.view;
+    StageSource* stage = stageSource();
+
+    if (shown & kCapBackground) {
+        const bool solid = v.background.kind == StageBackground::Kind::Solid;
+        ui::beginCapsule("background", kBackgroundCapW);
+
+        bool openSolid = false;
+        if (ui::capSwatch("##bg-solid", solidU32(v.lastSolid), ArtThumb{}, solid, "Solid Color Background")) {
+            if (solid) openSolid = true;
+            else pickSolid(v, v.lastSolid);
+        }
+        if (popoverBelow("bg-solid-menu", openSolid)) {
+            int i = 0;
+            for (const auto& c : kSolidColours) {
+                if (i % 4) ImGui::SameLine();
+                ImGui::PushID(i++);
+                const bool on = solid && v.background.r == c[0] && v.background.g == c[1] && v.background.b == c[2];
+                if (ui::swatch("##dot", ImVec2(28.0f, 28.0f), 14.0f, solidU32(c), ArtThumb{}, on)) pickSolid(v, c);
+                ImGui::PopID();
+            }
+            // `.color-dot.custom`: a roda de matiz, que abre o seletor.
+            ImGui::SameLine();
+            if (ui::swatch("##custom", ImVec2(28.0f, 28.0f), 14.0f, 0, ArtThumb{}, false, "Custom color"))
+                ImGui::OpenPopup("bg-custom");
+            {
+                const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+                const ImVec2 c((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+                const float r = (b.x - a.x) * 0.5f - 1.0f * k;
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                constexpr int kWedges = 36;
+                for (int w = 0; w < kWedges; ++w) {
+                    const float a0 = static_cast<float>(w) / kWedges * 2.0f * IM_PI - IM_PI * 0.5f;
+                    const float a1 = static_cast<float>(w + 1) / kWedges * 2.0f * IM_PI - IM_PI * 0.5f;
+                    dl->AddTriangleFilled(c, ImVec2(c.x + std::cos(a0) * r, c.y + std::sin(a0) * r),
+                                          ImVec2(c.x + std::cos(a1) * r, c.y + std::sin(a1) * r),
+                                          ImColor::HSV(static_cast<float>(w) / kWedges, 1.0f, 1.0f));
+                }
+            }
+            if (ImGui::BeginPopup("bg-custom")) {
+                float c[3] = {v.background.r, v.background.g, v.background.b};
+                ImGui::SetNextItemWidth(200.0f * k);
+                if (ImGui::ColorPicker3("##bg-picker", c,
+                                        ImGuiColorEditFlags_NoSidePreview | ImGuiColorEditFlags_NoSmallPreview |
+                                            ImGuiColorEditFlags_DisplayHex))
+                    pickSolid(v, c);
+                ImGui::EndPopup();
+            }
+            endPopover();
+        }
+
+        const int count = stage ? stage->backgrounds() : 0;
+        bool openImage = false;
+        // `.swatch.image:not([style])`: sem imagem carregada, o bege do degrade.
+        if (ui::capSwatch("##bg-image", IM_COL32(0xb9, 0xae, 0xa8, 255),
+                          stage && v.lastImage < count ? stage->background(v.lastImage) : ArtThumb{}, !solid,
+                          "Image Background")) {
+            // Sem imagem nenhuma para onde trocar, o clique abre o popover, que
+            // ainda tem o "Add Background...".
+            if (!solid || count == 0) openImage = true;
+            else pickImage(v, std::min(v.lastImage, count - 1));
+        }
+        if (popoverBelow("bg-image-menu", openImage)) {
+            for (int i = 0; i < count; ++i) {
+                if (i % 3) ImGui::SameLine();
+                ImGui::PushID(i);
+                const std::string name = stage->backgroundName(i);
+                if (ui::swatch("##tile", ImVec2(72.0f, 48.0f), 8.0f, IM_COL32(60, 60, 64, 255), stage->background(i),
+                               !solid && v.background.image == i, name.c_str())) {
+                    pickImage(v, i);
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::PopID();
+            }
+            if (count % 3) ImGui::SameLine();
+            // `.bg-tile.add`: o app pergunta o arquivo e o acrescenta a lista.
+            if (ui::swatch("##add", ImVec2(72.0f, 48.0f), 8.0f, theme::u32(theme::kBox), ArtThumb{}, false,
+                           "Add Background...")) {
+                actions.addBackground = true;
+                ImGui::CloseCurrentPopup();
+            }
+            {
+                const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+                const ImVec2 c((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+                if (!ui::symbol("plus", c, 17.0f * k, theme::u32(theme::kText2))) {
+                    const ImVec2 ts = ImGui::CalcTextSize("+");
+                    ImGui::GetWindowDrawList()->AddText(ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f),
+                                                        theme::u32(theme::kText2), "+");
+                }
+            }
+            endPopover();
+        }
+        ui::endCapsule();
+        n += 2;
+    }
+
+    if (shown & kCapGrid) {
+        ui::pushMenuStyle();
+        ui::beginCapsule("grid", kGridCapW);
+        if (ui::capButton("##grid", v.grid ? "toolbar-grid-on" : "toolbar-grid-off", v.grid, 17.0f, true,
+                          "Show or hide grid", 32.0f, "#"))
+            v.grid = !v.grid;
+        const bool styleClick = ui::capChevron("##grid-style", "Grid Style");
+        if (popupBelow("grid-style-menu", styleClick)) {
+            // Escolher um estilo tambem liga a grade, como no Tauri.
+            if (ui::menuItem("Light", nullptr, v.gridLight)) {
+                v.gridLight = true;
+                v.grid = true;
+            }
+            if (ui::menuItem("Dark", nullptr, !v.gridLight)) {
+                v.gridLight = false;
+                v.grid = true;
+            }
+            ImGui::EndPopup();
+        }
+        ui::endCapsule();
+        ui::popMenuStyle();
+        n += 2;
+    }
+    return n;
 }
 
 std::size_t contextBar(Session& s, unsigned shown) {
@@ -597,6 +790,7 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
         // depois dele, e numa barra em que nenhuma cabe nao ha item nenhum.
         if (shown != 0) ImGui::SetCursorScreenPos(ImVec2(capsulesX, barTop + (barH - 34.0f * dk) * 0.5f));
         if (shown & kCapEffects) st.effectsControls = effectsBar(s);
+        st.stageControls = stageBar(s, shown, actions);
         st.contextControls = contextBar(s, shown);
         if (shown & kCapZoomButtons) st.zoomControls = zoomBar(s);
         ImGui::EndMenuBar();
@@ -720,11 +914,26 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
     v.canvasW = availW;
     v.canvasH = availH;
 
-    // Flat colour behind the icon (spec 13/09 §6). Flat and KNOWN: the six
-    // `sine-*` backdrops of the target are round 5, and a backdrop taken from
-    // the theme could be fully transparent, which would put the icon's own
-    // alpha over the window and make transparency unreadable.
-    dl->AddRectFilled(origin, corner, theme::u32(theme::kCanvas));
+    // O FUNDO DO PALCO (Stage.h): a cor chapada que a pessoa escolheu -- o
+    // `kCanvas` do tema ate ela escolher outra -- ou uma das imagens, estendida
+    // em `cover`. A cor vai por baixo SEMPRE, opaca: enquanto a imagem nao
+    // carregou, ou sem `StageSource`, o alfa do icone fica sobre uma cor
+    // conhecida e nao sobre a janela.
+    {
+        const StageBackground& bg = v.background;
+        const float colour[3] = {bg.r, bg.g, bg.b};
+        dl->AddRectFilled(origin, corner, solidU32(colour));
+        if (bg.kind == StageBackground::Kind::Image) {
+            if (StageSource* stage = stageSource()) {
+                const ArtThumb image = stage->background(bg.image);
+                if (image.texture != ImTextureID_Invalid && image.texture != 0) {
+                    const StageCover c = stageCover(availW, availH, image.width, image.height);
+                    dl->AddImage(image.texture, origin, corner, ImVec2(c.u0, c.v0), ImVec2(c.u1, c.v1));
+                    st.backgroundImage = true;
+                }
+            }
+        }
+    }
 
     // Left OR middle drag pans, which is what Onyx's viewer accepts
     // (ImageViewer.cpp:199-200). Left as well as middle because a middle button
@@ -884,14 +1093,20 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
     if (v.settledSeconds >= kTileSettleSeconds || v.stageW == 0.0f) {
         v.tileSize = want.w ? canvasTileSize(v.size, v.zoomTarget) : 0;
         v.tile = want;
-        // O palco e o quadrado do icone NO ALVO, em pontos a partir do canto
-        // do palco: o que o vidro e o Clear do Mono leem (Renditions.h).
-        v.stageW = availW;
-        v.stageH = availH;
-        v.squareX = v.panTargetX;
-        v.squareY = v.panTargetY;
-        v.squareSide = sidePx * v.zoomTarget;
     }
+    // O PALCO E O QUADRADO DO ICONE, A CADA QUADRO E ONDE ELE ESTA NA TELA
+    // (02/10): em pontos a partir do canto do palco, e o que o vidro e o Clear
+    // do Mono leem (Renditions.h). Ate aqui eles so eram escritos no
+    // assentamento do ladrilho e com o ALVO do ease -- o vidro ficava com o
+    // fundo de onde o icone ESTAVA ate o gesto acabar e um render inteiro
+    // voltar. Um quadrado por quadro deixou de ser um render por quadro: o
+    // app guarda o icone de antes do vidro e so refaz o vidro (AppPorts.h,
+    // `MonoBase`). Fora do Mono nada disto entra na chave do render.
+    v.stageW = availW;
+    v.stageH = availH;
+    v.squareX = v.panX;
+    v.squareY = v.panY;
+    v.squareSide = sidePx * v.zoom;
 
     // ── THE RECORTE ─────────────────────────────────────────────────────────
     // Everything from here to PopClipRect is the canvas's own rectangle and
@@ -914,8 +1129,40 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
     // imagem e acompanha o pan; um zoom o estica ate o novo chegar.
     // A BASE, SEMPRE O ICONE INTEIRO, esticada ao lado que esta na tela. E o
     // que a pessoa ve enquanto o zoom anda e o ladrilho novo nao chegou.
+    //
+    // NUM MONO, A TEXTURA NAO E O QUE SE VE (02/10): e o icone de antes do
+    // vidro, e quem poe o vidro simulado e o Clear por cima do fundo e a
+    // `StageSource`, na GPU da tela, neste quadro e na posicao deste quadro.
+    // E por isso que mover ou dar zoom nao espera render nenhum.
+    auto drawLayer = [&](ImTextureID texture, ImVec2 a, ImVec2 b, ImVec2 uv0, ImVec2 uv1, bool raw, bool clear,
+                         bool dark) {
+        if (raw) {
+            if (StageSource* stage = stageSource()) {
+                MonoStageDraw d;
+                d.texture = texture;
+                d.quadMin = a;
+                d.quadMax = b;
+                d.uvMin = uv0;
+                d.uvMax = uv1;
+                d.squareMin = tl;
+                d.squareSide = fullSide;
+                d.stageMin = origin;
+                d.stageMax = corner;
+                d.background = v.background;
+                d.clear = clear;
+                d.dark = dark;
+                d.watch = v.context.idiom == icf::Idiom::WatchOS;
+                if (stage->composeMono(dl, d)) {
+                    st.composed = true;
+                    return;
+                }
+            }
+        }
+        dl->AddImage(texture, a, b);
+    };
     if (view.texture != ImTextureID_Invalid && view.width > 0) {
-        dl->AddImage(view.texture, tl, ImVec2(tl.x + fullSide, tl.y + fullSide));
+        drawLayer(view.texture, tl, ImVec2(tl.x + fullSide, tl.y + fullSide), ImVec2(0, 0), ImVec2(1, 1),
+                  view.monoRaw, view.monoClear, view.monoDark);
         st.textured = true;
     }
     // O LADRILHO, so quando e deste zoom e desta versao: a grade dele tem de
@@ -927,7 +1174,28 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
                        tl.y + static_cast<float>(view.tileY) * perTexel);
         const ImVec2 b(a.x + static_cast<float>(view.tileWidth) * perTexel,
                        a.y + static_cast<float>(view.tileHeight) * perTexel);
-        dl->AddImage(view.tileTexture, a, b);
+        const float grid = static_cast<float>(view.tileGrid);
+        drawLayer(view.tileTexture, a, b,
+                  ImVec2(static_cast<float>(view.tileX) / grid, static_cast<float>(view.tileY) / grid),
+                  ImVec2(static_cast<float>(view.tileX + static_cast<std::int32_t>(view.tileWidth)) / grid,
+                         static_cast<float>(view.tileY + static_cast<std::int32_t>(view.tileHeight)) / grid),
+                  view.tileMonoRaw, view.tileMonoClear, view.tileMonoDark);
+    }
+
+    // ── A GRADE (`.grid-overlay`) ───────────────────────────────────────────
+    // O `appicongrid` do alvo sobre o quadrado do icone, a 55%: preta, ou
+    // branca no estilo Light (o `filter: invert(1)` do CSS). A do watchOS e a
+    // da familia redonda. Acompanha o zoom e o pan porque e desenhada no mesmo
+    // quadrado da base.
+    if (v.grid) {
+        if (StageSource* stage = stageSource()) {
+            const ImTextureID grid = stage->grid(v.context.idiom == icf::Idiom::WatchOS);
+            if (grid != ImTextureID_Invalid && grid != 0) {
+                dl->AddImage(grid, tl, ImVec2(tl.x + fullSide, tl.y + fullSide), ImVec2(0, 0), ImVec2(1, 1),
+                             v.gridLight ? IM_COL32(255, 255, 255, 140) : IM_COL32(0, 0, 0, 140));
+                st.gridDrawn = true;
+            }
+        }
     }
 
     // ── O RETANGULO DA CAMADA SELECIONADA ───────────────────────────────────

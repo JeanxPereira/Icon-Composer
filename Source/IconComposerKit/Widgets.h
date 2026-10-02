@@ -5,9 +5,13 @@
 //
 // Nada aqui guarda estado de documento: sao widgets. O estado de UI que um
 // widget precisa (um menu aberto) fica no ImGui, pelo id.
+#include "Source/IconComposerKit/Stage.h"
+
 #include "imgui.h"
 
 #include <filesystem>
+#include <memory>
+#include <string>
 #include <string_view>
 
 namespace ick {
@@ -42,6 +46,47 @@ struct ArtSource {
 void setArtSource(ArtSource* source);
 ArtSource* artSource();
 
+// O PALCO: a grade do icone (`appicongrid.ios`/`.watchos` de `custom/`, como
+// mascara branca num raster grande -- a do `SymbolSource` tem o tamanho de um
+// botao) e as imagens de fundo (`backgrounds/`, mais as que a pessoa
+// acrescenta). Sem fonte, nos testes, nao ha grade nem imagem: o palco e a cor
+// chapada e os controles continuam la.
+// UM QUADRO DO MONO, COMPOSTO NA GPU DA TELA. `texture` e o icone de antes do
+// vidro (`RenderResult::monoRaw`), no retangulo `quad` da tela, cobrindo `uv`
+// do canvas (0..1; um ladrilho cobre so um pedaco). O resto e o que o vidro e
+// o Clear leem: onde o quadrado do icone esta, o palco e o fundo dele.
+struct MonoStageDraw {
+    ImTextureID texture = ImTextureID_Invalid;
+    ImVec2 quadMin, quadMax;
+    ImVec2 uvMin, uvMax;
+    ImVec2 squareMin;
+    float squareSide = 0.0f;
+    ImVec2 stageMin, stageMax;
+    StageBackground background;
+    bool clear = false;   // a textura e a mascara do Clear
+    bool dark = false;    // a matriz escura do vidro
+    bool watch = false;   // a pastilha redonda
+};
+
+struct StageSource {
+    virtual ~StageSource() = default;
+    // O app compoe o Mono na GPU da tela. Falso (os testes, ou um aparelho
+    // que nao montou o pipeline): o vidro e o Clear ficam com o job, na CPU.
+    virtual bool composes() { return false; }
+    // Poe o quadro na draw list, dentro do recorte corrente. Falso: nao deu, e
+    // o chamador desenha a textura como ela e.
+    virtual bool composeMono(ImDrawList*, const MonoStageDraw&) { return false; }
+    virtual ImTextureID grid(bool watch) = 0;
+    virtual int backgrounds() = 0;
+    // A textura e a proporcao; invalida enquanto nao carregou.
+    virtual ArtThumb background(int index) = 0;
+    virtual std::string backgroundName(int index) = 0;
+    // Os pixels, para o render do Mono (Ports.h, `MonoBackdrop::image`).
+    virtual std::shared_ptr<const StagePixels> pixels(int index) = 0;
+};
+void setStageSource(StageSource* source);
+StageSource* stageSource();
+
 namespace ui {
 
 // Desenha o simbolo centrado em `centre`, com lado `size` (pt, ja com o DPI).
@@ -66,6 +111,16 @@ bool capButton(const char* id, std::string_view sym, bool on, float symSize = 17
                const char* tooltip = nullptr, float width = 32.0f, const char* fallback = "?");
 // Um botao de texto da capsula (`.text-cap`): o rotulo e uma setinha.
 bool capText(const char* id, const char* label, float width, const char* tooltip = nullptr);
+// O botao estreito da capsula (`.cap-btn.narrow`): 22 pt, so a setinha.
+bool capChevron(const char* id, const char* tooltip = nullptr);
+// A AMOSTRA DE FUNDO (`.swatch`): 36 x 26, raio 13, a cor ou a imagem (cortada
+// em `cover`), com o anel de destaque quando e a escolhida. Dentro de uma
+// capsula, como um `capButton`.
+bool capSwatch(const char* id, ImU32 colour, const ArtThumb& image, bool on, const char* tooltip = nullptr);
+// A mesma amostra solta, num popover: `size` em pt, `rounding` em pt. Sem cor
+// nem imagem (`colour == 0`) desenha so o anel e deixa o miolo para o chamador.
+bool swatch(const char* id, ImVec2 size, float rounding, ImU32 colour, const ArtThumb& image, bool on,
+            const char* tooltip = nullptr);
 
 // O ESTILO DE MENU DO SISTEMA (`.menu`): o popover arredondado, o item em
 // hover na cor de destaque. Empilhar em volta de quem abre menus.

@@ -375,7 +375,13 @@ TEST_CASE(canvas_never_paints_outside_the_canvas) {
     const ick::RenderView view = landed(512);
 
     // Frame one lays it out, so `clip` below is the canvas the window gave us.
-    const ick::CanvasStats fitted = canvasFrame(gui, *s, view);
+    //
+    // 1000 pt de largura, e nao os 840 do padrao: desde 02/10 a barra tem
+    // tambem o fundo e a grade, e em 840 os botoes de zoom cedem o lugar
+    // (`capsulesThatFit`). O caso e sobre o icone nao pintar por cima dos
+    // controles, entao ele quer a barra com TODOS eles.
+    const float kWide = 1000.0f;
+    const ick::CanvasStats fitted = canvasFrame(gui, *s, view, kWide);
     REQUIRE(fitted.textured);
     REQUIRE(!fitted.clip.empty());
 
@@ -386,7 +392,7 @@ TEST_CASE(canvas_never_paints_outside_the_canvas) {
     s->view.panX = s->view.panTargetX = -1800.0f;
     s->view.panY = s->view.panTargetY = -1500.0f;
 
-    const ick::CanvasStats st = canvasFrame(gui, *s, view);
+    const ick::CanvasStats st = canvasFrame(gui, *s, view, kWide);
     REQUIRE(st.textured);
 
     // The icon really is trying to leave -- above and to the left of the canvas,
@@ -422,6 +428,7 @@ TEST_CASE(canvas_never_paints_outside_the_canvas) {
     CHECK(scissor.y >= st.clip.y0 - 0.25f);
     CHECK_EQ(st.contextControls, std::size_t(4));
     CHECK_EQ(st.zoomControls, std::size_t(4));
+    CHECK_EQ(st.stageControls, std::size_t(4));
     CHECK_EQ(gui.errors(), std::uint64_t(0));
 }
 

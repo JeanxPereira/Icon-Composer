@@ -101,6 +101,12 @@ void TexturePool::remove(ImTextureID id) {
         if (t.id == id && t.retireIn < 0) t.retireIn = kFramesInFlight;
 }
 
+VkImageView TexturePool::view(ImTextureID id) const {
+    for (const Tex& t : textures_)
+        if (t.id == id && t.retireIn < 0) return t.view;
+    return VK_NULL_HANDLE;
+}
+
 void TexturePool::advanceFrame() {
     for (Tex& t : textures_)
         if (t.retireIn > 0) --t.retireIn;

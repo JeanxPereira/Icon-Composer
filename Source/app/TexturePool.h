@@ -29,6 +29,9 @@ public:
     ImTextureID create(std::uint32_t w, std::uint32_t h, const std::uint8_t* rgba8, std::string* why);
     bool update(ImTextureID id, const std::uint8_t* rgba8, std::string* why);
     void remove(ImTextureID id);
+    // A vista da imagem por tras de um id, para quem a amostra num pipeline
+    // proprio (StageCompositor.h). Nula se o id nao e daqui ou ja foi removido.
+    VkImageView view(ImTextureID id) const;
     // Uma vez por quadro desenhado, depois de todo upload dele.
     void advanceFrame();
 

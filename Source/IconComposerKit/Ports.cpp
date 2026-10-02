@@ -14,6 +14,8 @@ RenderResult failedResult(const RenderRequest& r, std::string why) {
     out.size = r.size;
     out.tile = r.tile;
     out.mono = r.mono;
+    out.background = r.background;
+    out.monoRaw = r.monoRaw;
     out.generation = r.generation;
     out.effects = r.effects;
     out.error = std::move(why);

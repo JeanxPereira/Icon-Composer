@@ -27,6 +27,7 @@
 #include "Source/CoreSVG/Document.h"
 #include "Source/IconComposerFoundation/Edit.h"
 #include "Source/IconComposerFoundation/IconBundle.h"
+#include "Source/IconComposerKit/Stage.h"
 #include "Source/IconComposerKit/Tile.h"
 #include "Source/RenderBox/DesignGeneration.h"
 #include "Source/RenderBox/FillResolve.h"
@@ -108,6 +109,17 @@ struct ViewContext {
     // E o terceiro caso do `EffectsRenderMode` do alvo: "Liquid Glass Effects
     // Disabled". Falso, o render sai com `glass` desligado em toda camada.
     bool effects = true;
+    // A GRADE E O FUNDO DO PALCO (`grid`, `gridStyle` e `background` do
+    // App.tsx). A grade e o `appicongrid` do alvo por cima do quadrado do
+    // icone; "Light" a desenha branca, para um icone escuro. O fundo e o que
+    // fica atras do icone (Stage.h), e o app o carrega de um documento para o
+    // seguinte: e a bancada de quem esta olhando, nao um dado do icone.
+    bool grid = false;
+    bool gridLight = false;
+    StageBackground background;
+    // O ultimo de cada tipo, para o clique na amostra voltar a ele.
+    float lastSolid[3] = {0x1e / 255.0f, 0x1e / 255.0f, 0x20 / 255.0f};
+    int lastImage = 0;
     double tintPosition = 0.75, tintAlpha = 0.625;
     // O palco e o quadrado do icone nele, em pontos, escritos pelo canvas no
     // MESMO assentamento do ladrilho: o vidro e o Clear leem o fundo sob o

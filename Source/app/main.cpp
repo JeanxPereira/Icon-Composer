@@ -2,6 +2,7 @@
 //
 //   IconComposer [bundle.icon] [--generation 26|27]
 //   IconComposer --version
+//   IconComposer --context-menu on|off|status
 //   IconComposer --selftest <bundle.icon> [--frames N]
 //
 // The selftest is the assertion that "the UI opens" (spec 13/09 §8): every
@@ -10,6 +11,7 @@
 // answered on a machine nobody is looking at.
 #include "Source/IconComposerKit/SelfTest.h"
 #include "Source/app/AppPorts.h"
+#include "Source/app/ShellIntegration.h"
 #include "Source/app/Window.h"
 
 #include <cstdio>
@@ -66,6 +68,28 @@ int selftest(const std::string& bundle, int frames) {
 int main(int argc, char** argv) {
     if (argc >= 2 && std::strcmp(argv[1], "--version") == 0) {
         std::puts("IconComposer " IC_VERSION);
+        return 0;
+    }
+    // O "Abrir com Icon Composer" do Explorer (ShellIntegration.h), sem abrir a
+    // janela: para um instalador, ou para ligar de um script. O menu File do
+    // editor faz o mesmo.
+    if (argc >= 3 && std::strcmp(argv[1], "--context-menu") == 0) {
+        if (!icapp::contextMenuSupported()) {
+            std::fputs("IconComposer: the folder context menu is a Windows Explorer feature\n", stderr);
+            return 1;
+        }
+        const bool on = std::strcmp(argv[2], "on") == 0, off = std::strcmp(argv[2], "off") == 0;
+        if (on || off) {
+            const std::string why = icapp::setContextMenu(on);
+            if (!why.empty()) {
+                std::fprintf(stderr, "IconComposer: %s\n", why.c_str());
+                return 1;
+            }
+        } else if (std::strcmp(argv[2], "status") != 0) {
+            std::fputs("IconComposer: --context-menu on|off|status\n", stderr);
+            return 1;
+        }
+        std::puts(icapp::contextMenuRegistered() ? "context menu: on" : "context menu: off");
         return 0;
     }
     hideAConsoleMadeForUs();

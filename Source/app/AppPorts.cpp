@@ -33,8 +33,21 @@ bool PoolTextureSink::update(ImTextureID id, std::uint32_t, std::uint32_t, const
     return ok;
 }
 
+namespace {
+
+rb::MonoLook withoutSquare(rb::MonoLook m) {
+    m.squareX = m.squareY = m.squareSide = 0.0;
+    return m;
+}
+
+// O teto do que fica guardado: um ladrilho de zoom alto pode ser grande, e a
+// copia e de floats (16 bytes por pixel).
+constexpr std::size_t kMonoBaseMaxPixels = 2048u * 2048u;
+
+}  // namespace
+
 ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
-                            rb::RenderCache* cache) {
+                            rb::RenderCache* cache, MonoBase* monoBase) {
     ick::RenderResult out;
     out.version = r.version;
     // THE ECHO. The coordinator matches a result against the request it is
@@ -52,6 +65,8 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
     out.size = r.size;
     out.tile = r.tile;
     out.mono = r.mono;
+    out.background = r.background;
+    out.monoRaw = r.monoRaw;
     out.generation = r.generation;
     out.effects = r.effects;
 
@@ -76,7 +91,23 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
         ick::disableGlassEffects(*flat);
     }
     const icf::IconBundle& bundle = flat ? *flat : r.bundle;
-    auto icon = rb::renderIconGpu(device, bundle, io);
+    // O ICONE DE ANTES DO VIDRO JA ESTA AQUI? (AppPorts.h, `MonoBase`.)
+    std::string document;
+    bool reused = false;
+    if (r.mono && monoBase) {
+        document = r.bundle.path().string();
+        document += char(10);
+        document += icf::json::write(r.bundle.json());
+        reused = monoBase->valid && monoBase->document == document && monoBase->context == r.context &&
+                 monoBase->size == r.size && monoBase->fallbackSize == r.fallbackSize &&
+                 monoBase->tile == r.tile && monoBase->look == withoutSquare(*r.mono) &&
+                 monoBase->generation == r.generation && monoBase->effects == r.effects;
+    }
+    auto icon = reused ? rb::Result<rb::RenderedIcon>(monoBase->icon) : rb::renderIconGpu(device, bundle, io);
+    if (reused) {
+        out.refined = monoBase->refined;
+        out.notes = monoBase->notes;
+    }
 
     // Um ladrilho pode ser impossivel de desenhar de duas formas (spec
     // 2026-09-16, "O teto de area"):
@@ -101,7 +132,7 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
     std::vector<std::string> areaCapNotes;
     if (areaCapped) areaCapNotes = icon->notes;
 
-    if ((areaCapped || tileErrored) && r.fallbackSize > 0) {
+    if (!reused && (areaCapped || tileErrored) && r.fallbackSize > 0) {
         // O teto (spec 2026-09-16): o canvas inteiro na resolucao base, e o
         // painel estica -- o que ele fazia antes desta frente.
         io.size = r.fallbackSize;
@@ -120,9 +151,37 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
         }
     }
 
-    // E depois dele o vidro simulado e o Clear, sobre o fundo chapado do palco
-    // (`MonoBackdrop`: o canvas do editor e uma cor so).
-    if (icon.has_value() && r.mono) {
+    // Guardado ANTES do vidro, que e a metade que depende do quadrado.
+    if (!reused && r.mono && monoBase) {
+        monoBase->valid = false;
+        if (icon.has_value() && static_cast<std::size_t>(icon->width) * icon->height <= kMonoBaseMaxPixels) {
+            monoBase->document = std::move(document);
+            monoBase->context = r.context;
+            monoBase->size = r.size;
+            monoBase->fallbackSize = r.fallbackSize;
+            monoBase->tile = r.tile;
+            monoBase->look = withoutSquare(*r.mono);
+            monoBase->generation = r.generation;
+            monoBase->effects = r.effects;
+            monoBase->icon = *icon;
+            monoBase->refined = out.refined;
+            monoBase->notes = out.notes;
+            monoBase->valid = true;
+        }
+    }
+
+    // E depois dele o vidro simulado e o Clear, sobre o fundo do palco
+    // (`MonoBackdrop`): a cor chapada, ou a imagem estendida sobre o palco como
+    // o canvas a desenha (`stageCover`).
+    if (icon.has_value() && r.mono && r.monoRaw) {
+        // O MONO SEM O VIDRO (Ports.h): so a metade que nao depende de onde o
+        // icone esta -- a recoloracao do Tinted Dark, que `finishMono` faria
+        // primeiro. O vidro e o Clear sao do compositor do palco.
+        if (r.mono->kind == rb::MonoLook::Kind::TintedDark && !icon->tintApplied) {
+            rb::applyTintedDark(*icon, r.mono->tint);
+        }
+        out.monoClear = r.mono->clears() && icon->clearMask;
+    } else if (icon.has_value() && r.mono) {
         rb::ClearBackdrop back;
         back.width = r.backdrop.width;
         back.height = r.backdrop.height;
@@ -136,6 +195,30 @@ ick::RenderResult renderNow(rb::Device& device, const ick::RenderRequest& r,
             back.rgba[i + 1] = to8(r.backdrop.g);
             back.rgba[i + 2] = to8(r.backdrop.b);
             back.rgba[i + 3] = 255;
+        }
+        if (const ick::StagePixels* img = r.backdrop.image.get();
+            img && img->width > 0 && img->height > 0 && back.width > 0 && back.height > 0) {
+            const ick::StageCover c =
+                ick::stageCover(static_cast<float>(back.width), static_cast<float>(back.height),
+                                static_cast<float>(img->width), static_cast<float>(img->height));
+            // O texel mais proximo: a copia ja e meia resolucao e o vidro a
+            // borra por cima.
+            for (std::uint32_t y = 0; y < back.height; ++y) {
+                const float v = c.v0 + (c.v1 - c.v0) * (static_cast<float>(y) + 0.5f) / static_cast<float>(back.height);
+                const std::uint32_t sy =
+                    std::min(img->height - 1, static_cast<std::uint32_t>(v * static_cast<float>(img->height)));
+                for (std::uint32_t x = 0; x < back.width; ++x) {
+                    const float u =
+                        c.u0 + (c.u1 - c.u0) * (static_cast<float>(x) + 0.5f) / static_cast<float>(back.width);
+                    const std::uint32_t sx =
+                        std::min(img->width - 1, static_cast<std::uint32_t>(u * static_cast<float>(img->width)));
+                    const std::uint8_t* src = &img->rgba[(static_cast<std::size_t>(sy) * img->width + sx) * 4];
+                    std::uint8_t* dst = &back.rgba[(static_cast<std::size_t>(y) * back.width + x) * 4];
+                    dst[0] = src[0];
+                    dst[1] = src[1];
+                    dst[2] = src[2];
+                }
+            }
         }
         const std::string why = rb::finishMono(*icon, *r.mono, back, io.context.idiom, io.size);
         if (!why.empty()) out.notes.push_back("mono: " + why);
@@ -216,7 +299,7 @@ void JobScheduler::submitPending() {
             // nenhum. `renderNow` aloca o buffer inteiro do ladrilho, entao
             // `bad_alloc` e o escape que se espera de verdade aqui.
             try {
-                *result = renderNow(device_, *req, &cache_);
+                *result = renderNow(device_, *req, &cache_, &monoBase_);
             } catch (const std::exception& e) {
                 *result = ick::failedResult(*req, std::string("o render lancou: ") + e.what());
             } catch (...) {

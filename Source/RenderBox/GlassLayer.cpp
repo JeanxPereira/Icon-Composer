@@ -1,5 +1,7 @@
 #include "Source/RenderBox/GlassLayer.h"
 
+#include "Source/RenderBox/Parallel.h"
+
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -175,7 +177,11 @@ DisplacementImage glassDisplacementMap(const FieldImage& field, const GlassRefra
     rot.cos = r.angleCos;
     rot.sin = r.angleSin;
 
-    for (std::uint32_t y = 0; y < field.height; ++y) {
+    // Por linhas (Parallel.h): cada texel do mapa le so o texel do campo no
+    // mesmo lugar e escreve so o seu, entao a divisao nao move um bit.
+    parallelRanges(field.height, static_cast<std::size_t>(field.width) * field.height * 60,
+                   [&](std::size_t y0, std::size_t y1) {
+    for (std::uint32_t y = static_cast<std::uint32_t>(y0); y < y1; ++y) {
         for (std::uint32_t x = 0; x < field.width; ++x) {
             const float* f = field.at(x, y);
             sdfdisp::Field in;
@@ -201,6 +207,7 @@ DisplacementImage glassDisplacementMap(const FieldImage& field, const GlassRefra
             out.rgba[i + 3] = d.alpha;
         }
     }
+    });
     return out;
 }
 
@@ -257,7 +264,14 @@ void glassOver(std::vector<float>& acc, const PixelGrid& grid, const Displacemen
     const float dpdx[2] = {1.0f, 0.0f};
     const float dpdy[2] = {0.0f, 1.0f};
 
-    for (std::uint32_t y = 0; y < grid.height; ++y) {
+    // POR LINHAS, E SEM MOVER UM BIT (Parallel.h). Cada pixel le o INSTANTANEO
+    // (`backdrop`, que ninguem escreve) e o mapa, e escreve so o proprio texel
+    // de `acc`: nao ha ordem entre eles para uma thread trocar. Era o laco
+    // serial que dominava o vidro simulado do Mono -- 63 dos ~100 ms de cada
+    // passo de um pan a 512 px, medido 02/10.
+    parallelRanges(grid.height, static_cast<std::size_t>(grid.width) * grid.height * 200,
+                   [&](std::size_t y0, std::size_t y1) {
+    for (std::uint32_t y = static_cast<std::uint32_t>(y0); y < y1; ++y) {
         for (std::uint32_t x = 0; x < grid.width; ++x) {
             const std::size_t i = (static_cast<std::size_t>(y) * grid.width + x) * 4;
             const float mask = map.rgba[i + 3];
@@ -276,6 +290,7 @@ void glassOver(std::vector<float>& acc, const PixelGrid& grid, const Displacemen
             }
         }
     }
+    });
 }
 
 }  // namespace rb

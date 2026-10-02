@@ -183,6 +183,7 @@ bool Shell::Impl::init(const std::string& title, std::string* why) {
     ii.MinImageCount = kMinImageCount;
     ii.ImageCount = wd.ImageCount;
     ii.PipelineInfoMain.RenderPass = wd.RenderPass;
+    gpu_.renderPass = wd.RenderPass;
     ii.PipelineInfoMain.Subpass = 0;
     ii.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     ii.CheckVkResultFn = checkVk;
