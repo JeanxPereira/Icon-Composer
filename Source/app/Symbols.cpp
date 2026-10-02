@@ -12,6 +12,8 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace icapp {
@@ -34,6 +36,97 @@ std::string keyOf(std::string_view name, bool custom) {
 // a cor deles.
 bool keepsColour(const std::string& stem) { return stem == "Opacity" || stem == "Blendmode"; }
 
+// ---- `<use>` e `<mask>` nos simbolos da UI ----------------------------------
+//
+// Os assets que vieram do `.car` por um exportador de desenho (os dois
+// `toolbar-grid-*`) guardam a forma em `<defs>` e a desenham por `<use>`, e
+// recortam o miolo por `<mask>`. O CoreSVG deste repositorio le o que o do alvo
+// le -- e nenhum dos dois e geral ali --, entao o `-off` saia vazio e o `-on`
+// so com o contorno.
+//
+// A arte de um DOCUMENTO tem de passar pelo parser como ele e; um simbolo da
+// barra nao. Entao so aqui, antes do parse: cada `<use>` vira o `<path>` que
+// ele aponta, com os atributos do proprio `<use>`, e a mascara -- uma forma
+// branca, nos dois arquivos -- vira o `clipPath` que ela e.
+//
+// Varredura a mao e nao `std::regex`: um `d` tem oito mil caracteres, e a
+// regex da libstdc++ recursa por caractere.
+std::string attributeOf(std::string_view tag, std::string_view name) {
+    for (std::size_t at = tag.find(name); at != std::string_view::npos; at = tag.find(name, at + name.size())) {
+        const std::size_t eq = at + name.size();
+        const bool starts = at > 0 && std::isspace(static_cast<unsigned char>(tag[at - 1]));
+        if (!starts || eq + 1 >= tag.size() || tag[eq] != '=' || tag[eq + 1] != '"') continue;
+        const std::size_t close = tag.find('"', eq + 2);
+        if (close == std::string_view::npos) return {};
+        return std::string(tag.substr(eq + 2, close - (eq + 2)));
+    }
+    return {};
+}
+
+void eraseAttribute(std::string& attrs, std::string_view name) {
+    for (std::size_t at = attrs.find(name); at != std::string::npos; at = attrs.find(name, at + name.size())) {
+        const std::size_t eq = at + name.size();
+        const bool starts = at > 0 && std::isspace(static_cast<unsigned char>(attrs[at - 1]));
+        if (!starts || eq + 1 >= attrs.size() || attrs[eq] != '=' || attrs[eq + 1] != '"') continue;
+        const std::size_t close = attrs.find('"', eq + 2);
+        if (close == std::string::npos) return;
+        attrs.erase(at, close + 1 - at);
+        return;
+    }
+}
+
+void replaceAll(std::string& text, std::string_view from, std::string_view to) {
+    for (std::size_t at = text.find(from); at != std::string::npos; at = text.find(from, at + to.size())) {
+        text.replace(at, from.size(), to);
+    }
+}
+
+std::string flattenUses(std::string svg) {
+    if (svg.find("<use") == std::string::npos) return svg;
+    // Os caminhos com nome. O ultimo de um id vale, como no parser.
+    std::unordered_map<std::string, std::string> paths;
+    for (std::size_t at = svg.find("<path"); at != std::string::npos; at = svg.find("<path", at + 5)) {
+        const std::size_t end = svg.find('>', at);
+        if (end == std::string::npos) break;
+        const std::string_view tag(svg.data() + at, end + 1 - at);
+        const std::string id = attributeOf(tag, "id"), d = attributeOf(tag, "d");
+        if (!id.empty() && !d.empty()) paths[id] = d;
+    }
+
+    std::string out;
+    std::size_t from = 0;
+    for (;;) {
+        const std::size_t use = svg.find("<use", from);
+        if (use == std::string::npos) break;
+        const std::size_t end = svg.find('>', use);
+        if (end == std::string::npos) break;
+        out.append(svg, from, use - from);
+        const std::string tag = svg.substr(use, end + 1 - use);
+        const bool selfClosed = tag.size() >= 2 && tag[tag.size() - 2] == '/';
+        std::size_t next = end + 1;
+        if (!selfClosed && svg.compare(next, 6, "</use>") == 0) next += 6;
+
+        std::string href = attributeOf(tag, "xlink:href");
+        if (href.empty()) href = attributeOf(tag, "href");
+        const auto target = href.size() > 1 && href[0] == '#' ? paths.find(href.substr(1)) : paths.end();
+        if (target == paths.end()) {
+            out.append(svg, use, next - use);   // nao e um caminho com nome: fica como esta
+        } else {
+            std::string attrs = tag.substr(4, tag.size() - 4 - (selfClosed ? 2 : 1));
+            eraseAttribute(attrs, "xlink:href");
+            eraseAttribute(attrs, "href");
+            out += "<path d=\"" + target->second + "\"" + attrs + "/>";
+        }
+        from = next;
+    }
+    out.append(svg, from, std::string::npos);
+
+    replaceAll(out, "<mask", "<clipPath");
+    replaceAll(out, "</mask>", "</clipPath>");
+    replaceAll(out, " mask=\"url(", " clip-path=\"url(");
+    return out;
+}
+
 }  // namespace
 
 void AppSymbols::schedule(JobQueue& jobs, rb::Device& device, TexturePool& pool, const fs::path& appleDir,
@@ -50,7 +143,8 @@ void AppSymbols::schedule(JobQueue& jobs, rb::Device& device, TexturePool& pool,
                 for (const auto& e : fs::directory_iterator(dir, ec)) {
                     if (e.path().extension() != ".svg") continue;
                     std::ifstream f(e.path(), std::ios::binary);
-                    const std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+                    const std::string text = flattenUses(
+                        std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()));
                     auto doc = icf::svg::SvgDocument::parse(text);
                     if (!doc) {
                         ++failed;
