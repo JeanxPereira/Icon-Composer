@@ -34,7 +34,30 @@ std::optional<Session> Session::create(const fs::path& dir) {
     if (ec) return std::nullopt;
     std::ofstream f(dir / "icon.json", std::ios::binary | std::ios::trunc);
     if (!f) return std::nullopt;
-    f << "{\n  \"fill\" : \"automatic\",\n  \"groups\" : [\n\n  ]\n}";
+    // O DOCUMENTO NOVO DO ALVO, e nao um que este projeto escolheu. `[BIN]`
+    // `IconDocument.init()` (Kit `0x33594`) chama
+    // `IconComposition.makeIconCompositionFromTemplate()` (Foundation `0x59128`),
+    // e o construtor do molde (`0xC7404`) escreve: o fill de raiz como um
+    // gradiente automatico do azul do sistema, na chave simples (`0xC74C0`-
+    // `0xC7504`); nenhum grupo (`0xC75DC`); e `supportedPlatforms = 02 00 01`,
+    // que e squares `shared` com circles `[watchOS]` (`0x117140`). Ate 01/10
+    // isto era `"fill": "automatic"`, que desenha a rampa clara do sistema: um
+    // icone novo abria numa pastilha branca, e o do alvo abre azul.
+    //
+    // `[ART]` A grafia do azul nao esta no binario -- ele pede `Color.blue` ao
+    // SwiftUI em tempo de execucao (`0xA3910`). E a dos 6 documentos do corpus
+    // que carregam o azul do sistema atual, (0, 136, 255) em extended-srgb; 8
+    // outros trazem o da geracao anterior, (0, 122, 255).
+    f << "{\n"
+         "  \"fill\" : {\n"
+         "    \"automatic-gradient\" : \"extended-srgb:0.00000,0.53333,1.00000,1.00000\"\n"
+         "  },\n"
+         "  \"groups\" : [\n\n  ],\n"
+         "  \"supported-platforms\" : {\n"
+         "    \"circles\" : [\n      \"watchOS\"\n    ],\n"
+         "    \"squares\" : \"shared\"\n"
+         "  }\n"
+         "}";
     f.close();
     return open(dir);
 }
