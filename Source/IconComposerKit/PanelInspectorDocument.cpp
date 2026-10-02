@@ -36,7 +36,9 @@
 // invent `supported-platforms-specializations` -- a key that does not exist --
 // and `Section::begin` would label a root key "inherited", which is a lie about a
 // value that has no more general scope to inherit from. So these open their own
-// `CollapsingHeader` and address the plain key directly.
+// header and box -- the same `ui::sectionHead` and `ui::boxBegin` every other
+// section is drawn with, minus the scope status on the right -- and address the
+// plain key directly.
 //
 // The Session is NOT bypassed. Every write still goes through
 // `Session::setProperty` under the Base context, so undo stays a snapshot of the
@@ -68,11 +70,32 @@ void writeRoot(Section& x, std::string_view key, std::optional<icf::json::Value>
 }
 
 // Opens a section and counts it the way `Section::begin` does, minus the scope
-// machinery these keys do not answer to.
-bool header(Section& x, const char* label) {
-    const bool open = ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen);
+// machinery these keys do not answer to: the header that folds, `why` as its
+// tooltip, and the box the rows go in. The id scope is the LABEL, as it is in
+// `Section::begin`, so a control is found under (section, label) at both.
+bool begin(Section& x, const char* label, const char* why = nullptr) {
+    ImGui::PushID(label);
+    ImGuiStorage* store = ImGui::GetStateStorage();
+    const ImGuiID openId = ImGui::GetID("##open");
+    bool open = store->GetBool(openId, true);
+    if (ui::sectionHead(label)) {
+        open = !open;
+        store->SetBool(openId, open);
+    }
+    if (why) ImGui::SetItemTooltip("%s", why);
+    if (!open) ui::sectionStatus("collapsed", theme::kText3);
     ++x.st.sections;
+    if (open) ui::boxBegin();
     return open;
+}
+
+void end(bool open) {
+    if (open) {
+        ui::boxEnd();
+    } else {
+        ImGui::Dummy(ImVec2(0.0f, 10.0f * ui::dpi()));
+    }
+    ImGui::PopID();
 }
 
 bool isString(const icf::json::Value* v, std::string_view text) {
@@ -136,12 +159,12 @@ icf::json::Value platformsToJson(const Platforms& p) {
 }
 
 void platforms(Section& x) {
-    ImGui::PushID("Platforms");
-    if (header(x, "Platforms")) {
-        ImGui::SetItemTooltip(
-            "The only shape choice the format has. The square family is drawn as a squircle and the "
-            "round one as a circle; the corner radius belongs to the renderer, not to the document "
-            "(0 of 145 documents carry a radius key).");
+    const bool open = begin(
+        x, "Platforms",
+        "The only shape choice the format has. The square family is drawn as a squircle and the "
+        "round one as a circle; the corner radius belongs to the renderer, not to the document "
+        "(0 of 145 documents carry a radius key).");
+    if (open) {
         const Platforms p = readPlatforms(rootValue(x, "supported-platforms"));
         Platforms next = p;
 
@@ -158,7 +181,6 @@ void platforms(Section& x) {
             ImGui::EndCombo();
         }
         if (!p.squaresShared) {
-            ImGui::Indent();
             // A list of one cannot be emptied: 0 of 28 lists in the corpus are
             // empty, and an empty one would claim the icon ships for nothing.
             // The last box left standing is greyed rather than silently ignored.
@@ -172,7 +194,6 @@ void platforms(Section& x) {
             ui::toggle("macOS", &next.squaresMacOS);
             ImGui::EndDisabled();
             if (onlyMacOS) ImGui::SetItemTooltip("The list cannot be empty; switch to Shared instead.");
-            ImGui::Unindent();
         }
 
         ui::toggle("Circles (watchOS)", &next.circles);
@@ -185,7 +206,7 @@ void platforms(Section& x) {
         // halves would record two undo steps for one decision.
         if (next != p) writeRoot(x, "supported-platforms", platformsToJson(next));
     }
-    ImGui::PopID();
+    end(open);
 }
 
 // ---- color-space-for-untagged-svg-colors ------------------------------------
@@ -195,21 +216,24 @@ void platforms(Section& x) {
 // checkbox. The disk spelling is the one exception to the kebab-case rule
 // (doc 01 §1), so it is written literally and never derived.
 void svgColorSpace(Section& x) {
-    ImGui::PushID("SVG Color Space");
-    if (header(x, "SVG Color Space")) {
+    const bool open = begin(
+        x, "SVG Color Space",
+        "Every SVG colour that carries no tag of its own is read as Display P3 instead of sRGB. "
+        "20 of the 145 corpus documents say so.");
+    if (open) {
         const icf::json::Value* v = rootValue(x, "color-space-for-untagged-svg-colors");
         bool on = isString(v, "display-p3");
         if (v && !on) {
             // A value outside the sealed vocabulary: shown, and left alone. A
             // checkbox that silently rewrote it would destroy what it cannot read.
-            ImGui::TextDisabled("unreadable value -- left untouched");
+            ui::note("Unreadable value -- left untouched.");
         } else if (ui::toggle("Assume Display P3 for untagged SVG colors", &on)) {
             writeRoot(x, "color-space-for-untagged-svg-colors",
                       on ? std::optional<icf::json::Value>(icf::json::Value::string("display-p3"))
                          : std::nullopt);
         }
     }
-    ImGui::PopID();
+    end(open);
 }
 
 // ---- features ---------------------------------------------------------------
@@ -218,8 +242,11 @@ void svgColorSpace(Section& x) {
 // ["specular-location"] once -- an opt-in list, never empty. So unchecking both
 // REMOVES the key rather than writing `[]`, which no document does.
 void features(Section& x) {
-    ImGui::PushID("Features");
-    if (header(x, "Features")) {
+    const bool open = begin(
+        x, "Features",
+        "An opt-in list the document carries for properties older readers do not know. 3 of the "
+        "145 corpus documents write it; with both off the key is removed.");
+    if (open) {
         const icf::json::Value* v = rootValue(x, "features");
         bool refractivity = false, specularLocation = false;
         if (v && v->kind() == icf::json::Value::Kind::Array) {
@@ -244,7 +271,7 @@ void features(Section& x) {
             }
         }
     }
-    ImGui::PopID();
+    end(open);
 }
 
 // ---- implicit-asset-mirroring -----------------------------------------------
@@ -268,8 +295,8 @@ void features(Section& x) {
 // `false`, and a key that only ever restates the default is a byte the
 // round-trip gate has to carry for nothing.
 void implicitMirroring(Section& x) {
-    ImGui::PushID("Implicit Asset Mirroring");
-    if (header(x, "Implicit Asset Mirroring")) {
+    const bool open = begin(x, "Implicit Asset Mirroring");
+    if (open) {
         const icf::json::Value* v = rootValue(x, "implicit-asset-mirroring");
         bool on = booleanOr(v, false);
         if (ui::toggle("Mirror assets for right-to-left languages", &on)) {
@@ -282,7 +309,7 @@ void implicitMirroring(Section& x) {
             "Inherited. Off is the binary's default, and 0 of the 145 corpus documents write this "
             "key at all -- so turning it off again takes the key back out.");
     }
-    ImGui::PopID();
+    end(open);
 }
 
 }  // namespace
