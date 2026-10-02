@@ -459,24 +459,22 @@ struct State {
 // comentario prometia nao fazer. `capPanelShare` so ENCOLHE, entao um divisor
 // arrastado fica onde a pessoa o pos enquanto couber na metade.
 //
+// E O QUE VOLTOU EM 01/10, SO O PISO: o MINIMO medido (250 pt de sidebar, 330
+// de inspetor) segura o painel enquanto ele couber -- `floorPanelWidth`. O
+// maximo continua fora, pela razao de cima. O que pediu o piso foi o caso
+// inverso do arrasto: um inspetor encolhido numa janela estreita ficava
+// encolhido para sempre, porque o no guarda largura absoluta.
+//
 // `DockBuilderSetNodeSize` escreve `Size` E `SizeRef` e poe a autoridade no no
 // (imgui.cpp:20792), que e o que faz o valor sobreviver ao quadro seguinte.
 void clampDockedWidths() {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     if (!vp) return;
     const float total = vp->WorkSize.x;
-    // O tamanho de janela em que o grampo ja foi aplicado. Um por processo,
-    // e pela mesma razao que o resto do app: ha exatamente uma janela.
-    static float appliedAt = -1.0f;
-    if (std::fabs(total - appliedAt) < 0.5f) return;
-
-    // E ELE SO E LATCHEADO DEPOIS DE TER SIDO APLICADO (revisao 19/09, N7).
-    // Ate aqui `appliedAt = total` era a linha seguinte ao teste, antes de as
-    // janelas serem procuradas: num quadro em que os nos de dock ainda nao
-    // existem -- `FindWindowByName` devolve null -- o tamanho ficava
-    // registrado como grampeado e o grampo DAQUELE tamanho nunca rodava.
-    // Benigno enquanto `defaultLayout` entrega numeros dentro do intervalo;
-    // deixa de ser no primeiro `imgui.ini` que restaure um painel fora dele.
+    // TODO QUADRO, desde 01/10, e nao so quando a janela muda de tamanho: o
+    // piso tem de segurar tambem um divisor arrastado e um `imgui.ini` que
+    // restaure um painel estreito. O custo e duas buscas por nome, e o no so e
+    // reescrito quando a largura difere em mais de um pixel.
     ImGuiWindow* layers = ImGui::FindWindowByName(ick::kLayersWindow);
     ImGuiWindow* inspector = ImGui::FindWindowByName(ick::kInspectorWindow);
     if (!layers || !layers->DockNode || !inspector || !inspector->DockNode) return;
@@ -484,7 +482,6 @@ void clampDockedWidths() {
     ImGuiDockNode* inspectorNode = inspector->DockNode;
     if (!(layersNode->Size.x > 0.0f) || !(layersNode->Size.y > 0.0f)) return;
     if (!(inspectorNode->Size.x > 0.0f) || !(inspectorNode->Size.y > 0.0f)) return;
-    appliedAt = total;
 
     auto capOne = [](ImGuiDockNode* node, float want) {
         // Meio pixel de folga: `Size.x` passou por uma razao e uma
@@ -494,11 +491,16 @@ void clampDockedWidths() {
         ImGui::DockBuilderSetNodeSize(node->ID, ImVec2(want, node->Size.y));
     };
 
-    const float sidebar = ick::capPanelShare(layersNode->Size.x, total);
+    // O PISO E O TETO (`WindowLayout.h`): nenhum dos dois paineis fica mais
+    // estreito que o minimo do alvo enquanto couber, nem passa de metade do
+    // espaco. Os minimos estao em pt e a tela tem escala.
+    const float k = ick::ui::dpi();
+    const float sidebar = ick::floorPanelWidth(layersNode->Size.x, ick::kSidebarMin * k, total);
     capOne(layersNode, sidebar);
     // O inspetor e medido contra o que SOBRA depois da sidebar grampeada -- a
     // mesma conta de `defaultLayout`, e nao contra a janela inteira.
-    capOne(inspectorNode, ick::capPanelShare(inspectorNode->Size.x, total - sidebar));
+    capOne(inspectorNode,
+           ick::floorPanelWidth(inspectorNode->Size.x, ick::kInspectorMin * k, total - sidebar));
 }
 
 // ---- os paineis, na ordem em que desenham -----------------------------------

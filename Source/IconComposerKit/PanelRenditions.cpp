@@ -575,13 +575,29 @@ RenditionStats drawRenditions(Session& s, RenditionThumbnails* thumbs, ImGuiWind
     // sob o mouse, ou da marcada -- num chip logo acima.
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float k = ui::dpi();
-    const float tile = 40.0f * k, inner = 36.0f * k, gap = 8.0f * k, groupGap = 22.0f * k;
-    float total = 0.0f;
-    for (std::size_t gi = 0; gi < groups.size(); ++gi) {
-        if (gi) total += groupGap;
-        total += groups[gi].count * tile + (groups[gi].count ? (groups[gi].count - 1) * gap : 0.0f);
-    }
+    float tile = 40.0f * k, inner = 36.0f * k, gap = 8.0f * k, groupGap = 22.0f * k;
+    auto width = [&] {
+        float w = 0.0f;
+        for (std::size_t gi = 0; gi < groups.size(); ++gi) {
+            if (gi) w += groupGap;
+            w += groups[gi].count * tile + (groups[gi].count ? (groups[gi].count - 1) * gap : 0.0f);
+        }
+        return w;
+    };
     const ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
+    float total = width();
+    // NUM CANVAS ESTREITO A FAIXA ENCOLHE INTEIRA, miniaturas e folgas na mesma
+    // proporcao, ate metade do tamanho: as da direita saiam pela borda do
+    // canvas, por baixo do inspetor. Abaixo de metade ela para de encolher e
+    // volta a ser cortada -- uma miniatura de 12 pt nao mostra nada.
+    if (const float room = ws.x - 16.0f * k; total > room && total > 0.0f) {
+        const float f = std::max(0.5f, room / total);
+        tile *= f;
+        inner *= f;
+        gap *= f;
+        groupGap *= f;
+        total = width();
+    }
     const float y = wp.y + ws.y - tile;
     float x = wp.x + std::max(0.0f, (ws.x - total) * 0.5f);
     std::string caption;

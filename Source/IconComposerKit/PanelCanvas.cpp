@@ -331,10 +331,56 @@ bool popupBelow(const char* id, bool clicked) {
 
 }  // namespace
 
-std::size_t contextBar(Session& s) {
+// AS CAPSULAS DA BARRA, e a ordem em que cedem numa barra estreita. Todas tem
+// um gemeo no menu View, entao a que some nao leva nada embora. A primeira a
+// sair e a de menos falta: os botoes de zoom, o zoom, o tamanho, o idioma, a
+// aparencia e, por ultimo, a geracao.
+enum Capsule : unsigned {
+    kCapEffects = 1u << 0,
+    kCapAppearance = 1u << 1,
+    kCapIdiom = 1u << 2,
+    kCapSize = 1u << 3,
+    kCapZoom = 1u << 4,
+    kCapZoomButtons = 1u << 5,
+    kCapAll = (1u << 6) - 1,
+};
+struct CapsuleSlot {
+    unsigned bit;
+    float width;   // em pt, como `beginCapsule` a recebe
+};
+// Na ordem em que sao desenhadas, da esquerda para a direita.
+constexpr CapsuleSlot kCapsules[] = {
+    {kCapEffects, 3 * 32.0f + 6.0f}, {kCapAppearance, 84.0f}, {kCapIdiom, 84.0f},
+    {kCapSize, 72.0f},               {kCapZoom, 70.0f},       {kCapZoomButtons, 4 * 26.0f + 6.0f},
+};
+constexpr float kCapsuleGap = 8.0f;
+
+float capsulesWidth(unsigned shown) {
+    float w = 0.0f;
+    int n = 0;
+    for (const CapsuleSlot& c : kCapsules) {
+        if (!(shown & c.bit)) continue;
+        w += c.width;
+        ++n;
+    }
+    return n > 0 ? w + kCapsuleGap * static_cast<float>(n - 1) : 0.0f;
+}
+
+// As capsulas que cabem em `avail` pt: da direita para a esquerda elas saem,
+// uma de cada vez, ate o resto caber.
+unsigned capsulesThatFit(float avail) {
+    unsigned shown = kCapAll;
+    for (int i = static_cast<int>(std::size(kCapsules)) - 1; i >= 0 && capsulesWidth(shown) > avail; --i) {
+        shown &= ~kCapsules[i].bit;
+    }
+    return shown;
+}
+
+std::size_t contextBar(Session& s, unsigned shown) {
     std::size_t n = 0;
     ui::pushMenuStyle();
 
+    if (shown & kCapAppearance) {
     ui::beginCapsule("appearance", 84.0f);
     const bool apClick = ui::capText("##appearance", appearanceLabel(s.view.context.appearance), 84.0f,
                                      "Appearance the canvas renders");
@@ -348,7 +394,9 @@ std::size_t contextBar(Session& s) {
     }
     ui::endCapsule();
     ++n;
+    }
 
+    if (shown & kCapIdiom) {
     ui::beginCapsule("idiom", 84.0f);
     const bool idClick = ui::capText("##idiom", idiomLabel(s.view.context.idiom), 84.0f);
     {
@@ -376,7 +424,9 @@ std::size_t contextBar(Session& s) {
     }
     ui::endCapsule();
     ++n;
+    }
 
+    if (shown & kCapSize) {
     char sizeLabel[16];
     std::snprintf(sizeLabel, sizeof sizeLabel, "%u px", s.view.size);
     ui::beginCapsule("size", 72.0f);
@@ -388,7 +438,9 @@ std::size_t contextBar(Session& s) {
     }
     ui::endCapsule();
     ++n;
+    }
 
+    if (shown & kCapZoom) {
     // TWO CONTROLS THAT DISAGREE ARE WORSE THAN ONE. The label reads the SAME
     // number the wheel writes, and it shows the TARGET, not the eased value:
     // mid-ease the number would otherwise flicker through every percentage.
@@ -408,6 +460,7 @@ std::size_t contextBar(Session& s) {
     }
     ui::endCapsule();
     ++n;
+    }
 
     ui::popMenuStyle();
     return n;
@@ -519,9 +572,13 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
         // barra, e daqui em diante tudo e posto a mao (o nome, as capsulas).
         const float titleX = ImGui::GetCurrentWindow()->DC.CursorPosPrevLine.x + 10.0f * dk;
         // As capsulas, encostadas a direita (`.toolbar-spacer`): 12 pt da borda.
-        // Elas ficam la em qualquer largura: quem cede e o nome, cortado a 16 pt
-        // delas -- um nome comprido as empurrava para fora da barra.
-        const float capsules = (3 * 32 + 6 + 84 + 84 + 72 + 70 + 4 * 26 + 6) * dk + 8.0f * dk * 5;
+        // Quem cede primeiro e o nome, cortado a 16 pt delas; e quando nem sem
+        // o nome elas cabem -- a coluna do canvas estreita, entre a sidebar e o
+        // inspetor --, saem as de menos falta, uma a uma (`capsulesThatFit`).
+        // Ate 01/10 elas ficavam todas, e as da direita corriam por baixo do
+        // inspetor.
+        const unsigned shown = capsulesThatFit((barRight - 12.0f * dk - titleX) / dk);
+        const float capsules = capsulesWidth(shown) * dk;
         const float capsulesX = std::max(barRight - 12.0f * dk - capsules, titleX);
         {
             const std::string title = s.bundle().path().stem().string();
@@ -536,10 +593,12 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
             bar->PopClipRect();
             ImGui::PopFont();
         }
-        ImGui::SetCursorScreenPos(ImVec2(capsulesX, barTop + (barH - 34.0f * dk) * 0.5f));
-        st.effectsControls = effectsBar(s);
-        st.contextControls = contextBar(s);
-        st.zoomControls = zoomBar(s);
+        // So com capsula para por: o ImGui recusa um cursor movido sem um item
+        // depois dele, e numa barra em que nenhuma cabe nao ha item nenhum.
+        if (shown != 0) ImGui::SetCursorScreenPos(ImVec2(capsulesX, barTop + (barH - 34.0f * dk) * 0.5f));
+        if (shown & kCapEffects) st.effectsControls = effectsBar(s);
+        st.contextControls = contextBar(s, shown);
+        if (shown & kCapZoomButtons) st.zoomControls = zoomBar(s);
         ImGui::EndMenuBar();
     }
     // A linha que separa a toolbar do palco (`border-bottom: 1px solid var(--sep)`).
@@ -620,12 +679,18 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
     // (`WindowLayoutConstants`, laudo 19/09 §4.2) de cada lado, e o Fit nunca
     // passa de 100% -- o `Math.min(1, ...)` do Stage.tsx. `canvasFitZoom`
     // continua a funcao pura que encosta exato; a folga entra aqui.
-    const float fitPad = 96.0f * ui::dpi();
-    auto fitZoom = [&] {
-        return std::min(1.0f, canvasFitZoom(std::max(1.0f, availW - 2.0f * fitPad),
-                                            std::max(1.0f, availH - 2.0f * fitPad), sidePx));
+    //
+    // A FOLGA CEDE NUM CANVAS ESTREITO (01/10): 96 pt de cada lado supoem a
+    // janela minima do alvo, de 1284 pt. Numa coluna de 265 px eles deixavam 73
+    // para o icone. Ela nunca passa de um oitavo do lado curto do canvas, o que
+    // so morde abaixo de 768 px -- acima disso sao os 96 lidos.
+    auto fitZoomIn = [&](float w, float h) {
+        const float fitPad = std::min(96.0f * ui::dpi(), 0.125f * std::min(w, h));
+        return std::min(1.0f, canvasFitZoom(std::max(1.0f, w - 2.0f * fitPad),
+                                            std::max(1.0f, h - 2.0f * fitPad), sidePx));
     };
-    if (!v.fitted) {
+    auto fitZoom = [&] { return fitZoomIn(availW, availH); };
+    auto snapToFit = [&] {
         v.zoomTarget = fitZoom();
         const CanvasVec c = canvasCentrePan(availW, availH, sidePx, v.zoomTarget);
         v.panTargetX = c.x;
@@ -633,8 +698,27 @@ CanvasStats drawCanvas(Session& s, const RenderView& view, MenuActions& actions,
         v.zoom = v.zoomTarget;
         v.panX = c.x;
         v.panY = c.y;
+    };
+    if (!v.fitted) {
+        snapToFit();
         v.fitted = true;
+    } else if (v.canvasW > 0.0f && (v.canvasW != availW || v.canvasH != availH)) {
+        // ── O Fit acompanha a janela ────────────────────────────────────────
+        // O canvas mudou de tamanho (a janela, ou um divisor arrastado). Se a
+        // vista estava no Fit do tamanho ANTERIOR -- o zoom e o pan que o Fit
+        // daria la --, ela continua no Fit do novo, sem ease: redimensionar nao
+        // e um gesto sobre o icone. Se a pessoa tinha dado zoom ou arrastado, a
+        // vista e dela e fica onde esta. Sem isto o icone ficava do tamanho em
+        // que abriu, cortado pelo inspetor numa janela estreita.
+        const float was = fitZoomIn(v.canvasW, v.canvasH);
+        const CanvasVec c = canvasCentrePan(v.canvasW, v.canvasH, sidePx, was);
+        if (std::fabs(v.zoomTarget - was) < 1e-4f && std::fabs(v.panTargetX - c.x) < 0.75f &&
+            std::fabs(v.panTargetY - c.y) < 0.75f) {
+            snapToFit();
+        }
     }
+    v.canvasW = availW;
+    v.canvasH = availH;
 
     // Flat colour behind the icon (spec 13/09 §6). Flat and KNOWN: the six
     // `sine-*` backdrops of the target are round 5, and a backdrop taken from

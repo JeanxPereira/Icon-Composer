@@ -328,6 +328,18 @@ const char* colorSpaceLabel(icf::ColorSpace s) {
     return "colour";
 }
 
+// The same name where the long one does not fit beside the control.
+const char* colorSpaceShortLabel(icf::ColorSpace s) {
+    switch (s) {
+        case icf::ColorSpace::DisplayP3: return "P3";
+        case icf::ColorSpace::SRGB: return "sRGB";
+        case icf::ColorSpace::ExtendedSRGB: return "Ext. sRGB";
+        case icf::ColorSpace::Gray: return "Gray";
+        case icf::ColorSpace::ExtendedGray: return "Ext. Gray";
+    }
+    return "colour";
+}
+
 // A colour as the UI can show it. A PREVIEW, not a render: it ignores the
 // stop's colour space, so a display-p3 ramp draws here a little duller than the
 // canvas will draw it.
@@ -473,18 +485,26 @@ void fill(Section& x) {
             // cannot convert -- `colorToString` writes the numbers back under
             // the space they arrived with -- so the least it can do is name the
             // space it is not honouring.
-            char label[64];
-            if (ramp) {
-                std::snprintf(label, sizeof label, "Stop %d · %s", static_cast<int>(i) + 1,
-                              colorSpaceLabel(c.space));
-            } else {
-                std::snprintf(label, sizeof label, "Color · %s", colorSpaceLabel(c.space));
-            }
             // The grey spaces carry two components, the RGB spaces four, and the
             // count is a property of the space -- so the control follows the
             // value rather than normalising it (Values.h).
             const float control = c.count == 4 ? kNumboxWidth : numboxesWidth(2);
-            const char* id = ui::leftLabelFixed(label, control + (removable ? button / k + 4.0f : 0.0f));
+            const float fixed = control + (removable ? button / k + 4.0f : 0.0f);
+            // The long name of the space where it fits beside the control, the
+            // short one where it does not: in a narrow inspector "Extended sRGB"
+            // was cut in the middle of the word.
+            const float room = ui::rowAvail() - (fixed + 6.0f) * k;
+            char label[64];
+            auto spell = [&](const char* space) {
+                if (ramp) {
+                    std::snprintf(label, sizeof label, "Stop %d · %s", static_cast<int>(i) + 1, space);
+                } else {
+                    std::snprintf(label, sizeof label, "Color · %s", space);
+                }
+            };
+            spell(colorSpaceLabel(c.space));
+            if (ImGui::CalcTextSize(label).x > room) spell(colorSpaceShortLabel(c.space));
+            const char* id = ui::leftLabelFixed(label, fixed);
             if (removable) {
                 // To the LEFT of the control, so the control stays in its column.
                 if (ui::plainButton("##remove", "minus", ImVec2(button, button), 12.0f, "-", true,
@@ -761,16 +781,22 @@ void scopeSelector(Session& s) {
                       appearanceLabel(s.view.context.appearance), idiomLabel(s.view.context.idiom));
         const float avail = ui::rowAvail();
         const float startX = ImGui::GetCursorPosX();
+        const char* kMatch = "Edit this";
+        const float bw = ImGui::CalcTextSize(kMatch).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        // A frase para a 8 pt do botao: na coluna estreita ela corria por baixo
+        // dele. O que foi cortado esta inteiro no tooltip.
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        ImGui::PushClipRect(p, ImVec2(p.x + std::max(0.0f, avail - bw - 8.0f * ui::dpi()),
+                                      p.y + ImGui::GetFrameHeight()), true);
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.25f, 1.0f), "%s", canvas);
+        ImGui::PopClipRect();
         ImGui::SetItemTooltip(
             "The canvas is showing %s / %s -- you are editing %s / %s.\nLegitimate -- editing one "
             "scope while looking at another is a real thing to want. But an edit made here may not "
             "move a pixel on screen, and that is a different fact from the edit not having happened.",
             appearanceLabel(s.view.context.appearance), idiomLabel(s.view.context.idiom),
             appearanceLabel(s.scope.appearance), idiomLabel(s.scope.idiom));
-        const char* kMatch = "Edit this";
-        const float bw = ImGui::CalcTextSize(kMatch).x + ImGui::GetStyle().FramePadding.x * 2.0f;
         ImGui::SameLine(startX + avail - bw);
         if (ImGui::Button(kMatch)) {
             // Only the SCOPE moves. Pulling the canvas to the scope instead

@@ -114,6 +114,18 @@ inline float capPanelShare(float want, float span) {
     return std::min(want, s * kPanelShareMax);
 }
 
+// O PISO, que entrou em 01/10 e é o único dos quatro números medidos que morde
+// depois da montagem: um painel não fica mais estreito que o mínimo do alvo
+// ENQUANTO houver espaço para ele. Sem isto um inspetor encolhido numa janela
+// estreita (pelo teto de metade, ou por um divisor arrastado) continuava
+// encolhido na janela larga -- o nó guarda largura absoluta e nada o trazia de
+// volta --, com os rótulos cortados ao meio. O teto de metade ainda ganha: numa
+// janela onde o mínimo não cabe, o canvas não fica sem nada. `minWidth` vem já
+// na escala da tela.
+inline float floorPanelWidth(float want, float minWidth, float span) {
+    return capPanelShare(std::max(want, minWidth), span);
+}
+
 // Pixels em razão, que é o que `DockBuilderSplitNode` pede.
 inline float dockRatio(float px, float span) {
     const float s = span > 1.0f ? span : 1.0f;

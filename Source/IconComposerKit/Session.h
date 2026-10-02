@@ -72,6 +72,10 @@ struct ViewContext {
     // False until the canvas has laid the document out to Fit. It is false in a
     // freshly opened Session and nowhere else, so "Fit on open" needs no event.
     bool fitted = false;
+    // O tamanho do canvas no quadro anterior: e contra ele que o canvas decide,
+    // quando a janela muda de tamanho, se a vista ainda estava no Fit -- e so
+    // nesse caso a reajusta (PanelCanvas.cpp, "o Fit acompanha a janela").
+    float canvasW = 0.0f, canvasH = 0.0f;
 
     // A control outside the canvas -- the zoom combo, the View>Zoom menu -- asks
     // for a magnification by writing this, and the canvas applies it anchored on

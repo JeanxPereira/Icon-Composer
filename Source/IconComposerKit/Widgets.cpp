@@ -535,6 +535,11 @@ const char* labelled(const char* label, float share, float fixed) {
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(label, label + n);
     ImGui::PopClipRect();
+    // Um rotulo cortado diz o nome inteiro a quem para em cima dele.
+    if (ImGui::CalcTextSize(label, label + n).x > avail - w - 6.0f * dpi() &&
+        ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+        ImGui::SetTooltip("%.*s", static_cast<int>(n), label);
+    }
     if (w > 0.0f) {
         ImGui::SameLine(startX + avail - w);
         ImGui::SetNextItemWidth(w);
@@ -558,12 +563,29 @@ bool combo(const char* label, const char* preview) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(5.0f * k, 5.0f * k));
     ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 9.0f * k);
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1, 1, 1, 0.12f));
-    const bool open = ImGui::BeginCombo(id, preview, ImGuiComboFlags_NoArrowButton);
+    // O valor e desenhado AQUI e nao pelo `BeginCombo`: sem a seta do ImGui o
+    // texto dele vai ate a borda do campo, e na coluna estreita um nome comprido
+    // ("Automatic Gradient") corria por baixo do chevron.
+    const bool open = ImGui::BeginCombo(id, "", ImGuiComboFlags_NoArrowButton);
     ImGui::PopStyleColor();
     ImGui::PopStyleVar(2);
     // O chevron duplo no fim do campo, onde o ImGui poria a seta.
     const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
     const ImVec2 c(b.x - 11.0f * k, (a.y + b.y) * 0.5f);
+    if (preview && *preview) {
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const bool disabled = (ImGui::GetItemFlags() & ImGuiItemFlags_Disabled) != 0;
+        const float textEnd = std::max(a.x, c.x - 9.0f * k);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->PushClipRect(a, ImVec2(textEnd, b.y), true);
+        dl->AddText(ImVec2(a.x + style.FramePadding.x, a.y + style.FramePadding.y),
+                    theme::u32(disabled ? theme::kText3 : theme::kText), preview);
+        dl->PopClipRect();
+        if (a.x + style.FramePadding.x + ImGui::CalcTextSize(preview).x > textEnd &&
+            ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+            ImGui::SetTooltip("%s", preview);
+        }
+    }
     if (!symbol("chevron.up.chevron.down", c, 11.0f * k, theme::u32(theme::kText2))) {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         dl->AddTriangleFilled(ImVec2(c.x - 3 * k, c.y - 1 * k), ImVec2(c.x + 3 * k, c.y - 1 * k),
